@@ -3,10 +3,24 @@ import WebSocket from "ws";
 import { startTestServer, api } from "./helpers.js";
 import type { LoomEvent } from "@loom/core";
 
-let gate: { resolve: () => void; promise: Promise<void> } | undefined;
+function makeGate() {
+  let markEntered!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((r) => { markEntered = r; });
+  const released = new Promise<void>((r) => { release = r; });
+  return { entered, released, markEntered, release };
+}
+
+let gate: ReturnType<typeof makeGate> | undefined;
 let s: Awaited<ReturnType<typeof startTestServer>>;
 beforeAll(async () => {
-  s = await startTestServer({ beforeReplay: async () => { if (gate) await gate.promise; } });
+  s = await startTestServer({
+    beforeReplay: async () => {
+      if (!gate) return;
+      gate.markEntered();
+      await gate.released;
+    },
+  });
 });
 afterAll(async () => { await s.close(); });
 
@@ -20,15 +34,26 @@ function collect(url: string, until: (evs: LoomEvent[]) => boolean, timeoutMs = 
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url);
     const events: LoomEvent[] = [];
-    const timer = setTimeout(() => reject(new Error(`timeout; got seqs ${events.map((e) => e.seq)}`)), timeoutMs);
+    const timer = setTimeout(() => {
+      try { ws.close(); } catch { /* ignore */ }
+      reject(new Error(`timeout; got seqs ${events.map((e) => e.seq)}`));
+    }, timeoutMs);
     ws.on("message", (data) => {
       const msg = JSON.parse(data.toString());
       if (msg.type === "ping") return;
       events.push(msg);
       if (until(events)) { clearTimeout(timer); resolve({ events, ws }); }
     });
-    ws.on("error", (e) => { clearTimeout(timer); reject(e); });
-    ws.on("unexpected-response", (_req, res) => { clearTimeout(timer); reject(new Error(`HTTP ${res.statusCode}`)); });
+    ws.on("error", (e) => {
+      clearTimeout(timer);
+      try { ws.close(); } catch { /* ignore */ }
+      reject(e);
+    });
+    ws.on("unexpected-response", (_req, res) => {
+      clearTimeout(timer);
+      try { ws.close(); } catch { /* ignore */ }
+      reject(new Error(`HTTP ${res.statusCode}`));
+    });
   });
 }
 
@@ -51,13 +76,12 @@ describe("stream", () => {
     const { weave, token, generalThread, secret } = c.json;
     for (let i = 0; i < 5; i++) await api(s.baseUrl, "POST", `/api/threads/${generalThread.id}/messages`, { text: `m${i}` }, token);
     // seqs now 1..8
-    let release!: () => void;
-    gate = { resolve: () => release(), promise: new Promise<void>((r) => { release = r; }) };
+    gate = makeGate();
     const t = await ticket(secret);
     const pending = collect(`${s.wsUrl}/api/weaves/${weave.id}/stream?since=0&ticket=${t}`, (evs) => evs.length === 10);
-    await new Promise((r) => setTimeout(r, 100)); // handler is now subscribed and parked before replay
+    await gate.entered; // handler is now subscribed and parked inside beforeReplay
     await api(s.baseUrl, "POST", `/api/threads/${generalThread.id}/messages`, { text: "during" }, token); // seq 9
-    gate.resolve(); gate = undefined;
+    gate.release(); gate = undefined;
     await new Promise((r) => setTimeout(r, 100));
     await api(s.baseUrl, "POST", `/api/threads/${generalThread.id}/messages`, { text: "after" }, token); // seq 10
     const { events, ws } = await pending;
