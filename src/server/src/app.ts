@@ -3,6 +3,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { LoomError, type Core } from "@loom/core";
 import { bearer, type Env } from "./auth.js";
 import { statusFor } from "./errors.js";
+import { logError } from "./log.js";
 import type { TicketStore } from "./tickets.js";
 import { weaveRoutes } from "./routes/weaves.js";
 import { threadRoutes } from "./routes/threads.js";
@@ -21,7 +22,7 @@ export function buildApp(deps: AppDeps): Hono<Env> {
   app.onError((err, c) => {
     if (err instanceof LoomError) return c.json({ code: err.code, message: err.message }, statusFor(err.code) as ContentfulStatusCode);
     if (err instanceof SyntaxError) return c.json({ code: "validation", message: "Body is not valid JSON" }, 400);
-    console.error("unhandled", err);
+    logError("unhandled", err);
     return c.json({ code: "internal", message: "Internal error" }, 500);
   });
 

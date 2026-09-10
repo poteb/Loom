@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { errors, type Core } from "@loom/core";
+import type { Core } from "@loom/core";
 import { requireActor, type Env } from "../auth.js";
 import { body } from "../validate.js";
 
@@ -9,11 +9,7 @@ export function adminRoutes(core: Core) {
 
   r.get("/weaves", async (c) => c.json({ weaves: await core.listWeaves(await requireActor(c, core)) }));
 
-  r.get("/settings", async (c) => {
-    const actor = await requireActor(c, core);
-    if (actor.kind !== "keeper") throw errors.forbidden("Instance keeper required");
-    return c.json(await core.getSettings());
-  });
+  r.get("/settings", async (c) => c.json(await core.readSettings(await requireActor(c, core))));
 
   r.put("/settings", async (c) => {
     const actor = await requireActor(c, core);

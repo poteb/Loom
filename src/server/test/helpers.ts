@@ -1,6 +1,8 @@
 import { serve, type ServerType } from "@hono/node-server";
 import { createCore, type Core } from "@loom/core";
 import { freshDb, closeTestDb } from "../../core/test/helpers.js";
+
+export { keeperToken } from "../../core/test/helpers.js";
 import { buildApp } from "../src/app.js";
 import { TicketStore } from "../src/tickets.js";
 import { attachWebSocket } from "../src/ws.js";
@@ -11,7 +13,16 @@ export type TestServerOpts = {
   replayPageSize?: number;
 };
 
-export async function startTestServer(opts: TestServerOpts = {}) {
+/** Spelled out because the inferred type would reach into @loom/core's internal dist paths. */
+export type TestServer = {
+  baseUrl: string;
+  wsUrl: string;
+  core: Core;
+  tickets: TicketStore;
+  close: () => Promise<void>;
+};
+
+export async function startTestServer(opts: TestServerOpts = {}): Promise<TestServer> {
   const core = createCore(await freshDb());
   const tickets = new TicketStore();
   const app = buildApp({ core, tickets });

@@ -1,8 +1,9 @@
 import { describe, it, expect, afterAll, beforeAll } from "vitest";
-import { startTestServer, api } from "./helpers.js";
+import { startTestServer, api, keeperToken } from "./helpers.js";
 
+const KEEPER = keeperToken("keeper-token");
 let s: Awaited<ReturnType<typeof startTestServer>>;
-beforeAll(async () => { s = await startTestServer(); await s.core.seedKeepers(["keeper-token"]); });
+beforeAll(async () => { s = await startTestServer(); await s.core.seedKeepers([KEEPER]); });
 afterAll(async () => { await s.close(); });
 
 const creator = { title: "PR 42", opener: "Review https://example/pr/42", creator: { name: "Claude", kind: "agent" } };
@@ -79,13 +80,13 @@ describe("weaves", () => {
     const a = await api(s.baseUrl, "POST", "/api/weaves", creator);
     const unknown = "11111111-2222-3333-4444-555555555555";
 
-    const bad = await api(s.baseUrl, "GET", "/api/weaves/not-a-uuid", undefined, "keeper-token");
+    const bad = await api(s.baseUrl, "GET", "/api/weaves/not-a-uuid", undefined, KEEPER);
     expect(bad.status).toBe(404); expect(bad.json.code).toBe("weave_not_found");
 
-    const gone = await api(s.baseUrl, "GET", `/api/weaves/${unknown}/events`, undefined, "keeper-token");
+    const gone = await api(s.baseUrl, "GET", `/api/weaves/${unknown}/events`, undefined, KEEPER);
     expect(gone.status).toBe(404); expect(gone.json.code).toBe("weave_not_found");
 
-    const badEvents = await api(s.baseUrl, "GET", "/api/weaves/not-a-uuid/events", undefined, "keeper-token");
+    const badEvents = await api(s.baseUrl, "GET", "/api/weaves/not-a-uuid/events", undefined, KEEPER);
     expect(badEvents.status).toBe(404); expect(badEvents.json.code).toBe("weave_not_found");
 
     const msg = await api(s.baseUrl, "POST", "/api/threads/not-a-uuid/messages", { text: "hi" }, a.json.token);
@@ -94,7 +95,7 @@ describe("weaves", () => {
     const role = await api(s.baseUrl, "PUT", `/api/weaves/${a.json.weave.id}/participants/not-a-uuid/role`, { role: "keeper" }, a.json.token);
     expect(role.status).toBe(400); expect(role.json.code).toBe("validation");
 
-    const keeper = await api(s.baseUrl, "DELETE", "/api/admin/keepers/not-a-uuid", undefined, "keeper-token");
+    const keeper = await api(s.baseUrl, "DELETE", "/api/admin/keepers/not-a-uuid", undefined, KEEPER);
     expect(keeper.status).toBe(400); expect(keeper.json.code).toBe("validation");
   });
 });
@@ -102,7 +103,7 @@ describe("weaves", () => {
 describe("auth + admin", () => {
   it("issues ws tickets for any credential", async () => {
     const a = await api(s.baseUrl, "POST", "/api/weaves", creator);
-    for (const cred of [a.json.token, a.json.secret, "keeper-token"]) {
+    for (const cred of [a.json.token, a.json.secret, KEEPER]) {
       const t = await api(s.baseUrl, "POST", "/api/auth/ws-ticket", undefined, cred);
       expect(t.status).toBe(200);
       expect(t.json.ticket).toHaveLength(43);
@@ -114,21 +115,21 @@ describe("auth + admin", () => {
   it("admin endpoints require instance keeper", async () => {
     const a = await api(s.baseUrl, "POST", "/api/weaves", creator);
     expect((await api(s.baseUrl, "GET", "/api/admin/weaves", undefined, a.json.token)).status).toBe(403);
-    const list = await api(s.baseUrl, "GET", "/api/admin/weaves", undefined, "keeper-token");
+    const list = await api(s.baseUrl, "GET", "/api/admin/weaves", undefined, KEEPER);
     expect(list.status).toBe(200);
     expect(list.json.weaves.length).toBeGreaterThan(0);
 
-    const st = await api(s.baseUrl, "PUT", "/api/admin/settings", { openWeaveCreation: false }, "keeper-token");
+    const st = await api(s.baseUrl, "PUT", "/api/admin/settings", { openWeaveCreation: false }, KEEPER);
     expect(st.status).toBe(200); expect(st.json.openWeaveCreation).toBe(false);
     expect((await api(s.baseUrl, "POST", "/api/weaves", creator)).status).toBe(403);
-    expect((await api(s.baseUrl, "POST", "/api/weaves", creator, "keeper-token")).status).toBe(201);
-    await api(s.baseUrl, "PUT", "/api/admin/settings", { openWeaveCreation: true }, "keeper-token");
-    expect((await api(s.baseUrl, "GET", "/api/admin/settings", undefined, "keeper-token")).json.openWeaveCreation).toBe(true);
+    expect((await api(s.baseUrl, "POST", "/api/weaves", creator, KEEPER)).status).toBe(201);
+    await api(s.baseUrl, "PUT", "/api/admin/settings", { openWeaveCreation: true }, KEEPER);
+    expect((await api(s.baseUrl, "GET", "/api/admin/settings", undefined, KEEPER)).json.openWeaveCreation).toBe(true);
 
-    const add = await api(s.baseUrl, "POST", "/api/admin/keepers", { name: "Ops" }, "keeper-token");
+    const add = await api(s.baseUrl, "POST", "/api/admin/keepers", { name: "Ops" }, KEEPER);
     expect(add.status).toBe(201);
     expect((await api(s.baseUrl, "GET", "/api/admin/keepers", undefined, add.json.token)).status).toBe(200);
-    expect((await api(s.baseUrl, "DELETE", `/api/admin/keepers/${add.json.keeper.id}`, undefined, "keeper-token")).status).toBe(204);
+    expect((await api(s.baseUrl, "DELETE", `/api/admin/keepers/${add.json.keeper.id}`, undefined, KEEPER)).status).toBe(204);
     expect((await api(s.baseUrl, "GET", "/api/admin/keepers", undefined, add.json.token)).status).toBe(401);
   });
 });
