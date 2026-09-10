@@ -33,6 +33,14 @@ describe("settings", () => {
     await expect(updateSettings(db, k, { maxMessageLength: 0 })).rejects.toMatchObject({ code: "validation" });
     await expect(updateSettings(db, k, { instanceName: "" })).rejects.toMatchObject({ code: "validation" });
   });
+  it("empty patch is a no-op that returns current settings", async () => {
+    const k = await keeperActor();
+    await updateSettings(db, k, { instanceName: "Before" });
+    const s = await updateSettings(db, k, {});
+    expect(s.instanceName).toBe("Before");
+    const s2 = await updateSettings(db, k, { instanceName: undefined });
+    expect(s2.instanceName).toBe("Before");
+  });
 });
 
 describe("keepers", () => {

@@ -29,7 +29,9 @@ export async function updateSettings(db: Db, actor: Actor, patch: Partial<Settin
   assertInstanceKeeper(actor);
   const parsed = patchSchema.safeParse(patch);
   if (!parsed.success) throw errors.validation(parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));
+  const updates = Object.fromEntries(Object.entries(parsed.data).filter(([, v]) => v !== undefined));
   await getSettings(db);
-  const [row] = await db.update(settings).set(parsed.data).where(eq(settings.id, 1)).returning();
+  if (Object.keys(updates).length === 0) return getSettings(db);
+  const [row] = await db.update(settings).set(updates).where(eq(settings.id, 1)).returning();
   return toSettings(row!);
 }
