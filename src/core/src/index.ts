@@ -43,6 +43,7 @@ export function createCore(db: Db) {
 }
 
 export { LoomError, errors, type ErrorCode } from "./errors.js";
+export { assertCanRead } from "./actors.js";
 export { createDb, runMigrations, closeDb, type Db } from "./db/index.js";
 export { EventBus } from "./bus.js";
 export type { CreateWeaveInput, CreateWeaveResult, WeaveInfo } from "./weaves.js";
