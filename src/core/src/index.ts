@@ -40,7 +40,8 @@ export function createCore(db: Db) {
     postMessage: (actor: Actor, threadId: string, text: string) => postMessage(db, bus, actor, threadId, text),
     setRole: (actor: Actor, weaveId: string, participantId: string, role: Role) => setRole(db, bus, actor, weaveId, participantId, role),
     exportWeave: (actor: Actor, weaveId: string, format: "md" | "json") => exportWeave(db, actor, weaveId, format),
-    getSettings: () => getSettings(db),
+    // No unauthenticated getSettings on the facade: adapters go through readSettings, which
+    // re-checks instance-keeper standing against the database on every call.
     readSettings: async (actor: Actor) => { await assertInstanceKeeperFresh(db, actor); return getSettings(db); },
     updateSettings: (actor: Actor, patch: Partial<Settings>) => updateSettings(db, actor, patch),
     seedKeepers: (tokens: string[]) => keepers.seedKeepers(db, tokens),
