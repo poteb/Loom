@@ -3,6 +3,7 @@ import { closeDb, createCore, createDb, runMigrations } from "@loom/core";
 import { loadConfig } from "./config.js";
 import { buildApp } from "./app.js";
 import { TicketStore } from "./tickets.js";
+import { logError } from "./log.js";
 import { attachWebSocket } from "./ws.js";
 
 async function main() {
@@ -29,4 +30,4 @@ async function main() {
   process.on("SIGTERM", () => void shutdown());
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+main().catch((e) => { logError("startup", e); process.exit(1); });
