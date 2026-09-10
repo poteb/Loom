@@ -2,6 +2,7 @@ import { and, asc, eq, gt } from "drizzle-orm";
 import type { Db } from "./db/index.js";
 import { events, weaves } from "./db/schema.js";
 import { errors } from "./errors.js";
+import { isUuid } from "./ids.js";
 import type { EventBus } from "./bus.js";
 import type { EventType, LoomEvent } from "./types.js";
 
@@ -40,6 +41,7 @@ export async function withWeaveLock<T>(
   db: Db, bus: EventBus, weaveId: string,
   fn: (tx: Tx, weave: WeaveRow) => Promise<{ result: T; events: NewEvent[] }>,
 ): Promise<T> {
+  if (!isUuid(weaveId)) throw errors.weaveNotFound();
   const { result, committed } = await db.transaction(async (tx) => {
     const [weave] = await tx.select().from(weaves).where(eq(weaves.id, weaveId)).for("update");
     if (!weave) throw errors.weaveNotFound();

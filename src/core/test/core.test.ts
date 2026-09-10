@@ -28,4 +28,10 @@ describe("createCore", () => {
     const meA = await core.resolveCredential(a.token);
     await expect(core.readEvents(meA, b.weave.id, {})).rejects.toMatchObject({ code: "forbidden" });
   });
+  it("readEvents 404s on an unknown weave", async () => {
+    await core.seedKeepers(["k"]);
+    const k = await core.resolveCredential("k");
+    await expect(core.readEvents(k, "11111111-2222-3333-4444-555555555555", {}))
+      .rejects.toMatchObject({ code: "weave_not_found" });
+  });
 });

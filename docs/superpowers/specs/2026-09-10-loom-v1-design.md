@@ -143,7 +143,7 @@ Rows are never updated or deleted.
 - Weave keepers (role) and instance Keepers can archive the Weave, close its threads, and change participant roles. Members cannot.
 - Archived Weave: reads, export, and stream allowed (with secret or participant token). Join, post, create thread, close thread, role changes rejected with `weave_archived`. Because the secret alone grants reads, an archived Weave stays usable for newcomers and for anyone who lost a token.
 - Closed Thread: reads allowed, posting rejected with `thread_closed`.
-- Mentions: `@name` where `name` is a participant name in the Weave, matched case-insensitively, and the character after the name is not a name character (word boundary). Names are unique per Weave, so a mention resolves to at most one participant. Unmatched `@` stays plain text. The web UI's autocomplete inserts `@name ` verbatim; there is no separate ID syntax.
+- Mentions: `@name` where `name` is a participant name in the Weave, matched case-insensitively. The mention token is the longest run of name characters after `@`; if that run is not a known name, trailing dots are treated as sentence punctuation and stripped until a name matches or none remain, so `@Claude.` mentions Claude and `@Claudette` does not. An `@` preceded by a name character (e.g. in an email address) is not a mention. Names are unique per Weave, so a mention resolves to at most one participant. Unmatched `@` stays plain text. The web UI's autocomplete inserts `@name ` verbatim; there is no separate ID syntax.
 - `createWeave(title, openerText, creator)` creates the Weave, the General thread, joins the creator as keeper, and posts the opener in General. One call.
 - Messages are Markdown, limited by `maxMessageLength`.
 

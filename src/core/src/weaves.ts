@@ -3,12 +3,12 @@ import type { Db } from "./db/index.js";
 import { weaves, threads, participants } from "./db/schema.js";
 import type { EventBus } from "./bus.js";
 import { errors } from "./errors.js";
-import { newId, newSecret } from "./ids.js";
+import { isUuid, newId, newSecret } from "./ids.js";
 import { validateName } from "./names.js";
 import { parseMentions } from "./mentions.js";
 import { getSettings } from "./settings.js";
 import { appendInTx, withWeaveLock } from "./events.js";
-import { actorId, assertCanRead, assertInstanceKeeper, assertIsKeeperOf, toPublicParticipant } from "./actors.js";
+import { actorId, assertCanRead, assertInstanceKeeper, assertIsKeeperOf, assertStillKeeperOf, toPublicParticipant } from "./actors.js";
 import type { Actor, Kind, PublicParticipant, PublicThread, PublicWeave } from "./types.js";
 
 export type CreateWeaveInput = { title: string; opener: string; creator: { name: string; kind: Kind } };
@@ -26,10 +26,13 @@ export function toPublicThread(t: typeof threads.$inferSelect): PublicThread {
     createdAt: t.createdAt.toISOString(), closedAt: t.closedAt ? t.closedAt.toISOString() : null };
 }
 
-function isPgUniqueViolation(e: unknown): boolean {
+/** True only for the per-Weave unique participant-name index; any other unique violation is a bug, not a taken name. */
+export function isNameTakenViolation(e: unknown): boolean {
   if (typeof e !== "object" || e === null) return false;
-  const err = e as { code?: string; cause?: { code?: string } };
-  return err.code === "23505" || err.cause?.code === "23505";
+  const err = e as { code?: string; constraint_name?: string; cause?: { code?: string; constraint_name?: string } };
+  const code = err.code ?? err.cause?.code;
+  const constraint = err.constraint_name ?? err.cause?.constraint_name;
+  return code === "23505" && constraint === "participants_weave_name_idx";
 }
 
 export async function createWeave(db: Db, bus: EventBus, input: CreateWeaveInput, actor?: Actor): Promise<CreateWeaveResult> {
@@ -67,6 +70,7 @@ export async function createWeave(db: Db, bus: EventBus, input: CreateWeaveInput
 
 export async function getWeave(db: Db, actor: Actor, weaveId: string): Promise<WeaveInfo> {
   assertCanRead(actor, weaveId);
+  if (!isUuid(weaveId)) throw errors.weaveNotFound();
   const [w] = await db.select().from(weaves).where(eq(weaves.id, weaveId));
   if (!w) throw errors.weaveNotFound();
   const ts = await db.select().from(threads).where(eq(threads.weaveId, weaveId)).orderBy(asc(threads.createdAt));
@@ -92,16 +96,18 @@ export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { na
     });
     return { weaveId: found.id, participant, token };
   } catch (e) {
-    if (isPgUniqueViolation(e)) throw errors.nameTaken(name);
+    if (isNameTakenViolation(e)) throw errors.nameTaken(name);
     throw e;
   }
 }
 
 export async function archiveWeave(db: Db, bus: EventBus, actor: Actor, weaveId: string): Promise<void> {
   assertIsKeeperOf(actor, weaveId);
+  if (!isUuid(weaveId)) throw errors.weaveNotFound();
   const [general] = await db.select().from(threads).where(eq(threads.weaveId, weaveId)).orderBy(asc(threads.createdAt)).limit(1);
   if (!general) throw errors.weaveNotFound();
   await withWeaveLock(db, bus, weaveId, async (tx, weave) => {
+    await assertStillKeeperOf(tx, actor, weaveId);
     if (weave.archivedAt) throw errors.weaveArchived();
     await tx.update(weaves).set({ archivedAt: new Date() }).where(eq(weaves.id, weaveId));
     return { result: undefined, events: [{ threadId: general.id, type: "weave.archived" as const, actor: actorId(actor), payload: {} }] };

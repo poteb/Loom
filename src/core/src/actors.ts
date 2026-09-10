@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
 import type { Db } from "./db/index.js";
+import type { Tx } from "./events.js";
 import { participants, keepers, weaves } from "./db/schema.js";
 import { errors } from "./errors.js";
 import type { Actor, PublicParticipant } from "./types.js";
@@ -47,4 +48,23 @@ export function assertIsKeeperOf(actor: Actor, weaveId: string): void {
 
 export function assertInstanceKeeper(actor: Actor): void {
   if (actor.kind !== "keeper") throw errors.forbidden("Instance keeper required");
+}
+
+/**
+ * Re-checks keeper authority against fresh rows inside the Weave lock: an Actor carries the
+ * role captured when its credential was resolved and may since have been demoted or removed.
+ */
+export async function assertStillKeeperOf(tx: Tx, actor: Actor, weaveId: string): Promise<void> {
+  if (actor.kind === "participant") {
+    const [p] = await tx.select({ weaveId: participants.weaveId, role: participants.role })
+      .from(participants).where(eq(participants.id, actor.participant.id)).limit(1);
+    if (!p || p.weaveId !== weaveId || p.role !== "keeper") throw errors.forbidden("Only a keeper of this Weave can do this");
+    return;
+  }
+  if (actor.kind === "keeper") {
+    const [k] = await tx.select({ id: keepers.id }).from(keepers).where(eq(keepers.id, actor.keeperId)).limit(1);
+    if (!k) throw errors.invalidToken();
+    return;
+  }
+  throw errors.forbidden("Only a keeper of this Weave can do this");
 }

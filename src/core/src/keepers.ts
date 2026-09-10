@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import type { Db } from "./db/index.js";
 import { keepers } from "./db/schema.js";
 import { errors } from "./errors.js";
-import { newId, newSecret } from "./ids.js";
+import { isUuid, newId, newSecret } from "./ids.js";
 import { assertInstanceKeeper } from "./actors.js";
 import type { Actor } from "./types.js";
 
@@ -38,6 +38,7 @@ export async function addKeeper(db: Db, actor: Actor, name: string): Promise<{ k
 export async function removeKeeper(db: Db, actor: Actor, id: string): Promise<void> {
   assertInstanceKeeper(actor);
   if (actor.kind === "keeper" && actor.keeperId === id) throw errors.validation("A keeper cannot remove itself");
+  if (!isUuid(id)) throw errors.validation("No such keeper");
   const deleted = await db.delete(keepers).where(eq(keepers.id, id)).returning({ id: keepers.id });
   if (deleted.length === 0) throw errors.validation("No such keeper");
 }

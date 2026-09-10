@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { LoomError, errors } from "../src/errors.js";
-import { newId, newSecret } from "../src/ids.js";
+import { newId, newSecret, isUuid } from "../src/ids.js";
 import { validateName } from "../src/names.js";
 import { parseMentions } from "../src/mentions.js";
+import { isNameTakenViolation } from "../src/weaves.js";
 
 describe("errors", () => {
   it("carries a code", () => {
@@ -21,6 +22,31 @@ describe("ids", () => {
   });
   it("id is a uuid", () => {
     expect(newId()).toMatch(/^[0-9a-f-]{36}$/);
+  });
+});
+
+describe("isUuid", () => {
+  it("accepts generated ids and canonical uuids", () => {
+    expect(isUuid(newId())).toBe(true);
+    expect(isUuid("11111111-2222-3333-4444-555555555555")).toBe(true);
+    expect(isUuid("11111111-2222-3333-4444-555555555555".toUpperCase())).toBe(true);
+  });
+  it.each(["", "not-a-uuid", "11111111-2222-3333-4444-55555555555", "11111111-2222-3333-4444-5555555555555",
+    "11111111222233334444555555555555", "gggggggg-2222-3333-4444-555555555555", " 11111111-2222-3333-4444-555555555555"])(
+    "rejects %j", (s) => { expect(isUuid(s)).toBe(false); });
+});
+
+describe("isNameTakenViolation", () => {
+  it("matches only the per-weave participant name index", () => {
+    expect(isNameTakenViolation({ code: "23505", constraint_name: "participants_weave_name_idx" })).toBe(true);
+    expect(isNameTakenViolation({ cause: { code: "23505", constraint_name: "participants_weave_name_idx" } })).toBe(true);
+  });
+  it("does not swallow other unique violations or other errors", () => {
+    expect(isNameTakenViolation({ code: "23505", constraint_name: "participants_token_unique" })).toBe(false);
+    expect(isNameTakenViolation({ code: "23505" })).toBe(false);
+    expect(isNameTakenViolation({ code: "23503", constraint_name: "participants_weave_name_idx" })).toBe(false);
+    expect(isNameTakenViolation(new Error("boom"))).toBe(false);
+    expect(isNameTakenViolation(null)).toBe(false);
   });
 });
 
