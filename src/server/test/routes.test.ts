@@ -74,6 +74,29 @@ describe("weaves", () => {
     const notJson = await fetch(`${s.baseUrl}/api/weaves`, { method: "POST", headers: { "content-type": "application/json" }, body: "{" });
     expect(notJson.status).toBe(400);
   });
+
+  it("unknown and malformed ids are 404/400, never 500", async () => {
+    const a = await api(s.baseUrl, "POST", "/api/weaves", creator);
+    const unknown = "11111111-2222-3333-4444-555555555555";
+
+    const bad = await api(s.baseUrl, "GET", "/api/weaves/not-a-uuid", undefined, "keeper-token");
+    expect(bad.status).toBe(404); expect(bad.json.code).toBe("weave_not_found");
+
+    const gone = await api(s.baseUrl, "GET", `/api/weaves/${unknown}/events`, undefined, "keeper-token");
+    expect(gone.status).toBe(404); expect(gone.json.code).toBe("weave_not_found");
+
+    const badEvents = await api(s.baseUrl, "GET", "/api/weaves/not-a-uuid/events", undefined, "keeper-token");
+    expect(badEvents.status).toBe(404); expect(badEvents.json.code).toBe("weave_not_found");
+
+    const msg = await api(s.baseUrl, "POST", "/api/threads/not-a-uuid/messages", { text: "hi" }, a.json.token);
+    expect(msg.status).toBe(404); expect(msg.json.code).toBe("thread_not_found");
+
+    const role = await api(s.baseUrl, "PUT", `/api/weaves/${a.json.weave.id}/participants/not-a-uuid/role`, { role: "keeper" }, a.json.token);
+    expect(role.status).toBe(400); expect(role.json.code).toBe("validation");
+
+    const keeper = await api(s.baseUrl, "DELETE", "/api/admin/keepers/not-a-uuid", undefined, "keeper-token");
+    expect(keeper.status).toBe(400); expect(keeper.json.code).toBe("validation");
+  });
 });
 
 describe("auth + admin", () => {

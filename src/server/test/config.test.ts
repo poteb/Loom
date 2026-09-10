@@ -10,4 +10,10 @@ describe("loadConfig", () => {
     expect(() => loadConfig({})).toThrow(/DATABASE_URL/);
     expect(() => loadConfig({ DATABASE_URL: "x", PORT: "abc" })).toThrow(/PORT/);
   });
+  it.each(["abc", "0", "-1", "1.5", "Infinity", "65536"])("rejects PORT=%j", (port) => {
+    expect(() => loadConfig({ DATABASE_URL: "x", PORT: port })).toThrow(/PORT/);
+  });
+  it("accepts the top of the port range", () => {
+    expect(loadConfig({ DATABASE_URL: "x", PORT: "65535" }).port).toBe(65535);
+  });
 });
