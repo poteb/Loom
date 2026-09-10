@@ -1,0 +1,59 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: loom
+      POSTGRES_PASSWORD: loom
+      POSTGRES_DB: loom
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U loom"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  loom:
+    build:
+      context: .
+      dockerfile: src/server/Dockerfile
+    environment:
+      DATABASE_URL: postgres://loom:loom@postgres:5432/loom
+      LOOM_KEEPER_TOKENS: ${LOOM_KEEPER_TOKENS:-}
+      PORT: "3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles: ["prod"]
+
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      LOOM_DOMAIN: ${LOOM_DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    profiles: ["prod"]
+
+  caddy-dev:
+    image: caddy:2-alpine
+    command: caddy reverse-proxy --from localhost --to host.docker.internal:3000
+    ports:
+      - "443:443"
+      - "80:80"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - caddy_data:/data
+    profiles: ["dev"]
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
