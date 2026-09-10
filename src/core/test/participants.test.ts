@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll, beforeEach } from "vitest";
-import { freshDb, closeTestDb } from "./helpers.js";
+import { freshDb, closeTestDb, keeperToken } from "./helpers.js";
 import { EventBus } from "../src/bus.js";
 import { createWeave, joinWeave, archiveWeave } from "../src/weaves.js";
 import { setRole } from "../src/participants.js";
@@ -33,8 +33,8 @@ describe("setRole", () => {
     const j = await joinWeave(db, bus, r.secret, { name: "M", kind: "human" });
     const member = await resolveCredential(db, j.token);
     await expect(setRole(db, bus, member, r.weave.id, r.participant.id, "member")).rejects.toMatchObject({ code: "forbidden" });
-    await seedKeepers(db, ["k"]);
-    const k = await resolveCredential(db, "k");
+    await seedKeepers(db, [keeperToken("k")]);
+    const k = await resolveCredential(db, keeperToken("k"));
     await setRole(db, bus, k, r.weave.id, j.participant.id, "keeper");
     await expect(setRole(db, bus, k, r.weave.id, j.participant.id, "boss" as never)).rejects.toMatchObject({ code: "validation" });
     await expect(setRole(db, bus, k, r.weave.id, "00000000-0000-0000-0000-000000000000", "member")).rejects.toMatchObject({ code: "validation" });

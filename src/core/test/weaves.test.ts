@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll, beforeEach } from "vitest";
-import { freshDb, closeTestDb } from "./helpers.js";
+import { freshDb, closeTestDb, keeperToken } from "./helpers.js";
 import { EventBus } from "../src/bus.js";
 import { createWeave, getWeave, joinWeave, archiveWeave, listWeaves } from "../src/weaves.js";
 import { readEvents } from "../src/events.js";
@@ -29,8 +29,8 @@ describe("createWeave", () => {
     expect(me.kind).toBe("participant");
   });
   it("respects openWeaveCreation=false", async () => {
-    await seedKeepers(db, ["k"]);
-    const k = await resolveCredential(db, "k");
+    await seedKeepers(db, [keeperToken("k")]);
+    const k = await resolveCredential(db, keeperToken("k"));
     await updateSettings(db, k, { openWeaveCreation: false });
     await expect(createWeave(db, bus, input)).rejects.toMatchObject({ code: "forbidden" });
     await expect(createWeave(db, bus, input, k)).resolves.toBeTruthy();
@@ -70,8 +70,8 @@ describe("getWeave", () => {
     const r = await createWeave(db, bus, input);
     const me = await resolveCredential(db, r.token);
     const bySecret = await resolveCredential(db, r.secret);
-    await seedKeepers(db, ["k"]);
-    const k = await resolveCredential(db, "k");
+    await seedKeepers(db, [keeperToken("k")]);
+    const k = await resolveCredential(db, keeperToken("k"));
     for (const a of [me, bySecret, k]) {
       const info = await getWeave(db, a, r.weave.id);
       expect(info.weave.title).toBe("PR #42");
@@ -104,8 +104,8 @@ describe("archiveWeave / listWeaves", () => {
   });
   it("instance keeper archives without joining and lists all weaves", async () => {
     const r = await createWeave(db, bus, input);
-    await seedKeepers(db, ["k"]);
-    const k = await resolveCredential(db, "k");
+    await seedKeepers(db, [keeperToken("k")]);
+    const k = await resolveCredential(db, keeperToken("k"));
     await archiveWeave(db, bus, k, r.weave.id);
     const all = await listWeaves(db, k);
     expect(all).toHaveLength(1);

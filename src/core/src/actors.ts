@@ -46,8 +46,14 @@ export function assertIsKeeperOf(actor: Actor, weaveId: string): void {
   throw errors.forbidden("Only a keeper of this Weave can do this");
 }
 
-export function assertInstanceKeeper(actor: Actor): void {
+/**
+ * Instance-keeper check against a fresh `keepers` row: an Actor carries the authority captured
+ * when its credential was resolved, and the keeper may have been removed since.
+ */
+export async function assertInstanceKeeperFresh(db: Db, actor: Actor): Promise<void> {
   if (actor.kind !== "keeper") throw errors.forbidden("Instance keeper required");
+  const [k] = await db.select({ id: keepers.id }).from(keepers).where(eq(keepers.id, actor.keeperId)).limit(1);
+  if (!k) throw errors.invalidToken();
 }
 
 /**

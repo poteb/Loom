@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll, beforeEach } from "vitest";
-import { freshDb, closeTestDb } from "./helpers.js";
+import { freshDb, closeTestDb, keeperToken } from "./helpers.js";
 import { EventBus } from "../src/bus.js";
 import { createWeave, joinWeave, archiveWeave } from "../src/weaves.js";
 import { createThread, closeThread } from "../src/threads.js";
@@ -31,8 +31,8 @@ describe("postMessage", () => {
     const r = await createWeave(db, bus, input);
     const me = await resolveCredential(db, r.token);
     await expect(postMessage(db, bus, me, r.generalThread.id, "   ")).rejects.toMatchObject({ code: "validation" });
-    await seedKeepers(db, ["k"]);
-    const k = await resolveCredential(db, "k");
+    await seedKeepers(db, [keeperToken("k")]);
+    const k = await resolveCredential(db, keeperToken("k"));
     await updateSettings(db, k, { maxMessageLength: 5 });
     await expect(postMessage(db, bus, me, r.generalThread.id, "123456")).rejects.toMatchObject({ code: "message_too_long" });
     const bySecret = await resolveCredential(db, r.secret);
@@ -42,8 +42,8 @@ describe("postMessage", () => {
   });
   it("instance keepers cannot post (they are not participants)", async () => {
     const r = await createWeave(db, bus, input);
-    await seedKeepers(db, ["k"]);
-    const k = await resolveCredential(db, "k");
+    await seedKeepers(db, [keeperToken("k")]);
+    const k = await resolveCredential(db, keeperToken("k"));
     await expect(postMessage(db, bus, k, r.generalThread.id, "x")).rejects.toMatchObject({ code: "forbidden" });
   });
   it("rejects closed thread and archived weave", async () => {

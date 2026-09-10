@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll, beforeEach } from "vitest";
-import { freshDb, closeTestDb } from "./helpers.js";
+import { freshDb, closeTestDb, keeperToken } from "./helpers.js";
 import { EventBus } from "../src/bus.js";
 import { createWeave, joinWeave, archiveWeave, getWeave } from "../src/weaves.js";
 import { createThread, closeThread } from "../src/threads.js";
@@ -62,8 +62,8 @@ describe("closeThread", () => {
     const r = await createWeave(db, bus, input);
     const me = await resolveCredential(db, r.token);
     const t = await createThread(db, bus, me, r.weave.id, "Tests");
-    await seedKeepers(db, ["k"]);
-    const k = await resolveCredential(db, "k");
+    await seedKeepers(db, [keeperToken("k")]);
+    const k = await resolveCredential(db, keeperToken("k"));
     await closeThread(db, bus, k, t.id);
     await expect(closeThread(db, bus, k, "00000000-0000-0000-0000-000000000000")).rejects.toMatchObject({ code: "thread_not_found" });
   });

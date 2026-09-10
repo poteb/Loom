@@ -4,7 +4,7 @@ import { weaves as weavesTable } from "./db/schema.js";
 import { errors } from "./errors.js";
 import { isUuid } from "./ids.js";
 import { EventBus } from "./bus.js";
-import { resolveCredential, assertCanRead } from "./actors.js";
+import { resolveCredential, assertCanRead, assertInstanceKeeperFresh } from "./actors.js";
 import { readEvents } from "./events.js";
 import * as weaves from "./weaves.js";
 import * as threads from "./threads.js";
@@ -41,6 +41,7 @@ export function createCore(db: Db) {
     setRole: (actor: Actor, weaveId: string, participantId: string, role: Role) => setRole(db, bus, actor, weaveId, participantId, role),
     exportWeave: (actor: Actor, weaveId: string, format: "md" | "json") => exportWeave(db, actor, weaveId, format),
     getSettings: () => getSettings(db),
+    readSettings: async (actor: Actor) => { await assertInstanceKeeperFresh(db, actor); return getSettings(db); },
     updateSettings: (actor: Actor, patch: Partial<Settings>) => updateSettings(db, actor, patch),
     seedKeepers: (tokens: string[]) => keepers.seedKeepers(db, tokens),
     listKeepers: (actor: Actor) => keepers.listKeepers(db, actor),
@@ -52,6 +53,7 @@ export function createCore(db: Db) {
 export { LoomError, errors, type ErrorCode } from "./errors.js";
 export { assertCanRead } from "./actors.js";
 export { createDb, runMigrations, closeDb, type Db } from "./db/index.js";
+export { KEEPER_TOKEN_RE } from "./ids.js";
 export { EventBus } from "./bus.js";
 export type { CreateWeaveInput, CreateWeaveResult, WeaveInfo } from "./weaves.js";
 export type { PublicKeeper } from "./keepers.js";

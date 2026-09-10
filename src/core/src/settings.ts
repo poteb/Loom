@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { Db } from "./db/index.js";
 import { settings } from "./db/schema.js";
 import { errors } from "./errors.js";
-import { assertInstanceKeeper } from "./actors.js";
+import { assertInstanceKeeperFresh } from "./actors.js";
 import type { Actor, Settings } from "./types.js";
 
 const patchSchema = z.object({
@@ -26,7 +26,7 @@ export async function getSettings(db: Db): Promise<Settings> {
 }
 
 export async function updateSettings(db: Db, actor: Actor, patch: Partial<Settings>): Promise<Settings> {
-  assertInstanceKeeper(actor);
+  await assertInstanceKeeperFresh(db, actor);
   const parsed = patchSchema.safeParse(patch);
   if (!parsed.success) throw errors.validation(parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));
   const updates = Object.fromEntries(Object.entries(parsed.data).filter(([, v]) => v !== undefined));

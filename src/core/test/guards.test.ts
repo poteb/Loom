@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll, beforeEach } from "vitest";
-import { freshDb, closeTestDb } from "./helpers.js";
+import { freshDb, closeTestDb, keeperToken } from "./helpers.js";
 import { createCore, type Core } from "../src/index.js";
 import { withWeaveLock } from "../src/events.js";
 
@@ -24,9 +24,9 @@ describe("keeper authority is re-checked inside the weave lock", () => {
     const r = await core.createWeave(input);
     const creator = await core.resolveCredential(r.token);
     const thread = await core.createThread(creator, r.weave.id, "Design");
-    await core.seedKeepers(["k1", "k2"]);
-    const stale = await core.resolveCredential("k1");
-    const k2 = await core.resolveCredential("k2");
+    await core.seedKeepers([keeperToken("k1"), keeperToken("k2")]);
+    const stale = await core.resolveCredential(keeperToken("k1"));
+    const k2 = await core.resolveCredential(keeperToken("k2"));
     const k1Id = (stale as { keeperId: string }).keeperId;
     await core.removeKeeper(k2, k1Id);
     await expect(core.closeThread(stale, thread.id)).rejects.toMatchObject({ code: "invalid_token" });
@@ -47,8 +47,8 @@ describe("malformed uuids do not reach postgres", () => {
   it("getWeave, readEvents, archiveWeave, createThread → weave_not_found", async () => {
     const r = await core.createWeave(input);
     const creator = await core.resolveCredential(r.token);
-    await core.seedKeepers(["k"]);
-    const k = await core.resolveCredential("k");
+    await core.seedKeepers([keeperToken("k")]);
+    const k = await core.resolveCredential(keeperToken("k"));
     await expect(core.getWeave(k, "not-a-uuid")).rejects.toMatchObject({ code: "weave_not_found" });
     await expect(core.readEvents(k, "not-a-uuid", {})).rejects.toMatchObject({ code: "weave_not_found" });
     await expect(core.archiveWeave(k, "not-a-uuid")).rejects.toMatchObject({ code: "weave_not_found" });
@@ -71,8 +71,8 @@ describe("malformed uuids do not reach postgres", () => {
   it("setRole participantId and removeKeeper id → validation", async () => {
     const r = await core.createWeave(input);
     const creator = await core.resolveCredential(r.token);
-    await core.seedKeepers(["k"]);
-    const k = await core.resolveCredential("k");
+    await core.seedKeepers([keeperToken("k")]);
+    const k = await core.resolveCredential(keeperToken("k"));
     await expect(core.setRole(creator, r.weave.id, "not-a-uuid", "keeper")).rejects.toMatchObject({ code: "validation" });
     await expect(core.removeKeeper(k, "not-a-uuid")).rejects.toMatchObject({ code: "validation" });
   });

@@ -8,7 +8,7 @@ import { validateName } from "./names.js";
 import { parseMentions } from "./mentions.js";
 import { getSettings } from "./settings.js";
 import { appendInTx, withWeaveLock } from "./events.js";
-import { actorId, assertCanRead, assertInstanceKeeper, assertIsKeeperOf, assertStillKeeperOf, toPublicParticipant } from "./actors.js";
+import { actorId, assertCanRead, assertInstanceKeeperFresh, assertIsKeeperOf, assertStillKeeperOf, toPublicParticipant } from "./actors.js";
 import type { Actor, Kind, PublicParticipant, PublicThread, PublicWeave } from "./types.js";
 
 export type CreateWeaveInput = { title: string; opener: string; creator: { name: string; kind: Kind } };
@@ -39,7 +39,7 @@ export async function createWeave(db: Db, bus: EventBus, input: CreateWeaveInput
   const settings = await getSettings(db);
   if (!settings.openWeaveCreation) {
     if (!actor) throw errors.forbidden("Weave creation is restricted to keepers");
-    assertInstanceKeeper(actor);
+    await assertInstanceKeeperFresh(db, actor);
   }
   const title = input.title.trim();
   if (title.length === 0 || title.length > 200) throw errors.validation("Title must be 1-200 characters");
@@ -115,6 +115,6 @@ export async function archiveWeave(db: Db, bus: EventBus, actor: Actor, weaveId:
 }
 
 export async function listWeaves(db: Db, actor: Actor): Promise<PublicWeave[]> {
-  assertInstanceKeeper(actor);
+  await assertInstanceKeeperFresh(db, actor);
   return (await db.select().from(weaves).orderBy(asc(weaves.createdAt))).map(toPublicWeave);
 }

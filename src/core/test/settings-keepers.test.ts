@@ -1,8 +1,9 @@
 import { describe, it, expect, afterAll, beforeEach } from "vitest";
-import { freshDb, closeTestDb } from "./helpers.js";
+import { freshDb, closeTestDb, keeperToken } from "./helpers.js";
 import { getSettings, updateSettings } from "../src/settings.js";
 import { seedKeepers, listKeepers, addKeeper, removeKeeper } from "../src/keepers.js";
 import { resolveCredential } from "../src/actors.js";
+import { keepers } from "../src/db/schema.js";
 import type { Db } from "../src/db/index.js";
 import type { Actor } from "../src/types.js";
 
@@ -11,8 +12,8 @@ let db: Db;
 beforeEach(async () => { db = await freshDb(); });
 
 async function keeperActor(): Promise<Actor> {
-  await seedKeepers(db, ["tok-a"]);
-  return resolveCredential(db, "tok-a");
+  await seedKeepers(db, [keeperToken("tok-a")]);
+  return resolveCredential(db, keeperToken("tok-a"));
 }
 
 describe("settings", () => {
@@ -45,9 +46,9 @@ describe("settings", () => {
 
 describe("keepers", () => {
   it("seed is idempotent and tokens resolve", async () => {
-    await seedKeepers(db, ["tok-a", "tok-b"]);
-    await seedKeepers(db, ["tok-a", "tok-b"]);
-    const k = await resolveCredential(db, "tok-b");
+    await seedKeepers(db, [keeperToken("tok-a"), keeperToken("tok-b")]);
+    await seedKeepers(db, [keeperToken("tok-a"), keeperToken("tok-b")]);
+    const k = await resolveCredential(db, keeperToken("tok-b"));
     expect(k.kind).toBe("keeper");
     expect(await listKeepers(db, k)).toHaveLength(2);
   });
@@ -60,6 +61,21 @@ describe("keepers", () => {
     await expect(removeKeeper(db, k2, (k2 as { keeperId: string }).keeperId)).rejects.toMatchObject({ code: "validation" });
     await removeKeeper(db, k, keeper.id);
     await expect(resolveCredential(db, token)).rejects.toMatchObject({ code: "invalid_token" });
+  });
+  it("seeds only into an empty store, so a removed seed keeper stays removed", async () => {
+    const a = keeperToken("tok-a"), b = keeperToken("tok-b");
+    await seedKeepers(db, [a, b]);
+    const k = await resolveCredential(db, a);
+    const [gone] = (await listKeepers(db, k)).filter((x) => x.name === "seed-2");
+    await removeKeeper(db, k, gone!.id);
+    await seedKeepers(db, [a, b]);                       // a restart re-runs the seed
+    await expect(resolveCredential(db, b)).rejects.toMatchObject({ code: "invalid_token" });
+    expect(await listKeepers(db, k)).toHaveLength(1);
+  });
+  it("ignores tokens that are not 43-char base64url", async () => {
+    await seedKeepers(db, ["short"]);
+    expect(await db.select().from(keepers)).toHaveLength(0);
+    await expect(resolveCredential(db, "short")).rejects.toMatchObject({ code: "invalid_token" });
   });
   it("non-keepers are refused", async () => {
     const secret: Actor = { kind: "secret", weaveId: "x" };
