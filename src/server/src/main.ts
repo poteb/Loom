@@ -1,5 +1,5 @@
 import { serve } from "@hono/node-server";
-import { createCore, createDb, runMigrations } from "@loom/core";
+import { closeDb, createCore, createDb, runMigrations } from "@loom/core";
 import { loadConfig } from "./config.js";
 import { buildApp } from "./app.js";
 import { TicketStore } from "./tickets.js";
@@ -18,9 +18,15 @@ async function main() {
   });
   attachWebSocket(server, { core, tickets });
 
-  const shutdown = () => { console.log("shutting down"); tickets.stop(); server.close(() => process.exit(0)); };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  const shutdown = async () => {
+    console.log("shutting down");
+    tickets.stop();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await closeDb(db);
+    process.exit(0);
+  };
+  process.on("SIGINT", () => void shutdown());
+  process.on("SIGTERM", () => void shutdown());
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
