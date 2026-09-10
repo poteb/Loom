@@ -74,4 +74,26 @@ describe("logError", () => {
     expect(() => logError("ctx", "sekret-token-value")).not.toThrow();
     expect(joined(spy)).not.toContain("sekret-token-value");
   });
+
+  it("redacts secrets found in the context, the error name, and a non-stable-shaped code", () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const nameSentinel = "NameSnt1nel".padEnd(43, "y");
+    const ctxSentinel = "Ctx5nt1nel".padEnd(43, "z");
+    const err = Object.assign(new Error("boom"), {
+      name: nameSentinel,
+      code: "postgres://u:hunter2@h/db",
+    });
+    logError(`ctx ${ctxSentinel}`, err);
+    const logged = joined(spy);
+    expect(logged).toContain("[redacted]");
+    expect(logged).not.toContain(nameSentinel);
+    expect(logged).not.toContain(ctxSentinel);
+    expect(logged).not.toContain("hunter2");
+  });
+
+  it("keeps a normal stable-shaped code", () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    logError("ctx", Object.assign(new Error("boom"), { code: "23505" }));
+    expect(joined(spy)).toContain("23505");
+  });
 });
