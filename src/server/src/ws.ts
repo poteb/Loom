@@ -11,6 +11,8 @@ export type WsDeps = {
   core: Core;
   tickets: TicketStore;
   beforeReplay?: () => Promise<void>;
+  /** Test seam: runs once replay has finished, while the stream is still buffering (live === false). */
+  afterReplay?: () => Promise<void>;
   /** WebSocket control-ping interval. */
   pingIntervalMs?: number;
   /** Events per replay page (and per gap-recovery read). */
@@ -106,6 +108,7 @@ async function stream(ws: WebSocket, weaveId: string, since: number, actor: Acto
       for (const e of events) { lastSent = e.seq; send(e); }
       if (events.length < page) break;
     }
+    if (deps.afterReplay) await deps.afterReplay();
     // 3. Hand off: feed what arrived during replay through the same serialized, gap-recovering
     //    path the live phase uses. `bus.publish` is synchronous and nothing below awaits, so an
     //    event published from here on queues behind the buffered ones instead of racing them.

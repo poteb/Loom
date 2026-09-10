@@ -13,6 +13,7 @@ function makeGate() {
 
 const KEEPER = keeperToken("ws-keeper");
 let gate: ReturnType<typeof makeGate> | undefined;
+let drainGate: ReturnType<typeof makeGate> | undefined;
 let s: Awaited<ReturnType<typeof startTestServer>>;
 beforeAll(async () => {
   s = await startTestServer({
@@ -20,6 +21,11 @@ beforeAll(async () => {
       if (!gate) return;
       gate.markEntered();
       await gate.released;
+    },
+    afterReplay: async () => {
+      if (!drainGate) return;
+      drainGate.markEntered();
+      await drainGate.released;
     },
     pingIntervalMs: 50,
     replayPageSize: 5,
@@ -159,6 +165,36 @@ describe("stream", () => {
     await new Promise((r) => setTimeout(r, 150)); // a duplicate would land here
     expect(events.map((e) => e.seq)).toEqual([1, 2, 3, 4, 5]);
     expect(events[3]!.payload).toMatchObject({ text: "handoff 4" });
+    ws.close();
+  });
+
+  it("recovers a gap from a buffered event parked after replay", async () => {
+    const c = await api(s.baseUrl, "POST", "/api/weaves", creator);
+    const { weave, participant, generalThread, secret } = c.json; // seqs 1..3
+    drainGate = makeGate();
+    const t = await ticket(secret);
+    const st = collect(`${s.wsUrl}/api/weaves/${weave.id}/stream?since=0&ticket=${t}`, (evs) => evs.length === 5);
+    await st.waitFor(3);       // replay has emitted 1..3
+    await drainGate.entered;   // parked after replay, still buffering
+
+    // Commit seqs 4 and 5 behind the bus's back, then announce only seq 5 into the buffer.
+    const pg = s.core.db.$client;
+    for (const seq of [4, 5]) {
+      await pg`insert into events (weave_id, seq, thread_id, type, actor, payload)
+               values (${weave.id}::uuid, ${seq}, ${generalThread.id}::uuid, 'message', ${participant.id},
+                       ${JSON.stringify({ text: `drain ${seq}`, mentions: [] })}::jsonb)`;
+    }
+    await pg`update weaves set last_seq = 5 where id = ${weave.id}::uuid`;
+    s.core.bus.publish({
+      weaveId: weave.id, seq: 5, threadId: generalThread.id, type: "message",
+      actor: participant.id, at: new Date().toISOString(), payload: { text: "drain 5", mentions: [] },
+    });
+    drainGate.release(); drainGate = undefined;
+
+    const { events, ws } = await st.done;
+    await new Promise((r) => setTimeout(r, 150)); // a duplicate would land here
+    expect(events.map((e) => e.seq)).toEqual([1, 2, 3, 4, 5]);
+    expect(events[3]!.payload).toMatchObject({ text: "drain 4" });   // recovered from Postgres by deliver()
     ws.close();
   });
 

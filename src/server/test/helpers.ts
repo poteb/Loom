@@ -9,6 +9,7 @@ import { attachWebSocket } from "../src/ws.js";
 
 export type TestServerOpts = {
   beforeReplay?: () => Promise<void>;
+  afterReplay?: () => Promise<void>;
   pingIntervalMs?: number;
   replayPageSize?: number;
 };
@@ -32,6 +33,7 @@ export async function startTestServer(opts: TestServerOpts = {}): Promise<TestSe
   attachWebSocket(server, {
     core, tickets,
     beforeReplay: opts.beforeReplay,
+    afterReplay: opts.afterReplay,
     pingIntervalMs: opts.pingIntervalMs,
     replayPageSize: opts.replayPageSize,
   });
