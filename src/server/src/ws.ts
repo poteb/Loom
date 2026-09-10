@@ -4,6 +4,7 @@ import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
 import { LoomError, type Actor, type Core, type LoomEvent } from "@loom/core";
 import { statusFor } from "./errors.js";
+import { logError } from "./log.js";
 import type { TicketStore } from "./tickets.js";
 
 export type WsDeps = {
@@ -60,7 +61,7 @@ export function attachWebSocket(server: ServerType, deps: WsDeps): void {
       });
     } catch (e) {
       if (e instanceof LoomError) return reject(socket, statusFor(e.code), e.message, e.code);
-      console.error("ws upgrade failed", e);
+      logError("ws upgrade failed", e);
       return reject(socket, 500, "Internal error");
     }
   });
@@ -76,7 +77,7 @@ async function stream(ws: WebSocket, weaveId: string, since: number, actor: Acto
   // event must not overtake it.
   let chain: Promise<void> = Promise.resolve();
 
-  const fail = (e: unknown) => { console.error("ws stream failed", e); ws.close(1011, "stream failed"); };
+  const fail = (e: unknown) => { logError("ws stream failed", e); ws.close(1011, "stream failed"); };
 
   /** Sends `e`, first replaying anything between it and the last event we sent. */
   const deliver = async (e: LoomEvent): Promise<void> => {
@@ -105,9 +106,11 @@ async function stream(ws: WebSocket, weaveId: string, since: number, actor: Acto
       for (const e of events) { lastSent = e.seq; send(e); }
       if (events.length < page) break;
     }
-    // 3. Flush what arrived during replay, dropping anything already sent.
+    // 3. Hand off: feed what arrived during replay through the same serialized, gap-recovering
+    //    path the live phase uses. `bus.publish` is synchronous and nothing below awaits, so an
+    //    event published from here on queues behind the buffered ones instead of racing them.
     buffer.sort((a, b) => a.seq - b.seq);
-    for (const e of buffer) if (e.seq > lastSent) { lastSent = e.seq; send(e); }
+    for (const e of buffer) chain = chain.then(() => deliver(e)).catch(fail);
     buffer.length = 0;
     // 4. Live.
     live = true;

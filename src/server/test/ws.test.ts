@@ -1,6 +1,6 @@
 import { describe, it, expect, afterAll, beforeAll } from "vitest";
 import WebSocket from "ws";
-import { startTestServer, api } from "./helpers.js";
+import { startTestServer, api, keeperToken } from "./helpers.js";
 import type { LoomEvent } from "@loom/core";
 
 function makeGate() {
@@ -11,6 +11,7 @@ function makeGate() {
   return { entered, released, markEntered, release };
 }
 
+const KEEPER = keeperToken("ws-keeper");
 let gate: ReturnType<typeof makeGate> | undefined;
 let s: Awaited<ReturnType<typeof startTestServer>>;
 beforeAll(async () => {
@@ -23,7 +24,7 @@ beforeAll(async () => {
     pingIntervalMs: 50,
     replayPageSize: 5,
   });
-  await s.core.seedKeepers(["ws-keeper"]);
+  await s.core.seedKeepers([KEEPER]);
 });
 afterAll(async () => { await s.close(); });
 
@@ -131,6 +132,36 @@ describe("stream", () => {
     ws.close();
   });
 
+  it("recovers a gap in the handoff buffer, delivering each event once", async () => {
+    const c = await api(s.baseUrl, "POST", "/api/weaves", creator);
+    const { weave, participant, generalThread, secret } = c.json; // seqs 1..3
+    gate = makeGate();
+    const t = await ticket(secret);
+    const st = collect(`${s.wsUrl}/api/weaves/${weave.id}/stream?since=0&ticket=${t}`, (evs) => evs.length === 5);
+    await gate.entered; // subscribed, parked before replay
+
+    // Commit seqs 4 and 5 behind the bus's back, then announce only seq 5. The buffered seq 5 must
+    // travel the same gap-recovering path as a live event, whether or not replay already saw 4.
+    const pg = s.core.db.$client;
+    for (const seq of [4, 5]) {
+      await pg`insert into events (weave_id, seq, thread_id, type, actor, payload)
+               values (${weave.id}::uuid, ${seq}, ${generalThread.id}::uuid, 'message', ${participant.id},
+                       ${JSON.stringify({ text: `handoff ${seq}`, mentions: [] })}::jsonb)`;
+    }
+    await pg`update weaves set last_seq = 5 where id = ${weave.id}::uuid`;
+    s.core.bus.publish({
+      weaveId: weave.id, seq: 5, threadId: generalThread.id, type: "message",
+      actor: participant.id, at: new Date().toISOString(), payload: { text: "handoff 5", mentions: [] },
+    });
+    gate.release(); gate = undefined;
+
+    const { events, ws } = await st.done;
+    await new Promise((r) => setTimeout(r, 150)); // a duplicate would land here
+    expect(events.map((e) => e.seq)).toEqual([1, 2, 3, 4, 5]);
+    expect(events[3]!.payload).toMatchObject({ text: "handoff 4" });
+    ws.close();
+  });
+
   it("replays across page boundaries in order", async () => {
     // replayPageSize is 5 for this server: 3 creation events + 8 messages = 11 events = 3 pages.
     const c = await api(s.baseUrl, "POST", "/api/weaves", creator);
@@ -193,7 +224,7 @@ describe("stream", () => {
     expect(await status(`${s.wsUrl}/api/weaves/${b.json.weave.id}/stream?ticket=${await ticket(a.json.token)}`)).toBe(403);
     // A participant credential is scoped to its own Weave, so access loses to existence.
     expect(await status(`${s.wsUrl}/api/weaves/00000000-0000-0000-0000-000000000000/stream?ticket=${await ticket(a.json.token)}`)).toBe(403);
-    const unknown = await handshake(`${s.wsUrl}/api/weaves/00000000-0000-0000-0000-000000000000/stream?ticket=${await ticket("ws-keeper")}`);
+    const unknown = await handshake(`${s.wsUrl}/api/weaves/00000000-0000-0000-0000-000000000000/stream?ticket=${await ticket(KEEPER)}`);
     expect(unknown.status).toBe(404);
     expect(JSON.parse(unknown.body).code).toBe("weave_not_found");
     const noRoute = await handshake(`${s.wsUrl}/api/other?ticket=${await ticket(a.json.token)}`);
