@@ -15,10 +15,11 @@ function toPublic(k: typeof keepers.$inferSelect): PublicKeeper {
 /**
  * Bootstraps the keeper store from the configured tokens. Only ever runs against an empty table:
  * after first boot keepers are managed through the admin API, and a removed one must stay removed
- * across restarts. Malformed tokens are ignored rather than seeded.
+ * across restarts. Malformed tokens are ignored rather than seeded, and repeated ones are seeded once.
  */
 export async function seedKeepers(db: Db, tokens: string[]): Promise<void> {
-  const clean = tokens.map((t) => t.trim()).filter((t) => KEEPER_TOKEN_RE.test(t));
+  // Deduplicated: the same token twice is one keeper, not one keeper and a dropped insert.
+  const clean = [...new Set(tokens.map((t) => t.trim()).filter((t) => KEEPER_TOKEN_RE.test(t)))];
   if (clean.length === 0) return;
   await db.transaction(async (tx) => {
     const [existing] = await tx.select({ id: keepers.id }).from(keepers).limit(1);

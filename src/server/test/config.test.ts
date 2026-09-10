@@ -18,6 +18,12 @@ describe("loadConfig", () => {
       expect(() => loadConfig({ DATABASE_URL: "postgres://x", LOOM_KEEPER_TOKENS: token }))
         .toThrow(/43-character base64url/);
     });
+  it("rejects duplicate keeper tokens", () => {
+    expect(() => loadConfig({ DATABASE_URL: "postgres://x", LOOM_KEEPER_TOKENS: `${TOKEN_A},${TOKEN_B},${TOKEN_A}` }))
+      .toThrow(/duplicate/);
+    expect(() => loadConfig({ DATABASE_URL: "postgres://x", LOOM_KEEPER_TOKENS: ` ${TOKEN_A} , ${TOKEN_A}` }))
+      .toThrow("LOOM_KEEPER_TOKENS contains duplicate tokens");
+  });
   it("requires DATABASE_URL and a numeric PORT", () => {
     expect(() => loadConfig({})).toThrow(/DATABASE_URL/);
     expect(() => loadConfig({ DATABASE_URL: "x", PORT: "abc" })).toThrow(/PORT/);

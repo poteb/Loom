@@ -52,6 +52,18 @@ describe("keepers", () => {
     expect(k.kind).toBe("keeper");
     expect(await listKeepers(db, k)).toHaveLength(2);
   });
+  it("seeds one keeper when the same token is listed twice", async () => {
+    const t = keeperToken("tok-dup");
+    await seedKeepers(db, [t, t]);
+    const k = await resolveCredential(db, t);
+    expect(await listKeepers(db, k)).toHaveLength(1);
+  });
+  it("numbers seed keepers by the deduplicated list", async () => {
+    const a = keeperToken("tok-a"), b = keeperToken("tok-b");
+    await seedKeepers(db, [a, a, b]);
+    const k = await resolveCredential(db, a);
+    expect((await listKeepers(db, k)).map((x) => x.name)).toEqual(["seed-1", "seed-2"]);
+  });
   it("add returns a token that works; remove revokes it; cannot remove self", async () => {
     const k = await keeperActor();
     const { keeper, token } = await addKeeper(db, k, "Ops");

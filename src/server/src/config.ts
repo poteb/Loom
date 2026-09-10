@@ -13,5 +13,7 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
   if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new Error("PORT must be an integer between 1 and 65535");
   const keeperTokens = (env.LOOM_KEEPER_TOKENS ?? "").split(",").map((t) => t.trim()).filter(Boolean);
   if (!keeperTokens.every((t) => KEEPER_TOKEN_RE.test(t))) throw new Error(TOKEN_HELP);
+  // Two keepers sharing a token cannot be told apart, and revoking one would revoke both.
+  if (new Set(keeperTokens).size !== keeperTokens.length) throw new Error("LOOM_KEEPER_TOKENS contains duplicate tokens");
   return { port, databaseUrl, keeperTokens };
 }
