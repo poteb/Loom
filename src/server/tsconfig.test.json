@@ -1,0 +1,8 @@
+{
+  // Type-checks the tests too. rootDir reaches up to `src/` because the server's test helpers
+  // reuse @loom/core's (`../../core/test/helpers.ts`); nothing is emitted, so it only widens
+  // the set of files tsc will accept.
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true, "composite": false, "rootDir": ".." },
+  "include": ["src", "test"]
+}
