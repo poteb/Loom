@@ -25,7 +25,7 @@ Spec: `docs/superpowers/specs/2026-09-10-loom-v1-design.md`. Plan 2 and plan 3 a
 - Secrets and tokens are never logged.
 - Server listens on plain HTTP on the Docker network only; Caddy terminates TLS. Local run is `https://localhost` via Caddy internal CA.
 - Env: `LOOM_DOMAIN`, `DATABASE_URL`, `LOOM_KEEPER_TOKENS` (comma-separated), `PORT` (default 3000).
-- Pinned versions: typescript 5.9.3, vitest 4.1.11, hono 4.13.7, @hono/node-server 2.1.1, ws 8.21.3, @types/ws 8.18.1, drizzle-orm 0.45.2, drizzle-kit 0.31.10, postgres 3.4.9, zod 4.6.1, @testcontainers/postgresql 12.1.0, tsx 4.23.13, @types/node 22.20.2, pnpm 12.3.4.
+- Pinned versions: typescript 5.9.3, vitest 4.1.11, hono 4.13.7, @hono/node-server 2.1.1, ws 8.21.3, @types/ws 8.18.1, drizzle-orm 0.45.2, drizzle-kit 0.31.10, postgres 3.4.9, zod 4.6.1, @testcontainers/postgresql 12.1.0, tsx 4.23.13, @types/node 22.20.2, pnpm 10.34.5.
 - Commit messages end with `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
 
 ---
@@ -99,7 +99,7 @@ loom/
 
 ```bash
 corepack enable pnpm
-corepack use pnpm@12.3.4
+corepack use pnpm@10.34.5
 ```
 
 `package.json`:
@@ -109,7 +109,7 @@ corepack use pnpm@12.3.4
   "name": "loom",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@12.3.4",
+  "packageManager": "pnpm@10.34.5",
   "engines": { "node": ">=24" },
   "scripts": {
     "build": "pnpm -r build",
@@ -131,6 +131,12 @@ corepack use pnpm@12.3.4
 ```yaml
 packages:
   - "src/*"
+
+onlyBuiltDependencies:
+  - esbuild
+  - cpu-features
+  - ssh2
+  - protobufjs
 ```
 
 `tsconfig.base.json`:
@@ -210,7 +216,7 @@ PORT=3000
 ```json
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": { "rootDir": "src", "outDir": "dist" },
+  "compilerOptions": { "rootDir": "src", "outDir": "dist", "composite": true },
   "include": ["src"]
 }
 ```
