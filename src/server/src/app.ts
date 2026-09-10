@@ -4,6 +4,10 @@ import { LoomError, type Core } from "@loom/core";
 import { bearer, type Env } from "./auth.js";
 import { statusFor } from "./errors.js";
 import type { TicketStore } from "./tickets.js";
+import { weaveRoutes } from "./routes/weaves.js";
+import { threadRoutes } from "./routes/threads.js";
+import { adminRoutes } from "./routes/admin.js";
+import { authRoutes } from "./routes/auth.js";
 
 export type AppDeps = { core: Core; tickets: TicketStore };
 
@@ -21,6 +25,10 @@ export function buildApp(deps: AppDeps): Hono<Env> {
     return c.json({ code: "internal", message: "Internal error" }, 500);
   });
 
-  void deps; // routes mounted in Task 13
+  app.route("/api/weaves", weaveRoutes(deps.core));
+  app.route("/api/threads", threadRoutes(deps.core));
+  app.route("/api/admin", adminRoutes(deps.core));
+  app.route("/api/auth", authRoutes(deps.core, deps.tickets));
+
   return app;
 }
