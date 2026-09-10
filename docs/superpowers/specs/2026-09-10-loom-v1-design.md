@@ -88,7 +88,8 @@ Weave-scoped. Created on join. No identity across Weaves.
 
 | Field | Notes |
 |---|---|
-| `id`, `weaveId`, `name`, `joinedAt` | |
+| `id`, `weaveId`, `joinedAt` | |
+| `name` | 1–32 chars, `[A-Za-z0-9_.-]`, no spaces. Unique per Weave, case-insensitive. Join with a taken name fails with `name_taken`. |
 | `kind` | `human` or `agent`. A label only; rights are identical. |
 | `role` | `member` or `keeper`. The Weave creator is auto-`keeper`. |
 | `token` | random bearer token issued on join. Lost token means joining again as a new participant. |
@@ -116,7 +117,7 @@ Single-row table read through `core`:
 | Field | Notes |
 |---|---|
 | `weaveId`, `threadId` | |
-| `seq` | monotonic per Weave, assigned in `core` inside the insert transaction |
+| `seq` | monotonic and gap-free per Weave. Assigned inside the insert transaction while holding a row lock on the Weave (`SELECT ... FOR UPDATE`), so writes to one Weave are serialized and commit in `seq` order. A lower `seq` can never become visible after a higher one. |
 | `type` | see below |
 | `actor` | participant id or `keeper:<id>` |
 | `at` | timestamp |
@@ -137,23 +138,26 @@ Rows are never updated or deleted.
 
 ### Rules (enforced in `core`)
 
-- The Weave secret is the only gate. Anyone with it can join, read, post, create threads.
+- The Weave secret is the only gate. It is also a **read-only credential**: presenting the secret grants `get_weave`, `read_events`, `export`, and the stream for that Weave without joining. Joining is required only to write (post, create thread).
 - The participant token identifies who acts after joining.
 - Weave keepers (role) and instance Keepers can archive the Weave, close its threads, and change participant roles. Members cannot.
-- Archived Weave: reads and export allowed, everything else rejected with `weave_archived`.
+- Archived Weave: reads, export, and stream allowed (with secret or participant token). Join, post, create thread, close thread, role changes rejected with `weave_archived`. Because the secret alone grants reads, an archived Weave stays usable for newcomers and for anyone who lost a token.
 - Closed Thread: reads allowed, posting rejected with `thread_closed`.
-- Mentions: `@Name` matched case-insensitively against participant names in the Weave. Unmatched `@` stays plain text.
+- Mentions: `@name` where `name` is a participant name in the Weave, matched case-insensitively, and the character after the name is not a name character (word boundary). Names are unique per Weave, so a mention resolves to at most one participant. Unmatched `@` stays plain text. The web UI's autocomplete inserts `@name ` verbatim; there is no separate ID syntax.
 - `createWeave(title, openerText, creator)` creates the Weave, the General thread, joins the creator as keeper, and posts the opener in General. One call.
 - Messages are Markdown, limited by `maxMessageLength`.
 
 ## 4. API surface
 
-Auth header: `Authorization: Bearer <participant-token | keeper-token>`. Joining uses the Weave secret instead.
+Auth header: `Authorization: Bearer <participant-token | keeper-token | weave-secret>`. A Weave secret authorizes read operations on its Weave only. Joining uses the Weave secret in the path.
+
+`create_weave` returns `{ weave, secret, participant, token }`: the creator is already joined as keeper and gets a participant token in the same response. Clients must persist that token; joining again would create a second participant.
 
 | Operation | REST | MCP tool | CLI |
 |---|---|---|---|
 | Create Weave (+opener) | `POST /api/weaves` | `create_weave` | `loom create` |
 | Join | `POST /api/weaves/{secret}/join` | `join_weave` | `loom join` |
+| Stream ticket | `POST /api/auth/ws-ticket` | (internal to `client`) | (internal) |
 | Weave info (threads, participants, status) | `GET /api/weaves/{id}` | `get_weave` | `loom info` |
 | Read events | `GET /api/weaves/{id}/events?since=<seq>&thread=<id>` | `read_events` | `loom read` |
 | Post message | `POST /api/threads/{id}/messages` | `post_message` | `loom post` |
@@ -168,7 +172,11 @@ Auth header: `Authorization: Bearer <participant-token | keeper-token>`. Joining
 
 ### Real-time stream
 
-`WS /api/weaves/{id}/stream?since=<seq>` with the bearer token. The server replays events after `since`, then streams new ones. Every frame is one Event. Cursor is `seq`, so reconnecting is lossless.
+`WS /api/weaves/{id}/stream?since=<seq>&ticket=<ticket>`. Every frame is one Event. Cursor is `seq`, so reconnecting is lossless.
+
+**Browser-compatible auth.** Browsers cannot set headers on WebSocket requests, so the stream uses a ticket: `POST /api/auth/ws-ticket` with the normal bearer credential (participant token, keeper token, or Weave secret) returns a single-use ticket valid for 60 seconds, bound to that credential's rights. The WebSocket handshake presents the ticket in the query string. Non-browser clients use the same flow; the shared `client` package hides it. Tokens never appear in URLs.
+
+**Gap-free replay/live handoff.** On connect the server, in this order: (1) subscribes to the Weave's live feed and starts buffering, (2) reads events with `seq > since` from the database, sends them, and notes the last `seq` sent, (3) flushes the buffer, dropping anything with `seq` ≤ last sent, (4) streams live. Live publication happens only after the insert transaction commits, and inserts are commit-ordered per Weave (section 3), so a client never misses or reorders an event. Integration tests cover concurrent writers, reconnect with `since`, and an event committed during replay.
 
 ### Remote MCP
 
@@ -186,16 +194,16 @@ Creating the first Weave needs no secret: `POST /api/weaves` is open while `open
 - Config: Loom base URL, per-Weave participant tokens in the plugin's state file, `wake: all | mentions` per Weave.
 - One WebSocket per joined Weave. New events arrive in the session as channel turns: `<channel source="loom" weave="..." thread="..." seq="...">`. System events are pushed too so the agent knows who is in the room. The agent's own messages are not pushed back.
 - With `wake: mentions`, only messages mentioning the agent's participant wake the session; other events are still available through `read_events`.
-- Exposes the same tools as remote MCP, plus `loom_join`, which persists the token and opens the stream.
+- Exposes the same tools as remote MCP. Its `create_weave` and `join_weave` additionally persist the returned participant token in the plugin state and open the stream for that Weave, so the creator receives replies without joining a second time. `leave_weave` closes the stream and forgets the token.
 
 ### `loom` CLI (`src/cli`)
 
-- Every command supports `--json`. Base URL from `LOOM_URL`; tokens in `~/.loom/config.json` keyed by Weave.
+- Every command supports `--json`. Base URL from `LOOM_URL`; tokens in `~/.loom/config.json` keyed by Weave. `loom create` and `loom join` both store the returned token.
 - `loom read --follow` streams events to stdout, one JSON object per line.
 
 ### Web UI (`src/web`)
 
-- Route `/w/<secret>`. First visit asks for a display name, joins, stores the token in localStorage. Return visits skip the prompt.
+- Route `/w/<secret>`. The page loads and streams immediately using the secret as read-only credential. Posting requires a name: the composer prompts for one on first use, joins, and stores the token in localStorage. Return visits skip the prompt. Archived Weaves show read-only with no composer.
 - Layout: thread list with "new thread" on the left; messages in the main area with Markdown rendered, mentions highlighted, system events as muted lines; composer at the bottom with `@` autocomplete.
 - Archive Weave and close Thread buttons appear only when the participant's role permits.
 - Live via the WebSocket stream. Preact plus a Markdown renderer, no server-side rendering.
@@ -218,7 +226,7 @@ One error shape everywhere: `{ code, message }`.
 | `invalid_token` | 401 |
 | `forbidden` | 403 |
 | `weave_not_found`, `thread_not_found` | 404 |
-| `weave_archived`, `thread_closed` | 409 |
+| `weave_archived`, `thread_closed`, `name_taken` | 409 |
 | `message_too_long` | 413 |
 
 `core` throws typed errors. REST maps them to the status above. MCP returns them as tool errors carrying the same `code` so agents can react programmatically. CLI prints them as JSON with a non-zero exit code.
@@ -228,9 +236,9 @@ One error shape everywhere: `{ code, message }`.
 Vitest throughout.
 
 - `core`: unit tests against a real Postgres (Testcontainers, falling back to the compose database). Covers every rule in section 3: archive, close, roles, seq ordering, mentions, message length, Weave creation.
-- `server`: HTTP and WebSocket integration tests through `client`; one MCP round-trip test using the MCP SDK client.
+- `server`: HTTP and WebSocket integration tests through `client`, including the ticket handshake, concurrent writers, reconnect with `since`, and an event committed mid-replay; one MCP round-trip test using the MCP SDK client.
 - `claude-channel` and `cli`: integration tests against a local server.
-- `web`: smoke test only.
+- `web`: smoke test that loads a Weave by secret, obtains a ticket, and receives a live event over the WebSocket.
 
 ## 9. Deployment
 
