@@ -18,19 +18,24 @@ export class ClientToolBackend implements LoomToolBackend {
   async createWeave(input: { title: string; opener: string; creator: { name: string; kind: Kind } }, credential?: string) {
     const r = await (credential ? this.as(credential) : this.client).createWeave(input);
     const joined: JoinedWeave = {
-      title: r.weave.title, secret: r.secret, token: r.token, participantId: r.participant.id, participantName: r.participant.name,
+      title: r.weave.title, token: r.token, participantId: r.participant.id, participantName: r.participant.name,
       generalThreadId: r.generalThread.id, wake: "all", lastSeq: 0,
     };
     this.state.upsertWeave(r.weave.id, joined);
     await this.hooks.onJoined(r.weave.id, joined);
     return r;
   }
+  /** Reads the Weave's metadata with the secret (a read-only credential) *before* joining: joining is
+   * irreversible and consumes the chosen name, so a metadata failure after a successful join would
+   * lose the issued token and make a retry fail with `name_taken`. Order: lookup -> getWeave -> join
+   * -> persist the token -> hooks. */
   async joinWeave(secret: string, who: { name: string; kind: Kind }) {
-    const j = await this.client.joinWeave(secret, who);
-    const info = await this.as(j.token).getWeave(j.weaveId);
+    const weaveId = await this.client.lookupWeave(secret);
+    const info = await this.as(secret).getWeave(weaveId);
     const general = info.threads.find((t) => t.isGeneral) ?? info.threads[0]!;
+    const j = await this.client.joinWeave(secret, who);
     const joined: JoinedWeave = {
-      title: info.weave.title, secret, token: j.token, participantId: j.participant.id, participantName: j.participant.name,
+      title: info.weave.title, token: j.token, participantId: j.participant.id, participantName: j.participant.name,
       generalThreadId: general.id, wake: "all", lastSeq: 0,
     };
     this.state.upsertWeave(j.weaveId, joined);

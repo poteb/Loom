@@ -3,7 +3,7 @@ import path from "node:path";
 
 export type Wake = "all" | "mentions";
 export type JoinedWeave = {
-  title: string; secret?: string; token: string; participantId: string; participantName: string;
+  title: string; token: string; participantId: string; participantName: string;
   generalThreadId: string; wake: Wake; lastSeq: number;
 };
 export type ChannelConfig = { url?: string; allowInsecure?: boolean; weaves: Record<string, JoinedWeave> };
