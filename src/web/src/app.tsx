@@ -75,6 +75,7 @@ function Weave({ secret }: { secret: string }) {
         <ThreadList state={state} session={session} onError={reportError} />
         <div class="main">
           {archived && <div class="banner">This Weave is archived and read-only.</div>}
+          {state.refreshError && <div class="warn-bar">Having trouble syncing: {state.refreshError}</div>}
           <MessageList state={state} />
           {error && <div class="error-bar">{error}</div>}
           {!archived && <Composer state={state} onSend={send} draft={draft} />}
