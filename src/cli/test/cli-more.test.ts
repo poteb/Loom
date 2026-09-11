@@ -6,8 +6,29 @@ import { startTestServer, keeperToken, type TestServer } from "../../server/test
 import { runCli, type CliIo } from "../src/cli.js";
 import { ConfigStore } from "../src/config.js";
 
+/** A one-shot rendezvous: the awaiter of `entered` learns the pauser has reached the gate, then
+ *  the pauser waits on `released` until the test calls `release()`. Mirrors server/test/ws.test.ts,
+ *  used here to pin the moment a `read --follow` WS connection is subscribed but not yet replaying. */
+function makeGate() {
+  let markEntered!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((r) => { markEntered = r; });
+  const released = new Promise<void>((r) => { release = r; });
+  return { entered, released, markEntered, release };
+}
+
 let s: TestServer;
-beforeAll(async () => { s = await startTestServer(); await s.core.seedKeepers([keeperToken("k1")]); });
+let gate: ReturnType<typeof makeGate> | undefined;
+beforeAll(async () => {
+  s = await startTestServer({
+    beforeReplay: async () => {
+      if (!gate) return;
+      gate.markEntered();
+      await gate.released;
+    },
+  });
+  await s.core.seedKeepers([keeperToken("k1")]);
+});
 afterAll(async () => { await s.close(); });
 
 let cfg: string;
@@ -21,7 +42,16 @@ async function run(args: string[], extraEnv: Record<string, string> = {}) {
     env: { LOOM_URL: s.baseUrl, LOOM_ALLOW_INSECURE: "1", LOOM_CONFIG: cfg, ...extraEnv },
   };
   const code = await runCli(args, io);
-  return { code, out, err, json: () => JSON.parse(out), lines: () => out.trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) };
+  // Getters, not plain fields: a caller that reads `.out`/`.err` after some later event (a delay,
+  // a second await) must see writes that happened after `run()` itself resolved, not a string
+  // snapshot frozen at this point.
+  return {
+    code,
+    get out() { return out; },
+    get err() { return err; },
+    json: () => JSON.parse(out),
+    lines: () => out.trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)),
+  };
 }
 
 describe("threads, roles, archive, export", () => {
@@ -93,21 +123,31 @@ describe("read --follow", () => {
     expect(res.out).toContain("#5 [Design] Me: in design");
   });
 
-  it("stops exactly at --count even when several events arrive in a burst", async () => {
+  it("stops exactly at --count even when several events arrive in the same replay burst", async () => {
     const created = (await run(["create", "--title", "T", "--opener", "o", "--name", "Me", "--json"])).json();
     const actor = await s.core.resolveCredential(created.token);
+    gate = makeGate();
     const follow = run(["read", "--follow", "--since", "3", "--count", "2", "--json"]);
-    await new Promise((r) => setTimeout(r, 300));
-    await Promise.all([
-      s.core.postMessage(actor, created.generalThread.id, "one"),
-      s.core.postMessage(actor, created.generalThread.id, "two"),
-      s.core.postMessage(actor, created.generalThread.id, "three"),
-      s.core.postMessage(actor, created.generalThread.id, "four"),
-    ]);
+    // The WS handler has subscribed and is parked inside beforeReplay: the CLI's initial
+    // (non-stream) batch was already fetched and printed before this point, so these four
+    // commits are invisible to it and will only surface once the stream's own replay runs.
+    await gate.entered;
+    await s.core.postMessage(actor, created.generalThread.id, "one");
+    await s.core.postMessage(actor, created.generalThread.id, "two");
+    await s.core.postMessage(actor, created.generalThread.id, "three");
+    await s.core.postMessage(actor, created.generalThread.id, "four");
+    // Releasing now lets replay read all four committed events in a single DB page and send them
+    // down the socket back-to-back, deterministically exercising the chained-handler queue: the
+    // client's onEvent fires for seq 6 and 7 while the chain link for seq 5 (which reaches
+    // --count and calls settle()) may not have run yet.
+    gate.release();
+    gate = undefined;
     const res = await follow;
     expect(res.code).toBe(0);
     const lines = res.lines();
     expect(lines.map((e: { seq: number }) => e.seq)).toEqual([4, 5]);
+    // Read `res.out` live (via run()'s getter), after the follow's promise has already settled,
+    // to confirm seq 6 and 7 never get written even though they were already queued.
     const lenAfterResolve = res.out.length;
     await new Promise((r) => setTimeout(r, 300));
     expect(res.out.length).toBe(lenAfterResolve);
@@ -129,7 +169,7 @@ describe("read --follow", () => {
     expect(lines[0].payload.text).toBe("in design");
   });
 
-  it("closes the stream and removes the SIGINT listener when the stream fails", async () => {
+  it("rejects a stored-but-invalid token before ever reaching the follow loop", async () => {
     const created = (await run(["create", "--title", "T", "--opener", "o", "--name", "Me", "--json"])).json();
     const store = new ConfigStore(cfg);
     const config = store.load();
@@ -140,6 +180,49 @@ describe("read --follow", () => {
     expect(res.code).toBe(1);
     expect(JSON.parse(res.err).code).toBe("invalid_token");
     expect(process.listenerCount("SIGINT")).toBe(before);
+  });
+
+  it("closes the stream and removes the SIGINT listener when the stream fails while live", async () => {
+    const created = (await run(["create", "--title", "T", "--opener", "o", "--name", "Me", "--json"])).json();
+    const before = process.listenerCount("SIGINT");
+    gate = makeGate();
+    const follow = run(["read", "--follow", "--count", "5", "--json"]);
+    // The WS handler only reaches beforeReplay after the handshake completed and it subscribed to
+    // the bus, so by the time this resolves the client has already seen status "open" — the
+    // follow loop is genuinely live, not merely mid-connect.
+    await gate.entered;
+    // Revoke the participant's token directly in the database (mirrors server/test/ws.test.ts's
+    // direct-row technique): the CLI's in-memory client still holds the now-stale token string,
+    // so the *next* ws-ticket request for it will fail with invalid_token.
+    const pg = s.core.db.$client;
+    await pg`update participants set token = ${"revoked-" + created.participant.id} where id = ${created.participant.id}::uuid`;
+    gate.release();
+    gate = undefined;
+    // Force the live connection closed so the client's stream reconnect logic runs, re-requests a
+    // ticket with the now-revoked token, and gets a fatal invalid_token back.
+    s.dropSockets();
+    const res = await follow;
+    expect(res.code).toBe(1);
+    expect(JSON.parse(res.err).code).toBe("invalid_token");
+    expect(process.listenerCount("SIGINT")).toBe(before);
+    const lenAfterResolve = res.out.length;
+    await new Promise((r) => setTimeout(r, 300));
+    expect(res.out.length).toBe(lenAfterResolve);
+  });
+
+  it("prints the initial batch before any streamed event, and initial events don't count toward --count", async () => {
+    const created = (await run(["create", "--title", "T", "--opener", "o", "--name", "Me", "--json"])).json();
+    const actor = await s.core.resolveCredential(created.token);
+    const follow = run(["read", "--follow", "--since", "1", "--count", "1", "--json"]);
+    await new Promise((r) => setTimeout(r, 300));
+    await s.core.postMessage(actor, created.generalThread.id, "streamed");
+    const res = await follow;
+    expect(res.code).toBe(0);
+    const lines = res.lines();
+    // seq 2 and 3 are the initial (non-follow) batch for --since 1; they print unconditionally and
+    // are not counted. Only the streamed seq 4 counts toward --count 1, so the command exits after it.
+    expect(lines.map((e: { seq: number }) => e.seq)).toEqual([2, 3, 4]);
+    expect(lines.at(-1).payload.text).toBe("streamed");
   });
 });
 

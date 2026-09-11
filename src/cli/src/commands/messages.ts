@@ -1,5 +1,5 @@
 import { InvalidArgumentError, type Command } from "commander";
-import type { LoomEvent, Thread, Participant } from "@loom/client";
+import type { LoomEvent, StreamHandle, Thread, Participant } from "@loom/client";
 import type { CliContext } from "../context.js";
 import { emit } from "../output.js";
 
@@ -56,18 +56,24 @@ export function registerMessageCommands(program: Command, ctx: () => CliContext)
       await new Promise<void>((resolve, reject) => {
         let chain = Promise.resolve();
         let stopped = false;
+        // Declared before settle() can be called (SIGINT can fire the instant the listener is
+        // installed, before client.stream() returns) so settle() never touches it uninitialized.
+        let handle: StreamHandle | undefined;
         // Centralizes settlement: every path that ends the follow loop (count reached, SIGINT,
         // a closed-with-error stream status, or a handler throwing) goes through here exactly
         // once, so the stream handle and SIGINT listener are always released together.
         const settle = (err?: unknown) => {
           if (stopped) return;
           stopped = true;
-          handle.close();
+          handle?.close();
           process.off("SIGINT", onSigint);
           if (err !== undefined) reject(err); else resolve();
         };
         const onSigint = () => settle();
-        const handle = client.stream(weaveId, {
+        // Installed before client.stream() so a SIGINT arriving during connection setup is never
+        // dropped on the floor.
+        process.once("SIGINT", onSigint);
+        handle = client.stream(weaveId, {
           since: lastSeq,
           onEvent: (e) => {
             // Bail before even queueing when we already know we're done; this is best-effort,
@@ -87,7 +93,9 @@ export function registerMessageCommands(program: Command, ctx: () => CliContext)
           },
           onStatus: (st, d) => { if (st === "closed" && d?.error) settle(d.error); },
         });
-        process.once("SIGINT", onSigint);
+        // A synchronous onEvent/onStatus callback (or the SIGINT listener) may have already
+        // called settle() during client.stream(), before `handle` was assigned above.
+        if (stopped) handle.close();
       });
     });
 }
