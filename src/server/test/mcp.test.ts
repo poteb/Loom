@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { serve, type ServerType } from "@hono/node-server";
 import { buildApp } from "../src/app.js";
+import type { MountMcpOptions } from "../src/mcp/index.js";
 import { TicketStore } from "../src/tickets.js";
 import { startTestServer, keeperToken, type TestServer } from "./helpers.js";
 
@@ -10,17 +11,15 @@ let s: TestServer | undefined;
 beforeAll(async () => { s = await startTestServer(); await s.core.seedKeepers([keeperToken("k1")]); });
 afterAll(async () => { await s?.close(); });
 
-async function connect(): Promise<Client> {
-  const client = new Client({ name: "chatgpt-like", version: "1.0" });
-  await client.connect(new StreamableHTTPClientTransport(new URL(`${s!.baseUrl}/mcp`)));
-  return client;
-}
-
-/** Connects `n` clients, runs `fn`, and always closes them — a failed assertion must not leave
- * open HTTP sessions behind to hang teardown. */
+/** Connects `n` clients, runs `fn`, and always closes them — a failed assertion, or one client's
+ * connect() rejecting while its siblings already hold open sessions, must not leave HTTP sessions
+ * leaked behind to hang teardown. So every Client is created up front (a cheap, synchronous, never-
+ * failing step) before any connect() is attempted, and the try/finally that closes them wraps the
+ * connecting too — not just the caller's `fn`. */
 async function withClients<T>(n: number, fn: (clients: Client[]) => Promise<T>): Promise<T> {
-  const clients = await Promise.all(Array.from({ length: n }, () => connect()));
+  const clients = Array.from({ length: n }, () => new Client({ name: "chatgpt-like", version: "1.0" }));
   try {
+    await Promise.all(clients.map((c) => c.connect(new StreamableHTTPClientTransport(new URL(`${s!.baseUrl}/mcp`)))));
     return await fn(clients);
   } finally {
     await Promise.all(clients.map((c) => c.close().catch(() => {})));
@@ -32,6 +31,67 @@ const text = (r: Awaited<ReturnType<Client["callTool"]>>) => (r.content as { tex
 const json = (r: Awaited<ReturnType<Client["callTool"]>>) => JSON.parse(text(r));
 
 describe("remote MCP at /mcp", () => {
+  it("withClients closes every already-created client even when a later connect() rejects", async () => {
+    // Partial setup: the 2nd of 3 clients fails to connect. The 1st already holds an open HTTP
+    // session by then — it must still be closed, not leaked because Promise.all rejected before
+    // the try/finally ever ran.
+    const realConnect = Client.prototype.connect;
+    let calls = 0;
+    const connectSpy = vi.spyOn(Client.prototype, "connect").mockImplementation(async function (this: Client, transport: unknown) {
+      calls++;
+      if (calls === 2) throw new Error("boom");
+      return realConnect.call(this, transport as Parameters<typeof realConnect>[0]);
+    });
+    const closeSpy = vi.spyOn(Client.prototype, "close");
+    try {
+      await expect(withClients(3, async () => { throw new Error("fn should not run"); })).rejects.toThrow("boom");
+      // A client whose own connect() succeeded fires its transport's onclose handler, which calls
+      // close() again — so assert every *distinct* created client got closed at least once, rather
+      // than pinning an exact call count coupled to that internal double-invocation.
+      expect(new Set(closeSpy.mock.instances).size).toBe(3);
+    } finally {
+      connectSpy.mockRestore();
+      closeSpy.mockRestore();
+    }
+  });
+
+  it("connects the shared MCP transport exactly once, and every concurrent request waits for that same attempt", async () => {
+    // Deterministic version of the "three clients race a fresh mount" test above: instead of hoping
+    // real concurrency wins the race, control the connect attempt directly via the injectable seam.
+    // Two plain requests (not full MCP handshakes, so there's no JSON-RPC id-correlation concern —
+    // this is purely about the connect gate) must both stall until the connect resolves, and neither
+    // may complete before it does.
+    let connectCalls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const mcpConnect: MountMcpOptions["connect"] = async (mcpServer, transport) => {
+      connectCalls++;
+      await gate;
+      await mcpServer.connect(transport);
+    };
+    const tickets = new TicketStore();
+    const app = buildApp({ core: s!.core, tickets, mcpConnect });
+    try {
+      let aDone = false;
+      let bDone = false;
+      const pa = Promise.resolve(app.request("/mcp", { method: "PUT" })).then((r) => { aDone = true; return r; });
+      const pb = Promise.resolve(app.request("/mcp", { method: "PUT" })).then((r) => { bDone = true; return r; });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(connectCalls).toBe(1);
+      expect(aDone).toBe(false);
+      expect(bDone).toBe(false);
+      release();
+      const [ra, rb] = await Promise.all([pa, pb]);
+      expect(aDone).toBe(true);
+      expect(bDone).toBe(true);
+      expect(connectCalls).toBe(1);
+      expect(ra.status).toBe(405);
+      expect(rb.status).toBe(405);
+    } finally {
+      tickets.stop();
+    }
+  });
+
   it("serves the tool catalog without connection-level auth", async () => {
     await withClient(async (c) => {
         const { tools } = await c.listTools();

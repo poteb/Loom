@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ChannelState } from "../src/state.js";
@@ -24,5 +24,18 @@ describe("ChannelState", () => {
   it("dirFrom honours LOOM_CHANNEL_STATE_DIR else ~/.claude/channels/loom", () => {
     expect(ChannelState.dirFrom({ LOOM_CHANNEL_STATE_DIR: "/x" })).toBe("/x");
     expect(ChannelState.dirFrom({ HOME: "/home/u" })).toBe(path.join("/home/u", ".claude", "channels", "loom"));
+  });
+  it("scrubs a legacy `secret` field from a weave on load and rewrites the file without it", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+    const clean = { title: "T2", token: "u".repeat(43), participantId: "p2", participantName: "GPT", generalThreadId: "g2", wake: "all" as const, lastSeq: 3 };
+    const legacy = { ...clean, secret: "s".repeat(43) };
+    writeFileSync(path.join(dir, "config.json"), JSON.stringify({ weaves: { w1: legacy } }, null, 2) + "\n");
+    const st = new ChannelState(dir);
+    const loaded = st.get().weaves.w1;
+    expect(loaded).toEqual(clean);
+    expect(loaded && "secret" in loaded).toBe(false);
+    const onDisk = readFileSync(path.join(dir, "config.json"), "utf8");
+    expect(onDisk).not.toContain(legacy.secret);
+    expect(onDisk).not.toContain("secret");
   });
 });

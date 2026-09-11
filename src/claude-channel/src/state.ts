@@ -23,7 +23,18 @@ export class ChannelState {
   load(): ChannelConfig {
     if (!existsSync(this.file)) return { weaves: {} };
     const raw = JSON.parse(readFileSync(this.file, "utf8")) as Partial<ChannelConfig>;
-    return { url: raw.url, allowInsecure: raw.allowInsecure, weaves: raw.weaves ?? {} };
+    const rawWeaves = raw.weaves ?? {};
+    let dirty = false;
+    const weaves: Record<string, JoinedWeave> = {};
+    for (const [id, entry] of Object.entries(rawWeaves)) {
+      const { title, token, participantId, participantName, generalThreadId, wake, lastSeq } = entry;
+      const sanitized: JoinedWeave = { title, token, participantId, participantName, generalThreadId, wake, lastSeq };
+      if (Object.keys(entry).length !== Object.keys(sanitized).length) dirty = true;
+      weaves[id] = sanitized;
+    }
+    const config: ChannelConfig = { url: raw.url, allowInsecure: raw.allowInsecure, weaves };
+    if (dirty) this.save(config);
+    return config;
   }
 
   save(c: ChannelConfig): void {
