@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { startTestServer, type TestServer } from "../../server/test/helpers.js";
 import { runCli, type CliIo } from "../src/cli.js";
+import { ConfigStore } from "../src/config.js";
 
 let s: TestServer;
 beforeAll(async () => { s = await startTestServer(); });
@@ -42,6 +43,31 @@ describe("loom create / join / info / post / read", () => {
     const info = await run(["info", "--weave", created.weave.id, "--json"]);
     expect(info.code).toBe(0);
     expect(info.json().participants.map((p: { name: string }) => p.name)).toEqual(["Claude", "ChatGPT"]);
+  });
+
+  it("join returns the general thread and title in one round trip and stores them", async () => {
+    const created = (await run(["create", "--title", "One shot", "--name", "Me", "--json"])).json();
+    const cfg2 = path.join(mkdtempSync(path.join(tmpdir(), "loom-cli-")), "config.json");
+    const j = await run(["join", created.secret, "--name", "Bot", "--json"], { LOOM_CONFIG: cfg2 });
+    expect(j.code).toBe(0);
+    expect(j.json().generalThreadId).toBe(created.generalThread.id);
+    expect(j.json().weave.title).toBe("One shot");
+    const stored = new ConfigStore(cfg2).load();
+    expect(stored.weaves[created.weave.id]).toMatchObject({ title: "One shot", generalThreadId: created.generalThread.id, secret: created.secret });
+    const h = await run(["join", created.secret, "--name", "Bot2"], { LOOM_CONFIG: cfg2 });
+    expect(h.out).toContain('Joined "One shot" as Bot2');
+  });
+
+  it("concurrent invocations sharing a config file do not lose each other's tokens", async () => {
+    const [a, b, c] = await Promise.all([
+      run(["create", "--title", "A", "--name", "Me", "--json"]),
+      run(["create", "--title", "B", "--name", "Me", "--json"]),
+      run(["create", "--title", "C", "--name", "Me", "--json"]),
+    ]);
+    for (const r of [a, b, c]) expect(r.code).toBe(0);
+    const stored = new ConfigStore(cfg).load();
+    expect(Object.keys(stored.weaves).sort()).toEqual([a.json().weave.id, b.json().weave.id, c.json().weave.id].sort());
+    expect(stored.lastWeave).toBeDefined();
   });
 
   it("post and read use the last weave by default; read supports --since and --thread", async () => {

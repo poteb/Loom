@@ -91,10 +91,21 @@ export function openStream(client: LoomClient, weaveId: string, opts: StreamOpti
       if (socket !== ws) return;
       socket = undefined;
       if (closedByUser) { reportClosed(); return; }
-      // A handshake rejection (never opened) is most likely a credential problem; re-fetching the
-      // ticket on reconnect surfaces it as a fatal error from wsTicket() if the credential is dead.
-      void opened;
-      scheduleReconnect();
+      if (opened) { scheduleReconnect(); return; }
+      // A handshake rejection (never opened). A dead credential surfaces as a fatal wsTicket()
+      // error on reconnect, but a *live* credential aimed at the wrong (or a nonexistent) Weave
+      // keeps getting tickets and would retry forever; ask REST about the target to tell the two
+      // apart and stop on a permanent answer.
+      void (async () => {
+        try {
+          await client.getWeave(weaveId);
+        } catch (e) {
+          if (closedByUser) return;
+          if (e instanceof LoomClientError && FATAL.has(e.code)) { reportClosed({ error: e }); return; }
+        }
+        if (closedByUser) return;
+        scheduleReconnect();
+      })();
     };
   };
 
