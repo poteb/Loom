@@ -51,7 +51,7 @@ function reject(socket: Duplex, status: number, message: string, code = STATUS_C
   );
 }
 
-export function attachWebSocket(server: ServerType, deps: WsDeps): void {
+export function attachWebSocket(server: ServerType, deps: WsDeps): { dropAll: () => void } {
   const wss = new WebSocketServer({ noServer: true });
   // Without this, an error on the server itself (distinct from a per-connection `ws` error) is an
   // unhandled "error" event, which crashes the process.
@@ -79,6 +79,8 @@ export function attachWebSocket(server: ServerType, deps: WsDeps): void {
       return reject(socket, 500, "Internal error");
     }
   });
+
+  return { dropAll: () => { for (const c of wss.clients) c.terminate(); } };
 }
 
 async function stream(ws: WebSocket, weaveId: string, since: number, actor: Actor, credential: string, deps: WsDeps) {

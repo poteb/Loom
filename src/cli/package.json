@@ -1,0 +1,20 @@
+{
+  "name": "@loom/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "loom": "./bin/loom.js" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@loom/client": "workspace:*",
+    "commander": "15.0.0"
+  },
+  "devDependencies": {
+    "@loom/core": "workspace:*",
+    "@loom/server": "workspace:*"
+  }
+}

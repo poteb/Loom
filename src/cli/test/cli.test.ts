@@ -1,0 +1,142 @@
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { startTestServer, type TestServer } from "../../server/test/helpers.js";
+import { runCli, type CliIo } from "../src/cli.js";
+import { ConfigStore } from "../src/config.js";
+
+let s: TestServer;
+beforeAll(async () => { s = await startTestServer(); });
+afterAll(async () => { await s.close(); });
+
+let cfg: string;
+beforeEach(() => { cfg = path.join(mkdtempSync(path.join(tmpdir(), "loom-cli-")), "config.json"); });
+
+async function run(args: string[], extraEnv: Record<string, string> = {}) {
+  let out = ""; let err = "";
+  const io: CliIo = {
+    stdout: { write: (s: string) => { out += s; } },
+    stderr: { write: (s: string) => { err += s; } },
+    env: { LOOM_URL: s.baseUrl, LOOM_ALLOW_INSECURE: "1", LOOM_CONFIG: cfg, ...extraEnv },
+  };
+  const code = await runCli(args, io);
+  return { code, out, err, json: () => JSON.parse(out) };
+}
+
+describe("loom create / join / info / post / read", () => {
+  it("create stores the token and prints the secret; join stores a second identity", async () => {
+    const c = await run(["create", "--title", "PR 9", "--opener", "Review PR 9", "--name", "Claude", "--kind", "agent", "--json"]);
+    expect(c.code).toBe(0);
+    const created = c.json();
+    expect(created.secret).toHaveLength(43);
+    const h = await run(["create", "--title", "PR 9", "--name", "Claude"]);
+    expect(h.out).toMatch(/secret:/i);
+    expect(h.out).toContain(`/w/`);
+
+    // a second config file = a second user joining with the secret
+    const cfg2 = path.join(mkdtempSync(path.join(tmpdir(), "loom-cli-")), "config.json");
+    const j = await run(["join", created.secret, "--name", "ChatGPT", "--json"], { LOOM_CONFIG: cfg2 });
+    expect(j.code).toBe(0);
+    expect(j.json().participant.name).toBe("ChatGPT");
+
+    const info = await run(["info", "--weave", created.weave.id, "--json"]);
+    expect(info.code).toBe(0);
+    expect(info.json().participants.map((p: { name: string }) => p.name)).toEqual(["Claude", "ChatGPT"]);
+  });
+
+  it("join returns the general thread and title in one round trip and stores them", async () => {
+    const created = (await run(["create", "--title", "One shot", "--name", "Me", "--json"])).json();
+    const cfg2 = path.join(mkdtempSync(path.join(tmpdir(), "loom-cli-")), "config.json");
+    const j = await run(["join", created.secret, "--name", "Bot", "--json"], { LOOM_CONFIG: cfg2 });
+    expect(j.code).toBe(0);
+    expect(j.json().generalThreadId).toBe(created.generalThread.id);
+    expect(j.json().weave.title).toBe("One shot");
+    const stored = new ConfigStore(cfg2).load();
+    expect(stored.weaves[created.weave.id]).toMatchObject({ title: "One shot", generalThreadId: created.generalThread.id, secret: created.secret });
+    const h = await run(["join", created.secret, "--name", "Bot2"], { LOOM_CONFIG: cfg2 });
+    expect(h.out).toContain('Joined "One shot" as Bot2');
+  });
+
+  it("concurrent invocations sharing a config file do not lose each other's tokens", async () => {
+    const [a, b, c] = await Promise.all([
+      run(["create", "--title", "A", "--name", "Me", "--json"]),
+      run(["create", "--title", "B", "--name", "Me", "--json"]),
+      run(["create", "--title", "C", "--name", "Me", "--json"]),
+    ]);
+    for (const r of [a, b, c]) expect(r.code).toBe(0);
+    const stored = new ConfigStore(cfg).load();
+    expect(Object.keys(stored.weaves).sort()).toEqual([a.json().weave.id, b.json().weave.id, c.json().weave.id].sort());
+    expect(stored.lastWeave).toBeDefined();
+  });
+
+  it("post and read use the last weave by default; read supports --since and --thread", async () => {
+    const c = await run(["create", "--title", "T", "--opener", "hello", "--name", "Me", "--json"]);
+    const created = c.json();
+    const p = await run(["post", "second", "message", "--json"]);
+    expect(p.code).toBe(0);
+    expect(p.json().payload.text).toBe("second message");
+    const r = await run(["read", "--json"]);
+    expect(r.code).toBe(0);
+    expect(r.json().events.map((e: { type: string }) => e.type)).toEqual(["thread.created", "participant.joined", "message", "message"]);
+    const since = await run(["read", "--since", "3", "--json"]);
+    expect(since.json().events.map((e: { seq: number }) => e.seq)).toEqual([4]);
+    const human = await run(["read"]);
+    expect(human.out).toContain("#4 [General] Me: second message");
+    expect(human.out).toContain("#2 [General] * participant.joined");
+    const inThread = await run(["read", "--thread", created.generalThread.id, "--json"]);
+    expect(inThread.json().events).toHaveLength(4);
+  });
+
+  it("reports errors with code and exit 1; usage errors exit 2", async () => {
+    const noWeave = await run(["read", "--json"]);
+    expect(noWeave.code).toBe(1);
+    expect(JSON.parse(noWeave.err).code).toBe("no_weave");
+    const bad = await run(["join", "nope", "--name", "X"]);
+    expect(bad.code).toBe(1);
+    expect(bad.err).toContain("weave_not_found");
+    const usage = await run(["create"]);
+    expect(usage.code).toBe(2);
+    const insecure = await run(["info"], { LOOM_ALLOW_INSECURE: "" });
+    expect(insecure.code).toBe(1);
+    expect(insecure.err).toContain("insecure_url");
+  });
+
+  it("a secret starting with a dash is a commander usage error, not a weave lookup", async () => {
+    // Documents current behavior: commander parses a leading-dash positional as an unknown
+    // option, so this never reaches the server as a lookup. `newSecret()` in core now
+    // guarantees generated secrets never start with "-", so real users never hit this path;
+    // this only exercises a hand-crafted adversarial value.
+    const dashSecret = await run(["join", "-abc", "--name", "X", "--json"]);
+    expect(dashSecret.code).toBe(2);
+  });
+
+  it("usage errors in --json mode print a single JSON error object on stderr (no human diagnostics) and exit 2", async () => {
+    const missing = await run(["create", "--json"]);
+    expect(missing.code).toBe(2);
+    const missingErr = JSON.parse(missing.err.trim());
+    expect(missingErr.code).toBe("validation");
+    expect(typeof missingErr.message).toBe("string");
+    expect(missingErr.message.length).toBeGreaterThan(0);
+
+    const badSince = await run(["read", "--since", "abc", "--json"]);
+    expect(badSince.code).toBe(2);
+    const badSinceErr = JSON.parse(badSince.err.trim());
+    expect(badSinceErr.code).toBe("validation");
+  });
+
+  it("--kind rejects anything but agent/human as a usage error", async () => {
+    const badCreate = await run(["create", "--title", "T", "--name", "X", "--kind", "robot"]);
+    expect(badCreate.code).toBe(2);
+    const badJoin = await run(["join", "somesecret", "--name", "X", "--kind", "robot"]);
+    expect(badJoin.code).toBe(2);
+  });
+
+  it("numeric options reject non-numeric or out-of-range values as usage errors", async () => {
+    await run(["create", "--title", "T", "--opener", "hello", "--name", "Me", "--json"]);
+    const badSince = await run(["read", "--since", "abc"]);
+    expect(badSince.code).toBe(2);
+    const badLimit = await run(["read", "--limit", "0"]);
+    expect(badLimit.code).toBe(2);
+  });
+});

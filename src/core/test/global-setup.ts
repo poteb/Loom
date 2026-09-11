@@ -28,7 +28,7 @@ export async function setup() {
   } catch (e) {
     const why = e instanceof Error ? e.message.split("\n")[0] : "unknown error";
     const fallbackUrl = fallbackTestUrl(COMPOSE_DATABASE_URL);
-    console.log(`testcontainer unavailable (${why}); falling back to a dedicated database on the compose server: ${fallbackUrl}`);
+    console.log(`testcontainer unavailable (${why}); falling back to a dedicated database on the compose server: loom_test`);
     await ensureFallbackDatabase();
     process.env.TEST_DATABASE_URL = fallbackUrl;
   }

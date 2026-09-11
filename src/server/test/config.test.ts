@@ -7,7 +7,16 @@ const TOKEN_B = "B_-9".padEnd(43, "z");
 describe("loadConfig", () => {
   it("parses env with defaults", () => {
     const c = loadConfig({ DATABASE_URL: "postgres://x", LOOM_KEEPER_TOKENS: ` ${TOKEN_A} , ${TOKEN_B} ,, ` });
-    expect(c).toEqual({ port: 3000, host: "127.0.0.1", databaseUrl: "postgres://x", keeperTokens: [TOKEN_A, TOKEN_B] });
+    expect(c).toEqual({
+      port: 3000,
+      host: "127.0.0.1",
+      databaseUrl: "postgres://x",
+      keeperTokens: [TOKEN_A, TOKEN_B],
+      webDist: undefined,
+    });
+  });
+  it("reads LOOM_WEB_DIST", () => {
+    expect(loadConfig({ DATABASE_URL: "postgres://x", LOOM_WEB_DIST: "/srv/web" }).webDist).toBe("/srv/web");
   });
   it("defaults host to loopback only", () => {
     expect(loadConfig({ DATABASE_URL: "postgres://x" }).host).toBe("127.0.0.1");

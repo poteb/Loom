@@ -1,6 +1,9 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { Hono } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { LoomError, type Core } from "@loom/core";
+import { serveStatic } from "@hono/node-server/serve-static";
 import { bearer, type Env } from "./auth.js";
 import { statusFor } from "./errors.js";
 import { logError } from "./log.js";
@@ -10,7 +13,7 @@ import { threadRoutes } from "./routes/threads.js";
 import { adminRoutes } from "./routes/admin.js";
 import { authRoutes } from "./routes/auth.js";
 
-export type AppDeps = { core: Core; tickets: TicketStore };
+export type AppDeps = { core: Core; tickets: TicketStore; webDist?: string };
 
 export function buildApp(deps: AppDeps): Hono<Env> {
   const app = new Hono<Env>();
@@ -30,6 +33,19 @@ export function buildApp(deps: AppDeps): Hono<Env> {
   app.route("/api/threads", threadRoutes(deps.core));
   app.route("/api/admin", adminRoutes(deps.core));
   app.route("/api/auth", authRoutes(deps.core, deps.tickets));
+
+  if (deps.webDist) {
+    const indexHtml = readFileSync(path.join(deps.webDist, "index.html"), "utf8");
+    app.get(
+      "/assets/*",
+      serveStatic({
+        root: deps.webDist,
+        onFound: (_path, c) => c.header("cache-control", "public, max-age=31536000, immutable"),
+      }),
+    );
+    app.get("/w/:secret", (c) => c.html(indexHtml));
+    app.get("/w/:secret/", (c) => c.html(indexHtml));
+  }
 
   return app;
 }
