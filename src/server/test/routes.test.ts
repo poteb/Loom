@@ -59,6 +59,16 @@ describe("weaves", () => {
     expect(js.json.events.at(-1).type).toBe("weave.archived");
   });
 
+  it("looks up a weave id by secret; unknown secret is 404", async () => {
+    const c = await api(s.baseUrl, "POST", "/api/weaves", creator);
+    const { weave, secret } = c.json;
+    const l = await api(s.baseUrl, "GET", `/api/weaves/${secret}/lookup`);
+    expect(l.status).toBe(200);
+    expect(l.json.weaveId).toBe(weave.id);
+    const bad = await api(s.baseUrl, "GET", "/api/weaves/nope/lookup");
+    expect(bad.status).toBe(404);
+  });
+
   it("maps errors: 401 no auth, 403 wrong weave, 404 bad secret, 409 name taken, 400 validation", async () => {
     const a = await api(s.baseUrl, "POST", "/api/weaves", creator);
     const b = await api(s.baseUrl, "POST", "/api/weaves", creator);

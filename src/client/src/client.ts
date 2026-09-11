@@ -37,6 +37,10 @@ export class LoomClient {
   getWeave(weaveId: string): Promise<WeaveInfo> {
     return this.call("GET", `/api/weaves/${weaveId}`);
   }
+  async lookupWeave(secret: string): Promise<string> {
+    const r = await this.call<{ weaveId: string }>("GET", `/api/weaves/${encodeURIComponent(secret)}/lookup`);
+    return r.weaveId;
+  }
   async readEvents(weaveId: string, opts: { since?: number; threadId?: string; limit?: number } = {}): Promise<LoomEvent[]> {
     const q = new URLSearchParams();
     if (opts.since !== undefined) q.set("since", String(opts.since));

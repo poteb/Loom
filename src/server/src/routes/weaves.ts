@@ -22,6 +22,8 @@ export function weaveRoutes(core: Core) {
     return c.json(await core.joinWeave(c.req.param("secret"), who), 201);
   });
 
+  r.get("/:secret/lookup", async (c) => c.json({ weaveId: await core.lookupWeaveIdBySecret(c.req.param("secret")) }));
+
   r.get("/:id", async (c) => {
     const actor = await requireActor(c, core);
     return c.json(await core.getWeave(actor, c.req.param("id")));

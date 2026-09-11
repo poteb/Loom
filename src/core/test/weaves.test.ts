@@ -1,7 +1,7 @@
 import { describe, it, expect, afterAll, beforeEach } from "vitest";
 import { freshDb, closeTestDb, keeperToken } from "./helpers.js";
 import { EventBus } from "../src/bus.js";
-import { createWeave, getWeave, joinWeave, archiveWeave, listWeaves } from "../src/weaves.js";
+import { createWeave, getWeave, joinWeave, archiveWeave, listWeaves, lookupWeaveIdBySecret } from "../src/weaves.js";
 import { readEvents } from "../src/events.js";
 import { resolveCredential } from "../src/actors.js";
 import { seedKeepers } from "../src/keepers.js";
@@ -85,6 +85,14 @@ describe("getWeave", () => {
     const b = await createWeave(db, bus, input);
     const meA = await resolveCredential(db, a.token);
     await expect(getWeave(db, meA, b.weave.id)).rejects.toMatchObject({ code: "forbidden" });
+  });
+});
+
+describe("lookupWeaveIdBySecret", () => {
+  it("resolves a created weave's secret to its id; unknown secret is weave_not_found", async () => {
+    const r = await createWeave(db, bus, input);
+    await expect(lookupWeaveIdBySecret(db, r.secret)).resolves.toBe(r.weave.id);
+    await expect(lookupWeaveIdBySecret(db, "nope")).rejects.toMatchObject({ code: "weave_not_found" });
   });
 });
 

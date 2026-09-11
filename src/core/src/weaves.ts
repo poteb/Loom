@@ -114,6 +114,12 @@ export async function archiveWeave(db: Db, bus: EventBus, actor: Actor, weaveId:
   });
 }
 
+export async function lookupWeaveIdBySecret(db: Db, secret: string): Promise<string> {
+  const [w] = await db.select({ id: weaves.id }).from(weaves).where(eq(weaves.secret, secret));
+  if (!w) throw errors.weaveNotFound();
+  return w.id;
+}
+
 export async function listWeaves(db: Db, actor: Actor): Promise<PublicWeave[]> {
   await assertInstanceKeeperFresh(db, actor);
   return (await db.select().from(weaves).orderBy(asc(weaves.createdAt))).map(toPublicWeave);

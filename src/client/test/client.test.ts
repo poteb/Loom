@@ -53,6 +53,12 @@ describe("LoomClient", () => {
     expect(json.events.at(-1).type).toBe("weave.archived");
   });
 
+  it("lookupWeave resolves a secret to its weave id; rejects an unknown secret", async () => {
+    const r = await anon.createWeave(input);
+    await expect(anon.lookupWeave(r.secret)).resolves.toBe(r.weave.id);
+    await expect(anon.lookupWeave("nope")).rejects.toMatchObject({ code: "weave_not_found", status: 404 });
+  });
+
   it("maps server errors to LoomClientError with code and status", async () => {
     const r = await anon.createWeave(input);
     await expect(anon.getWeave(r.weave.id)).rejects.toMatchObject({ code: "invalid_token", status: 401 });
