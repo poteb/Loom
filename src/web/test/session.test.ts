@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { startTestServer, type TestServer } from "../../server/test/helpers.js";
 import { LoomClient } from "@loom/client";
 import { createSession, type Session } from "../src/session.js";
@@ -216,6 +216,164 @@ describe("session", () => {
     await waitFor(() => session.getState().threads.some((t) => t.name === "Design"));
     expect(session.getState().refreshError).toBeUndefined();
     expect(getWeaveCalls).toBe(8);
+    session.dispose();
+  });
+});
+
+/** One-shot rendezvous: the test learns the gated request arrived, the request waits for release. */
+function makeGate() {
+  let markEntered!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((r) => { markEntered = r; });
+  const released = new Promise<void>((r) => { release = r; });
+  return { entered, released, markEntered, release };
+}
+
+/** Counts the WebSockets a session actually opens, so "exactly one live stream" is observable. */
+function trackSockets() {
+  const Real = globalThis.WebSocket;
+  const created: WebSocket[] = [];
+  globalThis.WebSocket = class extends Real {
+    constructor(url: string | URL, protocols?: string | string[]) {
+      super(url, protocols);
+      created.push(this);
+    }
+  } as unknown as typeof WebSocket;
+  return {
+    live: () => created.filter((w) => w.readyState === Real.CONNECTING || w.readyState === Real.OPEN).length,
+    restore: () => { globalThis.WebSocket = Real; },
+  };
+}
+
+/** A client whose first events request parks on `gate` until the test releases it. */
+function gatedClient(baseUrl: string, gate: ReturnType<typeof makeGate>): LoomClient {
+  let gated = false;
+  return new LoomClient({
+    baseUrl, allowInsecure: true,
+    fetch: async (target, init) => {
+      const url = typeof target === "string" ? target : target.toString();
+      if (!gated && /\/events$/.test(new URL(url).pathname)) {
+        gated = true;
+        gate.markEntered();
+        await gate.released;
+      }
+      return fetch(url, init);
+    },
+  });
+}
+
+describe("session lifecycle", () => {
+  it("a superseded load() closes its own stream and never touches state", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const gate = makeGate();
+    const sockets = trackSockets();
+    try {
+      const session = createSession({ client: gatedClient(s.baseUrl, gate), secret: r.secret, storage: memoryStorage() });
+      const first = session.load();
+      await gate.entered;
+      // The second load() supersedes the first while the first is parked mid-backfill.
+      await session.load();
+      await waitFor(() => session.getState().connection === "open");
+      gate.release();
+      await first;
+      await new Promise((res) => setTimeout(res, 100));
+      // The stale load must clean up after itself rather than leak a second socket (or overwrite
+      // the live handle, which would make dispose() close the wrong stream).
+      expect(sockets.live()).toBe(1);
+
+      await anon.withToken(r.token).postMessage(r.generalThread.id, "live");
+      await waitFor(() => session.getState().events.some((e) => e.payload.text === "live"));
+      expect(session.getState().status).toBe("ready");
+
+      session.dispose();
+      await new Promise((res) => setTimeout(res, 100));
+      expect(sockets.live()).toBe(0);
+    } finally { sockets.restore(); }
+  });
+
+  it("dispose() during a load() leaves no stream and no state changes after disposal", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const gate = makeGate();
+    const sockets = trackSockets();
+    try {
+      const session = createSession({ client: gatedClient(s.baseUrl, gate), secret: r.secret, storage: memoryStorage() });
+      const loading = session.load();
+      await gate.entered;
+      session.dispose();
+      // set() replaces the state object, so identity is the sharpest "nothing changed" assertion.
+      const snapshot = session.getState();
+      gate.release();
+      await loading;
+      await new Promise((res) => setTimeout(res, 100));
+      expect(sockets.live()).toBe(0);
+      expect(session.getState()).toBe(snapshot);
+
+      await anon.withToken(r.token).postMessage(r.generalThread.id, "after dispose");
+      await new Promise((res) => setTimeout(res, 300));
+      expect(session.getState()).toBe(snapshot);
+      expect(session.getState().events).toHaveLength(0);
+    } finally { sockets.restore(); }
+  });
+
+  it("a re-load() announces itself: status goes back to loading and stale errors are cleared", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const session = createSession({ client: anon, secret: r.secret, storage: memoryStorage() });
+    await session.load();
+    expect(session.getState().status).toBe("ready");
+    // Read synchronously, before load() has awaited anything: a reload must publish "loading"
+    // (and drop any error left by a previous attempt) rather than sit on stale ready state.
+    const again = session.load();
+    expect(session.getState().status).toBe("loading");
+    expect(session.getState().error).toBeUndefined();
+    expect(session.getState().refreshError).toBeUndefined();
+    await again;
+    expect(session.getState().status).toBe("ready");
+    session.dispose();
+  });
+
+  it("dispose() cancels a pending retry sleep instead of leaving a timer behind", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    let getWeaveCalls = 0;
+    const flaky = new LoomClient({
+      baseUrl: s.baseUrl, allowInsecure: true,
+      fetch: (target, init) => {
+        const url = typeof target === "string" ? target : target.toString();
+        if (/^\/api\/weaves\/[^/]+$/.test(new URL(url).pathname)) {
+          getWeaveCalls++;
+          if (getWeaveCalls >= 2) return Promise.reject(new Error("simulated network failure"));
+        }
+        return fetch(url, init);
+      },
+    });
+    // A retry delay far longer than the test: if dispose() did not cancel it, the timer would
+    // outlive the session (and the suite would have to wait it out).
+    const session = createSession({
+      client: flaky, secret: r.secret, storage: memoryStorage(),
+      retry: { delaysMs: [600_000], slowMs: 600_000 },
+    });
+    await session.load();
+
+    const setSpy = vi.spyOn(globalThis, "setTimeout");
+    const clearSpy = vi.spyOn(globalThis, "clearTimeout");
+    try {
+      await anon.withToken(r.token).createThread(r.weave.id, "Design");
+      await waitFor(() => session.getState().refreshError !== undefined);
+      await new Promise((res) => setTimeout(res, 20));
+      const idx = setSpy.mock.calls.findIndex((c) => c[1] === 600_000);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const timerId = setSpy.mock.results[idx]!.value;
+      session.dispose();
+      expect(clearSpy).toHaveBeenCalledWith(timerId);
+    } finally { setSpy.mockRestore(); clearSpy.mockRestore(); session.dispose(); }
+  });
+
+  it("dismissNamePrompt() clears the name demand raised by an anonymous write", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const session = await makeSession(r.secret);
+    await expect(session.post("x")).rejects.toMatchObject({ code: "no_identity" });
+    expect(session.getState().needsName).toBe(true);
+    session.dismissNamePrompt();
+    expect(session.getState().needsName).toBe(false);
     session.dispose();
   });
 });

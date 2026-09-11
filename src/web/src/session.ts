@@ -16,10 +16,20 @@ export type Session = {
   getState(): SessionState; subscribe(fn: () => void): () => void;
   load(): Promise<void>; join(name: string): Promise<void>; selectThread(id: string): void;
   post(text: string): Promise<void>; createThread(name: string): Promise<void>; closeThread(id: string): Promise<void>; archive(): Promise<void>;
-  canModerate(): boolean; dispose(): void;
+  canModerate(): boolean; dismissNamePrompt(): void; dispose(): void;
 };
 
 const PAGE = 1000;
+
+/** setTimeout that settles early — and clears its timer — when `signal` aborts, so no timer outlives a session. */
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) { resolve(); return; }
+    const onAbort = () => { clearTimeout(timer); resolve(); };
+    const timer = setTimeout(() => { signal.removeEventListener("abort", onAbort); resolve(); }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 export type RetryOptions = { delaysMs: number[]; slowMs: number };
 const DEFAULT_RETRY: RetryOptions = { delaysMs: [250, 500, 1000, 2000, 4000], slowMs: 10_000 };
@@ -56,6 +66,9 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
   let disposed = false;
   let refreshInFlight: Promise<void> | undefined;
   let refreshDirty = false;
+  // Aborted by dispose(): cancels the retry sleep so a long backoff never keeps the process (or a
+  // test run) alive past the session it belongs to.
+  const lifetime = new AbortController();
 
   const runRefreshWithRetry = async () => {
     for (let attempt = 0; ; attempt++) {
@@ -68,7 +81,7 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
         if (disposed) return;
         set({ refreshError: e instanceof Error ? e.message : String(e) });
         const delay = attempt < retry.delaysMs.length ? retry.delaysMs[attempt]! : retry.slowMs;
-        await new Promise((resolve) => setTimeout(resolve, delay));
+        await sleep(delay, lifetime.signal);
       }
     }
   };
@@ -101,22 +114,31 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
       stream = undefined;
       generation++;
       const myGeneration = generation;
+      // A load() that has been superseded (a newer load(), or dispose()) owns nothing any more: it
+      // must not publish state and must clean up anything it managed to open. Checked after every
+      // await, since each one is a chance for a newer load to have taken over.
+      const stale = () => disposed || myGeneration !== generation;
+      set({ status: "loading", error: undefined, refreshError: undefined });
       try {
         // Backfill events BEFORE fetching threads/participants metadata: anything committed after
         // the backfill starts arrives live over the stream (started from the last backfilled seq)
         // and triggers the normal refresh. Fetching metadata first would let a thread/participant
         // change land in `events` (via the stream) without ever showing up in `threads`/
         // `participants`, since the stream only starts listening after that seq.
-        weaveId = await reader.lookupWeave(secret);
+        const id = await reader.lookupWeave(secret);
+        if (stale()) return;
         const events: LoomEvent[] = [];
         let since = 0;
         for (;;) {
-          const page = await reader.readEvents(weaveId, { since, limit: PAGE });
+          const page = await reader.readEvents(id, { since, limit: PAGE });
+          if (stale()) return;
           events.push(...page);
           if (page.length < PAGE) break;
           since = page.at(-1)!.seq;
         }
-        const info = await reader.getWeave(weaveId);
+        const info = await reader.getWeave(id);
+        if (stale()) return;
+        weaveId = id;
         let me: SessionState["me"];
         const stored = storage.get(key);
         if (stored) {
@@ -129,11 +151,11 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
         set({ status: "ready", weave: info.weave, threads: info.threads, participants: info.participants, events, me,
           currentThreadId: info.threads.find((t) => t.isGeneral)?.id ?? info.threads[0]?.id });
         let sawOpen = false;
-        stream = reader.stream(weaveId, {
+        const opened = reader.stream(id, {
           since: events.at(-1)?.seq ?? 0,
-          onEvent: (e) => { if (myGeneration !== generation) return; onEvent(e); },
+          onEvent: (e) => { if (stale()) return; onEvent(e); },
           onStatus: (st) => {
-            if (myGeneration !== generation) return;
+            if (stale()) return;
             set({ connection: st });
             // A reconnect's "open" (as opposed to the first "open" after this load()) means the
             // stream was down for a while; refresh derived state in case a qualifying event was
@@ -143,7 +165,12 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
             }
           },
         });
+        // stream() is synchronous, but the state it was built from is not: if this load lost the
+        // race while it was being constructed, close the socket instead of leaking it.
+        if (stale()) { opened.close(); return; }
+        stream = opened;
       } catch (e) {
+        if (stale()) return;
         const msg = e instanceof LoomClientError && e.code === "weave_not_found" ? "Weave not found: the link may be wrong" : (e as Error).message;
         set({ status: "error", error: msg });
       }
@@ -181,6 +208,16 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
       await refreshInfo();
     },
     canModerate: () => state.me?.participant.role === "keeper" && !state.weave?.archivedAt,
-    dispose: () => { disposed = true; stream?.close(); stream = undefined; listeners.clear(); },
+    dismissNamePrompt: () => { if (state.needsName) set({ needsName: false }); },
+    dispose: () => {
+      disposed = true;
+      // Bumping the generation retires any in-flight load() as well, so one that is still mid-fetch
+      // cleans up whatever it opens instead of publishing state into a disposed session.
+      generation++;
+      lifetime.abort();
+      stream?.close();
+      stream = undefined;
+      listeners.clear();
+    },
   };
 }
