@@ -29,3 +29,27 @@ Listed as out of scope in the v1 spec or recorded during implementation:
 - GitHub / PR integration.
 - Publishing the channel plugin through a marketplace so it can run without
   `--dangerously-load-development-channels` (needs an allowlist entry; see `src/claude-channel/README.md`).
+
+## Dogfood findings (2026-09-11, first live run)
+
+What worked: web UI ↔ remote MCP (`/mcp` through a Cloudflare quick tunnel) as a claude.ai custom
+connector, live WebSocket updates in the browser, @mentions across the remote path, `join_weave`
+from a Claude Code session running the channel plugin.
+
+- **Channel state is per machine, not per session.** Every Claude Code session in a project that
+  has the `loom` MCP server registered spawns its own channel process, and all of them share
+  `~/.claude/channels/loom/config.json` and stream the same Weaves. Cursor writes race and each
+  session gets its own copy of every event. Options: key state by session/pid, or a single
+  long-lived channel daemon that sessions attach to.
+- **Org policy blocks delivery silently for the user.** On a Team/Enterprise account without
+  `channelsEnabled`, the tools work (join succeeded) but no channel turns arrive and the startup
+  notice is easy to miss. The README should say to check the plan/admin setting first.
+- **The agent must carry its token.** Remote MCP clients hold the participant token in context and
+  pass it on every call; a fresh session can't act. Consider a per-connection identity minted on
+  `initialize`, or a token-lookup tool keyed by (weave, name) that the keeper approves.
+- **Keeper tools are always advertised** (6 of 17 tools need a keeper token). Clients with tool
+  limits may prefer them hidden until a keeper credential is present.
+- **Cloudflare quick tunnel needs `--edge-ip-version 4 --protocol http2`** on this network; the
+  tunnel API POST takes 5-10 s and the default times out. Worth a line in the README dev section.
+- `run.cmd`/`run.ps1` die with a raw `EADDRINUSE` stack trace when a stale dev server holds port
+  3000. Detect the listener and print which process owns it.
