@@ -2,10 +2,15 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { startTestServer, type TestServer } from "../../server/test/helpers.js";
 import { LoomClient, type LoomEvent, type StreamStatus } from "../src/index.js";
 
-let s: TestServer;
+let s: TestServer | undefined;
 let anon: LoomClient;
 beforeAll(async () => { s = await startTestServer(); anon = new LoomClient({ baseUrl: s.baseUrl, allowInsecure: true }); });
-afterAll(async () => { await s.close(); });
+afterAll(async () => { await s?.close(); });
+
+function srv(): TestServer {
+  if (!s) throw new Error("test server did not start");
+  return s;
+}
 
 const input = { title: "T", opener: "start", creator: { name: "Claude", kind: "agent" as const } };
 
@@ -45,7 +50,7 @@ describe("stream", () => {
     });
     await waitFor(() => got.length === 3);
     // Drop every server-side socket for this weave, then post while the client is reconnecting.
-    s.dropSockets();
+    srv().dropSockets();
     await waitFor(() => statuses.includes("reconnecting"));
     await me.postMessage(r.generalThread.id, "after drop");
     await waitFor(() => got.length === 4, 8000);
@@ -69,7 +74,7 @@ describe("stream", () => {
     const statuses: StreamStatus[] = [];
     const h = anon.withToken(r.secret).stream(r.weave.id, { onEvent: () => {}, onStatus: (st) => statuses.push(st), reconnect: false });
     await waitFor(() => statuses.includes("open"));
-    s.dropSockets();
+    srv().dropSockets();
     await waitFor(() => statuses.includes("closed"));
     expect(statuses).not.toContain("reconnecting");
     h.close();

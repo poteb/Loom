@@ -14,10 +14,15 @@ export async function request<T>(opts: RequestOpts): Promise<T> {
   try {
     res = await f(opts.url, { method: opts.method, headers, body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined });
   } catch (e) {
-    throw new LoomClientError("network", `Could not reach Loom: ${(e as Error).message}`);
+    throw new LoomClientError("network", `Could not reach Loom: ${e instanceof Error ? e.message : String(e)}`);
   }
   if (res.status === 204) return undefined as T;
-  const text = await res.text();
+  let text: string;
+  try {
+    text = await res.text();
+  } catch (e) {
+    throw new LoomClientError("network", `Could not reach Loom: ${e instanceof Error ? e.message : String(e)}`);
+  }
   if (!res.ok) {
     let code = "bad_response"; let message = text || res.statusText;
     try {

@@ -2,20 +2,25 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { startTestServer, keeperToken, type TestServer } from "../../server/test/helpers.js";
 import { LoomClient, LoomClientError } from "../src/index.js";
 
-let s: TestServer;
+let s: TestServer | undefined;
 let anon: LoomClient;
 beforeAll(async () => {
   s = await startTestServer();
   await s.core.seedKeepers([keeperToken("k1")]);
   anon = new LoomClient({ baseUrl: s.baseUrl, allowInsecure: true });
 });
-afterAll(async () => { await s.close(); });
+afterAll(async () => { await s?.close(); });
+
+function srv(): TestServer {
+  if (!s) throw new Error("test server did not start");
+  return s;
+}
 
 const input = { title: "PR 7", opener: "Look at PR 7", creator: { name: "Claude", kind: "agent" as const } };
 
 describe("LoomClient", () => {
   it("refuses insecure URLs unless allowed", () => {
-    expect(() => new LoomClient({ baseUrl: s.baseUrl })).toThrow(LoomClientError);
+    expect(() => new LoomClient({ baseUrl: srv().baseUrl })).toThrow(LoomClientError);
   });
 
   it("create → join → get → post → events → thread → role → close → archive → export", async () => {
@@ -65,7 +70,7 @@ describe("LoomClient", () => {
     const r = await anon.createWeave(input);
     const ticket = await anon.withToken(r.token).wsTicket();
     expect(ticket).toHaveLength(43);
-    expect(s.tickets.redeem(ticket)).toBe(r.token);
+    expect(srv().tickets.redeem(ticket)).toBe(r.token);
   });
 
   it("admin methods require a keeper token", async () => {
