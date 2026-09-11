@@ -55,20 +55,39 @@ export function registerMessageCommands(program: Command, ctx: () => CliContext)
       let remaining = o.count ?? Infinity;
       await new Promise<void>((resolve, reject) => {
         let chain = Promise.resolve();
-        const stop = () => { handle.close(); process.removeListener("SIGINT", stop); resolve(); };
+        let stopped = false;
+        // Centralizes settlement: every path that ends the follow loop (count reached, SIGINT,
+        // a closed-with-error stream status, or a handler throwing) goes through here exactly
+        // once, so the stream handle and SIGINT listener are always released together.
+        const settle = (err?: unknown) => {
+          if (stopped) return;
+          stopped = true;
+          handle.close();
+          process.off("SIGINT", onSigint);
+          if (err !== undefined) reject(err); else resolve();
+        };
+        const onSigint = () => settle();
         const handle = client.stream(weaveId, {
           since: lastSeq,
           onEvent: (e) => {
+            // Bail before even queueing when we already know we're done; this is best-effort,
+            // since events that arrived while an earlier handler was still awaiting may already
+            // be queued on the chain by the time `stopped` flips.
+            if (stopped) return;
             chain = chain.then(async () => {
+              // The authoritative check: a handler may run after settle() was called from an
+              // earlier link in the chain, so never write or touch state once stopped.
+              if (stopped) return;
               if (o.thread && e.threadId !== o.thread) return;
               if (e.type === "thread.created" || e.type === "participant.joined") info = await client.getWeave(weaveId);
+              if (stopped) return;
               c.io.stdout.write(json ? JSON.stringify(e) + "\n" : formatEvent(e, info.threads, info.participants) + "\n");
-              if (--remaining <= 0) stop();
-            }).catch(reject);
+              if (--remaining <= 0) settle();
+            }).catch(settle);
           },
-          onStatus: (st, d) => { if (st === "closed" && d?.error) reject(d.error); },
+          onStatus: (st, d) => { if (st === "closed" && d?.error) settle(d.error); },
         });
-        process.once("SIGINT", stop);
+        process.once("SIGINT", onSigint);
       });
     });
 }

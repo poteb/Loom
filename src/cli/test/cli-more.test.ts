@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { startTestServer, keeperToken, type TestServer } from "../../server/test/helpers.js";
 import { runCli, type CliIo } from "../src/cli.js";
+import { ConfigStore } from "../src/config.js";
 
 let s: TestServer;
 beforeAll(async () => { s = await startTestServer(); await s.core.seedKeepers([keeperToken("k1")]); });
@@ -53,6 +54,14 @@ describe("threads, roles, archive, export", () => {
     const js = await run(["export", "--format", "json"]);
     expect(JSON.parse(js.out).events.at(-1).type).toBe("weave.archived");
   });
+
+  it("role and export --format reject invalid values as usage errors", async () => {
+    const created = (await run(["create", "--title", "T", "--opener", "o", "--name", "Me", "--json"])).json();
+    const badRole = await run(["role", created.participant.id, "boss"]);
+    expect(badRole.code).toBe(2);
+    const badFormat = await run(["export", "--format", "xml"]);
+    expect(badFormat.code).toBe(2);
+  });
 });
 
 describe("read --follow", () => {
@@ -83,6 +92,55 @@ describe("read --follow", () => {
     expect(res.out).toContain("#4 [Design] * thread.created");
     expect(res.out).toContain("#5 [Design] Me: in design");
   });
+
+  it("stops exactly at --count even when several events arrive in a burst", async () => {
+    const created = (await run(["create", "--title", "T", "--opener", "o", "--name", "Me", "--json"])).json();
+    const actor = await s.core.resolveCredential(created.token);
+    const follow = run(["read", "--follow", "--since", "3", "--count", "2", "--json"]);
+    await new Promise((r) => setTimeout(r, 300));
+    await Promise.all([
+      s.core.postMessage(actor, created.generalThread.id, "one"),
+      s.core.postMessage(actor, created.generalThread.id, "two"),
+      s.core.postMessage(actor, created.generalThread.id, "three"),
+      s.core.postMessage(actor, created.generalThread.id, "four"),
+    ]);
+    const res = await follow;
+    expect(res.code).toBe(0);
+    const lines = res.lines();
+    expect(lines.map((e: { seq: number }) => e.seq)).toEqual([4, 5]);
+    const lenAfterResolve = res.out.length;
+    await new Promise((r) => setTimeout(r, 300));
+    expect(res.out.length).toBe(lenAfterResolve);
+  });
+
+  it("filters follow events by --thread", async () => {
+    const created = (await run(["create", "--title", "T", "--opener", "o", "--name", "Me", "--json"])).json();
+    const actor = await s.core.resolveCredential(created.token);
+    const t = await s.core.createThread(actor, created.weave.id, "Design");
+    const follow = run(["read", "--follow", "--since", "4", "--thread", t.id, "--count", "1", "--json"]);
+    await new Promise((r) => setTimeout(r, 300));
+    await s.core.postMessage(actor, created.generalThread.id, "in general");
+    await s.core.postMessage(actor, t.id, "in design");
+    const res = await follow;
+    expect(res.code).toBe(0);
+    const lines = res.lines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0].threadId).toBe(t.id);
+    expect(lines[0].payload.text).toBe("in design");
+  });
+
+  it("closes the stream and removes the SIGINT listener when the stream fails", async () => {
+    const created = (await run(["create", "--title", "T", "--opener", "o", "--name", "Me", "--json"])).json();
+    const store = new ConfigStore(cfg);
+    const config = store.load();
+    config.weaves[created.weave.id]!.token = "x".repeat(43);
+    store.save(config);
+    const before = process.listenerCount("SIGINT");
+    const res = await run(["read", "--follow", "--count", "1", "--json"]);
+    expect(res.code).toBe(1);
+    expect(JSON.parse(res.err).code).toBe("invalid_token");
+    expect(process.listenerCount("SIGINT")).toBe(before);
+  });
 });
 
 describe("admin", () => {
@@ -103,6 +161,14 @@ describe("admin", () => {
     const bad = await run(["admin", "settings", "--set", "nope=1", "--json"], K);
     expect(bad.code).toBe(1);
     expect(JSON.parse(bad.err).code).toBe("validation");
+
+    const boolOff = await run(["admin", "settings", "--set", "openWeaveCreation=false", "--json"], K);
+    expect(boolOff.code).toBe(0);
+    expect(boolOff.json().openWeaveCreation).toBe(false);
+    const boolOn = await run(["admin", "settings", "--set", "openWeaveCreation=true", "--json"], K);
+    expect(boolOn.code).toBe(0);
+    expect(boolOn.json().openWeaveCreation).toBe(true);
+
     const show = await run(["admin", "settings"], K);
     expect(show.out).toContain("instanceName: Fragt");
     await run(["admin", "settings", "--set", "maxMessageLength=20000"], K);

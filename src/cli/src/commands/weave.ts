@@ -1,4 +1,4 @@
-import { Option, type Command } from "commander";
+import { Argument, Option, type Command } from "commander";
 import type { Kind } from "@loom/client";
 import type { CliContext } from "../context.js";
 import { emit } from "../output.js";
@@ -70,11 +70,12 @@ export function registerWeaveCommands(program: Command, ctx: () => CliContext): 
       emit(c, { ok: true, weaveId }, `Archived Weave ${weaveId}`);
     });
 
-  program.command("role <participantId> <role>")
+  program.command("role")
     .description("Set a participant's role: member | keeper (keepers only)")
-    .action(async (participantId: string, role: string) => {
+    .argument("<participantId>")
+    .addArgument(new Argument("<role>", "member | keeper").choices(["member", "keeper"]))
+    .action(async (participantId: string, role: "member" | "keeper") => {
       const c = ctx();
-      if (role !== "member" && role !== "keeper") throw new Error("role must be member or keeper");
       const { weaveId, entry } = c.resolveWeave();
       const p = await c.client(entry.token).setRole(weaveId, participantId, role);
       emit(c, p, `${p.name} is now ${p.role}`);
@@ -82,10 +83,9 @@ export function registerWeaveCommands(program: Command, ctx: () => CliContext): 
 
   program.command("export")
     .description("Export the Weave transcript")
-    .option("--format <fmt>", "md | json", "md")
-    .action(async (o: { format: string }) => {
+    .addOption(new Option("--format <fmt>", "md | json").choices(["md", "json"]).default("md"))
+    .action(async (o: { format: "md" | "json" }) => {
       const c = ctx();
-      if (o.format !== "md" && o.format !== "json") throw new Error("--format must be md or json");
       const { weaveId, entry } = c.resolveWeave();
       const out = await c.client(entry.token).exportWeave(weaveId, o.format);
       c.io.stdout.write(out.endsWith("\n") ? out : out + "\n");
