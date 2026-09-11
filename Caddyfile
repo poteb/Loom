@@ -1,0 +1,3 @@
+{$LOOM_DOMAIN:localhost} {
+	reverse_proxy loom:3000
+}

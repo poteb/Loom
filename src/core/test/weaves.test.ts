@@ -1,0 +1,116 @@
+import { describe, it, expect, afterAll, beforeEach } from "vitest";
+import { freshDb, closeTestDb, keeperToken } from "./helpers.js";
+import { EventBus } from "../src/bus.js";
+import { createWeave, getWeave, joinWeave, archiveWeave, listWeaves } from "../src/weaves.js";
+import { readEvents } from "../src/events.js";
+import { resolveCredential } from "../src/actors.js";
+import { seedKeepers } from "../src/keepers.js";
+import { updateSettings } from "../src/settings.js";
+import type { Db } from "../src/db/index.js";
+
+afterAll(closeTestDb);
+let db: Db; let bus: EventBus;
+beforeEach(async () => { db = await freshDb(); bus = new EventBus(); });
+
+const input = { title: "PR #42", opener: "Review https://github.com/x/y/pull/42", creator: { name: "Claude", kind: "agent" as const } };
+
+describe("createWeave", () => {
+  it("creates weave, General, creator as keeper, and three events", async () => {
+    const r = await createWeave(db, bus, input);
+    expect(r.secret).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(r.participant.role).toBe("keeper");
+    expect(r.generalThread.isGeneral).toBe(true);
+    expect(r.generalThread.name).toBe("General");
+    const evs = await readEvents(db, r.weave.id, {});
+    expect(evs.map((e) => e.type)).toEqual(["thread.created", "participant.joined", "message"]);
+    expect(evs[2]!.payload).toEqual({ text: input.opener, mentions: [] });
+    expect(evs[2]!.actor).toBe(r.participant.id);
+    const me = await resolveCredential(db, r.token);
+    expect(me.kind).toBe("participant");
+  });
+  it("respects openWeaveCreation=false", async () => {
+    await seedKeepers(db, [keeperToken("k")]);
+    const k = await resolveCredential(db, keeperToken("k"));
+    await updateSettings(db, k, { openWeaveCreation: false });
+    await expect(createWeave(db, bus, input)).rejects.toMatchObject({ code: "forbidden" });
+    await expect(createWeave(db, bus, input, k)).resolves.toBeTruthy();
+  });
+  it("validates title and name", async () => {
+    await expect(createWeave(db, bus, { ...input, title: " " })).rejects.toMatchObject({ code: "validation" });
+    await expect(createWeave(db, bus, { ...input, creator: { name: "a b", kind: "human" } })).rejects.toMatchObject({ code: "validation" });
+  });
+});
+
+describe("joinWeave", () => {
+  it("adds a member and emits participant.joined", async () => {
+    const r = await createWeave(db, bus, input);
+    const j = await joinWeave(db, bus, r.secret, { name: "ChatGPT", kind: "agent" });
+    expect(j.weaveId).toBe(r.weave.id);
+    expect(j.participant.role).toBe("member");
+    const evs = await readEvents(db, r.weave.id, { since: 3 });
+    expect(evs).toHaveLength(1);
+    expect(evs[0]!.type).toBe("participant.joined");
+    expect(evs[0]!.payload).toMatchObject({ participantId: j.participant.id, name: "ChatGPT", kind: "agent", role: "member" });
+  });
+  it("rejects duplicate names case-insensitively", async () => {
+    const r = await createWeave(db, bus, input);
+    await expect(joinWeave(db, bus, r.secret, { name: "claude", kind: "human" })).rejects.toMatchObject({ code: "name_taken" });
+  });
+  it("rejects bad secret and archived weave", async () => {
+    await expect(joinWeave(db, bus, "nope", { name: "X", kind: "human" })).rejects.toMatchObject({ code: "weave_not_found" });
+    const r = await createWeave(db, bus, input);
+    const me = await resolveCredential(db, r.token);
+    await archiveWeave(db, bus, me, r.weave.id);
+    await expect(joinWeave(db, bus, r.secret, { name: "X", kind: "human" })).rejects.toMatchObject({ code: "weave_archived" });
+  });
+});
+
+describe("getWeave", () => {
+  it("works with participant token, secret, and keeper; hides tokens", async () => {
+    const r = await createWeave(db, bus, input);
+    const me = await resolveCredential(db, r.token);
+    const bySecret = await resolveCredential(db, r.secret);
+    await seedKeepers(db, [keeperToken("k")]);
+    const k = await resolveCredential(db, keeperToken("k"));
+    for (const a of [me, bySecret, k]) {
+      const info = await getWeave(db, a, r.weave.id);
+      expect(info.weave.title).toBe("PR #42");
+      expect(info.threads).toHaveLength(1);
+      expect(info.participants).toHaveLength(1);
+      expect(JSON.stringify(info)).not.toContain(r.token);
+    }
+  });
+  it("refuses a credential from another weave", async () => {
+    const a = await createWeave(db, bus, input);
+    const b = await createWeave(db, bus, input);
+    const meA = await resolveCredential(db, a.token);
+    await expect(getWeave(db, meA, b.weave.id)).rejects.toMatchObject({ code: "forbidden" });
+  });
+});
+
+describe("archiveWeave / listWeaves", () => {
+  it("keeper role archives; member cannot; archive is idempotent-rejecting", async () => {
+    const r = await createWeave(db, bus, input);
+    const j = await joinWeave(db, bus, r.secret, { name: "Member", kind: "human" });
+    const member = await resolveCredential(db, j.token);
+    await expect(archiveWeave(db, bus, member, r.weave.id)).rejects.toMatchObject({ code: "forbidden" });
+    const me = await resolveCredential(db, r.token);
+    await archiveWeave(db, bus, me, r.weave.id);
+    const info = await getWeave(db, me, r.weave.id);
+    expect(info.weave.archivedAt).not.toBeNull();
+    const last = (await readEvents(db, r.weave.id, {})).at(-1)!;
+    expect(last.type).toBe("weave.archived");
+    await expect(archiveWeave(db, bus, me, r.weave.id)).rejects.toMatchObject({ code: "weave_archived" });
+  });
+  it("instance keeper archives without joining and lists all weaves", async () => {
+    const r = await createWeave(db, bus, input);
+    await seedKeepers(db, [keeperToken("k")]);
+    const k = await resolveCredential(db, keeperToken("k"));
+    await archiveWeave(db, bus, k, r.weave.id);
+    const all = await listWeaves(db, k);
+    expect(all).toHaveLength(1);
+    expect(all[0]!.archivedAt).not.toBeNull();
+    const me = await resolveCredential(db, r.token);
+    await expect(listWeaves(db, me)).rejects.toMatchObject({ code: "forbidden" });
+  });
+});
