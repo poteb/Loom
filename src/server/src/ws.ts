@@ -2,7 +2,7 @@ import type { ServerType } from "@hono/node-server";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
-import { LoomError, type Actor, type Core, type LoomEvent } from "@loom/core";
+import { LoomError, assertCanRead, type Actor, type Core, type LoomEvent } from "@loom/core";
 import { statusFor } from "./errors.js";
 import { logError } from "./log.js";
 import type { TicketStore } from "./tickets.js";
@@ -17,11 +17,20 @@ export type WsDeps = {
   pingIntervalMs?: number;
   /** Events per replay page (and per gap-recovery read). */
   replayPageSize?: number;
+  /**
+   * How long a live connection trusts its resolved credential before re-checking it against the
+   * database. An instance keeper (or participant) removed mid-stream loses access once this
+   * elapses, rather than keeping the authority captured at connection time forever.
+   */
+  authTtlMs?: number;
 };
 
 const PATH_RE = /^\/api\/weaves\/([^/]+)\/stream$/;
 const PAGE = 500;
 const PING_MS = 30_000;
+const AUTH_TTL_MS = 10_000;
+/** Custom close code (private-use range, >= 4000): the credential was valid at connect time but no longer is. */
+const CREDENTIAL_REVOKED = 4401;
 
 const STATUS_TEXT: Record<number, string> = {
   400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found", 500: "Internal Server Error",
@@ -62,7 +71,7 @@ export function attachWebSocket(server: ServerType, deps: WsDeps): void {
       // Core decides: 403 when the credential is for another Weave, 404 when it does not exist.
       await deps.core.readEvents(actor, weaveId, { limit: 1 });
       wss.handleUpgrade(req, socket, head, (ws) => {
-        void stream(ws, weaveId, since, actor, deps);
+        void stream(ws, weaveId, since, actor, credential, deps);
       });
     } catch (e) {
       if (e instanceof LoomError) return reject(socket, statusFor(e.code), e.message, e.code);
@@ -72,8 +81,9 @@ export function attachWebSocket(server: ServerType, deps: WsDeps): void {
   });
 }
 
-async function stream(ws: WebSocket, weaveId: string, since: number, actor: Actor, deps: WsDeps) {
+async function stream(ws: WebSocket, weaveId: string, since: number, actor: Actor, credential: string, deps: WsDeps) {
   const page = deps.replayPageSize ?? PAGE;
+  const authTtlMs = deps.authTtlMs ?? AUTH_TTL_MS;
   const send = (e: LoomEvent) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(e)); };
   let lastSent = since;
   let live = false;
@@ -84,11 +94,33 @@ async function stream(ws: WebSocket, weaveId: string, since: number, actor: Acto
 
   const fail = (e: unknown) => { logError("ws stream failed", e); ws.close(1011, "stream failed"); };
 
+  // The actor captured at connect time carries whatever authority it had *then*; a keeper removed
+  // (or a participant demoted/removed) since must not keep streaming forever. Re-resolve the
+  // credential against the database at most once per authTtlMs, right before delivering an event.
+  let currentActor = actor;
+  let authorizedAt = Date.now();
+  let revoked = false;
+  const ensureAuthorized = async (): Promise<boolean> => {
+    if (revoked) return false;
+    if (Date.now() - authorizedAt < authTtlMs) return true;
+    try {
+      const fresh = await deps.core.resolveCredential(credential);
+      assertCanRead(fresh, weaveId);
+      currentActor = fresh;
+      authorizedAt = Date.now();
+      return true;
+    } catch {
+      revoked = true;
+      return false;
+    }
+  };
+
   /** Sends `e`, first replaying anything between it and the last event we sent. */
   const deliver = async (e: LoomEvent): Promise<void> => {
     if (e.seq <= lastSent) return;
+    if (!(await ensureAuthorized())) { ws.close(CREDENTIAL_REVOKED, "credential revoked"); return; }
     while (e.seq > lastSent + 1) {
-      const missing = await deps.core.readEvents(actor, weaveId, { since: lastSent, limit: Math.min(e.seq - lastSent - 1, page) });
+      const missing = await deps.core.readEvents(currentActor, weaveId, { since: lastSent, limit: Math.min(e.seq - lastSent - 1, page) });
       if (missing.length === 0) break;   // not committed yet; send what we have rather than spin
       for (const m of missing) if (m.seq > lastSent) { lastSent = m.seq; send(m); }
     }
