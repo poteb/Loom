@@ -87,7 +87,10 @@ export function registerWeaveCommands(program: Command, ctx: () => CliContext): 
     .action(async (o: { format: "md" | "json" }) => {
       const c = ctx();
       const { weaveId, entry } = c.resolveWeave();
-      const out = await c.client(entry.token).exportWeave(weaveId, o.format);
+      // --json always wins: it forces the json transcript format even when --format was also given
+      // (e.g. "--json --format md"), and covers the common case of --json alone with no --format.
+      const format = c.opts.json ? "json" : o.format;
+      const out = await c.client(entry.token).exportWeave(weaveId, format);
       c.io.stdout.write(out.endsWith("\n") ? out : out + "\n");
     });
 }

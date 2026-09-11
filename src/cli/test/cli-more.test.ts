@@ -89,6 +89,22 @@ describe("threads, roles, archive, export", () => {
     expect(JSON.parse(js.out).events.at(-1).type).toBe("weave.archived");
   });
 
+  it("export --json outputs the JSON transcript, and wins over a conflicting --format", async () => {
+    await run(["create", "--title", "T", "--opener", "o", "--name", "Me", "--json"]);
+
+    const j = await run(["export", "--json"]);
+    expect(j.code).toBe(0);
+    expect(j.json().events.length).toBeGreaterThan(0);
+
+    const conflict = await run(["export", "--json", "--format", "md"]);
+    expect(conflict.code).toBe(0);
+    expect(conflict.json().events.length).toBeGreaterThan(0);
+
+    const md = await run(["export", "--format", "md"]);
+    expect(md.code).toBe(0);
+    expect(md.out).toContain("# T");
+  });
+
   it("role and export --format reject invalid values as usage errors", async () => {
     const created = (await run(["create", "--title", "T", "--opener", "o", "--name", "Me", "--json"])).json();
     const badRole = await run(["role", created.participant.id, "boss"]);

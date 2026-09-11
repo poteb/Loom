@@ -8,6 +8,14 @@ import { registerAdminCommands } from "./commands/admin.js";
 export type { CliIo } from "./context.js";
 
 export async function runCli(argv: string[], io: CliIo): Promise<number> {
+  // Scanned before parsing: commander can throw a CommanderError (a missing required option, a bad
+  // argParser value, an unknown option) before --json would ever be readable from program.opts(), so
+  // whether to emit the JSON error shape has to be known up front.
+  const jsonMode = argv.includes("--json");
+  // Commander writes its own human-readable diagnostic straight to writeErr as it throws; in --json
+  // mode that diagnostic is buffered here instead of reaching stderr, so the caller sees exactly one
+  // JSON object on stderr rather than that diagnostic plus a JSON object appended after it.
+  let errBuf = "";
   const program = new Command("loom");
   program
     .description("Loom command line: create and join Weaves, read and post messages")
@@ -15,7 +23,10 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
     .option("--weave <id>", "Weave id (default: the last one created/joined)")
     .option("--json", "Print JSON")
     .exitOverride()
-    .configureOutput({ writeOut: (s) => io.stdout.write(s), writeErr: (s) => io.stderr.write(s) });
+    .configureOutput({
+      writeOut: (s) => io.stdout.write(s),
+      writeErr: (s) => { if (jsonMode) errBuf += s; else io.stderr.write(s); },
+    });
 
   let ctxCache: CliContext | undefined;
   const ctx = () => (ctxCache ??= buildContext(program.opts<GlobalOpts>(), io));
@@ -31,6 +42,11 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
   } catch (e) {
     if (e instanceof CommanderError) {
       if (e.code === "commander.helpDisplayed" || e.code === "commander.version") return 0;
+      if (jsonMode) {
+        const raw = (errBuf.length > 0 ? errBuf : e.message).trim();
+        const message = (raw.split("\n")[0] ?? raw).trim();
+        io.stderr.write(JSON.stringify({ code: "validation", message }) + "\n");
+      }
       return 2;
     }
     const json = program.opts<GlobalOpts>().json === true;

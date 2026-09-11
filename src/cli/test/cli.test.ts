@@ -85,6 +85,20 @@ describe("loom create / join / info / post / read", () => {
     expect(dashSecret.code).toBe(2);
   });
 
+  it("usage errors in --json mode print a single JSON error object on stderr (no human diagnostics) and exit 2", async () => {
+    const missing = await run(["create", "--json"]);
+    expect(missing.code).toBe(2);
+    const missingErr = JSON.parse(missing.err.trim());
+    expect(missingErr.code).toBe("validation");
+    expect(typeof missingErr.message).toBe("string");
+    expect(missingErr.message.length).toBeGreaterThan(0);
+
+    const badSince = await run(["read", "--since", "abc", "--json"]);
+    expect(badSince.code).toBe(2);
+    const badSinceErr = JSON.parse(badSince.err.trim());
+    expect(badSinceErr.code).toBe("validation");
+  });
+
   it("--kind rejects anything but agent/human as a usage error", async () => {
     const badCreate = await run(["create", "--title", "T", "--name", "X", "--kind", "robot"]);
     expect(badCreate.code).toBe(2);
