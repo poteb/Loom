@@ -31,6 +31,14 @@ export class ClientToolBackend implements LoomToolBackend {
    * -> persist the token -> hooks. */
   async joinWeave(secret: string, who: { name: string; kind: Kind }) {
     const weaveId = await this.client.lookupWeave(secret);
+    // Already joined under this name: hand back the stored identity rather than consuming the name
+    // a second time (which the server refuses with name_taken). Falls through to a fresh join if the
+    // stored token no longer works or the participant is gone.
+    const stored = this.state.get().weaves[weaveId];
+    if (stored && stored.participantName === who.name) {
+      const reused = await this.reuseStored(weaveId, stored);
+      if (reused) return reused;
+    }
     const info = await this.as(secret).getWeave(weaveId);
     const general = info.threads.find((t) => t.isGeneral) ?? info.threads[0]!;
     const j = await this.client.joinWeave(secret, who);
@@ -41,6 +49,15 @@ export class ClientToolBackend implements LoomToolBackend {
     this.state.upsertWeave(j.weaveId, joined);
     await this.hooks.onJoined(j.weaveId, joined);
     return j;
+  }
+  /** Validates a stored identity with its own token and re-arms its stream; undefined when it is dead. */
+  private async reuseStored(weaveId: string, stored: JoinedWeave) {
+    let info: Awaited<ReturnType<LoomClient["getWeave"]>>;
+    try { info = await this.as(stored.token).getWeave(weaveId); } catch { return undefined; }
+    const participant = info.participants.find((p) => p.id === stored.participantId);
+    if (!participant) return undefined;
+    await this.hooks.onJoined(weaveId, stored);
+    return { weaveId, weave: info.weave, generalThreadId: stored.generalThreadId, participant, token: stored.token, alreadyJoined: true };
   }
   async lookupWeave(secret: string) { return { weaveId: await this.client.lookupWeave(secret) }; }
   getWeave(c: string, weaveId: string) { return this.as(c).getWeave(weaveId); }

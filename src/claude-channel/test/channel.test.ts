@@ -82,6 +82,20 @@ describe("channel tools", () => {
     });
   });
 
+  it("join_weave twice with the same name returns the stored identity instead of name_taken", async () => {
+    await withChannel(stateDir, async (a) => {
+      const created = json(await a.callTool({ name: "create_weave", arguments: { title: "T", opener: "o", name: "Claude" } }));
+      const stateDirB = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+      await withChannel(stateDirB, async (b) => {
+        const first = json(await b.callTool({ name: "join_weave", arguments: { secret: created.secret, name: "Other" } }));
+        const again = json(await b.callTool({ name: "join_weave", arguments: { secret: created.secret, name: "Other" } }));
+        expect(again).toMatchObject({ weaveId: created.weave.id, token: first.token, participant: { id: first.participant.id, name: "Other" }, generalThreadId: created.generalThread.id, alreadyJoined: true });
+        const info = json(await a.callTool({ name: "get_weave", arguments: { credential: created.token, weaveId: created.weave.id } }));
+        expect(info.participants.map((p: { name: string }) => p.name)).toEqual(["Claude", "Other"]);
+      });
+    });
+  });
+
   it("join_weave persists the joiner's own identity in its own state dir", async () => {
     await withChannel(stateDir, async (a) => {
       const created = json(await a.callTool({ name: "create_weave", arguments: { title: "T", opener: "o", name: "Claude" } }));

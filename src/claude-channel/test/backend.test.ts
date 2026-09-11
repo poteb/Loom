@@ -80,6 +80,37 @@ describe("ClientToolBackend.joinWeave", () => {
     expect(onJoined).not.toHaveBeenCalled();
   });
 
+  it("returns the stored identity instead of joining again when already joined under that name", async () => {
+    const state = makeState();
+    const stored = { title: "Design review", token: "stored-token", participantId: "p9", participantName: "Claude", generalThreadId: "g1", wake: "all" as const, lastSeq: 7 };
+    state.upsertWeave(WEAVE_ID, stored);
+    const onJoined = vi.fn();
+    const { client, joinWeave, calls } = makeFakeClient({
+      getWeave: async () => ({ ...weaveInfo(), participants: [{ ...participant("Claude"), id: "p9" }] }),
+    });
+    const backend = new ClientToolBackend(client, state, { onJoined });
+
+    const r = await backend.joinWeave(SECRET, { name: "Claude", kind: "agent" }) as { weaveId: string; token: string; generalThreadId: string; participant: { id: string; name: string }; alreadyJoined?: boolean };
+
+    expect(joinWeave).not.toHaveBeenCalled();
+    expect(calls).toEqual(["lookupWeave", "getWeave"]);
+    expect(r).toMatchObject({ weaveId: WEAVE_ID, token: "stored-token", generalThreadId: "g1", participant: { id: "p9", name: "Claude" }, alreadyJoined: true });
+    expect(state.get().weaves[WEAVE_ID]).toEqual(stored); // cursor and wake untouched
+    expect(onJoined).toHaveBeenCalledWith(WEAVE_ID, stored); // re-arms the stream
+  });
+
+  it("joins afresh when the stored identity no longer works (participant gone or token rejected)", async () => {
+    const state = makeState();
+    state.upsertWeave(WEAVE_ID, { title: "Design review", token: "dead-token", participantId: "p9", participantName: "Claude", generalThreadId: "g1", wake: "all", lastSeq: 7 });
+    const { client, joinWeave } = makeFakeClient(); // getWeave() default: participants: [] -> p9 is gone
+    const backend = new ClientToolBackend(client, state, { onJoined: vi.fn() });
+
+    const r = await backend.joinWeave(SECRET, { name: "Claude", kind: "agent" }) as { token: string };
+    expect(joinWeave).toHaveBeenCalledTimes(1);
+    expect(r.token).toBe(TOKEN);
+    expect(state.get().weaves[WEAVE_ID]!.token).toBe(TOKEN);
+  });
+
   it("does not persist the Weave secret — the participant token is the stored credential", async () => {
     const state = makeState();
     const { client } = makeFakeClient();
