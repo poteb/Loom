@@ -25,7 +25,7 @@ function describe(e: unknown): string {
 }
 
 export async function main(): Promise<void> {
-  const state = new ChannelState(ChannelState.dirFrom(process.env));
+  const state = new ChannelState(ChannelState.dirFrom(process.env), ChannelState.sessionIdFrom(process.env));
   const cfg = state.get();
   const baseUrl = process.env.LOOM_URL ?? cfg.url;
   if (!baseUrl) { log("LOOM_URL is required (or url in the channel config)"); process.exit(1); }

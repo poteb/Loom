@@ -17,11 +17,11 @@ beforeEach(() => { stateDir = mkdtempSync(path.join(tmpdir(), "loom-ch-")); });
 
 const SERVER_JS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/server.js");
 
-export async function spawnChannel(dir: string, onStderr?: (chunk: string) => void): Promise<Client> {
+export async function spawnChannel(dir: string, onStderr?: (chunk: string) => void, extraEnv: Record<string, string> = {}): Promise<Client> {
   const client = new Client({ name: "claude-code-like", version: "1.0" });
   const transport = new StdioClientTransport({
     command: process.execPath, args: [SERVER_JS],
-    env: { ...process.env, LOOM_URL: s!.baseUrl, LOOM_ALLOW_INSECURE: "1", LOOM_CHANNEL_STATE_DIR: dir },
+    env: { ...process.env, LOOM_URL: s!.baseUrl, LOOM_ALLOW_INSECURE: "1", LOOM_CHANNEL_STATE_DIR: dir, ...extraEnv },
     stderr: "pipe",
   });
   if (onStderr) transport.stderr?.on("data", (chunk: Buffer) => onStderr(chunk.toString("utf8")));
@@ -33,9 +33,9 @@ export async function spawnChannel(dir: string, onStderr?: (chunk: string) => vo
  * so a failed assertion never leaks the child process or hangs teardown. The child's stderr is
  * captured throughout and appended to a thrown error's message, and also handed to `fn` via
  * `getStderr()` for tests that want to assert on it directly. */
-async function withChannel<T>(dir: string, fn: (client: Client, getStderr: () => string) => Promise<T>): Promise<T> {
+async function withChannel<T>(dir: string, fn: (client: Client, getStderr: () => string) => Promise<T>, extraEnv: Record<string, string> = {}): Promise<T> {
   let stderrBuf = "";
-  const client = await spawnChannel(dir, (chunk) => { stderrBuf += chunk; });
+  const client = await spawnChannel(dir, (chunk) => { stderrBuf += chunk; }, extraEnv);
   try {
     return await fn(client, () => stderrBuf);
   } catch (err) {
@@ -231,6 +231,36 @@ describe("channel streaming", () => {
       await waitFor(() => got2.length >= 2);
       expect(got2[1]!.content).toBe("three");
     });
+  });
+
+  it("a resumed session replays what it missed even if another session consumed those events; a fresh session does not", async () => {
+    let created!: { secret: string; weave: { id: string }; generalThread: { id: string } };
+    let gptActor!: Awaited<ReturnType<TestServer["core"]["resolveCredential"]>>;
+    const A = { CLAUDE_CODE_SESSION_ID: "session-A" };
+    await withChannel(stateDir, async (c) => {
+      const got = collectNotifications(c);
+      created = json(await c.callTool({ name: "create_weave", arguments: { title: "T", opener: "start", name: "Claude" } }));
+      const gpt = await s!.core.joinWeave(created.secret, { name: "ChatGPT", kind: "agent" });
+      gptActor = await s!.core.resolveCredential(gpt.token);
+      await s!.core.postMessage(gptActor, created.generalThread.id, "one");
+      await waitFor(() => got.some((g) => g.content === "one"));
+    }, A);
+    await s!.core.postMessage(gptActor, created.generalThread.id, "two"); // while A is down
+    await withChannel(stateDir, async (c) => {
+      const got = collectNotifications(c);
+      await waitFor(() => got.some((g) => g.content === "two")); // B (a different session) consumes it
+    }, { CLAUDE_CODE_SESSION_ID: "session-B" });
+    await withChannel(stateDir, async (c) => {
+      const got = collectNotifications(c);
+      await waitFor(() => got.some((g) => g.content === "two")); // A resumed: still gets "two"
+      expect(got.map((g) => g.content)).toEqual(["two"]);
+    }, A);
+    await withChannel(stateDir, async (c) => {
+      const got = collectNotifications(c);
+      await s!.core.postMessage(gptActor, created.generalThread.id, "three");
+      await waitFor(() => got.some((g) => g.content === "three"));
+      expect(got.map((g) => g.content)).toEqual(["three"]); // fresh session: no replay of "two"
+    }, { CLAUDE_CODE_SESSION_ID: "session-C" });
   });
 
   it("does not replay saved streams (or advance cursors) until the client has completed initialize", async () => {

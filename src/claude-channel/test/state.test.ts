@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, existsSync, readFileSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ChannelState } from "../src/state.js";
@@ -7,19 +7,92 @@ import { ChannelState } from "../src/state.js";
 const w = { title: "T", token: "t".repeat(43), participantId: "p1", participantName: "Claude", generalThreadId: "g1", wake: "all" as const, lastSeq: 0 };
 
 describe("ChannelState", () => {
-  it("starts empty, persists weaves, cursors and wake mode", () => {
+  it("starts empty, persists weaves, cursors and wake mode", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
-    const st = new ChannelState(dir);
-    expect(st.get()).toEqual({ weaves: {} });
-    st.upsertWeave("w1", w);
-    st.setLastSeq("w1", 7);
-    st.setWake("w1", "mentions");
+    const st = new ChannelState(dir, "s1");
+    expect(st.get().weaves).toEqual({});
+    await st.upsertWeave("w1", w);
+    await st.setLastSeq("w1", 7);
+    await st.setWake("w1", "mentions");
     expect(existsSync(path.join(dir, "config.json"))).toBe(true);
-    const again = new ChannelState(dir);
+    const again = new ChannelState(dir, "s1");
     expect(again.get().weaves.w1).toEqual({ ...w, lastSeq: 7, wake: "mentions" });
-    again.removeWeave("w1");
-    expect(new ChannelState(dir).get().weaves).toEqual({});
-    expect(JSON.parse(readFileSync(path.join(dir, "config.json"), "utf8"))).toEqual({ weaves: {} });
+    expect(again.cursor("w1")).toBe(7);
+    await again.removeWeave("w1");
+    expect(new ChannelState(dir, "s1").get().weaves).toEqual({});
+    const onDisk = JSON.parse(readFileSync(path.join(dir, "config.json"), "utf8"));
+    expect(onDisk.weaves).toEqual({});
+    expect(JSON.stringify(onDisk)).not.toContain("w1"); // the removed weave's cursors go too
+  });
+
+  it("two processes on one file never lose each other's writes (locked read-merge-write)", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+    const a = new ChannelState(dir, "sA");
+    const b = new ChannelState(dir, "sB");
+    a.get(); b.get(); // both hold a (stale) cache of the empty file
+    await Promise.all([
+      a.upsertWeave("w1", w),
+      b.upsertWeave("w2", { ...w, participantId: "p2" }),
+    ]);
+    await a.setLastSeq("w1", 5);
+    await b.setWake("w2", "mentions");
+    const disk = new ChannelState(dir, "sC").get();
+    expect(Object.keys(disk.weaves).sort()).toEqual(["w1", "w2"]);
+    expect(disk.weaves.w1!.lastSeq).toBe(5);
+    expect(disk.weaves.w2!.wake).toBe("mentions");
+    expect(existsSync(path.join(dir, "config.json.lock"))).toBe(false);
+  });
+
+  it("keeps a cursor per session: a resumed session replays what it missed, a new session starts at the watermark", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+    const s1 = new ChannelState(dir, "s1");
+    await s1.upsertWeave("w1", w);
+    await s1.setLastSeq("w1", 5);
+    const s2 = new ChannelState(dir, "s2");
+    expect(s2.cursor("w1")).toBe(5); // new session: nothing delivered to it yet, start at the machine-wide watermark
+    await s2.setLastSeq("w1", 9);   // s2 consumes 6..9 while s1 is away
+    expect(new ChannelState(dir, "s1").cursor("w1")).toBe(5); // s1 resumes exactly where *it* left off
+    expect(new ChannelState(dir, "s3").cursor("w1")).toBe(9); // a fresh session does not replay 6..9
+    expect(new ChannelState(dir, "s1").get().weaves.w1!.lastSeq).toBe(9); // watermark = max over sessions
+  });
+
+  it("cursors and the watermark only move forward", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+    const st = new ChannelState(dir, "s1");
+    await st.upsertWeave("w1", w);
+    await st.setLastSeq("w1", 9);
+    await st.setLastSeq("w1", 4);
+    expect(st.cursor("w1")).toBe(9);
+    expect(st.get().weaves.w1!.lastSeq).toBe(9);
+  });
+
+  it("forgets sessions that have not been seen for 30 days", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+    const old = new ChannelState(dir, "old", () => new Date("2026-01-01T00:00:00Z"));
+    await old.upsertWeave("w1", w);
+    await old.setLastSeq("w1", 3);
+    const now = new ChannelState(dir, "new", () => new Date("2026-03-01T00:00:00Z"));
+    await now.setLastSeq("w1", 8);
+    expect(new ChannelState(dir, "old").cursor("w1")).toBe(8); // pruned: treated as a new session
+    expect(readFileSync(path.join(dir, "config.json"), "utf8")).not.toContain('"old"');
+  });
+
+  it("takes over a stale lock left by a crashed process", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+    const st = new ChannelState(dir, "s1");
+    await st.upsertWeave("w1", w);
+    const lock = path.join(dir, "config.json.lock");
+    writeFileSync(lock, "");
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(lock, past, past);
+    await st.setLastSeq("w1", 2);
+    expect(st.cursor("w1")).toBe(2);
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  it("sessionIdFrom uses CLAUDE_CODE_SESSION_ID, else a per-process id", () => {
+    expect(ChannelState.sessionIdFrom({ CLAUDE_CODE_SESSION_ID: "abc" })).toBe("abc");
+    expect(ChannelState.sessionIdFrom({})).toMatch(/^pid:\d+$/);
   });
   it("dirFrom honours LOOM_CHANNEL_STATE_DIR else ~/.claude/channels/loom", () => {
     expect(ChannelState.dirFrom({ LOOM_CHANNEL_STATE_DIR: "/x" })).toBe("/x");

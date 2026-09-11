@@ -21,7 +21,7 @@ export class ClientToolBackend implements LoomToolBackend {
       title: r.weave.title, token: r.token, participantId: r.participant.id, participantName: r.participant.name,
       generalThreadId: r.generalThread.id, wake: "all", lastSeq: 0,
     };
-    this.state.upsertWeave(r.weave.id, joined);
+    await this.state.upsertWeave(r.weave.id, joined);
     await this.hooks.onJoined(r.weave.id, joined);
     return r;
   }
@@ -34,7 +34,7 @@ export class ClientToolBackend implements LoomToolBackend {
     // Already joined under this name: hand back the stored identity rather than consuming the name
     // a second time (which the server refuses with name_taken). Falls through to a fresh join if the
     // stored token no longer works or the participant is gone.
-    const stored = this.state.get().weaves[weaveId];
+    const stored = this.state.load().weaves[weaveId];
     if (stored && stored.participantName === who.name) {
       const reused = await this.reuseStored(weaveId, stored);
       if (reused) return reused;
@@ -46,7 +46,7 @@ export class ClientToolBackend implements LoomToolBackend {
       title: info.weave.title, token: j.token, participantId: j.participant.id, participantName: j.participant.name,
       generalThreadId: general.id, wake: "all", lastSeq: 0,
     };
-    this.state.upsertWeave(j.weaveId, joined);
+    await this.state.upsertWeave(j.weaveId, joined);
     await this.hooks.onJoined(j.weaveId, joined);
     return j;
   }

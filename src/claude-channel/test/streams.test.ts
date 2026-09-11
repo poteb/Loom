@@ -14,10 +14,10 @@ function makeWeave(): JoinedWeave {
   return { title: "T", token: "tok", participantId: "p1", participantName: "Claude", generalThreadId: "g1", wake: "all", lastSeq: 3 };
 }
 
-function makeState(w: JoinedWeave): ChannelState {
+async function makeState(w: JoinedWeave, sessionId = "s1"): Promise<ChannelState> {
   const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
-  const st = new ChannelState(dir);
-  st.upsertWeave(WEAVE_ID, w);
+  const st = new ChannelState(dir, sessionId);
+  await st.upsertWeave(WEAVE_ID, w);
   return st;
 }
 
@@ -62,9 +62,22 @@ function waitFor(pred: () => boolean, ms = 2000): Promise<void> {
 }
 
 describe("StreamManager", () => {
+  it("opens the stream from this session's own cursor, not the machine-wide watermark", async () => {
+    const state = await makeState(makeWeave(), "s1");
+    await state.setLastSeq(WEAVE_ID, 5);
+    const other = new ChannelState(state.dir, "s2");
+    await other.setLastSeq(WEAVE_ID, 10); // another session got further while s1 was away
+    const { client, streams } = makeFakeClient();
+    const sm = new StreamManager(client, state, async () => {}, () => {});
+    sm.start(WEAVE_ID, state.get().weaves[WEAVE_ID]!);
+    await waitFor(() => streams.length === 1);
+    expect(streams[0]!.opts.since).toBe(5);
+    sm.closeAll();
+  });
+
   it("delivers events in order and persists lastSeq", async () => {
     const w = makeWeave();
-    const state = makeState(w);
+    const state = await makeState(w);
     const notify = vi.fn().mockResolvedValue(undefined);
     const log = vi.fn();
     const { client, streams } = makeFakeClient();
@@ -81,7 +94,7 @@ describe("StreamManager", () => {
 
   it("stops delivery and closes the handle when notify rejects, then restarts from the persisted cursor with backoff", async () => {
     const w = makeWeave();
-    const state = makeState(w);
+    const state = await makeState(w);
     const log = vi.fn();
     let rejectSeq5Once = true;
     const notify = vi.fn(async (params: { content: string; meta: Record<string, string> }) => {
@@ -117,7 +130,7 @@ describe("StreamManager", () => {
 
   it("restarts with backoff after a fatal stream close", async () => {
     const w = makeWeave();
-    const state = makeState(w);
+    const state = await makeState(w);
     const log = vi.fn();
     const notify = vi.fn().mockResolvedValue(undefined);
     const { client, streams } = makeFakeClient();
@@ -132,7 +145,7 @@ describe("StreamManager", () => {
 
   it("stop() before the backoff timer fires cancels the pending restart", async () => {
     const w = makeWeave();
-    const state = makeState(w);
+    const state = await makeState(w);
     const log = vi.fn();
     const notify = vi.fn().mockResolvedValue(undefined);
     const { client, streams } = makeFakeClient();
@@ -147,7 +160,7 @@ describe("StreamManager", () => {
 
   it("noteThread registers ownership immediately, ahead of the stream's own thread.created round-trip; stop() clears it", async () => {
     const w = makeWeave();
-    const state = makeState(w);
+    const state = await makeState(w);
     const notify = vi.fn().mockResolvedValue(undefined);
     const log = vi.fn();
     const { client, streams } = makeFakeClient();
@@ -165,7 +178,7 @@ describe("StreamManager", () => {
 
   it("noteThread ignores a weave with no active entry, so there is nothing stop() forgot to clean up", async () => {
     const w = makeWeave();
-    const state = makeState(w);
+    const state = await makeState(w);
     const notify = vi.fn().mockResolvedValue(undefined);
     const log = vi.fn();
     const { client } = makeFakeClient();
@@ -182,7 +195,7 @@ describe("StreamManager", () => {
     vi.useFakeTimers();
     try {
       const w = makeWeave();
-      const state = makeState(w);
+      const state = await makeState(w);
       const log = vi.fn();
       const notify = vi.fn(async (): Promise<void> => { throw new Error("notify failed"); });
       const streams: Captured[] = [];
@@ -245,7 +258,7 @@ describe("StreamManager", () => {
 
   it("stop() clears thread ownership, and a name refresh that resolves after stop() does not re-add it", async () => {
     const w = makeWeave();
-    const state = makeState(w);
+    const state = await makeState(w);
     const log = vi.fn();
     const notify = vi.fn().mockResolvedValue(undefined);
     const streams: Captured[] = [];
@@ -283,7 +296,7 @@ describe("StreamManager", () => {
 
   it("schedules a restart when opening the stream itself throws, instead of leaving the weave silently disconnected", async () => {
     const w = makeWeave();
-    const state = makeState(w);
+    const state = await makeState(w);
     const log = vi.fn();
     const notify = vi.fn().mockResolvedValue(undefined);
     const streams: Captured[] = [];
@@ -314,7 +327,7 @@ describe("StreamManager", () => {
 
   it("stop() while the initial name refresh is still pending opens no stream and delivers nothing", async () => {
     const w = makeWeave();
-    const state = makeState(w);
+    const state = await makeState(w);
     const log = vi.fn();
     const notify = vi.fn().mockResolvedValue(undefined);
     const streams: Captured[] = [];
@@ -342,7 +355,7 @@ describe("StreamManager", () => {
 
   it("closes the handle when a terminal close fires synchronously from stream(), before `handle` could be assigned", async () => {
     const w = makeWeave();
-    const state = makeState(w);
+    const state = await makeState(w);
     const log = vi.fn();
     const notify = vi.fn().mockResolvedValue(undefined);
     const streams: Captured[] = [];
@@ -372,7 +385,7 @@ describe("StreamManager", () => {
 
   it("after stop(), a non-General thread no longer resolves but the General thread still does via the persisted state fallback, until the Weave is removed from state entirely", async () => {
     const w = makeWeave();
-    const state = makeState(w);
+    const state = await makeState(w);
     const notify = vi.fn().mockResolvedValue(undefined);
     const log = vi.fn();
     const { client, streams } = makeFakeClient();
@@ -392,7 +405,7 @@ describe("StreamManager", () => {
     expect(sm.threadOwner("t1")).toBeUndefined();
     expect(sm.threadOwner(w.generalThreadId)).toBe(WEAVE_ID);
 
-    state.removeWeave(WEAVE_ID); // simulates leave_weave, which removes the Weave from state too
+    await state.removeWeave(WEAVE_ID); // simulates leave_weave, which removes the Weave from state too
     expect(sm.threadOwner(w.generalThreadId)).toBeUndefined();
   });
 });
