@@ -44,6 +44,9 @@ function reject(socket: Duplex, status: number, message: string, code = STATUS_C
 
 export function attachWebSocket(server: ServerType, deps: WsDeps): void {
   const wss = new WebSocketServer({ noServer: true });
+  // Without this, an error on the server itself (distinct from a per-connection `ws` error) is an
+  // unhandled "error" event, which crashes the process.
+  wss.on("error", (err) => logError("wss", err));
 
   server.on("upgrade", async (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     try {
@@ -99,6 +102,11 @@ async function stream(ws: WebSocket, weaveId: string, since: number, actor: Acto
   });
   const ping = setInterval(() => { if (ws.readyState === ws.OPEN) ws.ping(); }, deps.pingIntervalMs ?? PING_MS);
   ws.on("close", () => { unsubscribe(); clearInterval(ping); });
+  // A malformed frame (e.g. an unmasked frame from a client) surfaces as an "error" event on the
+  // socket, not "close". Without a listener here, Node treats it as unhandled and crashes the
+  // process. `terminate()` forces the underlying socket closed, which still fires "close" above
+  // and runs the same cleanup.
+  ws.on("error", (err) => { logError("ws", err); try { ws.terminate(); } catch { /* already closing */ } });
 
   try {
     if (deps.beforeReplay) await deps.beforeReplay();
