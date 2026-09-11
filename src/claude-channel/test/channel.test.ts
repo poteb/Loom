@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -216,6 +217,54 @@ describe("channel streaming", () => {
       await waitFor(() => got2.length >= 2);
       expect(got2[1]!.content).toBe("three");
     });
+  });
+
+  it("does not replay saved streams (or advance cursors) until the client has completed initialize", async () => {
+    let created!: { secret: string; weave: { id: string }; generalThread: { id: string } };
+    let gptActor!: Awaited<ReturnType<TestServer["core"]["resolveCredential"]>>;
+    await withChannel(stateDir, async (c1) => {
+      const got1 = collectNotifications(c1);
+      created = json(await c1.callTool({ name: "create_weave", arguments: { title: "T", opener: "start", name: "Claude" } }));
+      const gpt = await s!.core.joinWeave(created.secret, { name: "ChatGPT", kind: "agent" });
+      gptActor = await s!.core.resolveCredential(gpt.token);
+      await waitFor(() => got1.length >= 1);
+    });
+    const seqBefore = () => JSON.parse(readFileSync(path.join(stateDir, "config.json"), "utf8")).weaves[created.weave.id].lastSeq as number;
+    const saved = seqBefore();
+    // An event while the channel is down: it must wait for a client that can actually receive it.
+    await s!.core.postMessage(gptActor, created.generalThread.id, "offline");
+
+    // A raw stdio client that connects but does NOT initialize yet (the SDK Client initializes immediately).
+    const child = spawn(process.execPath, [SERVER_JS], {
+      env: { ...process.env, LOOM_URL: s!.baseUrl, LOOM_ALLOW_INSECURE: "1", LOOM_CHANNEL_STATE_DIR: stateDir },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const lines: Record<string, unknown>[] = [];
+    let buf = "";
+    child.stdout.on("data", (d: Buffer) => {
+      buf += d.toString("utf8");
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) { const l = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (l) lines.push(JSON.parse(l)); }
+    });
+    let stderr = "";
+    child.stderr.on("data", (d: Buffer) => { stderr += d.toString("utf8"); });
+    try {
+      await waitFor(() => /connected/.test(stderr));
+      await new Promise((r) => setTimeout(r, 1500));
+      expect(lines, stderr).toEqual([]);
+      expect(seqBefore()).toBe(saved);
+
+      const send = (m: unknown) => child.stdin.write(JSON.stringify(m) + "\n");
+      send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "raw", version: "1" } } });
+      await waitFor(() => lines.some((l) => l.id === 1));
+      send({ jsonrpc: "2.0", method: "notifications/initialized" });
+      await waitFor(() => lines.some((l) => l.method === "notifications/claude/channel"));
+      const n = lines.find((l) => l.method === "notifications/claude/channel") as { params: { content: string } };
+      expect(n.params.content).toBe("offline");
+      await waitFor(() => seqBefore() > saved);
+    } finally {
+      child.kill();
+    }
   });
 
   it("leave_weave stops delivery", async () => {

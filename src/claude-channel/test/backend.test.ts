@@ -35,7 +35,7 @@ function makeFakeClient(over: { getWeave?: () => Promise<WeaveInfo>; lookupWeave
   const calls: string[] = [];
   const joinWeave = vi.fn(async (): Promise<JoinResult> => {
     calls.push("joinWeave");
-    return { weaveId: WEAVE_ID, participant: participant("Claude"), token: TOKEN };
+    return { weaveId: WEAVE_ID, weave: weaveInfo().weave, generalThreadId: "g1", participant: participant("Claude"), token: TOKEN };
   });
   const fake = {
     withToken: () => fake,

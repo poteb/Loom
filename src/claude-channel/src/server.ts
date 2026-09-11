@@ -47,13 +47,20 @@ export async function main(): Promise<void> {
   registerChannelTools(server, state, { onLeave: (id) => streams.stop(id), onWakeChanged: (id, wake) => streams.setWake(id, wake) });
 
   process.on("unhandledRejection", (e) => log(`unhandled rejection: ${describe(e)}`));
-  await server.connect(new StdioServerTransport());
-  streams.restoreAll();
-  log("connected");
   const shutdown = () => { streams.closeAll(); process.exit(0); };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
   process.stdin.on("close", shutdown); // Claude Code closes stdin when the session ends
+
+  // connect() only wires the transport; the client learns about the claude/channel capability
+  // and installs its listener during the initialize handshake. Restoring saved streams before
+  // that would replay offline events into the void — and persist their cursors as delivered.
+  const initialized = new Promise<void>((resolve) => { server.server.oninitialized = resolve; });
+  await server.connect(new StdioServerTransport());
+  log("connected, waiting for initialize");
+  await initialized;
+  streams.restoreAll();
+  log("initialized");
 }
 
 main().catch((e) => { log(`fatal: ${describe(e)}`); process.exit(1); });
