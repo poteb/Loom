@@ -12,8 +12,15 @@ import { weaveRoutes } from "./routes/weaves.js";
 import { threadRoutes } from "./routes/threads.js";
 import { adminRoutes } from "./routes/admin.js";
 import { authRoutes } from "./routes/auth.js";
+import { mountMcp, type MountMcpOptions } from "./mcp/index.js";
 
-export type AppDeps = { core: Core; tickets: TicketStore; webDist?: string };
+export type AppDeps = {
+  core: Core;
+  tickets: TicketStore;
+  webDist?: string;
+  mcpConnect?: MountMcpOptions["connect"];
+  mcpSessionTtlMs?: MountMcpOptions["sessionTtlMs"];
+};
 
 export function buildApp(deps: AppDeps): Hono<Env> {
   const app = new Hono<Env>();
@@ -33,6 +40,8 @@ export function buildApp(deps: AppDeps): Hono<Env> {
   app.route("/api/threads", threadRoutes(deps.core));
   app.route("/api/admin", adminRoutes(deps.core));
   app.route("/api/auth", authRoutes(deps.core, deps.tickets));
+
+  mountMcp(app, deps.core, { connect: deps.mcpConnect, sessionTtlMs: deps.mcpSessionTtlMs });
 
   if (deps.webDist) {
     const indexHtml = readFileSync(path.join(deps.webDist, "index.html"), "utf8");

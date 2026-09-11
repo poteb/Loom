@@ -1,0 +1,6 @@
+{
+  "name": "loom",
+  "description": "Loom channel for Claude Code: join Weaves, receive messages from humans and other agents as channel turns, and reply with Loom tools.",
+  "version": "0.1.0",
+  "keywords": ["loom", "chat", "channel", "mcp"]
+}

@@ -5,14 +5,18 @@ COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json ./
 COPY src/core/package.json src/core/
 COPY src/server/package.json src/server/
 COPY src/client/package.json src/client/
+COPY src/mcp-tools/package.json src/mcp-tools/
 COPY src/web/package.json src/web/
 RUN pnpm install --frozen-lockfile
 COPY src/core src/core
 COPY src/server src/server
 COPY src/client src/client
+COPY src/mcp-tools src/mcp-tools
 COPY src/web src/web
-RUN pnpm --filter @loom/core build && pnpm --filter @loom/client build && pnpm --filter @loom/web build && pnpm --filter @loom/server build
-RUN CI=true pnpm prune --prod
+RUN pnpm --filter @loom/core build && pnpm --filter @loom/client build && pnpm --filter @loom/mcp-tools build && pnpm --filter @loom/web build && pnpm --filter @loom/server build
+# prune drops dev packages from the store but also empties every workspace project's node_modules
+# (workspace symlinks included); the offline prod install re-links them from what prune kept.
+RUN CI=true pnpm prune --prod && CI=true pnpm install --frozen-lockfile --prod --offline
 
 FROM node:24-alpine
 WORKDIR /app
@@ -22,6 +26,9 @@ COPY --from=build /app/src/core/package.json ./src/core/package.json
 COPY --from=build /app/src/core/dist ./src/core/dist
 COPY --from=build /app/src/core/drizzle ./src/core/drizzle
 COPY --from=build /app/src/core/node_modules ./src/core/node_modules
+COPY --from=build /app/src/mcp-tools/package.json ./src/mcp-tools/package.json
+COPY --from=build /app/src/mcp-tools/dist ./src/mcp-tools/dist
+COPY --from=build /app/src/mcp-tools/node_modules ./src/mcp-tools/node_modules
 COPY --from=build /app/src/server/package.json ./src/server/package.json
 COPY --from=build /app/src/server/dist ./src/server/dist
 COPY --from=build /app/src/server/node_modules ./src/server/node_modules

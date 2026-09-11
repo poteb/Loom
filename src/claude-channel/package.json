@@ -1,0 +1,22 @@
+{
+  "name": "@loom/claude-channel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
+    "test": "pnpm build && vitest run",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@loom/client": "workspace:*",
+    "@loom/mcp-tools": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "zod": "4.6.1"
+  },
+  "devDependencies": {
+    "@loom/core": "workspace:*",
+    "@loom/server": "workspace:*"
+  }
+}
