@@ -75,4 +75,13 @@ describe("loom create / join / info / post / read", () => {
     expect(insecure.code).toBe(1);
     expect(insecure.err).toContain("insecure_url");
   });
+
+  it("a secret starting with a dash is a commander usage error, not a weave lookup", async () => {
+    // Documents current behavior: commander parses a leading-dash positional as an unknown
+    // option, so this never reaches the server as a lookup. `newSecret()` in core now
+    // guarantees generated secrets never start with "-", so real users never hit this path;
+    // this only exercises a hand-crafted adversarial value.
+    const dashSecret = await run(["join", "-abc", "--name", "X", "--json"]);
+    expect(dashSecret.code).toBe(2);
+  });
 });

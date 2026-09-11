@@ -23,6 +23,13 @@ describe("ids", () => {
   it("id is a uuid", () => {
     expect(newId()).toMatch(/^[0-9a-f-]{36}$/);
   });
+  it("secret never starts with a dash", () => {
+    for (let i = 0; i < 2000; i++) {
+      const s = newSecret();
+      expect(s.startsWith("-")).toBe(false);
+      expect(s).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    }
+  });
 });
 
 describe("isUuid", () => {
