@@ -11,5 +11,6 @@ docker compose --profile dev up -d postgres caddy-dev
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Host "waiting for postgres..."
 do { Start-Sleep -Seconds 1; docker compose exec -T postgres pg_isready -U loom *> $null } until ($LASTEXITCODE -eq 0)
-Write-Host "Loom: https://localhost  (API on http://localhost:3000)"
+pnpm --filter @loom/web build
+Write-Host "Loom: https://localhost/w/<secret>  (API on http://127.0.0.1:3000)"
 pnpm --filter @loom/server dev

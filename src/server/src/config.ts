@@ -1,6 +1,6 @@
 import { KEEPER_TOKEN_RE } from "@loom/core";
 
-export type Config = { port: number; databaseUrl: string; keeperTokens: string[] };
+export type Config = { port: number; databaseUrl: string; keeperTokens: string[]; webDist: string | undefined };
 
 const TOKEN_HELP =
   "LOOM_KEEPER_TOKENS entries must be 43-character base64url strings (32 random bytes); " +
@@ -15,5 +15,6 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
   if (!keeperTokens.every((t) => KEEPER_TOKEN_RE.test(t))) throw new Error(TOKEN_HELP);
   // Two keepers sharing a token cannot be told apart, and revoking one would revoke both.
   if (new Set(keeperTokens).size !== keeperTokens.length) throw new Error("LOOM_KEEPER_TOKENS contains duplicate tokens");
-  return { port, databaseUrl, keeperTokens };
+  const webDist = env.LOOM_WEB_DIST;
+  return { port, databaseUrl, keeperTokens, webDist };
 }

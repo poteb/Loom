@@ -8,5 +8,6 @@ export DATABASE_URL="${DATABASE_URL:-postgres://loom:loom@localhost:5432/loom}"
 docker compose --profile dev up -d postgres caddy-dev
 echo "waiting for postgres..."
 until docker compose exec -T postgres pg_isready -U loom >/dev/null 2>&1; do sleep 1; done
-echo "Loom: https://localhost  (API on http://localhost:3000)"
+pnpm --filter @loom/web build
+echo "Loom: https://localhost/w/<secret>  (API on http://127.0.0.1:3000)"
 pnpm --filter @loom/server dev
