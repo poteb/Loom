@@ -1,4 +1,5 @@
 import type { Hono } from "hono";
+import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPTransport } from "@hono/mcp";
 import { registerLoomTools } from "@loom/mcp-tools";
@@ -18,25 +19,71 @@ export function buildMcpServer(core: Core): McpServer {
   return server;
 }
 
+const DEFAULT_SESSION_TTL_MS = 30 * 60 * 1000;
+
 export type MountMcpOptions = {
-  /** Test seam: how the shared McpServer connects to the shared transport. Defaults to
-   * `server.connect(transport)`. Lets a test control exactly when the one shared connect attempt
-   * resolves, to prove every concurrent request waits for it instead of racing ahead. */
+  /** Test seam: how a session's McpServer connects to its transport. Defaults to
+   * `server.connect(transport)`. Lets a test control exactly when a connect attempt resolves, to
+   * prove concurrent requests that share a session wait for that session's own attempt without
+   * racing ahead, and that a brand-new session gets its own independent attempt. */
   connect?: (server: McpServer, transport: StreamableHTTPTransport) => Promise<void>;
+  /** How long (ms) a session may sit idle before it is evicted. Defaults to 30 minutes. Injectable
+   * so tests can exercise eviction without waiting half an hour. */
+  sessionTtlMs?: number;
 };
 
-export function mountMcp(app: Hono<Env>, core: Core, opts?: MountMcpOptions): void {
-  const server = buildMcpServer(core);
-  const transport = new StreamableHTTPTransport();
+type McpSession = { server: McpServer; transport: StreamableHTTPTransport; lastSeen: number };
+
+export function mountMcp(app: Hono<Env>, core: Core, opts?: MountMcpOptions): { closeIdle: () => void } {
   const doConnect = opts?.connect ?? ((s, t) => s.connect(t));
-  // One shared connect attempt, awaited by every request. An `isConnected()` check would let a
-  // request that arrives while the first connect is still in flight through on a transport that has
-  // not finished starting — and, if two requests raced the check, would call connect() twice (the
-  // SDK throws "Already connected"). A failed attempt is cleared so the next request retries.
-  let connectPromise: Promise<void> | undefined;
+  const ttlMs = opts?.sessionTtlMs ?? DEFAULT_SESSION_TTL_MS;
+  // One McpServer + one StreamableHTTPTransport per MCP session, keyed by the session id the
+  // transport itself assigns on `initialize`. A single shared transport correlates responses by
+  // JSON-RPC message id alone, so two independent clients whose first requests both use id 0 in the
+  // same tick collide (one hangs) — per-session isolation removes the shared map entirely.
+  const sessions = new Map<string, McpSession>();
+
+  function evictIdle(): void {
+    const now = Date.now();
+    for (const [id, session] of sessions) {
+      if (now - session.lastSeen > ttlMs) {
+        sessions.delete(id);
+        void session.server.close();
+      }
+    }
+  }
+  const evictionTimer = setInterval(evictIdle, Math.max(10, Math.min(ttlMs, 60_000)));
+  evictionTimer.unref();
+
   app.all("/mcp", async (c) => {
-    connectPromise ??= doConnect(server, transport).catch((e: unknown) => { connectPromise = undefined; throw e; });
-    await connectPromise;
+    const sessionId = c.req.header("mcp-session-id");
+    if (sessionId !== undefined) {
+      const session = sessions.get(sessionId);
+      if (!session) return c.json({ code: "not_found", message: "Unknown MCP session" }, 404);
+      session.lastSeen = Date.now();
+      return session.transport.handleRequest(c);
+    }
+
+    // No session id: this must be a fresh session's `initialize` request (the transport itself
+    // rejects anything else sent without one). Build a brand-new server + transport and connect
+    // them before handling the request — that's this session's own, independent connect attempt.
+    const server = buildMcpServer(core);
+    let session: McpSession;
+    const transport = new StreamableHTTPTransport({
+      sessionIdGenerator: () => randomUUID(),
+      onsessioninitialized: (id) => {
+        session.lastSeen = Date.now();
+        sessions.set(id, session);
+      },
+      onsessionclosed: (id) => {
+        sessions.delete(id);
+        void session.server.close();
+      },
+    });
+    session = { server, transport, lastSeen: Date.now() };
+    await doConnect(server, transport);
     return transport.handleRequest(c);
   });
+
+  return { closeIdle: () => clearInterval(evictionTimer) };
 }

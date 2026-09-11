@@ -7,6 +7,32 @@ import type { MountMcpOptions } from "../src/mcp/index.js";
 import { TicketStore } from "../src/tickets.js";
 import { startTestServer, keeperToken, type TestServer } from "./helpers.js";
 
+/** Races `p` against a timeout so a hung request fails the test instead of hanging the run. */
+function withTimeout<T>(p: Promise<T>, label: string, ms = 5000): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)),
+  ]);
+}
+
+async function startFreshApp(core: TestServer["core"], opts?: { mcpConnect?: MountMcpOptions["connect"]; mcpSessionTtlMs?: number }) {
+  const tickets = new TicketStore();
+  const app = buildApp({ core, tickets, mcpConnect: opts?.mcpConnect, mcpSessionTtlMs: opts?.mcpSessionTtlMs });
+  const server: ServerType = await new Promise((resolve) => {
+    const h = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolve(h));
+  });
+  const addr = server.address();
+  const baseUrl = `http://127.0.0.1:${typeof addr === "object" && addr ? addr.port : 0}`;
+  return {
+    baseUrl,
+    mcpUrl: new URL(`${baseUrl}/mcp`),
+    close: async () => {
+      tickets.stop();
+      await new Promise<void>((r) => server.close(() => r()));
+    },
+  };
+}
+
 let s: TestServer | undefined;
 beforeAll(async () => { s = await startTestServer(); await s.core.seedKeepers([keeperToken("k1")]); });
 afterAll(async () => { await s?.close(); });
@@ -55,18 +81,17 @@ describe("remote MCP at /mcp", () => {
     }
   });
 
-  it("connects the shared MCP transport exactly once, and every concurrent request waits for that same attempt", async () => {
-    // Deterministic version of the "three clients race a fresh mount" test above: instead of hoping
-    // real concurrency wins the race, control the connect attempt directly via the injectable seam.
-    // Two plain requests (not full MCP handshakes, so there's no JSON-RPC id-correlation concern —
-    // this is purely about the connect gate) must both stall until the connect resolves, and neither
-    // may complete before it does.
+  it("connects a fresh per-session server for each new session, and every concurrent no-session request waits for its own attempt", async () => {
+    // Deterministic version of the concurrency race below: instead of hoping real concurrency wins
+    // the race, control each connect attempt directly via the injectable seam. Two plain requests
+    // with no mcp-session-id header (not full MCP handshakes, so there's no JSON-RPC id-correlation
+    // concern here — this is purely about the per-session connect gate) each get their own session
+    // and their own connect attempt, and each must stall until *its* connect resolves.
     let connectCalls = 0;
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const releases: Array<() => void> = [];
     const mcpConnect: MountMcpOptions["connect"] = async (mcpServer, transport) => {
       connectCalls++;
-      await gate;
+      await new Promise<void>((resolve) => releases.push(resolve));
       await mcpServer.connect(transport);
     };
     const tickets = new TicketStore();
@@ -77,18 +102,120 @@ describe("remote MCP at /mcp", () => {
       const pa = Promise.resolve(app.request("/mcp", { method: "PUT" })).then((r) => { aDone = true; return r; });
       const pb = Promise.resolve(app.request("/mcp", { method: "PUT" })).then((r) => { bDone = true; return r; });
       await new Promise((r) => setTimeout(r, 50));
-      expect(connectCalls).toBe(1);
+      expect(connectCalls).toBe(2);
       expect(aDone).toBe(false);
       expect(bDone).toBe(false);
-      release();
+      releases.forEach((release) => release());
       const [ra, rb] = await Promise.all([pa, pb]);
       expect(aDone).toBe(true);
       expect(bDone).toBe(true);
-      expect(connectCalls).toBe(1);
+      expect(connectCalls).toBe(2);
       expect(ra.status).toBe(405);
       expect(rb.status).toBe(405);
     } finally {
       tickets.stop();
+    }
+  });
+
+  it("does not connect again for a request that carries an already-known session id", async () => {
+    let connectCalls = 0;
+    const mcpConnect: MountMcpOptions["connect"] = async (mcpServer, transport) => {
+      connectCalls++;
+      await mcpServer.connect(transport);
+    };
+    const fresh = await startFreshApp(s!.core, { mcpConnect });
+    const client = new Client({ name: "once", version: "1.0" });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(fresh.mcpUrl));
+      expect(connectCalls).toBe(1);
+      await client.listTools();
+      await client.listTools();
+      expect(connectCalls).toBe(1);
+    } finally {
+      await client.close().catch(() => {});
+      await fresh.close();
+    }
+  });
+
+  it("connects two clients truly concurrently to a fresh server without id collisions", async () => {
+    // The old implementation shared one McpServer + one transport across every client, correlating
+    // responses by JSON-RPC message id in a single map. Two independent clients whose first requests
+    // both use id 0 in the same tick collided (one hung). Real sockets add enough latency variance
+    // that two concurrent connect()s rarely land in the exact same tick, so route the SDK's HTTP
+    // transport through the Hono app's own `fetch` in-process — no real network I/O to serialize
+    // things — which is what actually forces both id-0 requests to race for real. Guard each step
+    // with a per-client timeout so a regression fails fast instead of hanging the whole run.
+    const tickets = new TicketStore();
+    const app = buildApp({ core: s!.core, tickets });
+    const mcpUrl = new URL("http://mcp.test/mcp");
+    const transportFor = () => new StreamableHTTPClientTransport(mcpUrl, { fetch: (url, init) => Promise.resolve(app.request(url, init)) });
+    const a = new Client({ name: "racer-a", version: "1.0" });
+    const b = new Client({ name: "racer-b", version: "1.0" });
+    try {
+      await Promise.all([
+        withTimeout(a.connect(transportFor()), "client a connect"),
+        withTimeout(b.connect(transportFor()), "client b connect"),
+      ]);
+      const [la, lb] = await Promise.all([
+        withTimeout(a.listTools(), "client a listTools"),
+        withTimeout(b.listTools(), "client b listTools"),
+      ]);
+      expect(la.tools.map((t) => t.name)).toContain("join_weave");
+      expect(lb.tools.map((t) => t.name)).toContain("join_weave");
+    } finally {
+      await Promise.all([a.close().catch(() => {}), b.close().catch(() => {})]);
+      tickets.stop();
+    }
+  });
+
+  it("isolates sessions: each connected client works independently, and closing one does not affect the other", async () => {
+    await withTwoClients(async (a, b) => {
+      const created = json(await a.callTool({ name: "create_weave", arguments: { title: "Iso", opener: "hi", name: "A" } }));
+      const joined = json(await b.callTool({ name: "join_weave", arguments: { secret: created.secret, name: "B" } }));
+      expect(joined.weaveId).toBe(created.weave.id);
+      await a.close();
+      const events = json(await b.callTool({ name: "read_events", arguments: { credential: joined.token, weaveId: created.weave.id, since: 0 } }));
+      expect(Array.isArray(events)).toBe(true);
+    });
+  });
+
+  it("rejects an unknown mcp-session-id with a 404 not_found", async () => {
+    const res = await fetch(`${s!.baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        "mcp-session-id": "nope",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ code: "not_found" });
+  });
+
+  it("evicts a session after it has been idle longer than the configured ttl", async () => {
+    const fresh = await startFreshApp(s!.core, { mcpSessionTtlMs: 50 });
+    const clientTransport = new StreamableHTTPClientTransport(fresh.mcpUrl);
+    const client = new Client({ name: "idle", version: "1.0" });
+    try {
+      await client.connect(clientTransport);
+      const sessionId = clientTransport.sessionId;
+      expect(sessionId).toBeTruthy();
+      await new Promise((r) => setTimeout(r, 150));
+      const res = await fetch(fresh.mcpUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          "mcp-session-id": sessionId!,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+      });
+      expect(res.status).toBe(404);
+      expect(await res.json()).toMatchObject({ code: "not_found" });
+    } finally {
+      await client.close().catch(() => {});
+      await fresh.close();
     }
   });
 
