@@ -10,6 +10,7 @@ export type SessionState = {
   currentThreadId?: string;
   connection: Connection;
   needsName: boolean;
+  refreshError?: string;
 };
 export type Session = {
   getState(): SessionState; subscribe(fn: () => void): () => void;
@@ -20,13 +21,18 @@ export type Session = {
 
 const PAGE = 1000;
 
-export function createSession(opts: { client: LoomClient; secret: string; storage: KeyValueStorage }): Session {
+export type RetryOptions = { delaysMs: number[]; slowMs: number };
+const DEFAULT_RETRY: RetryOptions = { delaysMs: [250, 500, 1000, 2000, 4000], slowMs: 10_000 };
+
+export function createSession(opts: { client: LoomClient; secret: string; storage: KeyValueStorage; retry?: RetryOptions }): Session {
   const { client, secret, storage } = opts;
+  const retry = opts.retry ?? DEFAULT_RETRY;
   const key = `loom:${secret}`;
   let state: SessionState = { status: "loading", threads: [], participants: [], events: [], connection: "closed", needsName: false };
   const listeners = new Set<() => void>();
   let weaveId: string | undefined;
   let stream: StreamHandle | undefined;
+  let generation = 0;
   const reader = client.withToken(secret);
 
   const set = (patch: Partial<SessionState>) => { state = { ...state, ...patch }; for (const l of listeners) l(); };
@@ -44,22 +50,25 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
   };
 
   // Coalesced, retried refresh for events that arrive off the wire: a failed refresh is retried
-  // with backoff instead of being dropped, and events that arrive while a refresh is already in
-  // flight just mark it dirty so exactly one more refresh runs after the current one settles.
+  // with backoff, then — rather than being abandoned — falls back to a slow indefinite cadence
+  // until it succeeds or the session is disposed. Events that arrive while a refresh is already
+  // in flight just mark it dirty so exactly one more refresh runs after the current one settles.
   let disposed = false;
   let refreshInFlight: Promise<void> | undefined;
   let refreshDirty = false;
-  const RETRY_DELAYS_MS = [250, 500, 1000, 1000]; // 1 initial attempt + up to 4 retries = 5 attempts
 
   const runRefreshWithRetry = async () => {
     for (let attempt = 0; ; attempt++) {
       if (disposed) return;
       try {
         await refreshInfo();
+        if (state.refreshError !== undefined) set({ refreshError: undefined });
         return;
-      } catch {
-        if (disposed || attempt >= RETRY_DELAYS_MS.length) return;
-        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[attempt]));
+      } catch (e) {
+        if (disposed) return;
+        set({ refreshError: e instanceof Error ? e.message : String(e) });
+        const delay = attempt < retry.delaysMs.length ? retry.delaysMs[attempt]! : retry.slowMs;
+        await new Promise((resolve) => setTimeout(resolve, delay));
       }
     }
   };
@@ -90,9 +99,15 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
     async load() {
       stream?.close();
       stream = undefined;
+      generation++;
+      const myGeneration = generation;
       try {
+        // Backfill events BEFORE fetching threads/participants metadata: anything committed after
+        // the backfill starts arrives live over the stream (started from the last backfilled seq)
+        // and triggers the normal refresh. Fetching metadata first would let a thread/participant
+        // change land in `events` (via the stream) without ever showing up in `threads`/
+        // `participants`, since the stream only starts listening after that seq.
         weaveId = await reader.lookupWeave(secret);
-        const info = await reader.getWeave(weaveId);
         const events: LoomEvent[] = [];
         let since = 0;
         for (;;) {
@@ -101,6 +116,7 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
           if (page.length < PAGE) break;
           since = page.at(-1)!.seq;
         }
+        const info = await reader.getWeave(weaveId);
         let me: SessionState["me"];
         const stored = storage.get(key);
         if (stored) {
@@ -112,10 +128,20 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
         }
         set({ status: "ready", weave: info.weave, threads: info.threads, participants: info.participants, events, me,
           currentThreadId: info.threads.find((t) => t.isGeneral)?.id ?? info.threads[0]?.id });
+        let sawOpen = false;
         stream = reader.stream(weaveId, {
           since: events.at(-1)?.seq ?? 0,
-          onEvent,
-          onStatus: (st) => set({ connection: st }),
+          onEvent: (e) => { if (myGeneration !== generation) return; onEvent(e); },
+          onStatus: (st) => {
+            if (myGeneration !== generation) return;
+            set({ connection: st });
+            // A reconnect's "open" (as opposed to the first "open" after this load()) means the
+            // stream was down for a while; refresh derived state in case a qualifying event was
+            // missed while disconnected.
+            if (st === "open") {
+              if (sawOpen) scheduleRefresh(); else sawOpen = true;
+            }
+          },
         });
       } catch (e) {
         const msg = e instanceof LoomClientError && e.code === "weave_not_found" ? "Weave not found: the link may be wrong" : (e as Error).message;

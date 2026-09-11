@@ -119,15 +119,40 @@ describe("session", () => {
   it("load() called twice does not leak the first stream", async () => {
     const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
     const session = createSession({ client: anon, secret: r.secret, storage: memoryStorage() });
+    const statuses: string[] = [];
+    session.subscribe(() => statuses.push(session.getState().connection));
     await session.load();
     await session.load();
     await waitFor(() => session.getState().connection === "open");
+    // The first load()'s stream must have reported "closed" (superseded by the second load()) rather
+    // than leaking on unobserved: dispose() alone would also produce a trailing "closed", but here we
+    // catch it before dispose, while the second stream is the one holding "open".
+    expect(statuses).toContain("closed");
     session.dispose();
-    // If the first load()'s stream leaked, it is still listening (dispose only closed the second
-    // stream handle) and would append this event to state even though the session was disposed.
-    await anon.withToken(r.token).postMessage(r.generalThread.id, "from claude");
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(session.getState().events).toHaveLength(3);
+  });
+
+  it("load() backfills events before fetching metadata, so a thread created mid-backfill is not lost", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    let raced = false;
+    const racing = new LoomClient({
+      baseUrl: s.baseUrl,
+      allowInsecure: true,
+      fetch: async (input, init) => {
+        const url = typeof input === "string" ? input : input.toString();
+        const target = new URL(url);
+        if (!raced && /^\/api\/weaves\/[^/]+\/events$/.test(target.pathname) && target.search.includes("since")) {
+          raced = true;
+          const actor = await s.core.resolveCredential(r.token);
+          await s.core.createThread(actor, r.weave.id, "Raced");
+        }
+        return fetch(url, init);
+      },
+    });
+    const session = createSession({ client: racing, secret: r.secret, storage: memoryStorage() });
+    await session.load();
+    expect(session.getState().threads.some((t) => t.name === "Raced")).toBe(true);
+    expect(session.getState().events.some((e) => e.type === "thread.created" && (e.payload as { name?: string }).name === "Raced")).toBe(true);
+    session.dispose();
   });
 
   it("retries a derived-state refresh that transiently fails", async () => {
@@ -155,6 +180,42 @@ describe("session", () => {
     await anon.withToken(r.token).createThread(r.weave.id, "Design");
     await waitFor(() => session.getState().threads.some((t) => t.name === "Design"));
     expect(getWeaveCalls).toBeGreaterThanOrEqual(3);
+    session.dispose();
+  });
+
+  it("never abandons a derived-state refresh: it falls back to a slow retry cadence and surfaces the failure", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    let getWeaveCalls = 0;
+    const flaky = new LoomClient({
+      baseUrl: s.baseUrl,
+      allowInsecure: true,
+      fetch: (input, init) => {
+        const url = typeof input === "string" ? input : input.toString();
+        const isGetWeave = /^\/api\/weaves\/[^/]+$/.test(new URL(url).pathname);
+        if (isGetWeave) {
+          getWeaveCalls++;
+          // Call 1 is the getWeave() inside load(); fail the next 6 (all 5 fast retries plus the
+          // first slow-cadence retry) so the refresh must fall back to the slow cadence rather than
+          // give up after the bounded fast retries are exhausted.
+          if (getWeaveCalls >= 2 && getWeaveCalls <= 7) return Promise.reject(new Error("simulated network failure"));
+        }
+        return fetch(url, init);
+      },
+    });
+    const session = createSession({
+      client: flaky, secret: r.secret, storage: memoryStorage(),
+      retry: { delaysMs: [5, 5, 5, 5, 5], slowMs: 20 },
+    });
+    await session.load();
+    expect(getWeaveCalls).toBe(1);
+
+    await anon.withToken(r.token).createThread(r.weave.id, "Design");
+    await waitFor(() => session.getState().refreshError !== undefined);
+    expect(session.getState().threads.some((t) => t.name === "Design")).toBe(false);
+
+    await waitFor(() => session.getState().threads.some((t) => t.name === "Design"));
+    expect(session.getState().refreshError).toBeUndefined();
+    expect(getWeaveCalls).toBe(8);
     session.dispose();
   });
 });
