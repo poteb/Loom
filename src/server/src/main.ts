@@ -14,8 +14,8 @@ async function main() {
   await core.seedKeepers(config.keeperTokens);
   const tickets = new TicketStore();
   const app = buildApp({ core, tickets });
-  const server = serve({ fetch: app.fetch, port: config.port, hostname: "0.0.0.0" }, (info) => {
-    console.log(`loom server listening on http://0.0.0.0:${info.port} (keepers seeded: ${config.keeperTokens.length})`);
+  const server = serve({ fetch: app.fetch, port: config.port, hostname: config.host }, (info) => {
+    console.log(`loom server listening on http://${config.host}:${info.port} (keepers seeded: ${config.keeperTokens.length})`);
   });
   attachWebSocket(server, { core, tickets });
 
