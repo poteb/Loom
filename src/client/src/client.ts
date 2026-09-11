@@ -1,5 +1,6 @@
 import { request } from "./http.js";
 import { resolveBaseUrl } from "./url.js";
+import { openStream, type StreamHandle, type StreamOptions } from "./stream.js";
 import type {
   CreateWeaveInput, CreateWeaveResult, JoinResult, Keeper, Kind, LoomEvent, Participant, Role, Settings, Thread, Weave, WeaveInfo,
 } from "./types.js";
@@ -66,6 +67,9 @@ export class LoomClient {
   async wsTicket(): Promise<string> {
     const r = await this.call<{ ticket: string }>("POST", "/api/auth/ws-ticket");
     return r.ticket;
+  }
+  stream(weaveId: string, opts: StreamOptions): StreamHandle {
+    return openStream(this, weaveId, opts);
   }
 
   readonly admin = {

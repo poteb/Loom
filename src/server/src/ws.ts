@@ -42,7 +42,7 @@ function reject(socket: Duplex, status: number, message: string, code = STATUS_C
   );
 }
 
-export function attachWebSocket(server: ServerType, deps: WsDeps): void {
+export function attachWebSocket(server: ServerType, deps: WsDeps): { dropAll: () => void } {
   const wss = new WebSocketServer({ noServer: true });
 
   server.on("upgrade", async (req: IncomingMessage, socket: Duplex, head: Buffer) => {
@@ -67,6 +67,8 @@ export function attachWebSocket(server: ServerType, deps: WsDeps): void {
       return reject(socket, 500, "Internal error");
     }
   });
+
+  return { dropAll: () => { for (const c of wss.clients) c.terminate(); } };
 }
 
 async function stream(ws: WebSocket, weaveId: string, since: number, actor: Actor, deps: WsDeps) {

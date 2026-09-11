@@ -21,6 +21,7 @@ export type TestServer = {
   core: Core;
   tickets: TicketStore;
   close: () => Promise<void>;
+  dropSockets: () => void;
 };
 
 export async function startTestServer(opts: TestServerOpts = {}): Promise<TestServer> {
@@ -30,7 +31,7 @@ export async function startTestServer(opts: TestServerOpts = {}): Promise<TestSe
   const server: ServerType = await new Promise((resolve) => {
     const s = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolve(s));
   });
-  attachWebSocket(server, {
+  const sockets = attachWebSocket(server, {
     core, tickets,
     beforeReplay: opts.beforeReplay,
     afterReplay: opts.afterReplay,
@@ -48,6 +49,7 @@ export async function startTestServer(opts: TestServerOpts = {}): Promise<TestSe
       await new Promise<void>((r) => server.close(() => r()));
       await closeTestDb();
     },
+    dropSockets: () => sockets.dropAll(),
   };
 }
 
