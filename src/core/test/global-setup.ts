@@ -12,7 +12,7 @@ export async function setup() {
     process.env.TEST_DATABASE_URL = container.getConnectionUri();
   } catch (e) {
     const why = e instanceof Error ? e.message.split("\n")[0] : "unknown error";
-    console.log(`testcontainer unavailable (${why}); falling back to the compose database ${COMPOSE_DATABASE_URL}`);
+    console.log(`testcontainer unavailable (${why}); falling back to the compose database on localhost:5432`);
     process.env.TEST_DATABASE_URL = COMPOSE_DATABASE_URL;
   }
 }
