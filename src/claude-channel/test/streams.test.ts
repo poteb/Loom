@@ -281,6 +281,95 @@ describe("StreamManager", () => {
     expect(sm.threadOwner("t2")).toBeUndefined();
   });
 
+  it("schedules a restart when opening the stream itself throws, instead of leaving the weave silently disconnected", async () => {
+    const w = makeWeave();
+    const state = makeState(w);
+    const log = vi.fn();
+    const notify = vi.fn().mockResolvedValue(undefined);
+    const streams: Captured[] = [];
+    let throwOnce = true;
+    const fake = {
+      withToken: () => fake,
+      getWeave: async () => weaveInfo(),
+      stream: (weaveId: string, opts: StreamOptions): StreamHandle => {
+        if (throwOnce) { throwOnce = false; throw new Error("connect refused"); }
+        const close = vi.fn();
+        streams.push({ weaveId, opts, close });
+        return { close, get lastSeq() { return opts.since ?? 0; } };
+      },
+    };
+    const sm = new StreamManager(fake as unknown as LoomClient, state, notify, log, { initial: 20, max: 80 });
+    sm.start(WEAVE_ID, w);
+
+    // The throw is reported (redacted, via the manager's log) rather than escaping to the global
+    // unhandledRejection handler, and the weave is retried from the persisted cursor.
+    await waitFor(() => log.mock.calls.some(([m]) => /weave w1/.test(String(m))));
+    await waitFor(() => streams.length === 1);
+    expect(streams[0]!.opts.since).toBe(3);
+
+    streams[0]!.opts.onEvent(event(4));
+    await waitFor(() => state.get().weaves[WEAVE_ID]?.lastSeq === 4);
+    sm.stop(WEAVE_ID);
+  });
+
+  it("stop() while the initial name refresh is still pending opens no stream and delivers nothing", async () => {
+    const w = makeWeave();
+    const state = makeState(w);
+    const log = vi.fn();
+    const notify = vi.fn().mockResolvedValue(undefined);
+    const streams: Captured[] = [];
+    let releaseRefresh: (() => void) | undefined;
+    const fake = {
+      withToken: () => fake,
+      getWeave: async (): Promise<WeaveInfo> => { await new Promise<void>((res) => { releaseRefresh = res; }); return weaveInfo(); },
+      stream: (weaveId: string, opts: StreamOptions): StreamHandle => {
+        const close = vi.fn();
+        streams.push({ weaveId, opts, close });
+        return { close, get lastSeq() { return opts.since ?? 0; } };
+      },
+    };
+    const sm = new StreamManager(fake as unknown as LoomClient, state, notify, log);
+    sm.start(WEAVE_ID, w);
+    await waitFor(() => releaseRefresh !== undefined);
+
+    sm.stop(WEAVE_ID);
+    releaseRefresh!();
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(streams).toHaveLength(0); // the stopped entry is never resurrected into a live stream
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("closes the handle when a terminal close fires synchronously from stream(), before `handle` could be assigned", async () => {
+    const w = makeWeave();
+    const state = makeState(w);
+    const log = vi.fn();
+    const notify = vi.fn().mockResolvedValue(undefined);
+    const streams: Captured[] = [];
+    let failOnce = true;
+    const fake = {
+      withToken: () => fake,
+      getWeave: async () => weaveInfo(),
+      stream: (weaveId: string, opts: StreamOptions): StreamHandle => {
+        const close = vi.fn();
+        streams.push({ weaveId, opts, close });
+        // The real client can report a terminal failure from inside stream() itself; at that moment
+        // `entry.handle` is still unassigned, so the handle this call returns would leak.
+        if (failOnce) { failOnce = false; opts.onStatus?.("closed", { error: new LoomClientError("network", "boom") }); }
+        return { close, get lastSeq() { return opts.since ?? 0; } };
+      },
+    };
+    // A long backoff keeps the scheduled restart from firing during the test: the handle must be
+    // closed by start() itself, not incidentally by the next restart's stop().
+    const sm = new StreamManager(fake as unknown as LoomClient, state, notify, log, { initial: 5_000, max: 5_000 });
+    sm.start(WEAVE_ID, w);
+
+    await waitFor(() => streams.length === 1);
+    await waitFor(() => streams[0]!.close.mock.calls.length === 1);
+    expect(streams).toHaveLength(1); // the restart is still pending behind the backoff
+    sm.stop(WEAVE_ID);
+  });
+
   it("after stop(), a non-General thread no longer resolves but the General thread still does via the persisted state fallback, until the Weave is removed from state entirely", async () => {
     const w = makeWeave();
     const state = makeState(w);

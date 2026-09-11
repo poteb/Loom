@@ -132,7 +132,7 @@ export class StreamManager {
     };
     void refresh().catch((err) => this.log(`initial name fetch failed for weave ${weaveId}: ${(err as Error).message}`)).then(() => {
       if (entry.stopped) return;
-      entry.handle = reader.stream(weaveId, {
+      const handle = reader.stream(weaveId, {
         since: this.state.get().weaves[weaveId]?.lastSeq ?? w.lastSeq,
         onEvent,
         onStatus: (st, d) => {
@@ -144,6 +144,20 @@ export class StreamManager {
           }
         },
       });
+      // stream() can report a terminal close from inside the call itself, before `handle` is
+      // assigned — onStatus's `entry.handle?.close()` then closes nothing and this handle would
+      // leak until the next restart's stop() happened to pick it up. Close it here instead.
+      if (entry.stopped) { handle.close(); return; }
+      entry.handle = handle;
+    }).catch((err) => {
+      // Opening the stream failed (a synchronous throw from stream(), or a rejection from the
+      // refresh chain). Without this the rejection would only surface in the process-wide
+      // unhandledRejection logger and the Weave would sit silently disconnected forever; instead,
+      // report it and retry from the persisted cursor with the usual backoff.
+      if (entry.stopped) return;
+      entry.stopped = true;
+      this.log(`stream start failed for weave ${weaveId}: ${(err as Error).message}`);
+      this.scheduleRestart(weaveId, entry);
     });
   }
 }
