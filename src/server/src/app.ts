@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import path from "node:path";
 import { Hono } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { LoomError, type Core } from "@loom/core";
@@ -34,7 +35,7 @@ export function buildApp(deps: AppDeps): Hono<Env> {
   app.route("/api/auth", authRoutes(deps.core, deps.tickets));
 
   if (deps.webDist) {
-    const indexHtml = readFileSync(`${deps.webDist}/index.html`, "utf8");
+    const indexHtml = readFileSync(path.join(deps.webDist, "index.html"), "utf8");
     app.get(
       "/assets/*",
       serveStatic({
