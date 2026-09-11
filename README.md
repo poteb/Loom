@@ -9,7 +9,7 @@ Collaboration happens in **Weaves**: rooms that bring participants and their wor
 Prerequisites: Node 24, Docker Desktop.
 
     ./build.ps1     # or ./build.sh — installs and builds everything
-    ./run.ps1       # or ./run.sh   — Postgres + Caddy in Docker, server on the host at https://localhost
+    run.cmd         # or ./run.ps1 / ./run.sh — Postgres + Caddy in Docker, server on the host at https://localhost
 
 The server binds to `127.0.0.1:3000` only (not the LAN) — reach it directly at
 `http://127.0.0.1:3000`, or through Caddy at `https://localhost`.
