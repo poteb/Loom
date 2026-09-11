@@ -1,5 +1,6 @@
 import { describe, it, expect, afterAll, beforeAll } from "vitest";
 import WebSocket from "ws";
+import type { Socket } from "node:net";
 import { startTestServer, api, keeperToken } from "./helpers.js";
 import type { LoomEvent } from "@loom/core";
 
@@ -29,6 +30,7 @@ beforeAll(async () => {
     },
     pingIntervalMs: 50,
     replayPageSize: 5,
+    authTtlMs: 50,
   });
   await s.core.seedKeepers([KEEPER]);
 });
@@ -233,6 +235,69 @@ describe("stream", () => {
         ws.on("error", (e) => { clearTimeout(timer); reject(e); });
       });
     } finally { ws.close(); }
+  });
+
+  it("survives a malformed (unmasked) frame from an authenticated client", async () => {
+    const c = await api(s.baseUrl, "POST", "/api/weaves", creator);
+    const t = await ticket(c.json.secret);
+    const ws = new WebSocket(`${s.wsUrl}/api/weaves/${c.json.weave.id}/stream?since=0&ticket=${t}`);
+    ws.on("error", () => { /* an abrupt server-side terminate() can surface as a client error too */ });
+    await new Promise<void>((resolve, reject) => {
+      ws.once("open", () => resolve());
+      ws.once("error", reject);
+    });
+    const closed = new Promise<void>((resolve) => ws.once("close", () => resolve()));
+    // RFC 6455 requires every client-to-server frame to be masked. Writing an unmasked frame
+    // directly onto the raw socket (bypassing ws's own, always-masked framing) reproduces what
+    // WS_ERR_EXPECTED_MASK detects server-side.
+    const socket = (ws as unknown as { _socket: Socket })._socket;
+    socket.write(Buffer.from([0x81, 0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f])); // unmasked text "hello"
+    await closed; // the server closed the connection instead of crashing the process
+
+    // The server is still alive: a fresh, well-behaved connection still streams normally.
+    const c2 = await api(s.baseUrl, "POST", "/api/weaves", creator);
+    const { weave, token, generalThread, secret } = c2.json;
+    const st = collect(`${s.wsUrl}/api/weaves/${weave.id}/stream?since=1&ticket=${await ticket(secret)}`, (evs) => evs.length === 3);
+    await st.waitFor(3);
+    await api(s.baseUrl, "POST", `/api/threads/${generalThread.id}/messages`, { text: "still alive" }, token);
+    const { events, ws: ws2 } = await st.done;
+    expect(events.map((e) => e.seq)).toEqual([2, 3, 4]);
+    ws2.close();
+  });
+
+  it("closes with 4401 when the streaming keeper's credential is revoked mid-stream", async () => {
+    const c = await api(s.baseUrl, "POST", "/api/weaves", creator);
+    const { weave, token, generalThread } = c.json;
+
+    // A second keeper, so it can be removed without hitting the "a keeper cannot remove itself" guard.
+    const added = await api(s.baseUrl, "POST", "/api/admin/keepers", { name: "temp" }, KEEPER);
+    const tempKeeperToken = added.json.token as string;
+    const tempKeeperId = added.json.keeper.id as string;
+
+    const received: LoomEvent[] = [];
+    const t = await ticket(tempKeeperToken);
+    const ws = new WebSocket(`${s.wsUrl}/api/weaves/${weave.id}/stream?since=0&ticket=${t}`);
+    const closeEvent = new Promise<{ code: number; reason: string }>((resolve) => {
+      ws.on("message", (data) => received.push(JSON.parse(data.toString()) as LoomEvent));
+      ws.on("close", (code, reason) => resolve({ code, reason: reason.toString() }));
+    });
+    await new Promise<void>((resolve) => ws.once("open", () => resolve()));
+
+    await api(s.baseUrl, "DELETE", `/api/admin/keepers/${tempKeeperId}`, undefined, KEEPER);
+    await new Promise((r) => setTimeout(r, 150)); // past the file-wide 50ms auth cache TTL
+    await api(s.baseUrl, "POST", `/api/threads/${generalThread.id}/messages`, { text: "after revoke" }, token);
+
+    const { code, reason } = await closeEvent;
+    expect(code).toBe(4401);
+    expect(reason).toBe("credential revoked");
+    expect(received.some((e) => (e.payload as { text?: string }).text === "after revoke")).toBe(false);
+
+    // A still-valid participant stream on the same weave keeps receiving.
+    const st = collect(`${s.wsUrl}/api/weaves/${weave.id}/stream?since=1&ticket=${await ticket(token)}`, (evs) => evs.length === 3);
+    const { events, ws: ws2 } = await st.done;
+    expect(events.map((e) => e.seq)).toEqual([2, 3, 4]);
+    expect(events[2]!.payload).toMatchObject({ text: "after revoke" });
+    ws2.close();
   });
 
   it("rejects bad ticket, reused ticket, foreign credential, unknown weave", async () => {

@@ -20,8 +20,8 @@ async function main() {
   const webDist = config.webDist ?? (existsSync(path.join(defaultWebDist, "index.html")) ? defaultWebDist : undefined);
   console.log(webDist ? `serving web UI from ${webDist}` : "web UI not built; /w/* disabled");
   const app = buildApp({ core, tickets, webDist });
-  const server = serve({ fetch: app.fetch, port: config.port, hostname: "0.0.0.0" }, (info) => {
-    console.log(`loom server listening on http://0.0.0.0:${info.port} (keepers seeded: ${config.keeperTokens.length})`);
+  const server = serve({ fetch: app.fetch, port: config.port, hostname: config.host }, (info) => {
+    console.log(`loom server listening on http://${config.host}:${info.port} (keepers seeded: ${config.keeperTokens.length})`);
   });
   attachWebSocket(server, { core, tickets });
 

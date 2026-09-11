@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { createDb, runMigrations, closeDb, type Db } from "../src/db/index.js";
+import { isProtectedDatabase } from "./db-guard.js";
 
 let db: Db | undefined;
 let migrated = false;
@@ -7,6 +8,15 @@ let migrated = false;
 export async function freshDb(): Promise<Db> {
   const url = process.env.TEST_DATABASE_URL;
   if (!url) throw new Error("TEST_DATABASE_URL not set (global setup missing?)");
+  // Belt-and-braces: freshDb() truncates every table, so never let it run against the real
+  // application database. A developer who explicitly set TEST_DATABASE_URL themselves is trusted.
+  if (isProtectedDatabase(url) && !process.env.LOOM_TEST_DATABASE_URL_USER_SET) {
+    throw new Error(
+      `refusing to run tests against protected database (TEST_DATABASE_URL=${url}); ` +
+      "this looks like the compose application database, and freshDb() truncates every table. " +
+      "Set TEST_DATABASE_URL explicitly if this is really what you want.",
+    );
+  }
   db ??= createDb(url);
   if (!migrated) { await runMigrations(db); migrated = true; }
   await db.execute(sql`truncate events, participants, threads, weaves, keepers, settings restart identity cascade`);

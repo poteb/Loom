@@ -12,6 +12,7 @@ export type TestServerOpts = {
   afterReplay?: () => Promise<void>;
   pingIntervalMs?: number;
   replayPageSize?: number;
+  authTtlMs?: number;
 };
 
 /** Spelled out because the inferred type would reach into @loom/core's internal dist paths. */
@@ -37,6 +38,7 @@ export async function startTestServer(opts: TestServerOpts = {}): Promise<TestSe
     afterReplay: opts.afterReplay,
     pingIntervalMs: opts.pingIntervalMs,
     replayPageSize: opts.replayPageSize,
+    authTtlMs: opts.authTtlMs,
   });
   const addr = server.address();
   const port = typeof addr === "object" && addr ? addr.port : 0;

@@ -28,6 +28,10 @@ COPY --from=build /app/src/server/node_modules ./src/server/node_modules
 COPY --from=build /app/src/web/dist ./src/web/dist
 ENV NODE_ENV=production
 ENV LOOM_WEB_DIST=/app/src/web/dist
+# The container's port 3000 is only reachable on the Docker network (compose does not publish
+# it), so binding all interfaces here is safe — unlike a host-run dev server, which defaults to
+# LOOM_HOST=127.0.0.1 (see config.ts) so it isn't exposed beyond loopback.
+ENV LOOM_HOST=0.0.0.0
 EXPOSE 3000
 WORKDIR /app/src/server
 CMD ["node", "dist/main.js"]
