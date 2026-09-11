@@ -39,7 +39,10 @@ export async function main(): Promise<void> {
   const streams = new StreamManager(client, state,
     (params) => server.server.notification({ method: "notifications/claude/channel", params }),
     log);
-  const backend = new ClientToolBackend(client, state, { onJoined: (id, w) => streams.start(id, w) });
+  const backend = new ClientToolBackend(client, state, {
+    onJoined: (id, w) => streams.start(id, w),
+    onThreadCreated: (weaveId, threadId) => streams.noteThread(weaveId, threadId),
+  });
   registerLoomTools(server, withStoredCredential(backend, state, (t) => streams.threadOwner(t)), { credentialHint: 'Your participant token, or the literal word "stored" to use the token this channel saved when you joined/created the Weave.' });
   registerChannelTools(server, state, { onLeave: (id) => streams.stop(id), onWakeChanged: (id, wake) => streams.setWake(id, wake) });
 

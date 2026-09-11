@@ -145,6 +145,24 @@ describe("StreamManager", () => {
     expect(streams.length).toBe(1); // no second stream() call
   });
 
+  it("noteThread registers ownership immediately, ahead of the stream's own thread.created round-trip; stop() clears it", async () => {
+    const w = makeWeave();
+    const state = makeState(w);
+    const notify = vi.fn().mockResolvedValue(undefined);
+    const log = vi.fn();
+    const { client, streams } = makeFakeClient();
+    const sm = new StreamManager(client, state, notify, log);
+    sm.start(WEAVE_ID, w);
+    await waitFor(() => streams.length === 1);
+
+    expect(sm.threadOwner("t-new")).toBeUndefined();
+    sm.noteThread(WEAVE_ID, "t-new");
+    expect(sm.threadOwner("t-new")).toBe(WEAVE_ID);
+
+    sm.stop(WEAVE_ID);
+    expect(sm.threadOwner("t-new")).toBeUndefined();
+  });
+
   it("stop() clears thread ownership, and a name refresh that resolves after stop() does not re-add it", async () => {
     const w = makeWeave();
     const state = makeState(w);

@@ -104,6 +104,17 @@ describe("channel tools", () => {
     expect(json(keeper).code).toBe("validation");
     await c.close();
   });
+
+  it("credential \"stored\" resolves for a thread this session just created, before its own thread.created event round-trips through the stream", async () => {
+    const c = await spawnChannel(stateDir);
+    const created = json(await c.callTool({ name: "create_weave", arguments: { title: "T", opener: "o", name: "Claude" } }));
+    const thread = json(await c.callTool({ name: "create_thread", arguments: { credential: "stored", weaveId: created.weave.id, name: "Sub" } }));
+    const posted = await c.callTool({ name: "post_message", arguments: { credential: "stored", threadId: thread.id, text: "immediate reply" } });
+    expect(posted.isError).toBeFalsy();
+    const events = json(await c.callTool({ name: "read_events", arguments: { credential: "stored", weaveId: created.weave.id, threadId: thread.id } }));
+    expect(events.map((e: { type: string }) => e.type)).toEqual(["thread.created", "message"]);
+    await c.close();
+  });
 });
 
 import { z } from "zod";

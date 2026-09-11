@@ -27,6 +27,14 @@ export class StreamManager {
     return this.threadToWeave.get(threadId) ?? Object.entries(this.state.get().weaves).find(([, w]) => w.generalThreadId === threadId)?.[0];
   }
 
+  /** Registers a thread's owning Weave immediately, for threads this session itself just created —
+   * the stream's own thread.created event (which would otherwise populate threadOwner) is delivered
+   * asynchronously and can race a post_message that follows create_thread right away. */
+  noteThread(weaveId: string, threadId: string): void {
+    this.threadToWeave.set(threadId, weaveId);
+    this.active.get(weaveId)?.threadIds.add(threadId);
+  }
+
   restoreAll(): void { for (const [id, w] of Object.entries(this.state.get().weaves)) this.start(id, w); }
   closeAll(): void { for (const id of [...this.active.keys()]) this.stop(id); }
   setWake(weaveId: string, wake: Wake): void { const a = this.active.get(weaveId); if (a) a.wake = wake; }
