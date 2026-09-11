@@ -1,4 +1,4 @@
-import type { Command } from "commander";
+import { InvalidArgumentError, type Command } from "commander";
 import type { LoomEvent, Thread, Participant } from "@loom/client";
 import type { CliContext } from "../context.js";
 import { emit } from "../output.js";
@@ -8,6 +8,17 @@ export function formatEvent(e: LoomEvent, threads: Thread[], participants: Parti
   const who = e.actor.startsWith("keeper:") ? "Keeper" : (participants.find((p) => p.id === e.actor)?.name ?? e.actor);
   if (e.type === "message") return `#${e.seq} [${thread}] ${who}: ${String(e.payload.text ?? "")}`;
   return `#${e.seq} [${thread}] * ${e.type}`;
+}
+
+/** A commander argParser: finite non-negative integer, throwing InvalidArgumentError (→ usage exit 2) otherwise. */
+function nonNegativeInt(min: number) {
+  return (v: string): number => {
+    const n = Number(v);
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n < min) {
+      throw new InvalidArgumentError(`must be an integer >= ${min}`);
+    }
+    return n;
+  };
 }
 
 export function registerMessageCommands(program: Command, ctx: () => CliContext): void {
@@ -22,18 +33,42 @@ export function registerMessageCommands(program: Command, ctx: () => CliContext)
     });
 
   program.command("read")
-    .description("Read events of the current Weave")
-    .option("--since <seq>", "Only events after this seq", (v) => Number(v))
+    .description("Read events of the current Weave; --follow streams new ones")
+    .option("--since <seq>", "Only events after this seq", nonNegativeInt(0))
     .option("--thread <id>", "Only this thread")
-    .option("--limit <n>", "Max events", (v) => Number(v))
-    .action(async (o: { since?: number; thread?: string; limit?: number }) => {
+    .option("--limit <n>", "Max events in the initial batch", nonNegativeInt(1))
+    .option("--follow", "Keep streaming new events")
+    .option("--count <n>", "With --follow: exit after n streamed events", nonNegativeInt(1))
+    .action(async (o: { since?: number; thread?: string; limit?: number; follow?: boolean; count?: number }) => {
       const c = ctx();
       const { weaveId, entry } = c.resolveWeave();
       const client = c.client(entry.token);
-      const [info, events] = await Promise.all([
-        client.getWeave(weaveId),
-        client.readEvents(weaveId, { since: o.since, threadId: o.thread, limit: o.limit }),
-      ]);
-      emit(c, { events }, events.map((e) => formatEvent(e, info.threads, info.participants)).join("\n"));
+      let info = await client.getWeave(weaveId);
+      const events = await client.readEvents(weaveId, { since: o.since, threadId: o.thread, limit: o.limit });
+      if (!o.follow) {
+        emit(c, { events }, events.map((e) => formatEvent(e, info.threads, info.participants)).join("\n"));
+        return;
+      }
+      const json = c.opts.json === true;
+      for (const e of events) c.io.stdout.write(json ? JSON.stringify(e) + "\n" : formatEvent(e, info.threads, info.participants) + "\n");
+      const lastSeq = events.at(-1)?.seq ?? o.since ?? 0;
+      let remaining = o.count ?? Infinity;
+      await new Promise<void>((resolve, reject) => {
+        let chain = Promise.resolve();
+        const stop = () => { handle.close(); process.removeListener("SIGINT", stop); resolve(); };
+        const handle = client.stream(weaveId, {
+          since: lastSeq,
+          onEvent: (e) => {
+            chain = chain.then(async () => {
+              if (o.thread && e.threadId !== o.thread) return;
+              if (e.type === "thread.created" || e.type === "participant.joined") info = await client.getWeave(weaveId);
+              c.io.stdout.write(json ? JSON.stringify(e) + "\n" : formatEvent(e, info.threads, info.participants) + "\n");
+              if (--remaining <= 0) stop();
+            }).catch(reject);
+          },
+          onStatus: (st, d) => { if (st === "closed" && d?.error) reject(d.error); },
+        });
+        process.once("SIGINT", stop);
+      });
     });
 }

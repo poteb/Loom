@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 export type WeaveEntry = {
@@ -23,6 +23,11 @@ export class ConfigStore {
 
   save(c: CliConfig): void {
     mkdirSync(path.dirname(this.path), { recursive: true });
-    writeFileSync(this.path, JSON.stringify(c, null, 2) + "\n", { mode: 0o600 });
+    const tmp = `${this.path}.tmp`;
+    writeFileSync(tmp, JSON.stringify(c, null, 2) + "\n", { mode: 0o600 });
+    renameSync(tmp, this.path);
+    // Tighten permissions on an existing file that may have been more permissive (e.g. created
+    // before this code existed, or with a permissive umask); a no-op mode-wise on Windows.
+    if (process.platform !== "win32") chmodSync(this.path, 0o600);
   }
 }

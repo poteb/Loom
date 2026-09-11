@@ -2,6 +2,8 @@ import { Command, CommanderError } from "commander";
 import { buildContext, CliError, isClientError, type CliContext, type CliIo, type GlobalOpts } from "./context.js";
 import { registerWeaveCommands } from "./commands/weave.js";
 import { registerMessageCommands } from "./commands/messages.js";
+import { registerThreadCommands } from "./commands/thread.js";
+import { registerAdminCommands } from "./commands/admin.js";
 
 export type { CliIo } from "./context.js";
 
@@ -20,6 +22,8 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
 
   registerWeaveCommands(program, ctx);
   registerMessageCommands(program, ctx);
+  registerThreadCommands(program, ctx);
+  registerAdminCommands(program, ctx);
 
   try {
     await program.parseAsync(argv, { from: "user" });

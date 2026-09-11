@@ -84,4 +84,19 @@ describe("loom create / join / info / post / read", () => {
     const dashSecret = await run(["join", "-abc", "--name", "X", "--json"]);
     expect(dashSecret.code).toBe(2);
   });
+
+  it("--kind rejects anything but agent/human as a usage error", async () => {
+    const badCreate = await run(["create", "--title", "T", "--name", "X", "--kind", "robot"]);
+    expect(badCreate.code).toBe(2);
+    const badJoin = await run(["join", "somesecret", "--name", "X", "--kind", "robot"]);
+    expect(badJoin.code).toBe(2);
+  });
+
+  it("numeric options reject non-numeric or out-of-range values as usage errors", async () => {
+    await run(["create", "--title", "T", "--opener", "hello", "--name", "Me", "--json"]);
+    const badSince = await run(["read", "--since", "abc"]);
+    expect(badSince.code).toBe(2);
+    const badLimit = await run(["read", "--limit", "0"]);
+    expect(badLimit.code).toBe(2);
+  });
 });
