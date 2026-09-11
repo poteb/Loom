@@ -47,7 +47,9 @@ describe("channel tools", () => {
     expect(cfg.weaves[created.weave.id]).toMatchObject({ token: created.token, participantId: created.participant.id, wake: "all", lastSeq: 0, generalThreadId: created.generalThread.id });
     const listed = json(await c.callTool({ name: "list_joined", arguments: {} }));
     expect(listed).toEqual([expect.objectContaining({ weaveId: created.weave.id, title: "T", participantName: "Claude", wake: "all" })]);
-    await c.callTool({ name: "set_wake", arguments: { weaveId: created.weave.id, wake: "mentions" } });
+    const waked = await c.callTool({ name: "set_wake", arguments: { weaveId: created.weave.id, wake: "mentions" } });
+    expect(waked.isError).toBeFalsy();
+    expect(json(waked)).toEqual({ weaveId: created.weave.id, wake: "mentions" });
     cfg = JSON.parse(readFileSync(path.join(stateDir, "config.json"), "utf8"));
     expect(cfg.weaves[created.weave.id].wake).toBe("mentions");
     const left = await c.callTool({ name: "leave_weave", arguments: { weaveId: created.weave.id } });
@@ -56,7 +58,26 @@ describe("channel tools", () => {
     expect(cfg.weaves).toEqual({});
     const unknown = await c.callTool({ name: "leave_weave", arguments: { weaveId: created.weave.id } });
     expect(unknown.isError).toBe(true);
+    expect(json(unknown)).toEqual({ code: "no_weave", message: expect.any(String) });
     await c.close();
+  });
+
+  it("join_weave persists the joiner's own identity in its own state dir", async () => {
+    const a = await spawnChannel(stateDir);
+    const created = json(await a.callTool({ name: "create_weave", arguments: { title: "T", opener: "o", name: "Claude" } }));
+    const stateDirB = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+    const b = await spawnChannel(stateDirB);
+    const joined = json(await b.callTool({ name: "join_weave", arguments: { secret: created.secret, name: "Other" } }));
+    expect(joined).toMatchObject({ token: expect.any(String), participant: { name: "Other" } });
+    const cfg = JSON.parse(readFileSync(path.join(stateDirB, "config.json"), "utf8"));
+    expect(cfg.weaves[created.weave.id]).toMatchObject({
+      token: joined.token, participantId: joined.participant.id, participantName: "Other",
+      generalThreadId: created.generalThread.id, wake: "all", lastSeq: 0, title: created.weave.title,
+    });
+    const listed = json(await b.callTool({ name: "list_joined", arguments: {} }));
+    expect(listed).toEqual([expect.objectContaining({ weaveId: created.weave.id, title: created.weave.title, participantName: "Other", wake: "all" })]);
+    await a.close();
+    await b.close();
   });
 
   it("other tools work with an explicit credential and map errors", async () => {
