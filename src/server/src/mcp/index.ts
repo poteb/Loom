@@ -21,8 +21,14 @@ export function buildMcpServer(core: Core): McpServer {
 export function mountMcp(app: Hono<Env>, core: Core): void {
   const server = buildMcpServer(core);
   const transport = new StreamableHTTPTransport();
+  // One shared connect attempt, awaited by every request. An `isConnected()` check would let a
+  // request that arrives while the first connect is still in flight through on a transport that has
+  // not finished starting — and, if two requests raced the check, would call connect() twice (the
+  // SDK throws "Already connected"). A failed attempt is cleared so the next request retries.
+  let connectPromise: Promise<void> | undefined;
   app.all("/mcp", async (c) => {
-    if (!server.isConnected()) await server.connect(transport);
+    connectPromise ??= server.connect(transport).catch((e: unknown) => { connectPromise = undefined; throw e; });
+    await connectPromise;
     return transport.handleRequest(c);
   });
 }
