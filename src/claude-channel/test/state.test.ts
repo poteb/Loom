@@ -90,6 +90,18 @@ describe("ChannelState", () => {
     expect(existsSync(lock)).toBe(false);
   });
 
+  it("aborts a write, and leaves the other owner's lock alone, when its lease was taken over mid-mutation", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+    const lock = path.join(dir, "config.json.lock");
+    let calls = 0;
+    // `now` runs inside the locked section (session stamp / prune): the first call simulates another
+    // process that judged our lock stale and replaced it with its own.
+    const st = new ChannelState(dir, "s1", () => { if (++calls === 1) writeFileSync(lock, "other-owner"); return new Date(); });
+    await expect(st.upsertWeave("w1", w)).rejects.toThrow(/lock/);
+    expect(existsSync(path.join(dir, "config.json"))).toBe(false); // nothing written
+    expect(readFileSync(lock, "utf8")).toBe("other-owner");        // and the new owner's lock still stands
+  });
+
   it("sessionIdFrom uses CLAUDE_CODE_SESSION_ID, else a per-process id", () => {
     expect(ChannelState.sessionIdFrom({ CLAUDE_CODE_SESSION_ID: "abc" })).toBe("abc");
     expect(ChannelState.sessionIdFrom({})).toMatch(/^pid:\d+$/);
@@ -98,15 +110,18 @@ describe("ChannelState", () => {
     expect(ChannelState.dirFrom({ LOOM_CHANNEL_STATE_DIR: "/x" })).toBe("/x");
     expect(ChannelState.dirFrom({ HOME: "/home/u" })).toBe(path.join("/home/u", ".claude", "channels", "loom"));
   });
-  it("scrubs a legacy `secret` field from a weave on load and rewrites the file without it", () => {
+  it("scrubs a legacy `secret` field from a weave on load and rewrites the file without it", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
     const clean = { title: "T2", token: "u".repeat(43), participantId: "p2", participantName: "GPT", generalThreadId: "g2", wake: "all" as const, lastSeq: 3 };
     const legacy = { ...clean, secret: "s".repeat(43) };
     writeFileSync(path.join(dir, "config.json"), JSON.stringify({ weaves: { w1: legacy } }, null, 2) + "\n");
-    const st = new ChannelState(dir);
+    const st = new ChannelState(dir, "s1");
     const loaded = st.get().weaves.w1;
     expect(loaded).toEqual(clean);
     expect(loaded && "secret" in loaded).toBe(false);
+    // load() never writes (that would bypass the lock); migrate() rewrites the file through it.
+    expect(readFileSync(path.join(dir, "config.json"), "utf8")).toContain("secret");
+    await st.migrate();
     const onDisk = readFileSync(path.join(dir, "config.json"), "utf8");
     expect(onDisk).not.toContain(legacy.secret);
     expect(onDisk).not.toContain("secret");

@@ -7,7 +7,7 @@ export type ChannelHooks = { onLeave(weaveId: string): void; onWakeChanged(weave
 
 export function registerChannelTools(server: McpServer, state: ChannelState, hooks: ChannelHooks): void {
   server.registerTool("list_joined", {
-    description: "List the Weaves this machine's Loom channel is joined to (the identity is shared by every Claude Code session here), with your participant name, wake mode and the last seq delivered to this session.",
+    description: "List the Weaves this machine's Loom channel is joined to (the identity is shared by every Claude Code session here), with your participant name, wake mode and lastSeq: the last event this session's stream has processed (in 'mentions' mode that includes events it did not wake you for; use read_events to see them).",
     inputSchema: {},
   }, async () => ok(Object.entries(state.load().weaves).map(([weaveId, w]) => ({
     weaveId, title: w.title, participantName: w.participantName, participantId: w.participantId, generalThreadId: w.generalThreadId, wake: w.wake, lastSeq: state.cursor(weaveId),

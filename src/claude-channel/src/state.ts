@@ -1,4 +1,5 @@
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 
 export type Wake = "all" | "mentions";
@@ -36,6 +37,8 @@ export class ChannelState {
   private cache: ChannelConfig | undefined;
   readonly file: string;
   private readonly lockFile: string;
+  /** Written into the lock file so a process can tell its own lock from one that replaced it. */
+  private readonly lockToken = `${process.pid}:${randomUUID()}`;
 
   constructor(readonly dir: string, readonly sessionId: string = ChannelState.sessionIdFrom(process.env), private readonly now: () => Date = () => new Date()) {
     this.file = path.join(dir, "config.json");
@@ -53,13 +56,17 @@ export class ChannelState {
     return env.CLAUDE_CODE_SESSION_ID ?? `pid:${process.pid}`;
   }
 
+  /** Reloads from disk. Never writes: unknown fields are dropped in memory, `migrate()` cleans the file. */
   load(): ChannelConfig {
-    const { config, dirty } = this.readChecked();
-    // A file carrying fields this version does not know (e.g. the legacy `secret`) is rewritten
-    // clean right away so the unknown data does not linger on disk.
-    if (dirty) this.write(config);
+    const config = this.read();
     this.cache = config;
     return config;
+  }
+
+  /** Rewrites a file that carries fields this version does not know (e.g. the legacy `secret`),
+   * through the locked path so it cannot clobber another process's concurrent update. */
+  async migrate(): Promise<void> {
+    if (this.readChecked().dirty) await this.mutate(() => {});
   }
 
   /** Last snapshot this process saw; loads on first use. */
@@ -130,11 +137,18 @@ export class ChannelState {
       const c = this.read();
       fn(c);
       this.prune(c);
+      // If another process judged this lock stale and took it over while we were in here, our
+      // snapshot is no longer authoritative: abort rather than overwrite its write.
+      if (!this.ownsLock()) throw new Error(`channel state lock ${this.lockFile} was taken over by another process; write aborted`);
       this.write(c);
       this.cache = c;
     } finally {
-      rmSync(this.lockFile, { force: true });
+      if (this.ownsLock()) rmSync(this.lockFile, { force: true });
     }
+  }
+
+  private ownsLock(): boolean {
+    try { return readFileSync(this.lockFile, "utf8") === this.lockToken; } catch { return false; }
   }
 
   private prune(c: ChannelConfig): void {
@@ -144,10 +158,18 @@ export class ChannelState {
     }
   }
 
+  /** Atomic replace, with the temp file fsynced first so a crash right after the rename cannot
+   * leave an empty or truncated config (and with it the participant tokens) behind. */
   private write(c: ChannelConfig): void {
     mkdirSync(this.dir, { recursive: true });
     const tmp = `${this.file}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(c, null, 2) + "\n", { mode: 0o600 });
+    const fd = openSync(tmp, "w", 0o600);
+    try {
+      writeSync(fd, JSON.stringify(c, null, 2) + "\n");
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
     renameSync(tmp, this.file);
   }
 
@@ -157,7 +179,7 @@ export class ChannelState {
     const t0 = Date.now();
     for (;;) {
       try {
-        closeSync(openSync(this.lockFile, "wx"));
+        writeFileSync(this.lockFile, this.lockToken, { flag: "wx" });
         return;
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
