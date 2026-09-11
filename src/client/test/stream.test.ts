@@ -80,3 +80,87 @@ describe("stream", () => {
     h.close();
   });
 });
+
+describe("stream close is terminal", () => {
+  it("reports closed exactly once when close() is called twice", async () => {
+    const r = await anon.createWeave(input);
+    const statuses: StreamStatus[] = [];
+    const h = anon.withToken(r.secret).stream(r.weave.id, { onEvent: () => {}, onStatus: (st) => statuses.push(st) });
+    await waitFor(() => statuses.includes("open"));
+    h.close();
+    h.close();
+    await new Promise((res) => setTimeout(res, 50));
+    expect(statuses.filter((x) => x === "closed")).toHaveLength(1);
+  });
+
+  it("reports closed once when close() lands while the ws-ticket request is still in flight", async () => {
+    const r = await anon.createWeave(input);
+    let release!: () => void;
+    const gate = new Promise<void>((res) => { release = res; });
+    let markRequested!: () => void;
+    const requested = new Promise<void>((res) => { markRequested = res; });
+    const client = new LoomClient({
+      baseUrl: srv().baseUrl,
+      allowInsecure: true,
+      token: r.secret,
+      fetch: async (target, init) => {
+        const url = typeof target === "string" ? target : target.toString();
+        if (new URL(url).pathname === "/api/auth/ws-ticket") {
+          markRequested();
+          await gate;
+          // The request only fails *after* close(): the post-close catch must stay silent rather
+          // than report a second "closed" (or schedule a reconnect) for an already-dead stream.
+          throw new Error("socket hang up");
+        }
+        return fetch(url, init);
+      },
+    });
+    const statuses: StreamStatus[] = [];
+    const h = client.stream(r.weave.id, {
+      onEvent: () => {}, onStatus: (st) => statuses.push(st), backoffMs: { initial: 10, max: 20 },
+    });
+    await requested;
+    h.close();
+    release();
+    await new Promise((res) => setTimeout(res, 100));
+    expect(statuses.filter((x) => x === "closed")).toHaveLength(1);
+    expect(statuses).not.toContain("reconnecting");
+  });
+});
+
+describe("stream survives a failing WebSocket constructor", () => {
+  it("treats a synchronous constructor throw like a dropped socket and reconnects", async () => {
+    const r = await anon.createWeave(input);
+    let fail = true;
+    const Flaky = class {
+      constructor(url: string) {
+        if (fail) { fail = false; throw new Error("constructor boom"); }
+        return new WebSocket(url) as never;
+      }
+    } as unknown as typeof WebSocket;
+    const got: LoomEvent[] = []; const statuses: StreamStatus[] = [];
+    const h = anon.withToken(r.secret).stream(r.weave.id, {
+      since: 0, onEvent: (e) => got.push(e), onStatus: (st) => statuses.push(st),
+      backoffMs: { initial: 10, max: 20 }, WebSocketImpl: Flaky,
+    });
+    await waitFor(() => got.length === 3);
+    expect(got.map((e) => e.seq)).toEqual([1, 2, 3]);
+    expect(statuses).toContain("reconnecting");
+    h.close();
+  });
+
+  it("reports closed with a network error when the constructor throws and reconnect is false", async () => {
+    const r = await anon.createWeave(input);
+    const Throwing = class {
+      constructor() { throw new Error("constructor boom"); }
+    } as unknown as typeof WebSocket;
+    const statuses: [StreamStatus, unknown][] = [];
+    anon.withToken(r.secret).stream(r.weave.id, {
+      onEvent: () => {}, onStatus: (st, d) => statuses.push([st, d?.error]),
+      reconnect: false, WebSocketImpl: Throwing,
+    });
+    await waitFor(() => statuses.some(([st]) => st === "closed"));
+    expect(statuses.find(([st]) => st === "closed")![1]).toMatchObject({ code: "network" });
+    expect(statuses.filter(([st]) => st === "closed")).toHaveLength(1);
+  });
+});
