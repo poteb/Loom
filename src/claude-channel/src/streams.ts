@@ -12,6 +12,12 @@ const DEFAULT_RESTART_BACKOFF = { initial: 2000, max: 30_000 };
 export class StreamManager {
   private active = new Map<string, Active>();
   private threadToWeave = new Map<string, string>();
+  /** Next backoff delay per weaveId, surviving across the ephemeral `Active` entries that
+   * scheduleRestart()/start() replace on each restart — otherwise exponential backoff would reset
+   * to `initial` on every restart instead of growing across repeated failures. Reset to `initial`
+   * after a successful delivery, and dropped entirely on an explicit stop() (leave/rejoin should
+   * not inherit a dead stream's backoff history). */
+  private nextBackoffMs = new Map<string, number>();
   private readonly restartBackoffMs: { initial: number; max: number };
 
   constructor(
@@ -50,15 +56,19 @@ export class StreamManager {
     a.handle?.close();
     for (const t of a.threadIds) this.threadToWeave.delete(t);
     this.active.delete(weaveId);
+    this.nextBackoffMs.delete(weaveId);
   }
 
   /** Schedules a restart of `weaveId` from the persisted cursor after a backoff, doubling on repeat
    * failures up to `restartBackoffMs.max` and resetting to `initial` after a successful delivery.
-   * The timer is stored on `entry` so `stop()` can cancel it, and is a no-op if the weave was
-   * removed or replaced (by an explicit stop()/start()) before it fires. */
+   * The doubled delay is recorded in `nextBackoffMs` so the *next* restart's fresh `Active` entry
+   * (created by start(), which cannot see this one) picks up the grown backoff instead of resetting
+   * to `initial`. The timer is stored on `entry` so `stop()` can cancel it, and is a no-op if the
+   * weave was removed or replaced (by an explicit stop()/start()) before it fires. */
   private scheduleRestart(weaveId: string, entry: Active): void {
     const delay = entry.backoffMs;
     entry.backoffMs = Math.min(this.restartBackoffMs.max, entry.backoffMs * 2);
+    this.nextBackoffMs.set(weaveId, entry.backoffMs);
     const timer = setTimeout(() => {
       entry.restartTimer = undefined;
       if (this.active.get(weaveId) !== entry) return;
@@ -71,11 +81,15 @@ export class StreamManager {
   }
 
   start(weaveId: string, w: JoinedWeave): void {
+    // Captured before stop(weaveId) below, which clears nextBackoffMs for this weaveId — stop()
+    // must run first (to tear down any existing entry the normal way) but must not erase the
+    // backoff value this fresh entry is about to seed itself with.
+    const backoffMs = this.nextBackoffMs.get(weaveId) ?? this.restartBackoffMs.initial;
     this.stop(weaveId);
     const reader = this.client.withToken(w.token);
     const entry: Active = {
       names: { threads: new Map(), participants: new Map() }, title: w.title, wake: w.wake, participantId: w.participantId,
-      chain: Promise.resolve(), stopped: false, threadIds: new Set(), backoffMs: this.restartBackoffMs.initial,
+      chain: Promise.resolve(), stopped: false, threadIds: new Set(), backoffMs,
     };
     this.active.set(weaveId, entry);
     const refresh = async () => {
@@ -97,6 +111,7 @@ export class StreamManager {
         }
         this.state.setLastSeq(weaveId, e.seq);
         entry.backoffMs = this.restartBackoffMs.initial;
+        this.nextBackoffMs.set(weaveId, this.restartBackoffMs.initial);
       }).catch((err) => {
         // A notify rejection or setLastSeq throw is fatal: lastSeq is only persisted after a
         // successful delivery, so leaving the chain to swallow this would let later events run and

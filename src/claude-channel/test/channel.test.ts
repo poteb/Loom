@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,6 +54,7 @@ describe("channel tools", () => {
     expect(cfg.weaves[created.weave.id].wake).toBe("mentions");
     const left = await c.callTool({ name: "leave_weave", arguments: { weaveId: created.weave.id } });
     expect(left.isError).toBeFalsy();
+    expect(json(left)).toEqual({ weaveId: created.weave.id, left: true });
     cfg = JSON.parse(readFileSync(path.join(stateDir, "config.json"), "utf8"));
     expect(cfg.weaves).toEqual({});
     const unknown = await c.callTool({ name: "leave_weave", arguments: { weaveId: created.weave.id } });
@@ -209,5 +210,39 @@ describe("channel streaming", () => {
     await new Promise((r) => setTimeout(r, 500));
     expect(got.map((g) => g.meta.type)).toEqual(["participant.joined"]);
     await c.close();
+  });
+});
+
+describe("subprocess stderr redaction", () => {
+  it("never logs the URL credential or a joined Weave's token when the stream fails to connect on startup", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+    const TOKEN = "T".repeat(43);
+    writeFileSync(path.join(dir, "config.json"), JSON.stringify({
+      weaves: {
+        w1: { title: "T", token: TOKEN, participantId: "p1", participantName: "Claude", generalThreadId: "g1", wake: "all", lastSeq: 0 },
+      },
+    }, null, 2) + "\n");
+
+    const client = new Client({ name: "claude-code-like", version: "1.0" });
+    const transport = new StdioClientTransport({
+      command: process.execPath, args: [SERVER_JS],
+      // A URL-embedded credential and an unreachable loopback port so the restored Weave's stream
+      // fails to connect immediately, exercising the failure-logging path.
+      env: { ...process.env, LOOM_URL: "http://user:sekret@127.0.0.1:1", LOOM_ALLOW_INSECURE: "1", LOOM_CHANNEL_STATE_DIR: dir },
+      stderr: "pipe",
+    });
+    let stderr = "";
+    transport.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
+    try {
+      await client.connect(transport);
+      await waitFor(() => /initial name fetch failed|stream for weave/.test(stderr), 2000).catch(() => {});
+      // A little extra margin past the first log line, in case more diagnostics land shortly after.
+      await new Promise((r) => setTimeout(r, 500));
+
+      expect(stderr).not.toContain("sekret");
+      expect(stderr).not.toContain(TOKEN);
+    } finally {
+      await client.close();
+    }
   });
 });

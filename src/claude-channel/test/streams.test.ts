@@ -163,6 +163,74 @@ describe("StreamManager", () => {
     expect(sm.threadOwner("t-new")).toBeUndefined();
   });
 
+  it("grows the restart backoff exponentially across consecutive restarts, caps at max, and resets to initial after a successful delivery", async () => {
+    // Fake timers make this deterministic: the delay actually passed to setTimeout is asserted
+    // directly (by advancing exactly up to, then past, each threshold) instead of measuring
+    // wall-clock gaps, which is flaky under real scheduling jitter.
+    vi.useFakeTimers();
+    try {
+      const w = makeWeave();
+      const state = makeState(w);
+      const log = vi.fn();
+      const notify = vi.fn(async (): Promise<void> => { throw new Error("notify failed"); });
+      const streams: Captured[] = [];
+      const fake = {
+        withToken: () => fake,
+        getWeave: async () => weaveInfo(),
+        stream: (weaveId: string, opts: StreamOptions): StreamHandle => {
+          const close = vi.fn();
+          streams.push({ weaveId, opts, close });
+          return { close, get lastSeq() { return opts.since ?? 0; } };
+        },
+      };
+      const client = fake as unknown as LoomClient;
+      const sm = new StreamManager(client, state, notify, log, { initial: 10, max: 40 });
+
+      sm.start(WEAVE_ID, w);
+      await vi.advanceTimersByTimeAsync(0); // let the initial refresh()/getWeave() microtasks resolve and open stream #1
+      expect(streams.length).toBe(1);
+
+      streams[0]!.opts.onEvent(event(4)); // notify rejects -> restart scheduled at `initial` (10ms)
+      await vi.advanceTimersByTimeAsync(9);
+      expect(streams.length).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(streams.length).toBe(2);
+
+      streams[1]!.opts.onEvent(event(4)); // rejects again -> doubled to 20ms
+      await vi.advanceTimersByTimeAsync(19);
+      expect(streams.length).toBe(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(streams.length).toBe(3);
+
+      streams[2]!.opts.onEvent(event(4)); // rejects again -> doubled to 40ms
+      await vi.advanceTimersByTimeAsync(39);
+      expect(streams.length).toBe(3);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(streams.length).toBe(4);
+
+      streams[3]!.opts.onEvent(event(4)); // rejects again -> would double to 80ms but caps at max (40ms)
+      await vi.advanceTimersByTimeAsync(39);
+      expect(streams.length).toBe(4);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(streams.length).toBe(5);
+
+      // A successful delivery resets the backoff back to `initial` for the next failure.
+      notify.mockImplementation(async () => {});
+      streams[4]!.opts.onEvent(event(4));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(state.get().weaves[WEAVE_ID]?.lastSeq).toBe(4);
+
+      notify.mockImplementation(async () => { throw new Error("notify failed again"); });
+      streams[4]!.opts.onEvent(event(5));
+      await vi.advanceTimersByTimeAsync(9); // still at `initial` (10ms), not the capped 40ms
+      expect(streams.length).toBe(5);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(streams.length).toBe(6);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("stop() clears thread ownership, and a name refresh that resolves after stop() does not re-add it", async () => {
     const w = makeWeave();
     const state = makeState(w);
@@ -199,5 +267,31 @@ describe("StreamManager", () => {
     resolveSecond?.();
     await new Promise((r) => setTimeout(r, 30));
     expect(sm.threadOwner("t2")).toBeUndefined();
+  });
+
+  it("after stop(), a non-General thread no longer resolves but the General thread still does via the persisted state fallback, until the Weave is removed from state entirely", async () => {
+    const w = makeWeave();
+    const state = makeState(w);
+    const notify = vi.fn().mockResolvedValue(undefined);
+    const log = vi.fn();
+    const { client, streams } = makeFakeClient();
+    const sm = new StreamManager(client, state, notify, log);
+    sm.start(WEAVE_ID, w);
+    await waitFor(() => streams.length === 1);
+    // refresh() has populated both threads from weaveInfo(): "g1" (General) and "t1" (not General).
+    expect(sm.threadOwner("t1")).toBe(WEAVE_ID);
+    expect(sm.threadOwner(w.generalThreadId)).toBe(WEAVE_ID);
+
+    sm.stop(WEAVE_ID);
+    // threadToWeave was cleared for every tracked thread, so a non-General thread is no longer
+    // resolvable purely from stop() — but state.get().weaves still has the joined Weave (stop()
+    // doesn't remove it; only an explicit leave_weave/removeWeave does), and threadOwner()'s
+    // fallback matches on generalThreadId, so General keeps resolving. This is intended: a
+    // post_message credential:"stored" in General must keep working while still joined.
+    expect(sm.threadOwner("t1")).toBeUndefined();
+    expect(sm.threadOwner(w.generalThreadId)).toBe(WEAVE_ID);
+
+    state.removeWeave(WEAVE_ID); // simulates leave_weave, which removes the Weave from state too
+    expect(sm.threadOwner(w.generalThreadId)).toBeUndefined();
   });
 });
