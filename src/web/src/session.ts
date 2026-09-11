@@ -179,8 +179,14 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
     async join(name) {
       const j = await client.joinWeave(secret, { name, kind: "human" });
       storage.set(key, JSON.stringify({ token: j.token, participantId: j.participant.id }));
-      set({ me: { token: j.token, participant: j.participant }, needsName: false });
-      await refreshInfo();
+      // The join is already committed server-side: reflect it locally right away and let a failing
+      // refresh retry in the background rather than surface as a rejection of an action that in fact
+      // succeeded (which would make the caller retry join() and hit name_taken).
+      const participants = state.participants.some((p) => p.id === j.participant.id)
+        ? state.participants
+        : [...state.participants, j.participant];
+      set({ me: { token: j.token, participant: j.participant }, needsName: false, participants });
+      scheduleRefresh();
     },
 
     selectThread: (id) => set({ currentThreadId: id }),
@@ -198,14 +204,20 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
       set({ threads: state.threads.some((x) => x.id === t.id) ? state.threads : [...state.threads, t], currentThreadId: t.id });
     },
     async closeThread(id) {
-      await writer().closeThread(id);
-      await refreshInfo();
+      const w = writer();
+      await w.closeThread(id);
+      // Committed server-side already: update the thread locally and refresh in the background (see
+      // join() above) instead of letting a transient refresh failure read back as a mutation failure.
+      set({ threads: state.threads.map((t) => (t.id === id && !t.closedAt ? { ...t, closedAt: new Date().toISOString() } : t)) });
+      scheduleRefresh();
     },
     async archive() {
       const w = writer();
       if (!weaveId) throw new LoomClientError("validation", "Weave not loaded");
       await w.archiveWeave(weaveId);
-      await refreshInfo();
+      // Same reasoning as join()/closeThread(): the archive is already committed.
+      set({ weave: state.weave && !state.weave.archivedAt ? { ...state.weave, archivedAt: new Date().toISOString() } : state.weave });
+      scheduleRefresh();
     },
     canModerate: () => state.me?.participant.role === "keeper" && !state.weave?.archivedAt,
     dismissNamePrompt: () => { if (state.needsName) set({ needsName: false }); },

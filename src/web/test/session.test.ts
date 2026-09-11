@@ -218,6 +218,102 @@ describe("session", () => {
     expect(getWeaveCalls).toBe(8);
     session.dispose();
   });
+
+  it("join() succeeds and updates state locally even when the refresh right after it transiently fails", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    let getWeaveCalls = 0;
+    const flaky = new LoomClient({
+      baseUrl: s.baseUrl,
+      allowInsecure: true,
+      fetch: (input, init) => {
+        const url = typeof input === "string" ? input : input.toString();
+        const isGetWeave = /^\/api\/weaves\/[^/]+$/.test(new URL(url).pathname);
+        if (isGetWeave) {
+          getWeaveCalls++;
+          // Call 1 is the getWeave() inside load(); fail only the refresh triggered by join().
+          if (getWeaveCalls === 2) return Promise.reject(new Error("simulated network failure"));
+        }
+        return fetch(url, init);
+      },
+    });
+    const session = createSession({ client: flaky, secret: r.secret, storage: memoryStorage() });
+    await session.load();
+    expect(getWeaveCalls).toBe(1);
+
+    // Must resolve — the join already committed server-side, so a failing background refresh must
+    // not read back as a failure of join() itself.
+    await session.join("Paw");
+    expect(session.getState().me?.participant.name).toBe("Paw");
+    expect(session.getState().needsName).toBe(false);
+    expect(session.getState().participants.filter((p) => p.name === "Paw")).toHaveLength(1);
+
+    await waitFor(() => session.getState().refreshError === undefined && getWeaveCalls >= 3);
+    expect(session.getState().participants.filter((p) => p.name === "Paw")).toHaveLength(1);
+    session.dispose();
+  });
+
+  it("closeThread() succeeds and marks the thread closed locally even when the refresh right after it transiently fails", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const storage = memoryStorage();
+    storage.set(`loom:${r.secret}`, JSON.stringify({ token: r.token, participantId: r.participant.id }));
+    // Created before the flaky session loads, so this doesn't add an extra live thread.created
+    // event (and extra scheduleRefresh) once the flaky session is streaming.
+    const tmp = await anon.withToken(r.token).createThread(r.weave.id, "Tmp");
+    let getWeaveCalls = 0;
+    const flaky = new LoomClient({
+      baseUrl: s.baseUrl,
+      allowInsecure: true,
+      fetch: (input, init) => {
+        const url = typeof input === "string" ? input : input.toString();
+        const isGetWeave = /^\/api\/weaves\/[^/]+$/.test(new URL(url).pathname);
+        if (isGetWeave) {
+          getWeaveCalls++;
+          if (getWeaveCalls === 2) return Promise.reject(new Error("simulated network failure"));
+        }
+        return fetch(url, init);
+      },
+    });
+    const session = createSession({ client: flaky, secret: r.secret, storage });
+    await session.load();
+    expect(getWeaveCalls).toBe(1);
+
+    await session.closeThread(tmp.id);
+    expect(session.getState().threads.find((t) => t.id === tmp.id)?.closedAt).not.toBeNull();
+
+    await waitFor(() => session.getState().refreshError === undefined && getWeaveCalls >= 3);
+    expect(session.getState().threads.find((t) => t.id === tmp.id)?.closedAt).not.toBeNull();
+    session.dispose();
+  });
+
+  it("archive() succeeds and marks the weave archived locally even when the refresh right after it transiently fails", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const storage = memoryStorage();
+    storage.set(`loom:${r.secret}`, JSON.stringify({ token: r.token, participantId: r.participant.id }));
+    let getWeaveCalls = 0;
+    const flaky = new LoomClient({
+      baseUrl: s.baseUrl,
+      allowInsecure: true,
+      fetch: (input, init) => {
+        const url = typeof input === "string" ? input : input.toString();
+        const isGetWeave = /^\/api\/weaves\/[^/]+$/.test(new URL(url).pathname);
+        if (isGetWeave) {
+          getWeaveCalls++;
+          if (getWeaveCalls === 2) return Promise.reject(new Error("simulated network failure"));
+        }
+        return fetch(url, init);
+      },
+    });
+    const session = createSession({ client: flaky, secret: r.secret, storage });
+    await session.load();
+    expect(getWeaveCalls).toBe(1);
+
+    await session.archive();
+    expect(session.getState().weave?.archivedAt).not.toBeNull();
+
+    await waitFor(() => session.getState().refreshError === undefined && getWeaveCalls >= 3);
+    expect(session.getState().weave?.archivedAt).not.toBeNull();
+    session.dispose();
+  });
 });
 
 /** One-shot rendezvous: the test learns the gated request arrived, the request waits for release. */
