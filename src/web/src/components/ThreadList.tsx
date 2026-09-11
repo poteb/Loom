@@ -1,7 +1,7 @@
 import { useState } from "preact/hooks";
 import type { Session, SessionState } from "../session.js";
 
-export function ThreadList({ state, session }: { state: SessionState; session: Session }) {
+export function ThreadList({ state, session, onError }: { state: SessionState; session: Session; onError: (e: unknown) => void }) {
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const archived = !!state.weave?.archivedAt;
@@ -9,7 +9,11 @@ export function ThreadList({ state, session }: { state: SessionState; session: S
     e.preventDefault();
     const n = name.trim();
     if (!n) return;
-    try { await session.createThread(n); setName(""); setCreating(false); } catch { /* needsName or error shown by app */ }
+    try { await session.createThread(n); setName(""); setCreating(false); }
+    catch (err) { onError(err); }
+  };
+  const close = async (id: string) => {
+    try { await session.closeThread(id); } catch (e) { onError(e); }
   };
   return (
     <aside class="threads">
@@ -25,11 +29,15 @@ export function ThreadList({ state, session }: { state: SessionState; session: S
       )}
       <ul>
         {state.threads.map((t) => (
-          <li key={t.id} class={t.id === state.currentThreadId ? "active" : ""} onClick={() => session.selectThread(t.id)}>
-            <span>{t.name}</span>
-            {t.closedAt && <span class="badge">closed</span>}
+          <li key={t.id} class={t.id === state.currentThreadId ? "active" : ""}>
+            {/* A real button, so selecting a thread is reachable by keyboard (Tab, then Enter or Space). */}
+            <button type="button" class="thread-pick" aria-current={t.id === state.currentThreadId ? "true" : undefined}
+              onClick={() => session.selectThread(t.id)}>
+              <span>{t.name}</span>
+              {t.closedAt && <span class="badge">closed</span>}
+            </button>
             {session.canModerate() && !t.isGeneral && !t.closedAt && (
-              <button class="link" onClick={(e) => { e.stopPropagation(); void session.closeThread(t.id); }}>close</button>
+              <button class="link" onClick={() => void close(t.id)}>close</button>
             )}
           </li>
         ))}

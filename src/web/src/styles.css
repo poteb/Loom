@@ -11,7 +11,8 @@ body { margin: 0; font: 14px/1.45 system-ui, sans-serif; background: var(--bg); 
 .threads { width: 220px; border-right: 1px solid var(--line); padding: 8px; overflow-y: auto; }
 .threads-head { display: flex; justify-content: space-between; align-items: center; font-weight: 600; margin-bottom: 8px; }
 .threads ul { list-style: none; margin: 0; padding: 0; }
-.threads li { display: flex; gap: 6px; align-items: center; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+.threads li { display: flex; gap: 6px; align-items: center; padding: 0 8px; border-radius: 6px; }
+.threads li .thread-pick { flex: 1; display: flex; gap: 6px; align-items: center; text-align: left; padding: 6px 0; border: none; background: none; color: inherit; font: inherit; cursor: pointer; }
 .threads li.active { background: var(--mention); }
 .thread-form { display: flex; gap: 4px; margin-bottom: 8px; } .thread-form input { flex: 1; }
 .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
