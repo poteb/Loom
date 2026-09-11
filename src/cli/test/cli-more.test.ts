@@ -286,6 +286,13 @@ describe("admin", () => {
     const boolOff = await run(["admin", "settings", "--set", "openWeaveCreation=false", "--json"], K);
     expect(boolOff.code).toBe(0);
     expect(boolOff.json().openWeaveCreation).toBe(false);
+    // With creation restricted, an anonymous create is forbidden but a configured keeper token gets through.
+    const anonCreate = await run(["create", "--title", "R", "--name", "Me", "--json"]);
+    expect(anonCreate.code).toBe(1);
+    expect(JSON.parse(anonCreate.err).code).toBe("forbidden");
+    const keeperCreate = await run(["create", "--title", "R", "--name", "Me", "--json"], K);
+    expect(keeperCreate.code).toBe(0);
+    expect(keeperCreate.json().weave.title).toBe("R");
     const boolOn = await run(["admin", "settings", "--set", "openWeaveCreation=true", "--json"], K);
     expect(boolOn.code).toBe(0);
     expect(boolOn.json().openWeaveCreation).toBe(true);

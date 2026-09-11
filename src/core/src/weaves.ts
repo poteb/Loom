@@ -81,9 +81,10 @@ export async function getWeave(db: Db, actor: Actor, weaveId: string): Promise<W
 export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { name: string; kind: Kind }) {
   const name = validateName(who.name);
   if (who.kind !== "human" && who.kind !== "agent") throw errors.validation("kind must be human or agent");
-  const [found] = await db.select({ id: weaves.id }).from(weaves).where(eq(weaves.secret, secret));
+  const [found] = await db.select().from(weaves).where(eq(weaves.secret, secret));
   if (!found) throw errors.weaveNotFound();
   const [general] = await db.select().from(threads).where(eq(threads.weaveId, found.id)).orderBy(asc(threads.createdAt)).limit(1);
+  if (!general) throw errors.weaveNotFound();
   const token = newSecret();
   const participantId = newId();
   try {
@@ -91,10 +92,12 @@ export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { na
       if (weave.archivedAt) throw errors.weaveArchived();
       const [p] = await tx.insert(participants).values({ id: participantId, weaveId: weave.id, name, kind: who.kind, role: "member", token }).returning();
       const pub = toPublicParticipant(p!);
-      return { result: pub, events: [{ threadId: general!.id, type: "participant.joined" as const, actor: participantId,
+      return { result: pub, events: [{ threadId: general.id, type: "participant.joined" as const, actor: participantId,
         payload: { participantId, name: pub.name, kind: pub.kind, role: pub.role } }] };
     });
-    return { weaveId: found.id, participant, token };
+    // Everything a client needs to act right away, so the credential never has to be held
+    // unsaved while a second (failable) metadata request runs.
+    return { weaveId: found.id, weave: toPublicWeave(found), generalThreadId: general.id, participant, token };
   } catch (e) {
     if (isNameTakenViolation(e)) throw errors.nameTaken(name);
     throw e;

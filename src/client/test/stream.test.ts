@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { startTestServer, type TestServer } from "../../server/test/helpers.js";
+import { startTestServer, keeperToken, type TestServer } from "../../server/test/helpers.js";
 import { LoomClient, type LoomEvent, type StreamStatus } from "../src/index.js";
 
 let s: TestServer | undefined;
 let anon: LoomClient;
-beforeAll(async () => { s = await startTestServer(); anon = new LoomClient({ baseUrl: s.baseUrl, allowInsecure: true }); });
+beforeAll(async () => { s = await startTestServer(); await s.core.seedKeepers([keeperToken("k1")]); anon = new LoomClient({ baseUrl: s.baseUrl, allowInsecure: true }); });
 afterAll(async () => { await s?.close(); });
 
 function srv(): TestServer {
@@ -67,6 +67,24 @@ describe("stream", () => {
     await waitFor(() => statuses.some(([st]) => st === "closed"));
     const closed = statuses.find(([st]) => st === "closed")!;
     expect(closed[1]).toMatchObject({ code: "invalid_token" });
+  });
+
+  it("stops with closed + forbidden when a valid credential targets another Weave", async () => {
+    const a = await anon.createWeave(input);
+    const b = await anon.createWeave(input);
+    const statuses: [StreamStatus, unknown][] = [];
+    anon.withToken(a.token).stream(b.weave.id, { onEvent: () => {}, onStatus: (st, d) => statuses.push([st, d?.error]) });
+    await waitFor(() => statuses.some(([st]) => st === "closed"));
+    const closed = statuses.find(([st]) => st === "closed")!;
+    expect(closed[1]).toMatchObject({ code: "forbidden" });
+  });
+
+  it("stops with closed + weave_not_found when a keeper targets a Weave that does not exist", async () => {
+    const statuses: [StreamStatus, unknown][] = [];
+    anon.withToken(keeperToken("k1")).stream("00000000-0000-4000-8000-000000000000", { onEvent: () => {}, onStatus: (st, d) => statuses.push([st, d?.error]) });
+    await waitFor(() => statuses.some(([st]) => st === "closed"));
+    const closed = statuses.find(([st]) => st === "closed")!;
+    expect(closed[1]).toMatchObject({ code: "weave_not_found" });
   });
 
   it("does not reconnect when reconnect is false", async () => {

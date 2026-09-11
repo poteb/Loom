@@ -14,8 +14,10 @@ export function registerWeaveCommands(program: Command, ctx: () => CliContext): 
     .addOption(kindOption())
     .action(async (o: { title: string; opener: string; name: string; kind: Kind }) => {
       const c = ctx();
-      const r = await c.client().createWeave({ title: o.title, opener: o.opener, creator: { name: o.name, kind: o.kind } });
-      c.remember(r.weave.id, {
+      // A configured instance-keeper token lets creation succeed when the instance restricts it;
+      // without one, creation is anonymous exactly as before.
+      const r = await c.client(c.io.env.LOOM_KEEPER_TOKEN).createWeave({ title: o.title, opener: o.opener, creator: { name: o.name, kind: o.kind } });
+      await c.remember(r.weave.id, {
         title: r.weave.title, secret: r.secret, token: r.token, participantId: r.participant.id,
         generalThreadId: r.generalThread.id, participantName: r.participant.name,
       });
@@ -36,13 +38,13 @@ export function registerWeaveCommands(program: Command, ctx: () => CliContext): 
     .action(async (secret: string, o: { name: string; kind: Kind }) => {
       const c = ctx();
       const j = await c.client().joinWeave(secret, { name: o.name, kind: o.kind });
-      const info = await c.client(j.token).getWeave(j.weaveId);
-      const general = info.threads.find((t) => t.isGeneral)!;
-      c.remember(j.weaveId, {
-        title: info.weave.title, secret, token: j.token, participantId: j.participant.id,
-        generalThreadId: general.id, participantName: j.participant.name,
+      // Persist before anything else can fail: the token is the only copy of this identity and
+      // re-joining under the same name would be refused as name_taken.
+      await c.remember(j.weaveId, {
+        title: j.weave.title, secret, token: j.token, participantId: j.participant.id,
+        generalThreadId: j.generalThreadId, participantName: j.participant.name,
       });
-      emit(c, j, `Joined "${info.weave.title}" as ${j.participant.name} (weave ${j.weaveId}). Token stored in ${c.store.path}`);
+      emit(c, j, `Joined "${j.weave.title}" as ${j.participant.name} (weave ${j.weaveId}). Token stored in ${c.store.path}`);
     });
 
   program.command("info")

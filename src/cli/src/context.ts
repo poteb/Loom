@@ -13,7 +13,7 @@ export type CliContext = {
   client(token?: string): LoomClient;
   resolveWeave(): { weaveId: string; entry: WeaveEntry };
   keeperClient(): LoomClient;
-  remember(weaveId: string, entry: WeaveEntry): void;
+  remember(weaveId: string, entry: WeaveEntry): Promise<void>;
 };
 
 export function buildContext(opts: GlobalOpts, io: CliIo): CliContext {
@@ -39,10 +39,15 @@ export function buildContext(opts: GlobalOpts, io: CliIo): CliContext {
       if (!t) throw new CliError("no_keeper_token", "Admin commands need LOOM_KEEPER_TOKEN");
       return root.withToken(t);
     },
-    remember: (weaveId, entry) => {
-      config.weaves[weaveId] = entry;
-      config.lastWeave = weaveId;
-      store.save(config);
+    remember: async (weaveId, entry) => {
+      // Merge into whatever is on disk *now*, under a lock, rather than saving the snapshot loaded
+      // at startup: two invocations racing (create + join) must both keep their new tokens.
+      const latest = await store.update((c) => {
+        c.weaves[weaveId] = entry;
+        c.lastWeave = weaveId;
+      });
+      config.weaves = latest.weaves;
+      config.lastWeave = latest.lastWeave;
     },
   };
   return ctx;

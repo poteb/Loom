@@ -19,6 +19,6 @@ export type LoomEvent = {
 export type WeaveInfo = { weave: Weave; threads: Thread[]; participants: Participant[] };
 export type CreateWeaveInput = { title: string; opener: string; creator: { name: string; kind: Kind } };
 export type CreateWeaveResult = { weave: Weave; secret: string; participant: Participant; token: string; generalThread: Thread };
-export type JoinResult = { weaveId: string; participant: Participant; token: string };
+export type JoinResult = { weaveId: string; weave: Weave; generalThreadId: string; participant: Participant; token: string };
 export type Settings = { instanceName: string; maxMessageLength: number; openWeaveCreation: boolean };
 export type Keeper = { id: string; name: string; createdAt: string };
