@@ -255,10 +255,16 @@ describe("subprocess stderr redaction", () => {
     transport.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
     try {
       await client.connect(transport);
-      await waitFor(() => /initial name fetch failed|stream for weave/.test(stderr), 2000).catch(() => {});
+      // The absence assertions below are only meaningful once the failure path has actually run and
+      // logged, so *require* the stream-failure diagnostic (naming the weave) rather than waiting
+      // out a swallowed timeout: a silent channel would otherwise pass this test vacuously.
+      // (The client's own stream reconnects forever on a network error, so the diagnostic that is
+      // guaranteed here is the startup name fetch; both startup failure lines name the weave.)
+      await waitFor(() => /loom channel: (?:initial name fetch failed|stream start failed) for weave w1/.test(stderr), 10_000);
       // A little extra margin past the first log line, in case more diagnostics land shortly after.
       await new Promise((r) => setTimeout(r, 500));
 
+      expect(stderr).toContain("for weave w1");
       expect(stderr).not.toContain("sekret");
       expect(stderr).not.toContain(TOKEN);
     } finally {
