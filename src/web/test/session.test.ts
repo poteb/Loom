@@ -90,4 +90,71 @@ describe("session", () => {
     expect(session.getState().status).toBe("error");
     expect(session.getState().error).toMatch(/not found/i);
   });
+
+  it("anonymous writes always demand a name, whether or not the session has loaded", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+
+    const unloaded = createSession({ client: anon, secret: r.secret, storage: memoryStorage() });
+    await expect(unloaded.post("x")).rejects.toMatchObject({ code: "no_identity" });
+    expect(unloaded.getState().needsName).toBe(true);
+    await expect(unloaded.createThread("Design")).rejects.toMatchObject({ code: "no_identity" });
+    expect(unloaded.getState().needsName).toBe(true);
+    await expect(unloaded.closeThread(r.generalThread.id)).rejects.toMatchObject({ code: "no_identity" });
+    expect(unloaded.getState().needsName).toBe(true);
+    await expect(unloaded.archive()).rejects.toMatchObject({ code: "no_identity" });
+    expect(unloaded.getState().needsName).toBe(true);
+
+    const loaded = await makeSession(r.secret);
+    await expect(loaded.post("x")).rejects.toMatchObject({ code: "no_identity" });
+    expect(loaded.getState().needsName).toBe(true);
+    await expect(loaded.createThread("Design")).rejects.toMatchObject({ code: "no_identity" });
+    expect(loaded.getState().needsName).toBe(true);
+    await expect(loaded.closeThread(r.generalThread.id)).rejects.toMatchObject({ code: "no_identity" });
+    expect(loaded.getState().needsName).toBe(true);
+    await expect(loaded.archive()).rejects.toMatchObject({ code: "no_identity" });
+    expect(loaded.getState().needsName).toBe(true);
+    loaded.dispose();
+  });
+
+  it("load() called twice does not leak the first stream", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const session = createSession({ client: anon, secret: r.secret, storage: memoryStorage() });
+    await session.load();
+    await session.load();
+    await waitFor(() => session.getState().connection === "open");
+    session.dispose();
+    // If the first load()'s stream leaked, it is still listening (dispose only closed the second
+    // stream handle) and would append this event to state even though the session was disposed.
+    await anon.withToken(r.token).postMessage(r.generalThread.id, "from claude");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(session.getState().events).toHaveLength(3);
+  });
+
+  it("retries a derived-state refresh that transiently fails", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    let getWeaveCalls = 0;
+    const flaky = new LoomClient({
+      baseUrl: s.baseUrl,
+      allowInsecure: true,
+      fetch: (input, init) => {
+        const url = typeof input === "string" ? input : input.toString();
+        const isGetWeave = /^\/api\/weaves\/[^/]+$/.test(new URL(url).pathname);
+        if (isGetWeave) {
+          getWeaveCalls++;
+          // Let the getWeave() inside load() through; fail only the next one (triggered by the
+          // qualifying event below), which refreshInfo() must retry rather than give up on.
+          if (getWeaveCalls === 2) return Promise.reject(new Error("simulated network failure"));
+        }
+        return fetch(url, init);
+      },
+    });
+    const session = createSession({ client: flaky, secret: r.secret, storage: memoryStorage() });
+    await session.load();
+    expect(getWeaveCalls).toBe(1);
+
+    await anon.withToken(r.token).createThread(r.weave.id, "Design");
+    await waitFor(() => session.getState().threads.some((t) => t.name === "Design"));
+    expect(getWeaveCalls).toBeGreaterThanOrEqual(3);
+    session.dispose();
+  });
 });

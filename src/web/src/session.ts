@@ -42,12 +42,42 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
         ? { token: state.me.token, participant: info.participants.find((p) => p.id === state.me!.participant.id)! }
         : state.me });
   };
+
+  // Coalesced, retried refresh for events that arrive off the wire: a failed refresh is retried
+  // with backoff instead of being dropped, and events that arrive while a refresh is already in
+  // flight just mark it dirty so exactly one more refresh runs after the current one settles.
+  let disposed = false;
+  let refreshInFlight: Promise<void> | undefined;
+  let refreshDirty = false;
+  const RETRY_DELAYS_MS = [250, 500, 1000, 1000]; // 1 initial attempt + up to 4 retries = 5 attempts
+
+  const runRefreshWithRetry = async () => {
+    for (let attempt = 0; ; attempt++) {
+      if (disposed) return;
+      try {
+        await refreshInfo();
+        return;
+      } catch {
+        if (disposed || attempt >= RETRY_DELAYS_MS.length) return;
+        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[attempt]));
+      }
+    }
+  };
+  const scheduleRefresh = () => {
+    if (disposed) return;
+    if (refreshInFlight) { refreshDirty = true; return; }
+    refreshInFlight = runRefreshWithRetry().finally(() => {
+      refreshInFlight = undefined;
+      if (refreshDirty && !disposed) { refreshDirty = false; scheduleRefresh(); }
+    });
+  };
+
   const onEvent = (e: LoomEvent) => {
     if (state.events.some((x) => x.seq === e.seq)) return;
     const events = [...state.events, e].sort((a, b) => a.seq - b.seq);
     set({ events });
     if (e.type === "thread.created" || e.type === "thread.closed" || e.type === "participant.joined" || e.type === "participant.role_changed") {
-      void refreshInfo().catch(() => { /* transient; next event retries */ });
+      scheduleRefresh();
     } else if (e.type === "weave.archived" && state.weave) {
       set({ weave: { ...state.weave, archivedAt: e.at } });
     }
@@ -58,6 +88,8 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
     subscribe: (fn) => { listeners.add(fn); return () => { listeners.delete(fn); }; },
 
     async load() {
+      stream?.close();
+      stream = undefined;
       try {
         weaveId = await reader.lookupWeave(secret);
         const info = await reader.getWeave(weaveId);
@@ -107,8 +139,9 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
       onEvent(await w.postMessage(threadId, text));
     },
     async createThread(name) {
-      if (!weaveId) return;
-      const t = await writer().createThread(weaveId, name);
+      const w = writer();
+      if (!weaveId) throw new LoomClientError("validation", "Weave not loaded");
+      const t = await w.createThread(weaveId, name);
       set({ threads: state.threads.some((x) => x.id === t.id) ? state.threads : [...state.threads, t], currentThreadId: t.id });
     },
     async closeThread(id) {
@@ -116,11 +149,12 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
       await refreshInfo();
     },
     async archive() {
-      if (!weaveId) return;
-      await writer().archiveWeave(weaveId);
+      const w = writer();
+      if (!weaveId) throw new LoomClientError("validation", "Weave not loaded");
+      await w.archiveWeave(weaveId);
       await refreshInfo();
     },
     canModerate: () => state.me?.participant.role === "keeper" && !state.weave?.archivedAt,
-    dispose: () => { stream?.close(); stream = undefined; listeners.clear(); },
+    dispose: () => { disposed = true; stream?.close(); stream = undefined; listeners.clear(); },
   };
 }

@@ -67,6 +67,7 @@ describe("weaves", () => {
     expect(l.json.weaveId).toBe(weave.id);
     const bad = await api(s.baseUrl, "GET", "/api/weaves/nope/lookup");
     expect(bad.status).toBe(404);
+    expect(bad.json.code).toBe("weave_not_found");
   });
 
   it("maps errors: 401 no auth, 403 wrong weave, 404 bad secret, 409 name taken, 400 validation", async () => {
