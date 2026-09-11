@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { LoomClient, type StreamHandle, type StreamOptions } from "@loom/client";
 import { startTestServer, keeperToken, type TestServer } from "../../server/test/helpers.js";
 import { runCli, type CliIo } from "../src/cli.js";
 import { ConfigStore } from "../src/config.js";
@@ -33,6 +34,9 @@ afterAll(async () => { await s.close(); });
 
 let cfg: string;
 beforeEach(() => { cfg = path.join(mkdtempSync(path.join(tmpdir(), "loom-cli-")), "config.json"); });
+// A gate a failing assertion left parked would hold the server's replay hook (and therefore the
+// next test's WS connection) forever, turning one failure into a suite-wide hang: always release.
+afterEach(() => { gate?.release(); gate = undefined; });
 
 async function run(args: string[], extraEnv: Record<string, string> = {}) {
   let out = ""; let err = "";
@@ -129,13 +133,17 @@ describe("read --follow", () => {
     gate = makeGate();
     const follow = run(["read", "--follow", "--since", "3", "--count", "2", "--json"]);
     // The WS handler has subscribed and is parked inside beforeReplay: the CLI's initial
-    // (non-stream) batch was already fetched and printed before this point, so these four
-    // commits are invisible to it and will only surface once the stream's own replay runs.
+    // (non-stream) batch was already fetched and printed before this point, so these commits are
+    // invisible to it and will only surface once the stream's own replay runs.
     await gate.entered;
+    // The FIRST event after the cursor is a thread.created on purpose: its handler awaits
+    // getWeave() before printing, so the burst behind it is structurally forced to queue on the
+    // chain while an earlier link is still suspended — the overshoot hazard this test exists for,
+    // rather than one that depends on how the runtime happens to interleave synchronous handlers.
+    await s.core.createThread(actor, created.weave.id, "Design");
     await s.core.postMessage(actor, created.generalThread.id, "one");
     await s.core.postMessage(actor, created.generalThread.id, "two");
     await s.core.postMessage(actor, created.generalThread.id, "three");
-    await s.core.postMessage(actor, created.generalThread.id, "four");
     // Releasing now lets replay read all four committed events in a single DB page and send them
     // down the socket back-to-back, deterministically exercising the chained-handler queue: the
     // client's onEvent fires for seq 6 and 7 while the chain link for seq 5 (which reaches
@@ -146,6 +154,7 @@ describe("read --follow", () => {
     expect(res.code).toBe(0);
     const lines = res.lines();
     expect(lines.map((e: { seq: number }) => e.seq)).toEqual([4, 5]);
+    expect(lines[0].type).toBe("thread.created");
     // Read `res.out` live (via run()'s getter), after the follow's promise has already settled,
     // to confirm seq 6 and 7 never get written even though they were already queued.
     const lenAfterResolve = res.out.length;
@@ -185,29 +194,42 @@ describe("read --follow", () => {
   it("closes the stream and removes the SIGINT listener when the stream fails while live", async () => {
     const created = (await run(["create", "--title", "T", "--opener", "o", "--name", "Me", "--json"])).json();
     const before = process.listenerCount("SIGINT");
-    gate = makeGate();
-    const follow = run(["read", "--follow", "--count", "5", "--json"]);
-    // The WS handler only reaches beforeReplay after the handshake completed and it subscribed to
-    // the bus, so by the time this resolves the client has already seen status "open" — the
-    // follow loop is genuinely live, not merely mid-connect.
-    await gate.entered;
-    // Revoke the participant's token directly in the database (mirrors server/test/ws.test.ts's
-    // direct-row technique): the CLI's in-memory client still holds the now-stale token string,
-    // so the *next* ws-ticket request for it will fail with invalid_token.
-    const pg = s.core.db.$client;
-    await pg`update participants set token = ${"revoked-" + created.participant.id} where id = ${created.participant.id}::uuid`;
-    gate.release();
-    gate = undefined;
-    // Force the live connection closed so the client's stream reconnect logic runs, re-requests a
-    // ticket with the now-revoked token, and gets a fatal invalid_token back.
-    s.dropSockets();
-    const res = await follow;
-    expect(res.code).toBe(1);
-    expect(JSON.parse(res.err).code).toBe("invalid_token");
-    expect(process.listenerCount("SIGINT")).toBe(before);
-    const lenAfterResolve = res.out.length;
-    await new Promise((r) => setTimeout(r, 300));
-    expect(res.out.length).toBe(lenAfterResolve);
+    // Count close() calls on the handle the follow loop actually holds: settle() must run exactly
+    // once, so the stream is released once — never twice (a double settle) and never zero times.
+    let closeCalls = 0;
+    const realStream = LoomClient.prototype.stream;
+    const streamSpy = vi.spyOn(LoomClient.prototype, "stream").mockImplementation(
+      function (this: LoomClient, weaveId: string, opts: StreamOptions): StreamHandle {
+        const handle = realStream.call(this, weaveId, opts);
+        return { close: () => { closeCalls++; handle.close(); }, get lastSeq() { return handle.lastSeq; } };
+      },
+    );
+    try {
+      gate = makeGate();
+      const follow = run(["read", "--follow", "--count", "5", "--json"]);
+      // The WS handler only reaches beforeReplay after the handshake completed and it subscribed to
+      // the bus, so by the time this resolves the client has already seen status "open" — the
+      // follow loop is genuinely live, not merely mid-connect.
+      await gate.entered;
+      // Revoke the participant's token directly in the database (mirrors server/test/ws.test.ts's
+      // direct-row technique): the CLI's in-memory client still holds the now-stale token string,
+      // so the *next* ws-ticket request for it will fail with invalid_token.
+      const pg = s.core.db.$client;
+      await pg`update participants set token = ${"revoked-" + created.participant.id} where id = ${created.participant.id}::uuid`;
+      gate.release();
+      gate = undefined;
+      // Force the live connection closed so the client's stream reconnect logic runs, re-requests a
+      // ticket with the now-revoked token, and gets a fatal invalid_token back.
+      s.dropSockets();
+      const res = await follow;
+      expect(res.code).toBe(1);
+      expect(JSON.parse(res.err).code).toBe("invalid_token");
+      expect(process.listenerCount("SIGINT")).toBe(before);
+      const lenAfterResolve = res.out.length;
+      await new Promise((r) => setTimeout(r, 300));
+      expect(res.out.length).toBe(lenAfterResolve);
+      expect(closeCalls).toBe(1);
+    } finally { streamSpy.mockRestore(); }
   });
 
   it("prints the initial batch before any streamed event, and initial events don't count toward --count", async () => {
