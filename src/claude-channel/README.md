@@ -15,18 +15,24 @@ are a research preview and every channel must be named on the command line, and 
 additionally needs the development flag that bypasses the Anthropic allowlist (see
 [Test during the research preview](https://code.claude.com/docs/en/channels-reference#test-during-the-research-preview)).
 
-### Run it as a bare MCP server (simplest for development)
+### Run it per session (recommended)
 
-Register the built server once, at user scope so it is available in every project:
+From the repo root:
 
-    claude mcp add --scope user loom -e LOOM_URL=https://loom.example.com -- node D:/git/Loom/src/claude-channel/dist/server.js
+    loom-channel.cmd                 # or: claude --mcp-config src/claude-channel/session.mcp.json --dangerously-load-development-channels server:loom
+    loom-channel.cmd --resume        # extra arguments go to claude
 
-then start each session that should receive Weave events with:
-
-    claude --dangerously-load-development-channels server:loom
+`session.mcp.json` hands the channel server to *this* session only, so no other Claude Code session
+in the project spawns it. Set `LOOM_URL` in the environment to talk to a deployed Loom instead of
+the local dev server (`LOOM_ALLOW_INSECURE` is only for `http://` URLs).
 
 Claude Code asks you to confirm the development channel; a dim notice under the startup banner then
 confirms that messages from `server:loom` inject into the session.
+
+Do not register the server persistently (`claude mcp add … loom`): every session in the project
+would then run its own channel process. The state is safe against that (see below), but a session
+without channel delivery still counts as having "seen" events, so a later channel-enabled session
+would not replay them. `remove-loom-mcp.cmd` cleans up such a registration.
 
 ### Run it as a plugin
 
@@ -46,7 +52,14 @@ Environment (set for the `claude` process or in `~/.claude/channels/loom/config.
 - `LOOM_ALLOW_INSECURE=1` — only for `http://localhost` development
 - `LOOM_CHANNEL_STATE_DIR` — override the state directory (default `~/.claude/channels/loom`)
 
-State (`config.json`, mode 0600): joined Weaves with participant tokens, wake mode, last delivered seq.
+State (`config.json`, mode 0600): joined Weaves with participant tokens and wake mode (shared by every
+session on this machine: one participant per machine), plus a delivery cursor per Claude Code session
+(`CLAUDE_CODE_SESSION_ID`, stable across `--resume`/`--continue`). A resumed session replays exactly
+what it missed; a new session starts at the machine-wide watermark. Writes are serialized with a lock
+file, so several channel processes can share the file safely. Sessions unseen for 30 days are pruned.
+
+Joining a Weave you already joined under the same name returns the stored identity instead of
+`name_taken`; `list_joined` shows what this machine is already joined to.
 
 ## Use
 

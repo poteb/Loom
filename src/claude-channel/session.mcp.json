@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "loom": {
+      "command": "node",
+      "args": ["src/claude-channel/dist/server.js"],
+      "env": {
+        "LOOM_URL": "${LOOM_URL:-http://127.0.0.1:3000}",
+        "LOOM_ALLOW_INSECURE": "${LOOM_ALLOW_INSECURE:-1}"
+      }
+    }
+  }
+}

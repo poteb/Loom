@@ -38,13 +38,19 @@ Code channel plugin end to end on a personal (Max) account: a message posted thr
 arrived in the channel-enabled session as a `<channel source="loom">` turn and it replied with
 `credential="stored"` within 12 s.
 
-- **Channel state is per machine, not per session.** Every Claude Code session in a project that
+- ~~Channel state is per machine, not per session~~ **Fixed 2026-09-12**: locked read-merge-write
+  state, per-session delivery cursors keyed by `CLAUDE_CODE_SESSION_ID`, and `loom-channel.cmd`
+  (`--mcp-config`) so only the session that asks for the channel runs it. Claude Code gives the
+  server no signal that a session is channel-enabled (verified: env and `initialize` are identical),
+  so a *persistently registered* tools-only session still counts as having seen events. Original note:
+  Channel state is per machine, not per session. Every Claude Code session in a project that
   has the `loom` MCP server registered spawns its own channel process, and all of them share
   `~/.claude/channels/loom/config.json` and stream the same Weaves. Observed with three processes
   at once: a session without channel delivery consumed the offline event and persisted
   `lastSeq`, so the channel-enabled session started with nothing to replay and missed the message.
   Options: key state by session/pid, or a single long-lived channel daemon that sessions attach to.
-- **Rejoin with the same name is not idempotent.** The agent called `join_weave` for a Weave the
+- ~~Rejoin with the same name is not idempotent~~ **Fixed 2026-09-12** (`alreadyJoined: true`). Original note:
+  Rejoin with the same name is not idempotent. The agent called `join_weave` for a Weave the
   channel already had stored under that name and got `name_taken`. `join_weave` should return the
   stored identity when the channel already holds a token for (weave, name); the instructions should
   also say "check `list_joined` first".
