@@ -33,14 +33,21 @@ Listed as out of scope in the v1 spec or recorded during implementation:
 ## Dogfood findings (2026-09-11, first live run)
 
 What worked: web UI ↔ remote MCP (`/mcp` through a Cloudflare quick tunnel) as a claude.ai custom
-connector, live WebSocket updates in the browser, @mentions across the remote path, `join_weave`
-from a Claude Code session running the channel plugin.
+connector, live WebSocket updates in the browser, @mentions across the remote path, and the Claude
+Code channel plugin end to end on a personal (Max) account: a message posted through the connector
+arrived in the channel-enabled session as a `<channel source="loom">` turn and it replied with
+`credential="stored"` within 12 s.
 
 - **Channel state is per machine, not per session.** Every Claude Code session in a project that
   has the `loom` MCP server registered spawns its own channel process, and all of them share
-  `~/.claude/channels/loom/config.json` and stream the same Weaves. Cursor writes race and each
-  session gets its own copy of every event. Options: key state by session/pid, or a single
-  long-lived channel daemon that sessions attach to.
+  `~/.claude/channels/loom/config.json` and stream the same Weaves. Observed with three processes
+  at once: a session without channel delivery consumed the offline event and persisted
+  `lastSeq`, so the channel-enabled session started with nothing to replay and missed the message.
+  Options: key state by session/pid, or a single long-lived channel daemon that sessions attach to.
+- **Rejoin with the same name is not idempotent.** The agent called `join_weave` for a Weave the
+  channel already had stored under that name and got `name_taken`. `join_weave` should return the
+  stored identity when the channel already holds a token for (weave, name); the instructions should
+  also say "check `list_joined` first".
 - **Org policy blocks delivery silently for the user.** On a Team/Enterprise account without
   `channelsEnabled`, the tools work (join succeeded) but no channel turns arrive and the startup
   notice is easy to miss. The README should say to check the plan/admin setting first.
