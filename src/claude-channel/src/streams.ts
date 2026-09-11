@@ -35,10 +35,15 @@ export class StreamManager {
 
   /** Registers a thread's owning Weave immediately, for threads this session itself just created —
    * the stream's own thread.created event (which would otherwise populate threadOwner) is delivered
-   * asynchronously and can race a post_message that follows create_thread right away. */
+   * asynchronously and can race a post_message that follows create_thread right away. Only records
+   * ownership while the weave has an active entry: recording into threadToWeave without a matching
+   * `Active.threadIds` entry would leave stop() with nothing to clean up, leaking the mapping for a
+   * weave that is no longer active. */
   noteThread(weaveId: string, threadId: string): void {
+    const active = this.active.get(weaveId);
+    if (!active) return;
     this.threadToWeave.set(threadId, weaveId);
-    this.active.get(weaveId)?.threadIds.add(threadId);
+    active.threadIds.add(threadId);
   }
 
   restoreAll(): void { for (const [id, w] of Object.entries(this.state.get().weaves)) this.start(id, w); }

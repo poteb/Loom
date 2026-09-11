@@ -163,6 +163,18 @@ describe("StreamManager", () => {
     expect(sm.threadOwner("t-new")).toBeUndefined();
   });
 
+  it("noteThread ignores a weave with no active entry, so there is nothing stop() forgot to clean up", async () => {
+    const w = makeWeave();
+    const state = makeState(w);
+    const notify = vi.fn().mockResolvedValue(undefined);
+    const log = vi.fn();
+    const { client } = makeFakeClient();
+    const sm = new StreamManager(client, state, notify, log);
+    // Never started (or already stopped): no Active entry exists for WEAVE_ID.
+    sm.noteThread(WEAVE_ID, "t-new");
+    expect(sm.threadOwner("t-new")).toBeUndefined();
+  });
+
   it("grows the restart backoff exponentially across consecutive restarts, caps at max, and resets to initial after a successful delivery", async () => {
     // Fake timers make this deterministic: the delay actually passed to setTimeout is asserted
     // directly (by advancing exactly up to, then past, each threshold) instead of measuring
