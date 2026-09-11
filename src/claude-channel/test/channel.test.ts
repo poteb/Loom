@@ -84,3 +84,98 @@ describe("channel tools", () => {
     await c.close();
   });
 });
+
+import { z } from "zod";
+
+const ChannelNotification = z.object({
+  method: z.literal("notifications/claude/channel"),
+  params: z.object({ content: z.string(), meta: z.record(z.string(), z.string()) }),
+});
+
+function collectNotifications(c: Client): { content: string; meta: Record<string, string> }[] {
+  const got: { content: string; meta: Record<string, string> }[] = [];
+  c.setNotificationHandler(ChannelNotification, (n) => { got.push(n.params); });
+  return got;
+}
+function waitFor(pred: () => boolean, ms = 8000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const t0 = Date.now();
+    const tick = () => { if (pred()) resolve(); else if (Date.now() - t0 > ms) reject(new Error("timeout")); else setTimeout(tick, 25); };
+    tick();
+  });
+}
+
+describe("channel streaming", () => {
+  it("pushes others' events as channel notifications, never its own, and advances the cursor", async () => {
+    const c = await spawnChannel(stateDir);
+    const got = collectNotifications(c);
+    const created = json(await c.callTool({ name: "create_weave", arguments: { title: "PR 42", opener: "start", name: "Claude" } }));
+    // another participant (ChatGPT) joins and posts through the server core
+    const gpt = await s!.core.joinWeave(created.secret, { name: "ChatGPT", kind: "agent" });
+    const gptActor = await s!.core.resolveCredential(gpt.token);
+    await s!.core.postMessage(gptActor, created.generalThread.id, "Hello @Claude, I joined");
+    await waitFor(() => got.length >= 2);
+    expect(got[0]!.meta).toMatchObject({ weave: created.weave.id, type: "participant.joined", from: "ChatGPT", seq: "4" });
+    expect(got[1]!.content).toBe("Hello @Claude, I joined");
+    expect(got[1]!.meta).toMatchObject({ thread: created.generalThread.id, thread_name: "General", type: "message", from: "ChatGPT", from_kind: "agent", seq: "5", mentions: created.participant.id });
+    // own message is not pushed back
+    await c.callTool({ name: "post_message", arguments: { credential: "stored", threadId: created.generalThread.id, text: "thanks" } });
+    await s!.core.postMessage(gptActor, created.generalThread.id, "np");
+    await waitFor(() => got.length >= 3);
+    expect(got.map((g) => g.meta.seq)).toEqual(["4", "5", "7"]);
+    await waitFor(() => JSON.parse(readFileSync(path.join(stateDir, "config.json"), "utf8")).weaves[created.weave.id].lastSeq === 7);
+    await c.close();
+  });
+
+  it("wake=mentions filters to mentions only, thread names resolve for new threads", async () => {
+    const c = await spawnChannel(stateDir);
+    const got = collectNotifications(c);
+    const created = json(await c.callTool({ name: "create_weave", arguments: { title: "T", opener: "start", name: "Claude" } }));
+    await c.callTool({ name: "set_wake", arguments: { weaveId: created.weave.id, wake: "mentions" } });
+    const gpt = await s!.core.joinWeave(created.secret, { name: "ChatGPT", kind: "agent" });
+    const gptActor = await s!.core.resolveCredential(gpt.token);
+    const t = await s!.core.createThread(gptActor, created.weave.id, "Design");
+    await s!.core.postMessage(gptActor, t.id, "no mention here");
+    await s!.core.postMessage(gptActor, t.id, "ping @claude");
+    await waitFor(() => got.length >= 1);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(got).toHaveLength(1);
+    expect(got[0]!.meta).toMatchObject({ thread: t.id, thread_name: "Design", type: "message" });
+    await c.close();
+  });
+
+  it("restores joined weaves on restart from the saved cursor without duplicates", async () => {
+    const c1 = await spawnChannel(stateDir);
+    const got1 = collectNotifications(c1);
+    const created = json(await c1.callTool({ name: "create_weave", arguments: { title: "T", opener: "start", name: "Claude" } }));
+    const gpt = await s!.core.joinWeave(created.secret, { name: "ChatGPT", kind: "agent" });
+    const gptActor = await s!.core.resolveCredential(gpt.token);
+    await s!.core.postMessage(gptActor, created.generalThread.id, "one");
+    await waitFor(() => got1.length >= 2);
+    await c1.close();
+    // events while the channel is down
+    await s!.core.postMessage(gptActor, created.generalThread.id, "two");
+    const c2 = await spawnChannel(stateDir);
+    const got2 = collectNotifications(c2);
+    await waitFor(() => got2.length >= 1);
+    expect(got2.map((g) => g.content)).toEqual(["two"]);
+    await s!.core.postMessage(gptActor, created.generalThread.id, "three");
+    await waitFor(() => got2.length >= 2);
+    expect(got2[1]!.content).toBe("three");
+    await c2.close();
+  });
+
+  it("leave_weave stops delivery", async () => {
+    const c = await spawnChannel(stateDir);
+    const got = collectNotifications(c);
+    const created = json(await c.callTool({ name: "create_weave", arguments: { title: "T", opener: "start", name: "Claude" } }));
+    const gpt = await s!.core.joinWeave(created.secret, { name: "ChatGPT", kind: "agent" });
+    await waitFor(() => got.length >= 1);
+    await c.callTool({ name: "leave_weave", arguments: { weaveId: created.weave.id } });
+    const gptActor = await s!.core.resolveCredential(gpt.token);
+    await s!.core.postMessage(gptActor, created.generalThread.id, "after leave");
+    await new Promise((r) => setTimeout(r, 500));
+    expect(got.map((g) => g.meta.type)).toEqual(["participant.joined"]);
+    await c.close();
+  });
+});

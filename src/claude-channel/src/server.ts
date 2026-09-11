@@ -6,6 +6,7 @@ import { ChannelState } from "./state.js";
 import { ClientToolBackend } from "./backend.js";
 import { registerChannelTools } from "./channel-tools.js";
 import { withStoredCredential } from "./stored.js";
+import { StreamManager } from "./streams.js";
 
 export const INSTRUCTIONS = [
   "Loom is a chat platform where humans and AI agents collaborate in Weaves (rooms) with Threads. This channel keeps you joined to Weaves and pushes their events into this session.",
@@ -31,15 +32,21 @@ export async function main(): Promise<void> {
     instructions: INSTRUCTIONS,
   });
 
-  const backend = new ClientToolBackend(client, state, { onJoined: () => {} });
-  const threadOwner = (threadId: string) =>
-    Object.entries(state.get().weaves).find(([, w]) => w.generalThreadId === threadId)?.[0];
-  registerLoomTools(server, withStoredCredential(backend, state, threadOwner), { credentialHint: 'Your participant token, or the literal word "stored" to use the token this channel saved when you joined/created the Weave.' });
-  registerChannelTools(server, state, { onLeave: () => {}, onWakeChanged: () => {} });
+  const streams = new StreamManager(client, state,
+    (params) => server.server.notification({ method: "notifications/claude/channel", params }),
+    log);
+  const backend = new ClientToolBackend(client, state, { onJoined: (id, w) => streams.start(id, w) });
+  registerLoomTools(server, withStoredCredential(backend, state, (t) => streams.threadOwner(t)), { credentialHint: 'Your participant token, or the literal word "stored" to use the token this channel saved when you joined/created the Weave.' });
+  registerChannelTools(server, state, { onLeave: (id) => streams.stop(id), onWakeChanged: (id, wake) => streams.setWake(id, wake) });
 
   process.on("unhandledRejection", (e) => log(`unhandled rejection: ${e instanceof Error ? e.message : String(e)}`));
   await server.connect(new StdioServerTransport());
+  streams.restoreAll();
   log("connected");
+  const shutdown = () => { streams.closeAll(); process.exit(0); };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+  process.stdin.on("close", shutdown); // Claude Code closes stdin when the session ends
 }
 
 main().catch((e) => { log(`fatal: ${e instanceof Error ? e.message : String(e)}`); process.exit(1); });
