@@ -15,24 +15,27 @@ are a research preview and every channel must be named on the command line, and 
 additionally needs the development flag that bypasses the Anthropic allowlist (see
 [Test during the research preview](https://code.claude.com/docs/en/channels-reference#test-during-the-research-preview)).
 
-### Run it per session (recommended)
+### Run it (recommended)
 
 From the repo root:
 
-    loom-channel.cmd                 # or: claude --mcp-config src/claude-channel/session.mcp.json --dangerously-load-development-channels server:loom
+    loom-channel.cmd                 # registers the server at local scope, runs claude, unregisters on exit
     loom-channel.cmd --resume        # extra arguments go to claude
 
-`session.mcp.json` hands the channel server to *this* session only, so no other Claude Code session
-in the project spawns it. Set `LOOM_URL` in the environment to talk to a deployed Loom instead of
-the local dev server (`LOOM_ALLOW_INSECURE` is only for `http://` URLs).
+Set `LOOM_URL` in the environment to talk to a deployed Loom instead of the local dev server
+(`LOOM_ALLOW_INSECURE` is only for `http://` URLs).
 
 Claude Code asks you to confirm the development channel; a dim notice under the startup banner then
 confirms that messages from `server:loom` inject into the session.
 
-Do not register the server persistently (`claude mcp add … loom`): every session in the project
-would then run its own channel process. The state is safe against that (see below), but a session
-without channel delivery still counts as having "seen" events, so a later channel-enabled session
-would not replay them. `remove-loom-mcp.cmd` cleans up such a registration.
+Why the register/unregister dance: Claude Code's channel check (`server:<name>`) only accepts servers
+from its config scopes. A server passed with `--mcp-config` loads and its tools work, but the banner
+says `no MCP server configured with that name` and nothing is delivered (Claude Code 2.1.269). The
+launcher therefore keeps the registration alive only while the session runs. Other sessions started
+in this project during that window also spawn the channel process; that is safe (per-session cursors
+and a locked state file, see below), but such a session counts as having "seen" events for the
+machine-wide watermark. If a registration is left behind (terminal killed), `remove-loom-mcp.cmd`
+cleans it up.
 
 ### Run it as a plugin
 
