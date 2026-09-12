@@ -76,6 +76,9 @@ function Weave({ secret }: { secret: string }) {
         <div class="main">
           {archived && <div class="banner">This Weave is archived and read-only.</div>}
           {state.refreshError && <div class="warn-bar">Having trouble syncing: {state.refreshError}</div>}
+          {state.invitesForMe.size > 0 && (
+            <div class="banner">You were invited to {[...state.invitesForMe].map((id) => state.threads.find((t) => t.id === id)?.name ?? id).join(", ")}</div>
+          )}
           <MessageList state={state} />
           {error && <div class="error-bar">{error}</div>}
           {!archived && <Composer state={state} onSend={send} draft={draft} />}

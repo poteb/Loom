@@ -1,5 +1,5 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": { "rootDir": "..", "module": "NodeNext", "moduleResolution": "NodeNext", "types": ["node"] },
-  "include": ["src/storage.ts", "src/markdown.ts", "src/session.ts", "src/components/mention-logic.ts", "test", "../server/test/helpers.ts", "../core/test/helpers.ts"]
+  "include": ["src/storage.ts", "src/markdown.ts", "src/session.ts", "src/components/mention-logic.ts", "src/components/ThreadList.tsx", "src/components/MessageList.tsx", "test", "test/**/*.tsx", "../server/test/helpers.ts", "../core/test/helpers.ts"]
 }
