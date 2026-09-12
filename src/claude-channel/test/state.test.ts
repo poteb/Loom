@@ -44,7 +44,7 @@ describe("ChannelState", () => {
     const files = readdirSync(dir).sort();
     expect(files.filter((f) => f.endsWith(".tmp"))).toEqual([]);
     expect(files).not.toContain("config.json");
-    expect(files.filter((f) => /^config\.\d+\.json$/.test(f)).length).toBeLessThanOrEqual(2);
+    expect(files.filter((f) => /^config\.\d+\.json$/.test(f)).length).toBeLessThanOrEqual(3);
   });
 
   it("a writer whose snapshot went stale re-applies its change on the fresh state instead of overwriting", async () => {
@@ -110,6 +110,69 @@ describe("ChannelState", () => {
     expect(Object.keys(final.weaves).sort()).toEqual(["w0", "w1", "w2"]); // A's change landed on top of 4, not under it
     expect(a.file).toBe(path.join(dir, "config.5.json"));
     expect(intrusions).toBeGreaterThanOrEqual(2);
+  });
+
+  it("a publish that a later writer built upon counts as success and is not re-applied", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+    let intruded = false;
+    let applications = 0;
+    class Observed extends ChannelState {
+      protected override publish(tmp: string, target: string): void {
+        super.publish(tmp, target);
+        if (intruded) return;
+        intruded = true;
+        // Between A's publish of version 1 and its newest-version check, session B reads version 1,
+        // delivers up to seq 10 and commits version 2 *on top of it* (parent = A's commit id).
+        const v1 = JSON.parse(readFileSync(target, "utf8"));
+        v1.weaves.w1.lastSeq = 10;
+        v1.sessions.sB = { at: new Date().toISOString(), cursors: { w1: 10 } };
+        v1.commit = { id: "b-commit", parent: v1.commit.id };
+        writeFileSync(path.join(dir, "config.2.json"), JSON.stringify(v1));
+      }
+    }
+    const a = new Observed(dir, "sA", () => { applications++; return new Date(); });
+    await a.upsertWeave("w1", w); // lastSeq 0
+    const final = new ChannelState(dir, "x").get();
+    expect(final.weaves.w1!.lastSeq).toBe(10);          // B's progress preserved: A did not re-apply its join over it
+    expect(final.sessions.sB!.cursors.w1).toBe(10);
+    expect(applications).toBe(2); // `now` runs twice per attempt (session stamp + prune): exactly one attempt, no re-apply
+    expect(a.file).toBe(path.join(dir, "config.2.json"));
+  });
+
+  it("re-applying a join over state that already holds the same token keeps the advanced watermark and cursors", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+    const a = new ChannelState(dir, "sA");
+    await a.upsertWeave("w1", w);
+    await new ChannelState(dir, "sB").setLastSeq("w1", 10);
+    await a.setLastSeq("w1", 6);
+    await a.upsertWeave("w1", w);                        // same token: idempotent
+    let c = new ChannelState(dir, "x").get();
+    expect(c.weaves.w1!.lastSeq).toBe(10);
+    expect(c.sessions.sA!.cursors.w1).toBe(6);
+    expect(c.sessions.sB!.cursors.w1).toBe(10);
+    await a.upsertWeave("w1", { ...w, token: "new-identity" }); // genuinely new identity: history replays for this session
+    c = new ChannelState(dir, "x").get();
+    expect(c.weaves.w1!.lastSeq).toBe(0);
+    expect(c.sessions.sA!.cursors.w1).toBe(0);
+    expect(c.sessions.sB!.cursors.w1).toBe(10);           // other sessions untouched
+  });
+
+  it("re-checks for versions when the legacy file vanishes because another process just migrated it", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+    writeFileSync(path.join(dir, "config.json"), JSON.stringify({ weaves: { w1: w } }));
+    let listings = 0;
+    class Racy extends ChannelState {
+      protected override versions(): number[] {
+        const v = super.versions();
+        if (listings++ === 0) {
+          // Another process migrates: commits version 1 from the legacy file and removes config.json.
+          writeFileSync(path.join(dir, "config.1.json"), JSON.stringify({ weaves: { w1: w }, sessions: {}, commit: { id: "m" } }));
+          rmSync(path.join(dir, "config.json"));
+        }
+        return v;
+      }
+    }
+    expect(new Racy(dir, "sR").get().weaves.w1).toEqual(w); // not an empty store
   });
 
   it("re-enumerates when the versions it listed were swept before it could read them", async () => {

@@ -24,7 +24,9 @@ const STALE_TMP_MS = 60_000;
 const VERSION_FILE = /^config\.(\d+)\.json$/;
 const LEGACY_FILE = "config.json";
 
-type Snapshot = { config: ChannelConfig; base: number; dirty: boolean };
+/** `id` is the commit id of the version the config came from (undefined for legacy/empty). */
+type Snapshot = { config: ChannelConfig; base: number; dirty: boolean; id: string | undefined };
+type Parsed = { config: ChannelConfig; dirty: boolean; id: string | undefined; parent: string | undefined };
 
 /**
  * The channel's persistent state, shared by every channel process on the machine.
@@ -40,11 +42,16 @@ type Snapshot = { config: ChannelConfig; base: number; dirty: boolean };
  * `config.<n+1>.json` exclusively as a hard link of a fully written, fsynced temp file. A hard link
  * publishes complete content and claims the name in one atomic step, so it acts as a
  * compare-and-swap on the version number: if another process committed n+1 first, the link fails
- * and the mutation is re-applied to the fresh snapshot. A writer that was paused long enough for
- * its number to be superseded *and* swept can still create the file, so after publishing it checks
- * that its version is the newest on disk and otherwise treats the attempt as lost (readers only ever
- * use the newest version, so the stale file is inert until swept). No lock file, hence nothing to
- * reclaim from a crashed or paused process. Filesystems without hard links are refused.
+ * and the mutation is re-applied to the fresh snapshot.
+ *
+ * Every version records its own commit id and its parent's, so lineage is checkable. A writer that
+ * was paused long enough for its number to be superseded *and* swept can still create the file;
+ * after publishing, a writer therefore confirms that its version is either the newest or the parent
+ * of the next one (a successor that built on it means it landed). Otherwise the attempt is treated
+ * as lost and re-applied — which is safe because every mutation is idempotent over its own
+ * descendants (a join re-applied over state that already carries the same token keeps the advanced
+ * watermark and cursors). No lock file, hence nothing to reclaim from a crashed or paused process.
+ * Filesystems without hard links are refused.
  */
 export class ChannelState {
   private cache: ChannelConfig | undefined;
@@ -103,9 +110,18 @@ export class ChannelState {
 
   upsertWeave(id: string, w: JoinedWeave): Promise<void> {
     return this.mutate((c) => {
+      const existing = c.weaves[id];
+      const s = this.session(c);
+      if (existing?.token === w.token) {
+        // Same identity already stored (this very join re-applied over its own descendant, or a
+        // redundant re-store): keep whatever progress the watermark and this session's cursor made.
+        c.weaves[id] = { ...w, lastSeq: Math.max(existing.lastSeq, w.lastSeq) };
+        s.cursors[id] ??= w.lastSeq;
+        return;
+      }
+      // A new identity: a fresh join resets where this session listens from; other sessions keep their own cursors.
       c.weaves[id] = w;
-      // A (re)join resets where this session listens from; other sessions keep their own cursors.
-      this.session(c).cursors[id] = w.lastSeq;
+      s.cursors[id] = w.lastSeq;
     });
   }
 
@@ -143,10 +159,10 @@ export class ChannelState {
    */
   private async mutate<T = void>(fn: (c: ChannelConfig) => T): Promise<T> {
     for (let attempt = 1; attempt <= MAX_COMMIT_ATTEMPTS; attempt++) {
-      const { config, base } = this.snapshot();
+      const { config, base, id } = this.snapshot();
       const result = fn(config);
       this.prune(config);
-      if (this.commit(base, config)) {
+      if (this.commit(base, id, config)) {
         this.cache = config;
         return result;
       }
@@ -188,21 +204,29 @@ export class ChannelState {
     for (let attempt = 0; attempt < MAX_SNAPSHOT_ATTEMPTS; attempt++) {
       for (const v of versions) {
         const parsed = this.parse(this.versionPath(v));
-        if (parsed) return { config: parsed.config, base: versions[0]!, dirty: parsed.dirty };
+        if (parsed) return { config: parsed.config, base: versions[0]!, dirty: parsed.dirty, id: parsed.id };
       }
-      if (versions.length === 0) break;
-      const again = this.versions();
-      if (again[0] === versions[0]) throw new Error(`channel state in ${this.dir} is unreadable (newest version ${versions[0]}); refusing to reset it`);
-      versions = again;
+      if (versions.length > 0) {
+        const again = this.versions();
+        if (again[0] === versions[0]) throw new Error(`channel state in ${this.dir} is unreadable (newest version ${versions[0]}); refusing to reset it`);
+        versions = again;
+        continue;
+      }
+      // No versions: either a fresh or legacy store, or another process is migrating the legacy
+      // file right now (it commits version 1, then removes config.json).
+      const legacyPath = path.join(this.dir, LEGACY_FILE);
+      const legacy = this.parse(legacyPath);
+      if (legacy) return { config: legacy.config, base: 0, dirty: true, id: undefined };
+      if (existsSync(legacyPath)) throw new Error(`channel state in ${this.dir} is unreadable (legacy config.json); refusing to reset it`);
+      versions = this.versions();
+      if (versions.length === 0) return { config: { weaves: {}, sessions: {} }, base: 0, dirty: false, id: undefined };
     }
-    const legacy = this.parse(path.join(this.dir, LEGACY_FILE));
-    if (legacy) return { config: legacy.config, base: 0, dirty: true };
-    return { config: { weaves: {}, sessions: {} }, base: 0, dirty: false };
+    throw new Error(`channel state in ${this.dir} kept changing under us; giving up after ${MAX_SNAPSHOT_ATTEMPTS} attempts`);
   }
 
-  private parse(file: string): { config: ChannelConfig; dirty: boolean } | undefined {
-    let raw: Partial<ChannelConfig>;
-    try { raw = JSON.parse(readFileSync(file, "utf8")) as Partial<ChannelConfig>; } catch { return undefined; }
+  private parse(file: string): Parsed | undefined {
+    let raw: Partial<ChannelConfig> & { commit?: { id?: string; parent?: string } };
+    try { raw = JSON.parse(readFileSync(file, "utf8")) as typeof raw; } catch { return undefined; }
     if (!raw || typeof raw !== "object") return undefined;
     const weaves: Record<string, JoinedWeave> = {};
     let dirty = false;
@@ -212,7 +236,7 @@ export class ChannelState {
       weaves[id] = { title, token, participantId, participantName, generalThreadId, wake, lastSeq };
       if (Object.keys(entry).length !== 7) dirty = true;
     }
-    return { config: { url: raw.url, allowInsecure: raw.allowInsecure, weaves, sessions: raw.sessions ?? {} }, dirty };
+    return { config: { url: raw.url, allowInsecure: raw.allowInsecure, weaves, sessions: raw.sessions ?? {} }, dirty, id: raw.commit?.id, parent: raw.commit?.parent };
   }
 
   /**
@@ -220,13 +244,14 @@ export class ChannelState {
    * temp file, then published under the version name as a hard link, which claims the name and
    * exposes the complete content atomically. Returns false if someone else published that version
    * first, or if this writer was so delayed that its number was already superseded and swept (the
-   * file is created but is not the newest, so no reader will ever use it).
+   * file is created but is not the newest and nothing descends from it, so no reader ever uses it).
    */
-  private commit(base: number, c: ChannelConfig): boolean {
+  private commit(base: number, parent: string | undefined, c: ChannelConfig): boolean {
     mkdirSync(this.dir, { recursive: true });
     const target = this.versionPath(base + 1);
     const tmp = path.join(this.dir, `config.${base + 1}.${process.pid}.${randomUUID()}.tmp`);
-    writeFileDurably(tmp, JSON.stringify(c, null, 2) + "\n");
+    const id = randomUUID();
+    writeFileDurably(tmp, JSON.stringify({ ...c, commit: { id, parent } }, null, 2) + "\n");
     try {
       this.publish(tmp, target);
     } catch (e) {
@@ -235,18 +260,30 @@ export class ChannelState {
     } finally {
       rmSync(tmp, { force: true });
     }
-    if (this.versions()[0] !== base + 1) return false;
+    if (!this.landed(base + 1, id)) return false;
     this.sweep(base + 1);
     return true;
+  }
+
+  /** Our version landed if it is the newest, or if the next version names it as its parent (a
+   * successor built on it, so our change is in the lineage). A newer version that does not descend
+   * from ours means ours was a stale claim of a swept number. If the successor was already swept
+   * we cannot tell and report a loss; re-applying is harmless because mutations are idempotent over
+   * their own descendants. */
+  private landed(version: number, id: string): boolean {
+    const newest = this.versions()[0];
+    if (newest === version) return true;
+    return this.parse(this.versionPath(version + 1))?.parent === id;
   }
 
   /** Atomic claim-and-publish. Test seam. */
   protected publish(tmp: string, target: string): void { linkSync(tmp, target); }
 
-  /** After a successful commit: drop versions older than the previous one (a concurrent reader may
-   * still be on `committed - 1`), the legacy file, and temp files abandoned by crashed writers. */
+  /** After a successful commit: drop versions older than the two before it (a concurrent reader may
+   * still be on `committed - 1`; a delayed writer may need `committed - 1`'s parent link), the legacy
+   * file, and temp files abandoned by crashed writers. */
   private sweep(committed: number): void {
-    for (const v of this.versions()) if (v < committed - 1) rmSync(this.versionPath(v), { force: true });
+    for (const v of this.versions()) if (v < committed - 2) rmSync(this.versionPath(v), { force: true });
     rmSync(path.join(this.dir, LEGACY_FILE), { force: true });
     const cutoff = Date.now() - STALE_TMP_MS;
     for (const f of readdirSync(this.dir)) {
