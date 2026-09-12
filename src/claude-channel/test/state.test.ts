@@ -135,8 +135,40 @@ describe("ChannelState", () => {
     const final = new ChannelState(dir, "x").get();
     expect(final.weaves.w1!.lastSeq).toBe(10);          // B's progress preserved: A did not re-apply its join over it
     expect(final.sessions.sB!.cursors.w1).toBe(10);
-    expect(applications).toBe(2); // `now` runs twice per attempt (session stamp + prune): exactly one attempt, no re-apply
+    expect(applications).toBe(3); // `now` runs three times per attempt (session stamp, prune, writer stamp): one attempt, no re-apply
     expect(a.file).toBe(path.join(dir, "config.2.json"));
+  });
+
+  it("a landed commit is never re-applied, even after every trace of its successor has been swept", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+    const seed = new ChannelState(dir, "s0");
+    await seed.upsertWeave("w1", w);                           // version 1
+    let intruded = false;
+    let applications = 0;
+    class Paused extends ChannelState {
+      protected override publish(tmp: string, target: string): void {
+        super.publish(tmp, target);                            // A publishes removal of w1 as version 2 ...
+        if (intruded) return;
+        intruded = true;
+        // ... and pauses. B reads version 2 (w1 gone), stores a NEW identity for w1 with wake=mentions,
+        // then makes three cursor commits. Its writes sweep versions 2 and 3 before A resumes.
+        const v = Number(/config\.(\d+)\.json$/.exec(target)![1]);
+        const base = JSON.parse(readFileSync(target, "utf8"));
+        let cur = { ...base, weaves: { w1: { ...w, token: "b-token", wake: "mentions" } }, sessions: { sB: { at: new Date().toISOString(), cursors: { w1: 0 } } } };
+        for (let i = 1; i <= 4; i++) {
+          cur = { ...cur, sessions: { sB: { at: new Date().toISOString(), cursors: { w1: i * 5 } } }, commit: { id: `b${i}`, parent: i === 1 ? base.commit.id : `b${i - 1}` } };
+          writeFileSync(path.join(dir, `config.${v + i}.json`), JSON.stringify(cur));
+        }
+        rmSync(path.join(dir, `config.${v}.json`));
+        rmSync(path.join(dir, `config.${v + 1}.json`));
+      }
+    }
+    const a = new Paused(dir, "sA", () => { applications++; return new Date(); });
+    await a.removeWeave("w1");
+    const final = new ChannelState(dir, "x").get();
+    expect(final.weaves.w1).toMatchObject({ token: "b-token", wake: "mentions" }); // B's new identity survives
+    expect(final.sessions.sB!.cursors.w1).toBe(20);
+    expect(applications).toBe(2); // `now` runs twice per attempt here (prune, writer stamp): removeWeave ran once
   });
 
   it("re-applying a join over state that already holds the same token keeps the advanced watermark and cursors", async () => {

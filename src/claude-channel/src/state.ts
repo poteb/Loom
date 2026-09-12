@@ -15,9 +15,14 @@ export type ChannelConfig = {
   url?: string; allowInsecure?: boolean;
   weaves: Record<string, JoinedWeave>;
   sessions: Record<string, SessionCursors>;
+  /** Per writer (process), the id of its most recent commit. Carried forward by every descendant
+   * version, so a writer can prove its commit is in the lineage no matter how many commits and
+   * sweeps followed. Internal bookkeeping; entries older than WRITER_TTL_MS are pruned. */
+  writers: Record<string, { id: string; at: string }>;
 };
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const WRITER_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_COMMIT_ATTEMPTS = 100;
 const MAX_SNAPSHOT_ATTEMPTS = 10;
 const STALE_TMP_MS = 60_000;
@@ -44,17 +49,20 @@ type Parsed = { config: ChannelConfig; dirty: boolean; id: string | undefined; p
  * compare-and-swap on the version number: if another process committed n+1 first, the link fails
  * and the mutation is re-applied to the fresh snapshot.
  *
- * Every version records its own commit id and its parent's, so lineage is checkable. A writer that
- * was paused long enough for its number to be superseded *and* swept can still create the file;
- * after publishing, a writer therefore confirms that its version is either the newest or the parent
- * of the next one (a successor that built on it means it landed). Otherwise the attempt is treated
- * as lost and re-applied — which is safe because every mutation is idempotent over its own
- * descendants (a join re-applied over state that already carries the same token keeps the advanced
- * watermark and cursors). No lock file, hence nothing to reclaim from a crashed or paused process.
+ * A writer that was paused long enough for its number to be superseded *and* swept can still
+ * create the file, so a successful link is not yet proof of landing. Proof travels inside the
+ * state: every commit records `writers[<this process>] = <commit id>`, and every descendant copies
+ * that map forward. After publishing, the writer reads the newest state; if its own entry there is
+ * the id it just committed, its change is in the lineage (however many commits and sweeps
+ * followed). If not, the newest state does not descend from its version — a stale claim of a swept
+ * number — and the mutation is re-applied on a fresh snapshot. Mutations are never re-applied over
+ * their own descendants. No lock file, hence nothing to reclaim from a crashed or paused process.
  * Filesystems without hard links are refused.
  */
 export class ChannelState {
   private cache: ChannelConfig | undefined;
+  /** Identifies this process among writers; see ChannelConfig.writers. */
+  private readonly writerId = `${process.pid}:${randomUUID()}`;
 
   constructor(readonly dir: string, readonly sessionId: string = ChannelState.sessionIdFrom(process.env), private readonly now: () => Date = () => new Date()) {}
 
@@ -219,7 +227,7 @@ export class ChannelState {
       if (legacy) return { config: legacy.config, base: 0, dirty: true, id: undefined };
       if (existsSync(legacyPath)) throw new Error(`channel state in ${this.dir} is unreadable (legacy config.json); refusing to reset it`);
       versions = this.versions();
-      if (versions.length === 0) return { config: { weaves: {}, sessions: {} }, base: 0, dirty: false, id: undefined };
+      if (versions.length === 0) return { config: { weaves: {}, sessions: {}, writers: {} }, base: 0, dirty: false, id: undefined };
     }
     throw new Error(`channel state in ${this.dir} kept changing under us; giving up after ${MAX_SNAPSHOT_ATTEMPTS} attempts`);
   }
@@ -236,7 +244,7 @@ export class ChannelState {
       weaves[id] = { title, token, participantId, participantName, generalThreadId, wake, lastSeq };
       if (Object.keys(entry).length !== 7) dirty = true;
     }
-    return { config: { url: raw.url, allowInsecure: raw.allowInsecure, weaves, sessions: raw.sessions ?? {} }, dirty, id: raw.commit?.id, parent: raw.commit?.parent };
+    return { config: { url: raw.url, allowInsecure: raw.allowInsecure, weaves, sessions: raw.sessions ?? {}, writers: raw.writers ?? {} }, dirty, id: raw.commit?.id, parent: raw.commit?.parent };
   }
 
   /**
@@ -244,13 +252,17 @@ export class ChannelState {
    * temp file, then published under the version name as a hard link, which claims the name and
    * exposes the complete content atomically. Returns false if someone else published that version
    * first, or if this writer was so delayed that its number was already superseded and swept (the
-   * file is created but is not the newest and nothing descends from it, so no reader ever uses it).
+   * file is created but nothing descends from it, so no reader ever uses it).
    */
   private commit(base: number, parent: string | undefined, c: ChannelConfig): boolean {
     mkdirSync(this.dir, { recursive: true });
     const target = this.versionPath(base + 1);
     const tmp = path.join(this.dir, `config.${base + 1}.${process.pid}.${randomUUID()}.tmp`);
     const id = randomUUID();
+    const now = this.now();
+    const cutoff = now.getTime() - WRITER_TTL_MS;
+    for (const [w, e] of Object.entries(c.writers)) if (w !== this.writerId && Date.parse(e.at) < cutoff) delete c.writers[w];
+    c.writers[this.writerId] = { id, at: now.toISOString() };
     writeFileDurably(tmp, JSON.stringify({ ...c, commit: { id, parent } }, null, 2) + "\n");
     try {
       this.publish(tmp, target);
@@ -265,15 +277,13 @@ export class ChannelState {
     return true;
   }
 
-  /** Our version landed if it is the newest, or if the next version names it as its parent (a
-   * successor built on it, so our change is in the lineage). A newer version that does not descend
-   * from ours means ours was a stale claim of a swept number. If the successor was already swept
-   * we cannot tell and report a loss; re-applying is harmless because mutations are idempotent over
-   * their own descendants. */
+  /** Our version landed if it is the newest, or if the newest readable state still carries our
+   * writer entry with this commit id — every descendant copies `writers` forward, so this holds
+   * however many commits and sweeps followed. A newest state without it does not descend from our
+   * version: ours was a stale claim of a swept number, and no reader ever used it. */
   private landed(version: number, id: string): boolean {
-    const newest = this.versions()[0];
-    if (newest === version) return true;
-    return this.parse(this.versionPath(version + 1))?.parent === id;
+    if (this.versions()[0] === version) return true;
+    return this.snapshot().config.writers[this.writerId]?.id === id;
   }
 
   /** Atomic claim-and-publish. Test seam. */
