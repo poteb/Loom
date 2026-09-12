@@ -93,8 +93,12 @@ export async function getWeave(db: Db, actor: Actor, weaveId: string): Promise<W
   return { weave: toPublicWeave(w), threads: ts.map(toPublicThread), participants: ps.map(toPublicParticipant) };
 }
 
-export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { name: string; kind: Kind }, actor?: Actor): Promise<JoinResult> {
-  const name = validateName(who.name);
+export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { name?: string; kind: Kind }, actor?: Actor): Promise<JoinResult> {
+  // On an agent connection the name is optional (spec 2): the agent's registered name is the
+  // default, so a remote client with only a key in its URL can join with nothing else.
+  const wanted = who.name?.trim() ? who.name : actor?.kind === "agent" ? actor.agent.name : undefined;
+  if (wanted === undefined) throw errors.validation("name is required");
+  const name = validateName(wanted);
   if (who.kind !== "human" && who.kind !== "agent") throw errors.validation("kind must be human or agent");
   const [found] = await db.select().from(weaves).where(eq(weaves.secret, secret));
   if (!found) throw errors.weaveNotFound();

@@ -30,7 +30,7 @@ export function createCore(db: Db) {
     resolveCredential: (credential: string) => resolveCredential(db, credential),
     createWeave: (input: weaves.CreateWeaveInput, actor?: Actor) => weaves.createWeave(db, bus, input, actor),
     getWeave: async (actor: Actor, weaveId: string) => weaves.getWeave(db, await resolveInWeave(db, actor, weaveId), weaveId),
-    joinWeave: (secret: string, who: { name: string; kind: Kind }, actor?: Actor) => weaves.joinWeave(db, bus, secret, who, actor),
+    joinWeave: (secret: string, who: { name?: string; kind: Kind }, actor?: Actor) => weaves.joinWeave(db, bus, secret, who, actor),
     lookupWeaveIdBySecret: (secret: string) => weaves.lookupWeaveIdBySecret(db, secret),
     archiveWeave: async (actor: Actor, weaveId: string) => weaves.archiveWeave(db, bus, await resolveInWeave(db, actor, weaveId), weaveId),
     listWeaves: (actor: Actor) => weaves.listWeaves(db, actor),

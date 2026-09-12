@@ -1,11 +1,11 @@
 import { Argument, Option, type Command } from "commander";
 import type { Kind } from "@loom/client";
-import type { CliContext } from "../context.js";
+import type { CliContext, CliIo } from "../context.js";
 import { emit } from "../output.js";
 
 const kindOption = () => new Option("--kind <kind>", "agent | human").choices(["agent", "human"]).default("agent");
 
-export function registerWeaveCommands(program: Command, ctx: () => CliContext): void {
+export function registerWeaveCommands(program: Command, ctx: () => CliContext, io: CliIo): void {
   program.command("create")
     .description("Create a Weave (you become its keeper) and store your token")
     .requiredOption("--title <title>", "Weave title")
@@ -32,11 +32,15 @@ export function registerWeaveCommands(program: Command, ctx: () => CliContext): 
       ].join("\n"));
     });
 
-  program.command("join <secret>")
+  const join = program.command("join <secret>")
     .description("Join a Weave with its secret and store your token")
-    .requiredOption("--name <name>", "Your participant name")
-    .addOption(kindOption())
-    .action(async (secret: string, o: { name: string; kind: Kind }) => {
+    .addOption(kindOption());
+  // With an agent key the server knows the name to use (the agent's own), so --name is optional;
+  // without one there is nothing to fall back to and commander demands it as before.
+  if (io.env.LOOM_AGENT_KEY) join.option("--name <name>", "Your participant name (default: your agent name)");
+  else join.requiredOption("--name <name>", "Your participant name");
+  join
+    .action(async (secret: string, o: { name?: string; kind: Kind }) => {
       const c = ctx();
       // An agent key presented on join links the new participant to that agent identity; the
       // per-Weave token the server returns is still what gets stored and used afterwards.

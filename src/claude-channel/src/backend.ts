@@ -36,13 +36,13 @@ export class ClientToolBackend implements LoomToolBackend {
    * lose the issued token and make a retry fail with `name_taken`. Order: lookup -> getWeave -> join
    * -> persist the token -> hooks. The connection-wide agent key other backends pass through is
    * ignored here: the channel stores the participant identity it creates and reuses that instead. */
-  async joinWeave(secret: string, who: { name: string; kind: Kind }, _credential?: string) {
+  async joinWeave(secret: string, who: { name?: string; kind: Kind }, _credential?: string) {
     const weaveId = await this.client.lookupWeave(secret);
     // Already joined under this name: hand back the stored identity rather than consuming the name
     // a second time (which the server refuses with name_taken). Falls through to a fresh join if the
     // stored token no longer works or the participant is gone.
     const stored = this.state.load().weaves[weaveId];
-    if (stored && sameName(stored.participantName, who.name)) {
+    if (stored && who.name !== undefined && sameName(stored.participantName, who.name)) {
       const reused = await this.reuseStored(weaveId, stored);
       if (reused) return reused;
     }
@@ -56,7 +56,7 @@ export class ClientToolBackend implements LoomToolBackend {
       // already persisted the identity: the state lock does not cover the network round trip.
       if (e instanceof LoomClientError && e.code === "name_taken") {
         const raced = this.state.load().weaves[weaveId];
-        if (raced && sameName(raced.participantName, who.name)) {
+        if (raced && who.name !== undefined && sameName(raced.participantName, who.name)) {
           const reused = await this.reuseStored(weaveId, raced);
           if (reused) return reused;
         }

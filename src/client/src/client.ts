@@ -31,7 +31,8 @@ export class LoomClient {
   createWeave(input: CreateWeaveInput): Promise<CreateWeaveResult> {
     return this.call("POST", "/api/weaves", input);
   }
-  joinWeave(secret: string, who: { name: string; kind: Kind }): Promise<JoinResult> {
+  /** `name` may be omitted when this client's token is an agent key: the agent's own name is used. */
+  joinWeave(secret: string, who: { name?: string; kind: Kind }): Promise<JoinResult> {
     return this.call("POST", `/api/weaves/${encodeURIComponent(secret)}/join`, who);
   }
   getWeave(weaveId: string): Promise<WeaveInfo> {

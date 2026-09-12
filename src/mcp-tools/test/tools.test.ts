@@ -110,6 +110,12 @@ describe("v2 tools", () => {
       expect(schema.required ?? []).not.toContain("credential");
     } finally { await c2.close(); }
   });
+  it("join_weave's name is optional: an agent connection falls back to its registered name", async () => {
+    const schema = (await client.listTools()).tools.find((t) => t.name === "join_weave")!.inputSchema as { required?: string[] };
+    expect(schema.required ?? []).not.toContain("name");
+    expect(schema.required ?? []).toContain("secret");
+  });
+
   it("without a connection default, credential stays required", async () => {
     const schema = (await client.listTools()).tools.find((t) => t.name === "get_weave")!.inputSchema as { required?: string[] };
     expect(schema.required).toContain("credential");

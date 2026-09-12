@@ -7,7 +7,7 @@ export type Role = "member" | "keeper";
 
 export type LoomToolBackend = {
   createWeave(input: { title: string; opener: string; creator: { name: string; kind: Kind } }, credential?: string): Promise<unknown>; // CreateWeaveResult shape
-  joinWeave(secret: string, who: { name: string; kind: Kind }, credential?: string): Promise<unknown>;                     // JoinResult shape; credential: the connection's agent key, if any
+  joinWeave(secret: string, who: { name?: string; kind: Kind }, credential?: string): Promise<unknown>;                     // JoinResult shape; credential: the connection's agent key, if any
   lookupWeave(secret: string): Promise<{ weaveId: string }>;
   getWeave(credential: string, weaveId: string): Promise<unknown>;
   readEvents(credential: string, weaveId: string, opts: { since?: number; threadId?: string; limit?: number }): Promise<unknown[]>;

@@ -328,6 +328,16 @@ describe("remote MCP with an agent key", () => {
       expect(denied.isError).toBe(true); expect(json(denied).code).toBe("forbidden");
     } finally { await c.close(); }
   });
+  it("join_weave without a name takes the connection's agent name", async () => {
+    const { key } = await s!.core.addAgent(await s!.core.resolveCredential(keeperToken("k1")), "Nameless");
+    const other = await s!.core.createWeave({ title: "Host", opener: "", creator: { name: "Host", kind: "human" } });
+    const c = await agentClient(key, "query");
+    try {
+      const joined = json(await c.callTool({ name: "join_weave", arguments: { secret: other.secret } }));
+      expect(joined.participant.name).toBe("Nameless");
+      expect(joined.participant.agentId).toBeTruthy();
+    } finally { await c.close(); }
+  });
   it("Bearer agent key works too; a revoked key fails every tool with invalid_token", async () => {
     const keeper = await s!.core.resolveCredential(keeperToken("k1"));
     const { agent, key } = await s!.core.addAgent(keeper, "Bot");

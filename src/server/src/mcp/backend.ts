@@ -19,7 +19,7 @@ export class CoreToolBackend implements LoomToolBackend {
   async createWeave(input: { title: string; opener: string; creator: { name: string; kind: Kind } }, credential?: string) {
     return this.core.createWeave(input, credential ? await this.actor(credential) : undefined);
   }
-  async joinWeave(secret: string, who: { name: string; kind: Kind }, credential?: string) {
+  async joinWeave(secret: string, who: { name?: string; kind: Kind }, credential?: string) {
     return this.core.joinWeave(secret, who, credential ? await this.linkableActor(credential) : undefined);
   }
   async lookupWeave(secret: string) { return { weaveId: await this.core.lookupWeaveIdBySecret(secret) }; }

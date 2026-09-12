@@ -18,7 +18,8 @@ export function weaveRoutes(core: Core) {
   });
 
   r.post("/:secret/join", async (c) => {
-    const who = await body(c, z.object({ name: z.string(), kind: kindSchema }));
+    // `name` is optional: an agent key on this call supplies the agent's registered name.
+    const who = await body(c, z.object({ name: z.string().optional(), kind: kindSchema }));
     // An agent key on the join call links the new participant to that agent (and makes a repeat
     // join return the identity it already owns here). Any other credential — including a stale one
     // a client still attaches to every request — is ignored, not an error.

@@ -62,7 +62,7 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
   let ctxCache: CliContext | undefined;
   const ctx = () => (ctxCache ??= buildContext({ ...program.opts<GlobalOpts>(), url: baseUrlOpt }, io));
 
-  registerWeaveCommands(program, ctx);
+  registerWeaveCommands(program, ctx, io);
   registerMessageCommands(program, ctx);
   registerThreadCommands(program, ctx);
   registerAdminCommands(program, ctx);

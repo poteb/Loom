@@ -345,8 +345,14 @@ describe("v2: thread url, invite, inbox, agents", () => {
     const created = (await run(["create", "--title", "T", "--opener", "o", "--name", "Paw", "--json"])).json();
     const emptyCfg = path.join(mkdtempSync(path.join(tmpdir(), "loom-cli-")), "config.json");
     const A = { LOOM_CONFIG: emptyCfg, LOOM_AGENT_KEY: add.json().key };
-    const joined = await run(["join", created.secret, "--name", "ChatGPT", "--json"], A);
-    expect(joined.code).toBe(0); expect(joined.json().participant.agentId).toBe(add.json().agent.id);
+    // With LOOM_AGENT_KEY set, --name is optional: the server names the participant after the agent.
+    const joined = await run(["join", created.secret, "--json"], A);
+    expect(joined.code).toBe(0);
+    expect(joined.json().participant.agentId).toBe(add.json().agent.id);
+    expect(joined.json().participant.name).toBe("ChatGPT");
+    // Without a key it is still a usage error to omit it.
+    const noName = await run(["join", created.secret, "--json"], { LOOM_CONFIG: emptyCfg });
+    expect(noName.code).toBe(2);
     // create with only an agent key links the creator to that agent, exactly as join does.
     const mine = await run(["create", "--title", "Mine", "--opener", "o", "--name", "ChatGPT", "--json"], { ...A, LOOM_CONFIG: path.join(mkdtempSync(path.join(tmpdir(), "loom-cli-")), "config.json") });
     expect(mine.code).toBe(0); expect(mine.json().participant.agentId).toBe(add.json().agent.id);

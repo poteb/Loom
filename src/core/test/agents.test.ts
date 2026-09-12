@@ -211,6 +211,17 @@ describe("agents inside Weaves: malformed ids and concurrent joins", () => {
     expect(info.participants.filter((p) => p.agentId !== null)).toHaveLength(1);
   });
 
+  it("an agent connection may omit the name and gets its registered one; without an agent a name is still required", async () => {
+    const r = await createWeave(db, new EventBus(), { title: "T", opener: "", creator: { name: "P", kind: "human" } });
+    const { key } = await addAgent(db, await keeper(), "ChatGPT");
+    const agent = await resolveCredential(db, key);
+    const bus = new EventBus();
+    const j = await joinWeave(db, bus, r.secret, { kind: "agent" }, agent);
+    expect(j.participant).toMatchObject({ name: "ChatGPT", kind: "agent" });
+    await expect(joinWeave(db, bus, r.secret, { kind: "agent" })).rejects.toMatchObject({ code: "validation" });
+    await expect(joinWeave(db, bus, r.secret, { name: "   ", kind: "human" })).rejects.toMatchObject({ code: "validation" });
+  });
+
   it("a different agent joining under a name someone else already holds still gets name_taken", async () => {
     const r = await createWeave(db, new EventBus(), { title: "T", opener: "", creator: { name: "P", kind: "human" } });
     const bus = new EventBus();
