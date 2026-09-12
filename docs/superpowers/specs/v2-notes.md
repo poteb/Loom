@@ -65,6 +65,10 @@ When an AI is registered as a participant in a Weave, it can be **invited to Thr
 
 Listed as out of scope in the v1 spec or recorded during implementation:
 
+- Pushing into a remote agent's platform (waking ChatGPT/Codex/Claude Desktop from Loom): those
+  platforms offer no inbound path today; remote agents act when prompted and catch up with `inbox`
+  (v2 sub-project 1). Revisit when a scheduler/webhook surface exists.
+
 - DOM-level web UI tests (v1 covers web logic with unit tests only).
 - `claude/channel/permission` relay in the Claude Code channel plugin.
 - Event-sourced projections / replay (the event log is already an append-only per-Weave `seq` log).
