@@ -1,16 +1,26 @@
-import type { Core, Kind, Role, Settings } from "@loom/core";
+import { LoomError, type Actor, type Core, type Kind, type Role, type Settings } from "@loom/core";
 import type { LoomToolBackend } from "@loom/mcp-tools";
 
 /** LoomToolBackend directly over the core service layer (same process; no HTTP hop). Core errors carry {code,message}. */
 export class CoreToolBackend implements LoomToolBackend {
   constructor(private readonly core: Core) {}
   private actor(credential: string) { return this.core.resolveCredential(credential); }
+  /** For join only: core uses the actor solely to link an agent, so a credential that no longer
+   * resolves (a stale session default, a revoked key) means "join anonymously", not a failure. */
+  private async linkableActor(credential: string): Promise<Actor | undefined> {
+    try {
+      return await this.actor(credential);
+    } catch (e) {
+      if (e instanceof LoomError && e.code === "invalid_token") return undefined;
+      throw e;
+    }
+  }
 
   async createWeave(input: { title: string; opener: string; creator: { name: string; kind: Kind } }, credential?: string) {
     return this.core.createWeave(input, credential ? await this.actor(credential) : undefined);
   }
   async joinWeave(secret: string, who: { name: string; kind: Kind }, credential?: string) {
-    return this.core.joinWeave(secret, who, credential ? await this.actor(credential) : undefined);
+    return this.core.joinWeave(secret, who, credential ? await this.linkableActor(credential) : undefined);
   }
   async lookupWeave(secret: string) { return { weaveId: await this.core.lookupWeaveIdBySecret(secret) }; }
   async getWeave(c: string, weaveId: string) { return this.core.getWeave(await this.actor(c), weaveId); }

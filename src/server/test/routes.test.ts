@@ -186,6 +186,12 @@ describe("v2: threads url, invites, inbox, agents", () => {
     expect(rev.status).toBe(204);
     expect((await api(s.baseUrl, "GET", `/api/weaves/${r.weave.id}/events`, undefined, add.json.key)).status).toBe(401);
   });
+  it("join ignores a Bearer that no longer resolves instead of failing", async () => {
+    const r = (await api(s.baseUrl, "POST", "/api/weaves", { title: "T", opener: "o", creator: { name: "Paw", kind: "human" } })).json;
+    const stale = await api(s.baseUrl, "POST", `/api/weaves/${r.secret}/join`, { name: "Stale", kind: "human" }, "z".repeat(43));
+    expect(stale.status).toBe(201);
+    expect(stale.json.participant.agentId).toBeNull();
+  });
   it("?agent= is honoured on /mcp only, never on the REST API", async () => {
     const add = await api(s.baseUrl, "POST", "/api/admin/agents", { name: "Query" }, KEEPER);
     const r = (await api(s.baseUrl, "POST", "/api/weaves", { title: "T", opener: "o", creator: { name: "Paw", kind: "human" } })).json;

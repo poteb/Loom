@@ -339,6 +339,13 @@ describe("remote MCP with an agent key", () => {
       expect(r.isError).toBe(true); expect(json(r).code).toBe("invalid_token");
     } finally { await c.close(); }
   });
+  it("join_weave with a stale explicit credential still joins", async () => {
+    await withClient(async (c) => {
+      const created = json(await c.callTool({ name: "create_weave", arguments: { title: "J", opener: "", name: "Host" } }));
+      const joined = json(await c.callTool({ name: "join_weave", arguments: { secret: created.secret, name: "Guest", credential: "junk" } }));
+      expect(joined.participant.name).toBe("Guest");
+    });
+  });
   it("without an agent, credential stays required and there is no agent line in the instructions", async () => {
     await withClient(async (c) => {
       const schema = (await c.listTools()).tools.find((t) => t.name === "get_weave")!.inputSchema as { required?: string[] };
