@@ -30,6 +30,8 @@ export function actorId(actor: Actor): string {
 
 export function assertCanRead(actor: Actor, weaveId: string): void {
   if (actor.kind === "keeper") return;
+  // An agent key is not Weave-scoped; it grants nothing until it is mapped to a participant.
+  if (actor.kind === "agent") throw errors.forbidden("Credential does not belong to this Weave");
   const scoped = actor.kind === "participant" ? actor.participant.weaveId : actor.weaveId;
   if (scoped !== weaveId) throw errors.forbidden("Credential does not belong to this Weave");
 }

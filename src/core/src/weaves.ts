@@ -23,7 +23,8 @@ export function toPublicWeave(w: typeof weaves.$inferSelect): PublicWeave {
 }
 export function toPublicThread(t: typeof threads.$inferSelect): PublicThread {
   return { id: t.id, weaveId: t.weaveId, name: t.name, isGeneral: t.isGeneral, createdBy: t.createdBy,
-    createdAt: t.createdAt.toISOString(), closedAt: t.closedAt ? t.closedAt.toISOString() : null };
+    createdAt: t.createdAt.toISOString(), closedAt: t.closedAt ? t.closedAt.toISOString() : null,
+    url: t.url ?? null };
 }
 
 /** True only for the per-Weave unique participant-name index; any other unique violation is a bug, not a taken name. */

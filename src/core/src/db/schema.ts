@@ -18,9 +18,18 @@ export const threads = pgTable("threads", {
   name: text("name").notNull(),
   isGeneral: boolean("is_general").notNull().default(false),
   createdBy: text("created_by").notNull(),
+  url: text("url"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   closedAt: timestamp("closed_at", { withTimezone: true }),
 }, (t) => [index("threads_weave_idx").on(t.weaveId)]);
+
+export const agents = pgTable("agents", {
+  id: uuid("id").primaryKey(),
+  name: text("name").notNull(),
+  keyHash: text("key_hash").notNull().unique(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+});
 
 export const participants = pgTable("participants", {
   id: uuid("id").primaryKey(),
@@ -29,9 +38,11 @@ export const participants = pgTable("participants", {
   kind: text("kind", { enum: ["human", "agent"] }).notNull(),
   role: text("role", { enum: ["member", "keeper"] }).notNull().default("member"),
   token: text("token").notNull().unique(),
+  agentId: uuid("agent_id").references(() => agents.id),
   joinedAt: timestamp("joined_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   uniqueIndex("participants_weave_name_idx").on(t.weaveId, sql`lower(${t.name})`),
+  uniqueIndex("participants_weave_agent_idx").on(t.weaveId, t.agentId),
 ]);
 
 export const keepers = pgTable("keepers", {
