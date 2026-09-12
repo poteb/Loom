@@ -31,13 +31,21 @@ export function toPublicThread(t: typeof threads.$inferSelect): PublicThread {
     url: t.url ?? null };
 }
 
-/** True only for the per-Weave unique participant-name index; any other unique violation is a bug, not a taken name. */
-export function isNameTakenViolation(e: unknown): boolean {
+function isUniqueViolationOn(e: unknown, constraint: string): boolean {
   if (typeof e !== "object" || e === null) return false;
   const err = e as { code?: string; constraint_name?: string; cause?: { code?: string; constraint_name?: string } };
-  const code = err.code ?? err.cause?.code;
-  const constraint = err.constraint_name ?? err.cause?.constraint_name;
-  return code === "23505" && constraint === "participants_weave_name_idx";
+  return (err.code ?? err.cause?.code) === "23505"
+    && (err.constraint_name ?? err.cause?.constraint_name) === constraint;
+}
+
+/** True only for the per-Weave unique participant-name index; any other unique violation is a bug, not a taken name. */
+export function isNameTakenViolation(e: unknown): boolean {
+  return isUniqueViolationOn(e, "participants_weave_name_idx");
+}
+
+/** True only for the per-Weave unique participant-agent index: this key lost a concurrent first join. */
+export function isAgentAlreadyJoinedViolation(e: unknown): boolean {
+  return isUniqueViolationOn(e, "participants_weave_agent_idx");
 }
 
 export async function createWeave(db: Db, bus: EventBus, input: CreateWeaveInput, actor?: Actor): Promise<CreateWeaveResult> {
@@ -92,13 +100,21 @@ export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { na
   const [general] = await db.select().from(threads).where(eq(threads.weaveId, found.id)).orderBy(asc(threads.createdAt)).limit(1);
   if (!general) throw errors.weaveNotFound();
   const agentId = actor?.kind === "agent" ? actor.agent.id : null;
-  if (agentId) {
-    // An agent owns at most one participant per Weave: joining again is a lookup, not a new identity.
+  // The participant this agent already owns here, read raw: the caller needs its token, so
+  // `participantForAgent` (which returns the public shape) is not enough.
+  const myParticipant = async () => {
+    if (!agentId) return undefined;
     const [mine] = await db.select().from(participants)
       .where(and(eq(participants.agentId, agentId), eq(participants.weaveId, found.id))).limit(1);
-    if (mine) return { weaveId: found.id, weave: toPublicWeave(found), generalThreadId: general.id,
-      participant: toPublicParticipant(mine), token: mine.token, alreadyJoined: true };
-  }
+    return mine;
+  };
+  const asAlreadyJoined = (p: typeof participants.$inferSelect): JoinResult => ({
+    weaveId: found.id, weave: toPublicWeave(found), generalThreadId: general.id,
+    participant: toPublicParticipant(p), token: p.token, alreadyJoined: true,
+  });
+  // An agent owns at most one participant per Weave: joining again is a lookup, not a new identity.
+  const existing = await myParticipant();
+  if (existing) return asAlreadyJoined(existing);
   const token = newSecret();
   const participantId = newId();
   try {
@@ -113,6 +129,13 @@ export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { na
     // unsaved while a second (failable) metadata request runs.
     return { weaveId: found.id, weave: toPublicWeave(found), generalThreadId: general.id, participant, token };
   } catch (e) {
+    // The lookup above runs outside the Weave lock, so two concurrent first joins by one key can
+    // both miss it. The unique index rejects the loser; it adopts the winner's identity, which is
+    // the same idempotent answer a later join would have got.
+    if (agentId && isAgentAlreadyJoinedViolation(e)) {
+      const winner = await myParticipant();
+      if (winner) return asAlreadyJoined(winner);
+    }
     if (isNameTakenViolation(e)) throw errors.nameTaken(name);
     throw e;
   }

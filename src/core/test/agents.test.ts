@@ -6,7 +6,7 @@ import {
   actorId, assertCanRead, assertParticipantOf, assertIsKeeperOf, assertStillKeeperOf,
 } from "../src/actors.js";
 import { seedKeepers } from "../src/keepers.js";
-import { createWeave, joinWeave, getWeave } from "../src/weaves.js";
+import { createWeave, joinWeave, getWeave, isNameTakenViolation, isAgentAlreadyJoinedViolation } from "../src/weaves.js";
 import { readEvents } from "../src/events.js";
 import { createCore } from "../src/index.js";
 import { EventBus } from "../src/bus.js";
@@ -152,5 +152,44 @@ describe("agents inside Weaves", () => {
     await expect(core.createWeave({ title: "Nope", opener: "", creator: { name: "Bot", kind: "agent" } }, agent)).rejects.toMatchObject({ code: "forbidden" });
     const byKeeper = await core.createWeave({ title: "Ok", opener: "", creator: { name: "K", kind: "human" } }, await keeper());
     expect(byKeeper.participant.agentId).toBeNull();
+  });
+});
+
+describe("agents inside Weaves: malformed ids and concurrent joins", () => {
+  it("a malformed weaveId is a Loom weave_not_found for an agent actor, never a raw database error", async () => {
+    const core = createCore(db);
+    const { key } = await core.addAgent(await keeper(), "Bot");
+    const agent = await core.resolveCredential(key);
+    await expect(core.getWeave(agent, "not-a-uuid")).rejects.toMatchObject({ code: "weave_not_found" });
+    await expect(core.readEvents(agent, "nope", {})).rejects.toMatchObject({ code: "weave_not_found" });
+  });
+
+  it("the agent-join unique violation is recognised, and stays distinct from a taken name", () => {
+    const agentClash = { code: "23505", constraint_name: "participants_weave_agent_idx" };
+    expect(isAgentAlreadyJoinedViolation(agentClash)).toBe(true);
+    expect(isAgentAlreadyJoinedViolation({ cause: agentClash })).toBe(true);
+    expect(isAgentAlreadyJoinedViolation({ code: "23505", constraint_name: "participants_weave_name_idx" })).toBe(false);
+    expect(isAgentAlreadyJoinedViolation({ code: "23503", constraint_name: "participants_weave_agent_idx" })).toBe(false);
+    expect(isAgentAlreadyJoinedViolation({ code: "23505" })).toBe(false);
+    expect(isAgentAlreadyJoinedViolation(new Error("boom"))).toBe(false);
+    expect(isAgentAlreadyJoinedViolation(null)).toBe(false);
+    expect(isNameTakenViolation(agentClash)).toBe(false);
+  });
+
+  it("two concurrent first joins by one agent key converge on a single identity", async () => {
+    const r = await createWeave(db, new EventBus(), { title: "T", opener: "", creator: { name: "P", kind: "human" } });
+    const { key } = await addAgent(db, await keeper(), "Bot");
+    const agent = await resolveCredential(db, key);
+    const bus = new EventBus();
+    // Distinct names, so only participants_weave_agent_idx can be the colliding index.
+    const [a, b] = await Promise.all([
+      joinWeave(db, bus, r.secret, { name: "BotA", kind: "agent" }, agent),
+      joinWeave(db, bus, r.secret, { name: "BotB", kind: "agent" }, agent),
+    ]);
+    expect(b.participant.id).toBe(a.participant.id);
+    expect(b.token).toBe(a.token);
+    expect(a.alreadyJoined === true || b.alreadyJoined === true).toBe(true);
+    const info = await getWeave(db, await resolveCredential(db, r.token), r.weave.id);
+    expect(info.participants.filter((p) => p.agentId !== null)).toHaveLength(1);
   });
 });

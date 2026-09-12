@@ -3,6 +3,7 @@ import type { Db } from "./db/index.js";
 import type { Tx } from "./events.js";
 import { participants, keepers, weaves, agents } from "./db/schema.js";
 import { errors } from "./errors.js";
+import { isUuid } from "./ids.js";
 import { hashKey, toPublicAgent } from "./agent-keys.js";
 import type { Actor, PublicParticipant } from "./types.js";
 
@@ -38,6 +39,9 @@ export async function participantForAgent(db: Db, agentId: string, weaveId: stri
  */
 export async function resolveInWeave(db: Db, actor: Actor, weaveId: string): Promise<Actor> {
   if (actor.kind !== "agent") return actor;
+  // Guard before querying: `participants.weave_id` is a uuid column, so a malformed id would
+  // surface as a raw Postgres error instead of a Loom one. Callers guard too, but they run later.
+  if (!isUuid(weaveId)) throw errors.weaveNotFound();
   const me = await participantForAgent(db, actor.agent.id, weaveId);
   if (!me) throw errors.forbidden("Join the Weave first");
   return { kind: "participant", participant: me };
