@@ -11,6 +11,7 @@ import type { TicketStore } from "./tickets.js";
 import { weaveRoutes } from "./routes/weaves.js";
 import { threadRoutes } from "./routes/threads.js";
 import { adminRoutes } from "./routes/admin.js";
+import { agentRoutes } from "./routes/agents.js";
 import { authRoutes } from "./routes/auth.js";
 import { mountMcp, type MountMcpOptions } from "./mcp/index.js";
 
@@ -38,6 +39,8 @@ export function buildApp(deps: AppDeps): Hono<Env> {
 
   app.route("/api/weaves", weaveRoutes(deps.core));
   app.route("/api/threads", threadRoutes(deps.core));
+  // Before /api/admin: Hono matches in registration order, and adminRoutes has no /agents of its own.
+  app.route("/api/admin/agents", agentRoutes(deps.core));
   app.route("/api/admin", adminRoutes(deps.core));
   app.route("/api/auth", authRoutes(deps.core, deps.tickets));
 

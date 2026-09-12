@@ -6,7 +6,10 @@ export type Env = { Variables: { credential: string | null } };
 export const bearer: MiddlewareHandler<Env> = async (c, next) => {
   const h = c.req.header("authorization") ?? "";
   const m = /^Bearer\s+(.+)$/i.exec(h);
-  c.set("credential", m ? m[1]!.trim() : null);
+  let cred = m ? m[1]!.trim() : null;
+  // Remote MCP connectors often accept only a URL: the agent key may ride in ?agent= on /mcp.
+  if (!cred && new URL(c.req.url).pathname === "/mcp") cred = c.req.query("agent")?.trim() || null;
+  c.set("credential", cred);
   await next();
 };
 

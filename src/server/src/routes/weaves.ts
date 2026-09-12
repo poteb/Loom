@@ -19,7 +19,10 @@ export function weaveRoutes(core: Core) {
 
   r.post("/:secret/join", async (c) => {
     const who = await body(c, z.object({ name: z.string(), kind: kindSchema }));
-    return c.json(await core.joinWeave(c.req.param("secret"), who), 201);
+    // An agent key on the join call links the new participant to that agent (and makes a repeat
+    // join return the identity it already owns here).
+    const actor = await optionalActor(c, core);
+    return c.json(await core.joinWeave(c.req.param("secret"), who, actor), 201);
   });
 
   r.get("/:secret/lookup", async (c) => c.json({ weaveId: await core.lookupWeaveIdBySecret(c.req.param("secret")) }));
@@ -41,10 +44,20 @@ export function weaveRoutes(core: Core) {
     return c.json({ events });
   });
 
+  r.get("/:id/inbox", async (c) => {
+    const actor = await requireActor(c, core);
+    const q = z.object({
+      since: z.coerce.number().int().min(0).optional(),
+      limit: z.coerce.number().int().min(1).max(1000).optional(),
+    }).safeParse(c.req.query());
+    if (!q.success) throw errors.validation("Invalid query parameters");
+    return c.json({ events: await core.inbox(actor, c.req.param("id"), q.data) });
+  });
+
   r.post("/:id/threads", async (c) => {
     const actor = await requireActor(c, core);
-    const { name } = await body(c, z.object({ name: z.string() }));
-    return c.json(await core.createThread(actor, c.req.param("id"), name), 201);
+    const { name, url } = await body(c, z.object({ name: z.string(), url: z.string().nullable().optional() }));
+    return c.json(await core.createThread(actor, c.req.param("id"), name, url ?? null), 201);
   });
 
   r.post("/:id/archive", async (c) => {

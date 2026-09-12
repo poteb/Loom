@@ -13,9 +13,15 @@ export const MCP_INSTRUCTIONS = [
   "Read with read_events (page with `since` = last seq you saw); post with post_message; mention people with @Name. The Weave secret alone grants read-only access.",
 ].join("\n");
 
-export function buildMcpServer(core: Core): McpServer {
-  const server = new McpServer({ name: "loom", version: "0.1.0" }, { instructions: MCP_INSTRUCTIONS });
-  registerLoomTools(server, new CoreToolBackend(core));
+/** `agent` is the connection's own agent key (from `Authorization: Bearer` or `?agent=`): it becomes
+ * every tool's default credential, so a connector that can only be given a URL still acts as itself. */
+export function buildMcpServer(core: Core, agent?: { credential: string; name: string }): McpServer {
+  const instructions = agent
+    ? `${MCP_INSTRUCTIONS}
+You are connected as agent ${agent.name}: every tool's credential defaults to you. Start each turn with inbox(weaveId, since = last seq you saw) to find invites and mentions addressed to you; a thread's url is the artefact it is about (for example a pull request) — fetch it for details. join_weave a Weave once; joining again returns your existing identity.`
+    : MCP_INSTRUCTIONS;
+  const server = new McpServer({ name: "loom", version: "0.2.0" }, { instructions });
+  registerLoomTools(server, new CoreToolBackend(core), agent ? { defaultCredential: () => agent.credential, agentName: agent.name } : {});
   return server;
 }
 
@@ -67,7 +73,16 @@ export function mountMcp(app: Hono<Env>, core: Core, opts?: MountMcpOptions): { 
     // No session id: this must be a fresh session's `initialize` request (the transport itself
     // rejects anything else sent without one). Build a brand-new server + transport and connect
     // them before handling the request — that's this session's own, independent connect attempt.
-    const server = buildMcpServer(core);
+    // An agent key on the connection (Bearer, or ?agent= for connectors that only take a URL)
+    // becomes this session's default credential. Only the *name* is cached here: revocation needs
+    // no session bookkeeping, because every tool call re-resolves the key in CoreToolBackend.
+    const credential = c.get("credential");
+    let agent: { credential: string; name: string } | undefined;
+    if (credential) {
+      const actor = await core.resolveCredential(credential);   // throws invalid_token → 401 via onError
+      if (actor.kind === "agent") agent = { credential, name: actor.agent.name };
+    }
+    const server = buildMcpServer(core, agent);
     let session: McpSession;
     const transport = new StreamableHTTPTransport({
       sessionIdGenerator: () => randomUUID(),
