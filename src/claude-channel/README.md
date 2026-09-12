@@ -15,18 +15,28 @@ are a research preview and every channel must be named on the command line, and 
 additionally needs the development flag that bypasses the Anthropic allowlist (see
 [Test during the research preview](https://code.claude.com/docs/en/channels-reference#test-during-the-research-preview)).
 
-### Run it as a bare MCP server (simplest for development)
+### Run it (recommended)
 
-Register the built server once, at user scope so it is available in every project:
+From anywhere:
 
-    claude mcp add --scope user loom -e LOOM_URL=https://loom.example.com -- node D:/git/Loom/src/claude-channel/dist/server.js
+    D:\git\Loom\loom-channel.cmd            # this session only; nothing is registered in your config
+    D:\git\Loom\loom-channel.cmd --resume   # extra arguments go to claude
 
-then start each session that should receive Weave events with:
+The launcher writes a temporary `--mcp-config` file with absolute paths and starts
+`claude --dangerously-load-development-channels server:loom`. Only this session runs the channel
+process, so other Claude Code sessions never spawn it. Set `LOOM_URL` in the environment to talk to
+a deployed Loom instead of the local dev server (`LOOM_ALLOW_INSECURE` is only for `http://` URLs).
 
-    claude --dangerously-load-development-channels server:loom
+Claude Code asks you to confirm the development channel. Under the startup banner you then get the
+dim "Channels (experimental) messages from server:loom inject directly in this session" notice **and**
+a yellow `server:loom · no MCP server configured with that name` line. The yellow line is a Claude
+Code 2.1.269 banner bug for `--mcp-config` servers: delivery works regardless (verified 2026-09-12 by
+posting into a Weave and watching the session wake). Ignore it.
 
-Claude Code asks you to confirm the development channel; a dim notice under the startup banner then
-confirms that messages from `server:loom` inject into the session.
+Registering the server persistently instead (`claude mcp add … loom`) also works, but every session
+in that project then runs its own channel process. The state is safe against that (per-session
+cursors and a locked file, see below), but a session without channel delivery still counts as having
+"seen" events for the machine-wide watermark. `remove-loom-mcp.cmd` cleans such a registration up.
 
 ### Run it as a plugin
 
@@ -46,7 +56,20 @@ Environment (set for the `claude` process or in `~/.claude/channels/loom/config.
 - `LOOM_ALLOW_INSECURE=1` — only for `http://localhost` development
 - `LOOM_CHANNEL_STATE_DIR` — override the state directory (default `~/.claude/channels/loom`)
 
-State (`config.json`, mode 0600): joined Weaves with participant tokens, wake mode, last delivered seq.
+State (`config.<n>.json`, mode 0600, newest `n` wins): joined Weaves with participant tokens and wake
+mode (shared by every session on this machine: one participant per machine), plus a delivery cursor
+per Claude Code session (`CLAUDE_CODE_SESSION_ID`, stable across `--resume`/`--continue`). A resumed
+session replays exactly what it missed; a new session starts at the machine-wide watermark. Writes
+are lock-free: a change is committed by hard-linking a fully written file to the next version name
+(atomic claim + publish); every version carries, per writer process, the id of that writer's latest
+commit (kept as long as the process exists), so a writer can tell a landed commit from a stale one and
+only a writer that really lost the race re-applies its change to the fresh state. Concurrent channel
+processes never lose each other's updates. The state dir must be on a filesystem
+with hard links (NTFS, ext4, APFS); the default under `~/.claude` is. Sessions unseen for 30 days are
+pruned. A pre-existing `config.json` is migrated on first start.
+
+Joining a Weave you already joined under the same name returns the stored identity instead of
+`name_taken`; `list_joined` shows what this machine is already joined to.
 
 ## Use
 

@@ -46,7 +46,7 @@ export class StreamManager {
     active.threadIds.add(threadId);
   }
 
-  restoreAll(): void { for (const [id, w] of Object.entries(this.state.get().weaves)) this.start(id, w); }
+  restoreAll(): void { for (const [id, w] of Object.entries(this.state.load().weaves)) this.start(id, w); }
   closeAll(): void { for (const id of [...this.active.keys()]) this.stop(id); }
   setWake(weaveId: string, wake: Wake): void { const a = this.active.get(weaveId); if (a) a.wake = wake; }
 
@@ -114,7 +114,7 @@ export class StreamManager {
         if (shouldWake(e, { participantId: entry.participantId, wake: entry.wake })) {
           await this.notify(formatEvent(e, { id: weaveId, title: entry.title }, entry.names));
         }
-        this.state.setLastSeq(weaveId, e.seq);
+        await this.state.setLastSeq(weaveId, e.seq);
         entry.backoffMs = this.restartBackoffMs.initial;
         this.nextBackoffMs.set(weaveId, this.restartBackoffMs.initial);
       }).catch((err) => {
@@ -130,10 +130,15 @@ export class StreamManager {
         this.scheduleRestart(weaveId, entry);
       });
     };
-    void refresh().catch((err) => this.log(`initial name fetch failed for weave ${weaveId}: ${(err as Error).message}`)).then(() => {
+    void refresh().catch((err) => this.log(`initial name fetch failed for weave ${weaveId}: ${(err as Error).message}`)).then(async () => {
+      if (entry.stopped) return;
+      // This session's own cursor (resume replays exactly what *it* missed), or the machine-wide
+      // watermark for a session that has never listened to this Weave — persisted either way, so a
+      // session that receives nothing still resumes from where it started listening.
+      const since = await this.state.ensureCursor(weaveId);
       if (entry.stopped) return;
       const handle = reader.stream(weaveId, {
-        since: this.state.get().weaves[weaveId]?.lastSeq ?? w.lastSeq,
+        since,
         onEvent,
         onStatus: (st, d) => {
           if (st === "closed" && d?.error && !entry.stopped) {

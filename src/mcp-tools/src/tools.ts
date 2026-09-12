@@ -27,7 +27,7 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
     toToolResult(backend.createWeave({ title, opener, creator: { name, kind } }, credential)));
 
   server.registerTool("join_weave", {
-    description: "Join an existing Weave with its secret. Returns the weaveId, your participant record and your participant token — keep the token and pass it as `credential` to every later call in this session.",
+    description: "Join an existing Weave with its secret. Returns the weaveId, your participant record and your participant token — keep the token and pass it as `credential` to every later call in this session. Backends that remember your identity (the Claude Code channel) return the stored identity with alreadyJoined: true when you join a Weave you already joined under the same name, instead of failing with name_taken.",
     inputSchema: { secret: z.string().min(1), name: z.string().min(1).max(32), kind },
   }, ({ secret, name, kind }) => toToolResult(backend.joinWeave(secret, { name, kind })));
 

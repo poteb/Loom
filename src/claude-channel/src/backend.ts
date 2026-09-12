@@ -1,4 +1,4 @@
-import { LoomClient, type Kind, type Role, type Settings } from "@loom/client";
+import { LoomClient, LoomClientError, type Kind, type Role, type Settings } from "@loom/client";
 import type { LoomToolBackend } from "@loom/mcp-tools";
 import type { ChannelState, JoinedWeave } from "./state.js";
 
@@ -9,6 +9,12 @@ export type JoinHooks = {
    * thread.created event to come back over the stream. */
   onThreadCreated?(weaveId: string, threadId: string): void;
 };
+
+/** Participant names are unique per Weave case-insensitively (core: unique index on lower(name)), and trimmed. */
+const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/** Error codes that prove a stored credential can never work again. */
+const DEAD_IDENTITY = new Set(["invalid_token", "forbidden", "weave_not_found"]);
 
 /** LoomToolBackend over the HTTP client; create/join also persist the identity and open a stream via hooks. */
 export class ClientToolBackend implements LoomToolBackend {
@@ -21,7 +27,7 @@ export class ClientToolBackend implements LoomToolBackend {
       title: r.weave.title, token: r.token, participantId: r.participant.id, participantName: r.participant.name,
       generalThreadId: r.generalThread.id, wake: "all", lastSeq: 0,
     };
-    this.state.upsertWeave(r.weave.id, joined);
+    await this.state.upsertWeave(r.weave.id, joined);
     await this.hooks.onJoined(r.weave.id, joined);
     return r;
   }
@@ -31,16 +37,55 @@ export class ClientToolBackend implements LoomToolBackend {
    * -> persist the token -> hooks. */
   async joinWeave(secret: string, who: { name: string; kind: Kind }) {
     const weaveId = await this.client.lookupWeave(secret);
+    // Already joined under this name: hand back the stored identity rather than consuming the name
+    // a second time (which the server refuses with name_taken). Falls through to a fresh join if the
+    // stored token no longer works or the participant is gone.
+    const stored = this.state.load().weaves[weaveId];
+    if (stored && sameName(stored.participantName, who.name)) {
+      const reused = await this.reuseStored(weaveId, stored);
+      if (reused) return reused;
+    }
     const info = await this.as(secret).getWeave(weaveId);
     const general = info.threads.find((t) => t.isGeneral) ?? info.threads[0]!;
-    const j = await this.client.joinWeave(secret, who);
+    let j: Awaited<ReturnType<LoomClient["joinWeave"]>>;
+    try {
+      j = await this.client.joinWeave(secret, who);
+    } catch (e) {
+      // name_taken can mean a sibling channel process joined under this name a moment ago and has
+      // already persisted the identity: the state lock does not cover the network round trip.
+      if (e instanceof LoomClientError && e.code === "name_taken") {
+        const raced = this.state.load().weaves[weaveId];
+        if (raced && sameName(raced.participantName, who.name)) {
+          const reused = await this.reuseStored(weaveId, raced);
+          if (reused) return reused;
+        }
+      }
+      throw e;
+    }
     const joined: JoinedWeave = {
       title: info.weave.title, token: j.token, participantId: j.participant.id, participantName: j.participant.name,
       generalThreadId: general.id, wake: "all", lastSeq: 0,
     };
-    this.state.upsertWeave(j.weaveId, joined);
+    await this.state.upsertWeave(j.weaveId, joined);
     await this.hooks.onJoined(j.weaveId, joined);
     return j;
+  }
+  /** Validates a stored identity with its own token and re-arms its stream. Returns undefined only
+   * when the identity is definitively dead (token rejected, Weave gone, participant removed); a
+   * transient failure propagates, because a fresh join on top of a live identity would burn the
+   * name and fail with name_taken. */
+  private async reuseStored(weaveId: string, stored: JoinedWeave) {
+    let info: Awaited<ReturnType<LoomClient["getWeave"]>>;
+    try {
+      info = await this.as(stored.token).getWeave(weaveId);
+    } catch (e) {
+      if (e instanceof LoomClientError && DEAD_IDENTITY.has(e.code)) return undefined;
+      throw e;
+    }
+    const participant = info.participants.find((p) => p.id === stored.participantId);
+    if (!participant) return undefined;
+    await this.hooks.onJoined(weaveId, stored);
+    return { weaveId, weave: info.weave, generalThreadId: stored.generalThreadId, participant, token: stored.token, alreadyJoined: true };
   }
   async lookupWeave(secret: string) { return { weaveId: await this.client.lookupWeave(secret) }; }
   getWeave(c: string, weaveId: string) { return this.as(c).getWeave(weaveId); }
