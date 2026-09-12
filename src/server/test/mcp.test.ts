@@ -339,12 +339,20 @@ describe("remote MCP with an agent key", () => {
       expect(r.isError).toBe(true); expect(json(r).code).toBe("invalid_token");
     } finally { await c.close(); }
   });
-  it("join_weave with a stale explicit credential still joins", async () => {
-    await withClient(async (c) => {
-      const created = json(await c.callTool({ name: "create_weave", arguments: { title: "J", opener: "", name: "Host" } }));
-      const joined = json(await c.callTool({ name: "join_weave", arguments: { secret: created.secret, name: "Guest", credential: "junk" } }));
+  it("join_weave with a stale connection default joins anonymously instead of failing", async () => {
+    const keeper = await s!.core.resolveCredential(keeperToken("k1"));
+    const { agent, key } = await s!.core.addAgent(keeper, "Stale");
+    const c = await agentClient(key, "bearer");
+    try {
+      const created = json(await c.callTool({ name: "create_weave", arguments: { title: "J", opener: "", name: "Stale" } }));
+      await s!.core.revokeAgent(keeper, agent.id);
+      // The revoked key is still this session's default credential; join treats a credential that
+      // no longer resolves as "no identity to link", not as a failure.
+      const joined = json(await c.callTool({ name: "join_weave", arguments: { secret: created.secret, name: "Guest" } }));
       expect(joined.participant.name).toBe("Guest");
-    });
+      expect(joined.participant.agentId).toBeNull();
+      expect(joined.alreadyJoined).toBeUndefined();
+    } finally { await c.close(); }
   });
   it("without an agent, credential stays required and there is no agent line in the instructions", async () => {
     await withClient(async (c) => {
