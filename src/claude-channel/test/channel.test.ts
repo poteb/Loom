@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -46,6 +46,12 @@ async function withChannel<T>(dir: string, fn: (client: Client, getStderr: () =>
   }
 }
 const json = (r: Awaited<ReturnType<Client["callTool"]>>) => JSON.parse((r.content as { text: string }[])[0]!.text);
+/** The channel's newest committed state file (`config.<n>.json`), parsed. */
+function readState(dir: string) {
+  const versions = readdirSync(dir).map((f) => /^config\.(\d+)\.json$/.exec(f)).filter((m): m is RegExpExecArray => m !== null).map((m) => Number(m[1]));
+  if (versions.length === 0) throw new Error(`no state committed in ${dir}`);
+  return JSON.parse(readFileSync(path.join(dir, `config.${Math.max(...versions)}.json`), "utf8"));
+}
 
 describe("channel tools", () => {
   it("advertises the claude/channel capability and all tools", async () => {
@@ -62,19 +68,19 @@ describe("channel tools", () => {
   it("create_weave and join_weave persist the token; leave_weave forgets it", async () => {
     await withChannel(stateDir, async (c) => {
       const created = json(await c.callTool({ name: "create_weave", arguments: { title: "T", opener: "o", name: "Claude" } }));
-      let cfg = JSON.parse(readFileSync(path.join(stateDir, "config.json"), "utf8"));
+      let cfg = readState(stateDir);
       expect(cfg.weaves[created.weave.id]).toMatchObject({ token: created.token, participantId: created.participant.id, wake: "all", lastSeq: 0, generalThreadId: created.generalThread.id });
       const listed = json(await c.callTool({ name: "list_joined", arguments: {} }));
       expect(listed).toEqual([expect.objectContaining({ weaveId: created.weave.id, title: "T", participantName: "Claude", wake: "all" })]);
       const waked = await c.callTool({ name: "set_wake", arguments: { weaveId: created.weave.id, wake: "mentions" } });
       expect(waked.isError).toBeFalsy();
       expect(json(waked)).toEqual({ weaveId: created.weave.id, wake: "mentions" });
-      cfg = JSON.parse(readFileSync(path.join(stateDir, "config.json"), "utf8"));
+      cfg = readState(stateDir);
       expect(cfg.weaves[created.weave.id].wake).toBe("mentions");
       const left = await c.callTool({ name: "leave_weave", arguments: { weaveId: created.weave.id } });
       expect(left.isError).toBeFalsy();
       expect(json(left)).toEqual({ weaveId: created.weave.id, left: true });
-      cfg = JSON.parse(readFileSync(path.join(stateDir, "config.json"), "utf8"));
+      cfg = readState(stateDir);
       expect(cfg.weaves).toEqual({});
       const unknown = await c.callTool({ name: "leave_weave", arguments: { weaveId: created.weave.id } });
       expect(unknown.isError).toBe(true);
@@ -103,7 +109,7 @@ describe("channel tools", () => {
       await withChannel(stateDirB, async (b) => {
         const joined = json(await b.callTool({ name: "join_weave", arguments: { secret: created.secret, name: "Other" } }));
         expect(joined).toMatchObject({ token: expect.any(String), participant: { name: "Other" } });
-        const cfg = JSON.parse(readFileSync(path.join(stateDirB, "config.json"), "utf8"));
+        const cfg = readState(stateDirB);
         expect(cfg.weaves[created.weave.id]).toMatchObject({
           token: joined.token, participantId: joined.participant.id, participantName: "Other",
           generalThreadId: created.generalThread.id, wake: "all", lastSeq: 0, title: created.weave.title,
@@ -189,7 +195,7 @@ describe("channel streaming", () => {
       await s!.core.postMessage(gptActor, created.generalThread.id, "np");
       await waitFor(() => got.length >= 3);
       expect(got.map((g) => g.meta.seq)).toEqual(["4", "5", "7"]);
-      await waitFor(() => JSON.parse(readFileSync(path.join(stateDir, "config.json"), "utf8")).weaves[created.weave.id].lastSeq === 7);
+      await waitFor(() => readState(stateDir).weaves[created.weave.id].lastSeq === 7);
     });
   });
 
@@ -273,7 +279,7 @@ describe("channel streaming", () => {
       gptActor = await s!.core.resolveCredential(gpt.token);
       await waitFor(() => got1.length >= 1);
     });
-    const seqBefore = () => JSON.parse(readFileSync(path.join(stateDir, "config.json"), "utf8")).weaves[created.weave.id].lastSeq as number;
+    const seqBefore = () => readState(stateDir).weaves[created.weave.id].lastSeq as number;
     const saved = seqBefore();
     // An event while the channel is down: it must wait for a client that can actually receive it.
     await s!.core.postMessage(gptActor, created.generalThread.id, "offline");

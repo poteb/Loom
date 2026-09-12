@@ -1,4 +1,4 @@
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
@@ -17,9 +17,13 @@ export type ChannelConfig = {
   sessions: Record<string, SessionCursors>;
 };
 
-const STALE_LOCK_MS = 10_000;
-const LOCK_TIMEOUT_MS = 5_000;
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const MAX_COMMIT_ATTEMPTS = 100;
+const STALE_TMP_MS = 60_000;
+const VERSION_FILE = /^config\.(\d+)\.json$/;
+const LEGACY_FILE = "config.json";
+
+type Snapshot = { config: ChannelConfig; base: number; dirty: boolean };
 
 /**
  * The channel's persistent state, shared by every channel process on the machine.
@@ -30,25 +34,18 @@ const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
  * cursor so a resumed session replays exactly what *it* missed, while a brand-new session starts at
  * the machine-wide watermark rather than replaying history another session already handled.
  *
- * Every mutation is a locked read-merge-write against the file so concurrent processes never lose
- * each other's updates; reads serve the last snapshot this process saw (`get()`) or reload (`load()`).
+ * Concurrency is optimistic and lock-free. The state lives in versioned files `config.<n>.json`;
+ * a mutation reads the newest version n, applies its change, and commits by *creating*
+ * `config.<n+1>.json` exclusively (hard link of a fully written, fsynced temp file — or an O_EXCL
+ * create where hard links are unavailable). Exclusive create is atomic on every filesystem Node
+ * supports, so it acts as a compare-and-swap on the version number: if another process committed
+ * n+1 first, the create fails and the mutation is re-applied to the fresh snapshot. No lock file,
+ * hence nothing to reclaim from a crashed or paused process.
  */
-function processAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
-}
-
 export class ChannelState {
   private cache: ChannelConfig | undefined;
-  readonly file: string;
-  private readonly lockFile: string;
-  /** Written into the lock file so a process can tell its own lock from one that replaced it. */
-  private readonly lockToken = `${process.pid}:${randomUUID()}`;
 
-  constructor(readonly dir: string, readonly sessionId: string = ChannelState.sessionIdFrom(process.env), private readonly now: () => Date = () => new Date()) {
-    this.file = path.join(dir, "config.json");
-    this.lockFile = `${this.file}.lock`;
-  }
+  constructor(readonly dir: string, readonly sessionId: string = ChannelState.sessionIdFrom(process.env), private readonly now: () => Date = () => new Date()) {}
 
   static dirFrom(env: NodeJS.ProcessEnv): string {
     if (env.LOOM_CHANNEL_STATE_DIR) return env.LOOM_CHANNEL_STATE_DIR;
@@ -61,17 +58,22 @@ export class ChannelState {
     return env.CLAUDE_CODE_SESSION_ID ?? `pid:${process.pid}`;
   }
 
-  /** Reloads from disk. Never writes: unknown fields are dropped in memory, `migrate()` cleans the file. */
+  /** Path of the newest committed state file (the legacy `config.json` until the first commit). */
+  get file(): string {
+    const v = this.versions();
+    return v.length ? this.versionPath(v[0]!) : path.join(this.dir, LEGACY_FILE);
+  }
+
+  /** Reloads from disk. Never writes. */
   load(): ChannelConfig {
-    const config = this.read();
+    const { config } = this.snapshot();
     this.cache = config;
     return config;
   }
 
-  /** Rewrites a file that carries fields this version does not know (e.g. the legacy `secret`),
-   * through the locked path so it cannot clobber another process's concurrent update. */
+  /** Rewrites state that is still in the legacy file or carries fields this version does not know. */
   async migrate(): Promise<void> {
-    if (this.readChecked().dirty) await this.mutate(() => {});
+    if (this.snapshot().dirty) await this.mutate(() => {});
   }
 
   /** Last snapshot this process saw; loads on first use. */
@@ -131,11 +133,63 @@ export class ChannelState {
     return s;
   }
 
-  private read(): ChannelConfig { return this.readChecked().config; }
+  /**
+   * Optimistic read-modify-commit. `fn` must be a pure function of the snapshot it is given: it is
+   * re-run on a fresh snapshot whenever another process committed first.
+   */
+  private async mutate<T = void>(fn: (c: ChannelConfig) => T): Promise<T> {
+    for (let attempt = 1; attempt <= MAX_COMMIT_ATTEMPTS; attempt++) {
+      const { config, base } = this.snapshot();
+      const result = fn(config);
+      this.prune(config);
+      if (this.commit(base, config)) {
+        this.cache = config;
+        return result;
+      }
+      await new Promise((r) => setTimeout(r, 5 + Math.random() * 20));
+    }
+    throw new Error(`could not commit channel state in ${this.dir}: lost the version race ${MAX_COMMIT_ATTEMPTS} times`);
+  }
 
-  private readChecked(): { config: ChannelConfig; dirty: boolean } {
-    if (!existsSync(this.file)) return { config: { weaves: {}, sessions: {} }, dirty: false };
-    const raw = JSON.parse(readFileSync(this.file, "utf8")) as Partial<ChannelConfig>;
+  private prune(c: ChannelConfig): void {
+    const cutoff = this.now().getTime() - SESSION_TTL_MS;
+    for (const [id, s] of Object.entries(c.sessions)) {
+      if (id !== this.sessionId && Date.parse(s.at) < cutoff) delete c.sessions[id];
+    }
+  }
+
+  /** Version numbers present on disk, newest first (invalid or half-written files included: they still occupy their number). */
+  private versions(): number[] {
+    if (!existsSync(this.dir)) return [];
+    return readdirSync(this.dir)
+      .map((f) => VERSION_FILE.exec(f))
+      .filter((m): m is RegExpExecArray => m !== null)
+      .map((m) => Number(m[1]))
+      .sort((a, b) => b - a);
+  }
+
+  private versionPath(v: number): string { return path.join(this.dir, `config.${v}.json`); }
+
+  /**
+   * Newest readable state. `base` is the highest version number on disk (readable or not), so the
+   * next commit never collides with a half-written file left by a crashed writer; `config` comes
+   * from the newest version that parses, falling back to the legacy `config.json`, then to empty.
+   */
+  private snapshot(): Snapshot {
+    const versions = this.versions();
+    for (const v of versions) {
+      const parsed = this.parse(this.versionPath(v));
+      if (parsed) return { config: parsed.config, base: versions[0]!, dirty: parsed.dirty };
+    }
+    const legacy = this.parse(path.join(this.dir, LEGACY_FILE));
+    if (legacy) return { config: legacy.config, base: versions[0] ?? 0, dirty: true };
+    return { config: { weaves: {}, sessions: {} }, base: versions[0] ?? 0, dirty: false };
+  }
+
+  private parse(file: string): { config: ChannelConfig; dirty: boolean } | undefined {
+    let raw: Partial<ChannelConfig>;
+    try { raw = JSON.parse(readFileSync(file, "utf8")) as Partial<ChannelConfig>; } catch { return undefined; }
+    if (!raw || typeof raw !== "object") return undefined;
     const weaves: Record<string, JoinedWeave> = {};
     let dirty = false;
     for (const [id, entry] of Object.entries(raw.weaves ?? {})) {
@@ -147,76 +201,61 @@ export class ChannelState {
     return { config: { url: raw.url, allowInsecure: raw.allowInsecure, weaves, sessions: raw.sessions ?? {} }, dirty };
   }
 
-  /** Locked read-modify-write; the merged result becomes this process's snapshot. */
-  private async mutate<T = void>(fn: (c: ChannelConfig) => T): Promise<T> {
-    await this.acquireLock();
-    try {
-      const c = this.read();
-      const result = fn(c);
-      this.prune(c);
-      // If another process judged this lock stale and took it over while we were in here, our
-      // snapshot is no longer authoritative: abort rather than overwrite its write.
-      if (!this.ownsLock()) throw new Error(`channel state lock ${this.lockFile} was taken over by another process; write aborted`);
-      this.write(c);
-      this.cache = c;
-      return result;
-    } finally {
-      if (this.ownsLock()) rmSync(this.lockFile, { force: true });
-    }
-  }
-
-  private ownsLock(): boolean {
-    try { return readFileSync(this.lockFile, "utf8") === this.lockToken; } catch { return false; }
-  }
-
-  private prune(c: ChannelConfig): void {
-    const cutoff = this.now().getTime() - SESSION_TTL_MS;
-    for (const [id, s] of Object.entries(c.sessions)) {
-      if (id !== this.sessionId && Date.parse(s.at) < cutoff) delete c.sessions[id];
-    }
-  }
-
-  /** Atomic replace, with the temp file fsynced first so a crash right after the rename cannot
-   * leave an empty or truncated config (and with it the participant tokens) behind. */
-  private write(c: ChannelConfig): void {
+  /**
+   * Compare-and-swap commit of `base + 1`. The content is fully written and fsynced to a private
+   * temp file first, then published under the version name with an exclusive create, so a reader
+   * never sees a partial file under a final name on the hard-link path. Returns false if someone
+   * else published that version first.
+   */
+  private commit(base: number, c: ChannelConfig): boolean {
     mkdirSync(this.dir, { recursive: true });
-    const tmp = `${this.file}.${process.pid}.tmp`;
-    const fd = openSync(tmp, "w", 0o600);
+    const target = this.versionPath(base + 1);
+    const tmp = path.join(this.dir, `config.${base + 1}.${process.pid}.${randomUUID()}.tmp`);
+    const data = JSON.stringify(c, null, 2) + "\n";
+    writeFileDurably(tmp, data);
     try {
-      writeSync(fd, JSON.stringify(c, null, 2) + "\n");
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-    renameSync(tmp, this.file);
-  }
-
-  /** O_EXCL lock file holding "<pid>:<uuid>". A lock is only ever taken over from an owner that is
-   * demonstrably dead (its pid no longer exists); a live owner keeps it however long it takes, and
-   * we give up after LOCK_TIMEOUT_MS instead. Time-based takeover would let a merely paused owner
-   * resume and overwrite the new owner's write. A lock without a readable pid (older tooling, or a
-   * corrupt file) falls back to the age rule. */
-  private async acquireLock(): Promise<void> {
-    mkdirSync(this.dir, { recursive: true });
-    const t0 = Date.now();
-    for (;;) {
       try {
-        writeFileSync(this.lockFile, this.lockToken, { flag: "wx" });
-        return;
+        linkSync(tmp, target);
       } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+        const code = (e as NodeJS.ErrnoException).code;
+        if (code === "EEXIST") return false;
+        // Hard links unavailable (e.g. exFAT): fall back to an exclusive create with a direct write.
+        // A crash mid-write leaves a half-written version; snapshot() skips unreadable versions.
         try {
-          if (this.lockAbandoned()) { rmSync(this.lockFile, { force: true }); continue; }
-        } catch { continue; /* lock vanished between the failed create and the inspection: retry now */ }
-        if (Date.now() - t0 > LOCK_TIMEOUT_MS) throw new Error(`Timed out waiting for channel state lock ${this.lockFile}`);
-        await new Promise((r) => setTimeout(r, 10 + Math.random() * 20));
+          writeFileDurably(target, data, "wx");
+        } catch (e2) {
+          if ((e2 as NodeJS.ErrnoException).code === "EEXIST") return false;
+          throw e2;
+        }
       }
+    } finally {
+      rmSync(tmp, { force: true });
     }
+    this.sweep(base + 1);
+    return true;
   }
 
-  private lockAbandoned(): boolean {
-    const owner = /^(\d+):/.exec(readFileSync(this.lockFile, "utf8"));
-    if (owner) return !processAlive(Number(owner[1]));
-    return Date.now() - statSync(this.lockFile).mtimeMs > STALE_LOCK_MS;
+  /** After a successful commit: drop versions older than the previous one (a concurrent reader may
+   * still be on `committed - 1`), the legacy file, and temp files abandoned by crashed writers. */
+  private sweep(committed: number): void {
+    for (const v of this.versions()) if (v < committed - 1) rmSync(this.versionPath(v), { force: true });
+    rmSync(path.join(this.dir, LEGACY_FILE), { force: true });
+    const cutoff = Date.now() - STALE_TMP_MS;
+    for (const f of readdirSync(this.dir)) {
+      if (!f.endsWith(".tmp")) continue;
+      const p = path.join(this.dir, f);
+      try { if (statSync(p).mtimeMs < cutoff) rmSync(p, { force: true }); } catch { /* already gone */ }
+    }
+  }
+}
+
+/** Writes and fsyncs a whole file (mode 0600); `flag` "wx" makes the create exclusive. */
+function writeFileDurably(file: string, data: string, flag: "w" | "wx" = "w"): void {
+  const fd = openSync(file, flag, 0o600);
+  try {
+    writeSync(fd, data);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
   }
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, existsSync, readFileSync, writeFileSync, utimesSync } from "node:fs";
+import { mkdtempSync, existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ChannelState } from "../src/state.js";
@@ -14,18 +14,18 @@ describe("ChannelState", () => {
     await st.upsertWeave("w1", w);
     await st.setLastSeq("w1", 7);
     await st.setWake("w1", "mentions");
-    expect(existsSync(path.join(dir, "config.json"))).toBe(true);
+    expect(existsSync(st.file)).toBe(true);
     const again = new ChannelState(dir, "s1");
     expect(again.get().weaves.w1).toEqual({ ...w, lastSeq: 7, wake: "mentions" });
     expect(again.cursor("w1")).toBe(7);
     await again.removeWeave("w1");
     expect(new ChannelState(dir, "s1").get().weaves).toEqual({});
-    const onDisk = JSON.parse(readFileSync(path.join(dir, "config.json"), "utf8"));
+    const onDisk = JSON.parse(readFileSync(again.file, "utf8"));
     expect(onDisk.weaves).toEqual({});
     expect(JSON.stringify(onDisk)).not.toContain("w1"); // the removed weave's cursors go too
   });
 
-  it("two processes on one file never lose each other's writes (locked read-merge-write)", async () => {
+  it("two processes on one state never lose each other's writes (optimistic versioned commits)", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
     const a = new ChannelState(dir, "sA");
     const b = new ChannelState(dir, "sB");
@@ -40,7 +40,46 @@ describe("ChannelState", () => {
     expect(Object.keys(disk.weaves).sort()).toEqual(["w1", "w2"]);
     expect(disk.weaves.w1!.lastSeq).toBe(5);
     expect(disk.weaves.w2!.wake).toBe("mentions");
-    expect(existsSync(path.join(dir, "config.json.lock"))).toBe(false);
+    // Only the newest version and its predecessor stay behind; no temp files, no legacy file.
+    const files = readdirSync(dir).sort();
+    expect(files.filter((f) => f.endsWith(".tmp"))).toEqual([]);
+    expect(files).not.toContain("config.json");
+    expect(files.filter((f) => /^config\.\d+\.json$/.test(f)).length).toBeLessThanOrEqual(2);
+  });
+
+  it("a writer whose snapshot went stale re-applies its change on the fresh state instead of overwriting", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+    const seed = new ChannelState(dir, "s0");
+    await seed.upsertWeave("w0", w);
+    let intrusions = 0;
+    // `now` runs inside the mutation, after the snapshot was taken: the first call plays another
+    // process that commits the next version in the meantime.
+    const a = new ChannelState(dir, "sA", () => {
+      if (intrusions++ === 0) {
+        const latest = Number(/config\.(\d+)\.json$/.exec(new ChannelState(dir, "x").file)![1]);
+        const other = JSON.parse(readFileSync(path.join(dir, `config.${latest}.json`), "utf8"));
+        other.weaves.w1 = { ...w, participantId: "p-other" };
+        writeFileSync(path.join(dir, `config.${latest + 1}.json`), JSON.stringify(other));
+      }
+      return new Date();
+    });
+    await a.upsertWeave("w2", { ...w, participantId: "p-a" });
+    const final = new ChannelState(dir, "x").get();
+    expect(Object.keys(final.weaves).sort()).toEqual(["w0", "w1", "w2"]);
+    expect(intrusions).toBeGreaterThanOrEqual(2); // the mutation ran again on the fresh snapshot
+  });
+
+  it("skips a half-written newest version left by a crashed writer, and never reuses its number", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+    const st = new ChannelState(dir, "s1");
+    await st.upsertWeave("w1", w);
+    const good = Number(/config\.(\d+)\.json$/.exec(st.file)![1]);
+    writeFileSync(path.join(dir, `config.${good + 1}.json`), '{"weaves": {"w1": {"title": "trunc'); // crashed mid-write
+    const fresh = new ChannelState(dir, "s2");
+    expect(fresh.get().weaves.w1).toEqual(w); // reads the last good version
+    await fresh.setLastSeq("w1", 4);
+    expect(fresh.file).toBe(path.join(dir, `config.${good + 2}.json`)); // committed past the broken number
+    expect(new ChannelState(dir, "s1").get().weaves.w1!.lastSeq).toBe(4);
   });
 
   it("keeps a cursor per session: a resumed session replays what it missed, a new session starts at the watermark", async () => {
@@ -68,32 +107,6 @@ describe("ChannelState", () => {
     expect(await new ChannelState(dir, "sB").ensureCursor("w1")).toBe(5); // idempotent
   });
 
-  it("waits for a lock whose owner process is alive instead of taking it over, however old it is", async () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
-    const st = new ChannelState(dir, "s1");
-    await st.upsertWeave("w1", w);
-    const lock = path.join(dir, "config.json.lock");
-    writeFileSync(lock, `${process.pid}:someone-else-in-this-process`); // a live pid that is not us
-    const past = new Date(Date.now() - 60_000);
-    utimesSync(lock, past, past);
-    await expect(st.setLastSeq("w1", 2)).rejects.toThrow(/lock/);
-    expect(readFileSync(lock, "utf8")).toBe(`${process.pid}:someone-else-in-this-process`);
-    expect(new ChannelState(dir, "s1").cursor("w1")).toBe(0);
-  }, 15_000);
-
-  it("takes over a lock whose owner process is dead right away", async () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
-    const st = new ChannelState(dir, "s1");
-    await st.upsertWeave("w1", w);
-    const lock = path.join(dir, "config.json.lock");
-    writeFileSync(lock, "999999999:dead"); // no such pid
-    const t0 = Date.now();
-    await st.setLastSeq("w1", 2);
-    expect(Date.now() - t0).toBeLessThan(2000);
-    expect(st.cursor("w1")).toBe(2);
-    expect(existsSync(lock)).toBe(false);
-  });
-
   it("cursors and the watermark only move forward", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
     const st = new ChannelState(dir, "s1");
@@ -112,32 +125,7 @@ describe("ChannelState", () => {
     const now = new ChannelState(dir, "new", () => new Date("2026-03-01T00:00:00Z"));
     await now.setLastSeq("w1", 8);
     expect(new ChannelState(dir, "old").cursor("w1")).toBe(8); // pruned: treated as a new session
-    expect(readFileSync(path.join(dir, "config.json"), "utf8")).not.toContain('"old"');
-  });
-
-  it("takes over a stale lock left by a crashed process", async () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
-    const st = new ChannelState(dir, "s1");
-    await st.upsertWeave("w1", w);
-    const lock = path.join(dir, "config.json.lock");
-    writeFileSync(lock, "");
-    const past = new Date(Date.now() - 60_000);
-    utimesSync(lock, past, past);
-    await st.setLastSeq("w1", 2);
-    expect(st.cursor("w1")).toBe(2);
-    expect(existsSync(lock)).toBe(false);
-  });
-
-  it("aborts a write, and leaves the other owner's lock alone, when its lease was taken over mid-mutation", async () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
-    const lock = path.join(dir, "config.json.lock");
-    let calls = 0;
-    // `now` runs inside the locked section (session stamp / prune): the first call simulates another
-    // process that judged our lock stale and replaced it with its own.
-    const st = new ChannelState(dir, "s1", () => { if (++calls === 1) writeFileSync(lock, "other-owner"); return new Date(); });
-    await expect(st.upsertWeave("w1", w)).rejects.toThrow(/lock/);
-    expect(existsSync(path.join(dir, "config.json"))).toBe(false); // nothing written
-    expect(readFileSync(lock, "utf8")).toBe("other-owner");        // and the new owner's lock still stands
+    expect(readFileSync(now.file, "utf8")).not.toContain('"old"');
   });
 
   it("sessionIdFrom uses CLAUDE_CODE_SESSION_ID, else a per-process id", () => {
@@ -157,10 +145,12 @@ describe("ChannelState", () => {
     const loaded = st.get().weaves.w1;
     expect(loaded).toEqual(clean);
     expect(loaded && "secret" in loaded).toBe(false);
-    // load() never writes (that would bypass the lock); migrate() rewrites the file through it.
+    // load() never writes; migrate() commits a clean first version and retires the legacy file.
     expect(readFileSync(path.join(dir, "config.json"), "utf8")).toContain("secret");
     await st.migrate();
-    const onDisk = readFileSync(path.join(dir, "config.json"), "utf8");
+    expect(existsSync(path.join(dir, "config.json"))).toBe(false);
+    expect(st.file).toBe(path.join(dir, "config.1.json"));
+    const onDisk = readFileSync(st.file, "utf8");
     expect(onDisk).not.toContain(legacy.secret);
     expect(onDisk).not.toContain("secret");
   });

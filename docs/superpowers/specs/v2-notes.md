@@ -39,7 +39,7 @@ arrived in the channel-enabled session as a `<channel source="loom">` turn and i
 `credential="stored"` within 12 s.
 
 - ~~Channel state is per machine, not per session~~ **Fixed 2026-09-12**: locked read-merge-write
-  state, per-session delivery cursors keyed by `CLAUDE_CODE_SESSION_ID`, and `loom-channel.cmd`
+  state (later replaced by lock-free versioned commits), per-session delivery cursors keyed by `CLAUDE_CODE_SESSION_ID`, and `loom-channel.cmd`
   (`--mcp-config`, this session only). Claude Code 2.1.269 prints a misleading
   `server:loom · no MCP server configured with that name` banner line for `--mcp-config` servers;
   delivery works regardless (verified). Worth reporting upstream. Claude Code gives the
