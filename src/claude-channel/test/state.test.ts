@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ChannelState } from "../src/state.js";
@@ -69,17 +69,79 @@ describe("ChannelState", () => {
     expect(intrusions).toBeGreaterThanOrEqual(2); // the mutation ran again on the fresh snapshot
   });
 
-  it("skips a half-written newest version left by a crashed writer, and never reuses its number", async () => {
+  it("reads past an unreadable newest version when an older one exists, and never reuses its number", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
     const st = new ChannelState(dir, "s1");
     await st.upsertWeave("w1", w);
     const good = Number(/config\.(\d+)\.json$/.exec(st.file)![1]);
-    writeFileSync(path.join(dir, `config.${good + 1}.json`), '{"weaves": {"w1": {"title": "trunc'); // crashed mid-write
+    writeFileSync(path.join(dir, `config.${good + 1}.json`), '{"weaves": {"w1": {"title": "trunc'); // corrupt
     const fresh = new ChannelState(dir, "s2");
     expect(fresh.get().weaves.w1).toEqual(w); // reads the last good version
     await fresh.setLastSeq("w1", 4);
     expect(fresh.file).toBe(path.join(dir, `config.${good + 2}.json`)); // committed past the broken number
     expect(new ChannelState(dir, "s1").get().weaves.w1!.lastSeq).toBe(4);
+  });
+
+  it("throws instead of resetting the state when the only versions on disk are unreadable", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+    writeFileSync(path.join(dir, "config.7.json"), "{ not json");
+    expect(() => new ChannelState(dir, "s1").get()).toThrow(/unreadable/);
+  });
+
+  it("a delayed writer whose version number was superseded and swept does not count its publish as success", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+    const seed = new ChannelState(dir, "s0");
+    await seed.upsertWeave("w0", w);               // version 1
+    let intrusions = 0;
+    const a = new ChannelState(dir, "sA", () => {
+      // Inside A's first attempt (snapshot taken at version 1): another process commits 2, 3 and 4
+      // and sweeps 2, exactly the window in which A's hard link to config.2.json will succeed.
+      if (intrusions++ === 0) {
+        const cur = JSON.parse(readFileSync(path.join(dir, "config.1.json"), "utf8"));
+        cur.weaves.w1 = { ...w, participantId: "p-other" };
+        for (const v of [2, 3, 4]) writeFileSync(path.join(dir, `config.${v}.json`), JSON.stringify(cur));
+        writeFileSync(path.join(dir, "config.2.json"), JSON.stringify(cur)); // (re)written, then swept:
+        rmSync(path.join(dir, "config.2.json"));
+      }
+      return new Date();
+    });
+    await a.upsertWeave("w2", { ...w, participantId: "p-a" });
+    const final = new ChannelState(dir, "x").get();
+    expect(Object.keys(final.weaves).sort()).toEqual(["w0", "w1", "w2"]); // A's change landed on top of 4, not under it
+    expect(a.file).toBe(path.join(dir, "config.5.json"));
+    expect(intrusions).toBeGreaterThanOrEqual(2);
+  });
+
+  it("re-enumerates when the versions it listed were swept before it could read them", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+    const seed = new ChannelState(dir, "s0");
+    await seed.upsertWeave("w1", w);               // version 1
+    let listings = 0;
+    class Racy extends ChannelState {
+      protected override versions(): number[] {
+        const v = super.versions();
+        if (listings++ === 0) {
+          // Between our listing and our read, another process commits 2 and 3 and sweeps 1.
+          const cur = readFileSync(path.join(dir, "config.1.json"), "utf8");
+          writeFileSync(path.join(dir, "config.2.json"), cur);
+          writeFileSync(path.join(dir, "config.3.json"), cur);
+          rmSync(path.join(dir, "config.1.json"));
+        }
+        return v;
+      }
+    }
+    const r = new Racy(dir, "sR");
+    expect(r.get().weaves.w1).toEqual(w); // not an empty store
+    expect(listings).toBeGreaterThanOrEqual(2);
+  });
+
+  it("refuses a state dir on a filesystem without hard links instead of publishing non-atomically", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+    class NoLinks extends ChannelState {
+      protected override publish(): void { const e = new Error("EPERM: operation not permitted, link") as NodeJS.ErrnoException; e.code = "EPERM"; throw e; }
+    }
+    await expect(new NoLinks(dir, "s1").upsertWeave("w1", w)).rejects.toThrow(/hard links/);
+    expect(readdirSync(dir).filter((f) => f.endsWith(".tmp"))).toEqual([]);
   });
 
   it("keeps a cursor per session: a resumed session replays what it missed, a new session starts at the watermark", async () => {

@@ -60,10 +60,11 @@ State (`config.<n>.json`, mode 0600, newest `n` wins): joined Weaves with partic
 mode (shared by every session on this machine: one participant per machine), plus a delivery cursor
 per Claude Code session (`CLAUDE_CODE_SESSION_ID`, stable across `--resume`/`--continue`). A resumed
 session replays exactly what it missed; a new session starts at the machine-wide watermark. Writes
-are lock-free: a change is committed by exclusively creating the next version file, so concurrent
-channel processes never lose each other's updates (a writer that lost the race re-applies its change
-to the fresh state). Sessions unseen for 30 days are pruned. A pre-existing `config.json` is migrated
-on first start.
+are lock-free: a change is committed by hard-linking a fully written file to the next version name
+(atomic claim + publish), and a writer that lost the race re-applies its change to the fresh state, so
+concurrent channel processes never lose each other's updates. The state dir must be on a filesystem
+with hard links (NTFS, ext4, APFS); the default under `~/.claude` is. Sessions unseen for 30 days are
+pruned. A pre-existing `config.json` is migrated on first start.
 
 Joining a Weave you already joined under the same name returns the stored identity instead of
 `name_taken`; `list_joined` shows what this machine is already joined to.
