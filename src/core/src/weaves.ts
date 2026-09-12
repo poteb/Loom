@@ -72,7 +72,8 @@ export async function createWeave(db: Db, bus: EventBus, input: CreateWeaveInput
     const [p] = await tx.insert(participants).values({ id: participantId, weaveId, name, kind: agentId ? "agent" : input.creator.kind, role: "keeper", token, agentId }).returning();
     const pub = toPublicParticipant(p!);
     const committed = await appendInTx(tx, w!, [
-      { threadId, type: "thread.created", actor: participantId, payload: { threadId, name: "General" } },
+      // `url: null` so every thread.created payload has the same shape, General included.
+      { threadId, type: "thread.created", actor: participantId, payload: { threadId, name: "General", url: null } },
       { threadId, type: "participant.joined", actor: participantId, payload: { participantId, name: pub.name, kind: pub.kind, role: pub.role } },
       { threadId, type: "message", actor: participantId, payload: { text: opener, mentions: parseMentions(opener, [pub]) } },
     ]);

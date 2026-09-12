@@ -346,6 +346,9 @@ describe("v2: thread url, invite, inbox, agents", () => {
     const A = { LOOM_CONFIG: emptyCfg, LOOM_AGENT_KEY: add.json().key };
     const joined = await run(["join", created.secret, "--name", "ChatGPT", "--json"], A);
     expect(joined.code).toBe(0); expect(joined.json().participant.agentId).toBe(add.json().agent.id);
+    // create with only an agent key links the creator to that agent, exactly as join does.
+    const mine = await run(["create", "--title", "Mine", "--opener", "o", "--name", "ChatGPT", "--json"], { ...A, LOOM_CONFIG: path.join(mkdtempSync(path.join(tmpdir(), "loom-cli-")), "config.json") });
+    expect(mine.code).toBe(0); expect(mine.json().participant.agentId).toBe(add.json().agent.id);
     const posted = await run(["post", "--weave", created.weave.id, "hello", "--json"], { LOOM_CONFIG: path.join(mkdtempSync(path.join(tmpdir(), "loom-cli-")), "config.json"), LOOM_AGENT_KEY: add.json().key });
     expect(posted.code).toBe(0); expect(posted.json().payload.text).toBe("hello");
     const rev = await run(["admin", "agents", "revoke", add.json().agent.id, "--json"], K);

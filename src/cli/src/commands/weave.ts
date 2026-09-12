@@ -15,8 +15,9 @@ export function registerWeaveCommands(program: Command, ctx: () => CliContext): 
     .action(async (o: { title: string; opener: string; name: string; kind: Kind }) => {
       const c = ctx();
       // A configured instance-keeper token lets creation succeed when the instance restricts it;
-      // without one, creation is anonymous exactly as before.
-      const r = await c.client(c.io.env.LOOM_KEEPER_TOKEN).createWeave({ title: o.title, opener: o.opener, creator: { name: o.name, kind: o.kind } });
+      // failing that, an agent key links the creating participant to that agent identity (as join
+      // does). With neither, creation is anonymous exactly as before.
+      const r = await c.client(c.io.env.LOOM_KEEPER_TOKEN ?? c.io.env.LOOM_AGENT_KEY).createWeave({ title: o.title, opener: o.opener, creator: { name: o.name, kind: o.kind } });
       await c.remember(r.weave.id, {
         title: r.weave.title, secret: r.secret, token: r.token, participantId: r.participant.id,
         generalThreadId: r.generalThread.id, participantName: r.participant.name,
