@@ -4,7 +4,7 @@ import { weaves as weavesTable } from "./db/schema.js";
 import { errors } from "./errors.js";
 import { isUuid } from "./ids.js";
 import { EventBus } from "./bus.js";
-import { resolveCredential, assertCanRead, assertInstanceKeeperFresh } from "./actors.js";
+import { resolveCredential, assertCanRead, assertInstanceKeeperFresh, resolveInWeave } from "./actors.js";
 import { readEvents } from "./events.js";
 import * as weaves from "./weaves.js";
 import * as threads from "./threads.js";
@@ -13,6 +13,7 @@ import { setRole } from "./participants.js";
 import { exportWeave } from "./export.js";
 import { getSettings, updateSettings } from "./settings.js";
 import * as keepers from "./keepers.js";
+import * as agentsMod from "./agents.js";
 import type { Actor, Kind, Role, Settings } from "./types.js";
 
 export type Core = ReturnType<typeof createCore>;
@@ -49,6 +50,10 @@ export function createCore(db: Db) {
     listKeepers: (actor: Actor) => keepers.listKeepers(db, actor),
     addKeeper: (actor: Actor, name: string) => keepers.addKeeper(db, actor, name),
     removeKeeper: (actor: Actor, id: string) => keepers.removeKeeper(db, actor, id),
+    addAgent: (actor: Actor, name: string) => agentsMod.addAgent(db, actor, name),
+    listAgents: (actor: Actor) => agentsMod.listAgents(db, actor),
+    revokeAgent: (actor: Actor, id: string) => agentsMod.revokeAgent(db, actor, id),
+    resolveInWeave: (actor: Actor, weaveId: string) => resolveInWeave(db, actor, weaveId),
   };
 }
 

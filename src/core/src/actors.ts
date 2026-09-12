@@ -1,48 +1,73 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "./db/index.js";
 import type { Tx } from "./events.js";
-import { participants, keepers, weaves } from "./db/schema.js";
+import { participants, keepers, weaves, agents } from "./db/schema.js";
 import { errors } from "./errors.js";
+import { hashKey, toPublicAgent } from "./agent-keys.js";
 import type { Actor, PublicParticipant } from "./types.js";
 
 export function toPublicParticipant(p: typeof participants.$inferSelect): PublicParticipant {
   return { id: p.id, weaveId: p.weaveId, name: p.name, kind: p.kind, role: p.role, joinedAt: p.joinedAt.toISOString() };
 }
 
-/** Resolves a bearer credential: participant token, keeper token, or weave secret. */
+/** Resolves a bearer credential: participant token, keeper token, agent key, or weave secret. */
 export async function resolveCredential(db: Db, credential: string): Promise<Actor> {
   if (!credential) throw errors.invalidToken();
   const [p] = await db.select().from(participants).where(eq(participants.token, credential)).limit(1);
   if (p) return { kind: "participant", participant: toPublicParticipant(p) };
   const [k] = await db.select().from(keepers).where(eq(keepers.token, credential)).limit(1);
   if (k) return { kind: "keeper", keeperId: k.id, name: k.name };
+  const [a] = await db.select().from(agents).where(and(eq(agents.keyHash, hashKey(credential)), isNull(agents.revokedAt))).limit(1);
+  if (a) return { kind: "agent", agent: toPublicAgent(a) };
   const [w] = await db.select({ id: weaves.id }).from(weaves).where(eq(weaves.secret, credential)).limit(1);
   if (w) return { kind: "secret", weaveId: w.id };
   throw errors.invalidToken();
+}
+
+/** The participant an agent owns in a Weave, if it has joined. */
+export async function participantForAgent(db: Db, agentId: string, weaveId: string): Promise<PublicParticipant | undefined> {
+  const [p] = await db.select().from(participants)
+    .where(and(eq(participants.agentId, agentId), eq(participants.weaveId, weaveId))).limit(1);
+  return p ? toPublicParticipant(p) : undefined;
+}
+
+/**
+ * An agent key is an instance-level identity; inside a Weave it acts as the participant it owns
+ * there. Every Weave-scoped operation resolves through here first; non-agent actors pass through.
+ */
+export async function resolveInWeave(db: Db, actor: Actor, weaveId: string): Promise<Actor> {
+  if (actor.kind !== "agent") return actor;
+  const me = await participantForAgent(db, actor.agent.id, weaveId);
+  if (!me) throw errors.forbidden("Join the Weave first");
+  return { kind: "participant", participant: me };
 }
 
 /** Attribution string stored in events. */
 export function actorId(actor: Actor): string {
   if (actor.kind === "participant") return actor.participant.id;
   if (actor.kind === "keeper") return `keeper:${actor.keeperId}`;
+  // A raw agent actor must have been resolved through resolveInWeave before reaching here.
+  if (actor.kind === "agent") throw errors.forbidden("Join the Weave first");
   throw errors.forbidden("A Weave secret only grants read access; join to write");
 }
 
 export function assertCanRead(actor: Actor, weaveId: string): void {
-  if (actor.kind === "keeper") return;
   // An agent key is not Weave-scoped; it grants nothing until it is mapped to a participant.
-  if (actor.kind === "agent") throw errors.forbidden("Credential does not belong to this Weave");
+  if (actor.kind === "agent") throw errors.forbidden("Join the Weave first");
+  if (actor.kind === "keeper") return;
   const scoped = actor.kind === "participant" ? actor.participant.weaveId : actor.weaveId;
   if (scoped !== weaveId) throw errors.forbidden("Credential does not belong to this Weave");
 }
 
 export function assertParticipantOf(actor: Actor, weaveId: string): PublicParticipant {
+  if (actor.kind === "agent") throw errors.forbidden("Join the Weave first");
   if (actor.kind !== "participant") throw errors.forbidden("Join the Weave to do this");
   if (actor.participant.weaveId !== weaveId) throw errors.forbidden("Credential does not belong to this Weave");
   return actor.participant;
 }
 
 export function assertIsKeeperOf(actor: Actor, weaveId: string): void {
+  if (actor.kind === "agent") throw errors.forbidden("Join the Weave first");
   if (actor.kind === "keeper") return;
   if (actor.kind === "participant" && actor.participant.weaveId === weaveId && actor.participant.role === "keeper") return;
   throw errors.forbidden("Only a keeper of this Weave can do this");
@@ -63,6 +88,7 @@ export async function assertInstanceKeeperFresh(db: Db, actor: Actor): Promise<v
  * role captured when its credential was resolved and may since have been demoted or removed.
  */
 export async function assertStillKeeperOf(tx: Tx, actor: Actor, weaveId: string): Promise<void> {
+  if (actor.kind === "agent") throw errors.forbidden("Join the Weave first");
   if (actor.kind === "participant") {
     const [p] = await tx.select({ weaveId: participants.weaveId, role: participants.role })
       .from(participants).where(eq(participants.id, actor.participant.id)).limit(1);
