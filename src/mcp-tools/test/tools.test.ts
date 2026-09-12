@@ -12,7 +12,10 @@ const fake: LoomToolBackend = {
   getWeave: async (credential, weaveId) => ({ weave: { id: weaveId }, credential }),
   readEvents: async (_c, _w, opts) => [{ seq: (opts.since ?? 0) + 1 }],
   postMessage: async (_c, threadId, text) => ({ threadId, payload: { text } }),
-  createThread: async (_c, weaveId, name) => ({ weaveId, name }),
+  createThread: async (_c, weaveId, name, url) => ({ weaveId, name, url: url ?? null }),
+  setThreadUrl: async (_c, threadId, url) => ({ id: threadId, url }),
+  inviteParticipant: async (_c, threadId, participantId) => ({ seq: 9, created: true, threadId, participantId }),
+  inbox: async (c, weaveId, opts) => [{ type: "thread.invited", weaveId, since: opts.since, credential: c }],
   closeThread: async () => {},
   archiveWeave: async () => {},
   setRole: async (_c, _w, participantId, role) => ({ participantId, role }),
@@ -23,6 +26,9 @@ const fake: LoomToolBackend = {
   keeperList: async () => [],
   keeperAdd: async (_c, name) => ({ keeper: { name }, token: "k".repeat(43) }),
   keeperRemove: async () => { throw { code: "validation", message: "No such keeper" }; },
+  keeperAgentsList: async () => [{ id: "a1", name: "ChatGPT" }],
+  keeperAgentsAdd: async (_c, name) => ({ agent: { name }, key: "a".repeat(43) }),
+  keeperAgentsRevoke: async () => {},
 };
 
 let client: Client;
@@ -73,5 +79,39 @@ describe("registerLoomTools", () => {
     const r = await client.callTool({ name: "set_role", arguments: { credential: "c", weaveId: "w", participantId: "p", role: "boss" } });
     expect(r.isError).toBe(true);
     expect(calls.length).toBe(before);
+  });
+});
+
+describe("v2 tools", () => {
+  it("advertises the new tools", async () => {
+    const names = (await client.listTools()).tools.map((t) => t.name);
+    for (const n of ["set_thread_url", "invite_participant", "inbox", "keeper_agents_list", "keeper_agents_add", "keeper_agents_revoke"]) expect(names).toContain(n);
+    expect([...LOOM_TOOL_NAMES]).toEqual(expect.arrayContaining(names));
+  });
+  it("create_thread passes url through; set_thread_url accepts null; invite and inbox route their arguments", async () => {
+    expect(JSON.parse(text(await client.callTool({ name: "create_thread", arguments: { credential: "c", weaveId: "w1", name: "PR", url: "https://e.com" } })))).toEqual({ weaveId: "w1", name: "PR", url: "https://e.com" });
+    expect(JSON.parse(text(await client.callTool({ name: "set_thread_url", arguments: { credential: "c", threadId: "t1", url: null } })))).toEqual({ id: "t1", url: null });
+    expect(JSON.parse(text(await client.callTool({ name: "invite_participant", arguments: { credential: "c", threadId: "t1", participantId: "p2" } })))).toMatchObject({ seq: 9, created: true });
+    expect(JSON.parse(text(await client.callTool({ name: "inbox", arguments: { credential: "c", weaveId: "w1", since: 4 } })))).toEqual([{ type: "thread.invited", weaveId: "w1", since: 4, credential: "c" }]);
+  });
+  it("with a connection default, credential is optional and the default is used; an explicit one still wins", async () => {
+    const server = new McpServer({ name: "test", version: "0.0.0" });
+    registerLoomTools(server, fake, { defaultCredential: () => "agent-key", agentName: "ChatGPT" });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await server.connect(a);
+    const c2 = new Client({ name: "t2", version: "0" });
+    await c2.connect(b);
+    try {
+      const r = JSON.parse(text(await c2.callTool({ name: "inbox", arguments: { weaveId: "w1" } })));
+      expect(r[0].credential).toBe("agent-key");
+      const r2 = JSON.parse(text(await c2.callTool({ name: "inbox", arguments: { weaveId: "w1", credential: "explicit" } })));
+      expect(r2[0].credential).toBe("explicit");
+      const schema = (await c2.listTools()).tools.find((t) => t.name === "get_weave")!.inputSchema as { required?: string[] };
+      expect(schema.required ?? []).not.toContain("credential");
+    } finally { await c2.close(); }
+  });
+  it("without a connection default, credential stays required", async () => {
+    const schema = (await client.listTools()).tools.find((t) => t.name === "get_weave")!.inputSchema as { required?: string[] };
+    expect(schema.required).toContain("credential");
   });
 });

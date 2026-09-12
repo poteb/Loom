@@ -7,12 +7,15 @@ export type Role = "member" | "keeper";
 
 export type LoomToolBackend = {
   createWeave(input: { title: string; opener: string; creator: { name: string; kind: Kind } }, credential?: string): Promise<unknown>; // CreateWeaveResult shape
-  joinWeave(secret: string, who: { name: string; kind: Kind }): Promise<unknown>;                                          // JoinResult shape
+  joinWeave(secret: string, who: { name: string; kind: Kind }, credential?: string): Promise<unknown>;                     // JoinResult shape; credential: the connection's agent key, if any
   lookupWeave(secret: string): Promise<{ weaveId: string }>;
   getWeave(credential: string, weaveId: string): Promise<unknown>;
   readEvents(credential: string, weaveId: string, opts: { since?: number; threadId?: string; limit?: number }): Promise<unknown[]>;
   postMessage(credential: string, threadId: string, text: string): Promise<unknown>;
-  createThread(credential: string, weaveId: string, name: string): Promise<unknown>;
+  createThread(credential: string, weaveId: string, name: string, url?: string | null): Promise<unknown>;
+  setThreadUrl(credential: string, threadId: string, url: string | null): Promise<unknown>;
+  inviteParticipant(credential: string, threadId: string, participantId: string): Promise<unknown>;      // { seq, created }
+  inbox(credential: string, weaveId: string, opts: { since?: number; limit?: number }): Promise<unknown[]>;
   closeThread(credential: string, threadId: string): Promise<void>;
   archiveWeave(credential: string, weaveId: string): Promise<void>;
   setRole(credential: string, weaveId: string, participantId: string, role: Role): Promise<unknown>;
@@ -23,4 +26,7 @@ export type LoomToolBackend = {
   keeperList(credential: string): Promise<unknown[]>;
   keeperAdd(credential: string, name: string): Promise<unknown>;
   keeperRemove(credential: string, id: string): Promise<void>;
+  keeperAgentsList(credential: string): Promise<unknown[]>;
+  keeperAgentsAdd(credential: string, name: string): Promise<unknown>;                                   // { agent, key }
+  keeperAgentsRevoke(credential: string, id: string): Promise<void>;
 };
