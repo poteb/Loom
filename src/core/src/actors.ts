@@ -7,7 +7,8 @@ import { hashKey, toPublicAgent } from "./agent-keys.js";
 import type { Actor, PublicParticipant } from "./types.js";
 
 export function toPublicParticipant(p: typeof participants.$inferSelect): PublicParticipant {
-  return { id: p.id, weaveId: p.weaveId, name: p.name, kind: p.kind, role: p.role, joinedAt: p.joinedAt.toISOString() };
+  return { id: p.id, weaveId: p.weaveId, name: p.name, kind: p.kind, role: p.role,
+    joinedAt: p.joinedAt.toISOString(), agentId: p.agentId ?? null };
 }
 
 /** Resolves a bearer credential: participant token, keeper token, agent key, or weave secret. */

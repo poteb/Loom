@@ -11,7 +11,7 @@ export type Role = "member" | "keeper";
 export type Kind = "human" | "agent";
 
 export type PublicParticipant = {
-  id: string; weaveId: string; name: string; kind: Kind; role: Role; joinedAt: string;
+  id: string; weaveId: string; name: string; kind: Kind; role: Role; joinedAt: string; agentId: string | null;
 };
 export type PublicThread = {
   id: string; weaveId: string; name: string; isGeneral: boolean;

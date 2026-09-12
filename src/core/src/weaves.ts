@@ -1,4 +1,4 @@
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import type { Db } from "./db/index.js";
 import { weaves, threads, participants } from "./db/schema.js";
 import type { EventBus } from "./bus.js";
@@ -16,6 +16,10 @@ export type CreateWeaveResult = {
   weave: PublicWeave; secret: string; participant: PublicParticipant; token: string; generalThread: PublicThread;
 };
 export type WeaveInfo = { weave: PublicWeave; threads: PublicThread[]; participants: PublicParticipant[] };
+export type JoinResult = {
+  weaveId: string; weave: PublicWeave; generalThreadId: string; participant: PublicParticipant;
+  token: string; alreadyJoined?: boolean;
+};
 
 export function toPublicWeave(w: typeof weaves.$inferSelect): PublicWeave {
   return { id: w.id, title: w.title, createdAt: w.createdAt.toISOString(),
@@ -39,9 +43,10 @@ export function isNameTakenViolation(e: unknown): boolean {
 export async function createWeave(db: Db, bus: EventBus, input: CreateWeaveInput, actor?: Actor): Promise<CreateWeaveResult> {
   const settings = await getSettings(db);
   if (!settings.openWeaveCreation) {
-    if (!actor) throw errors.forbidden("Weave creation is restricted to keepers");
+    if (!actor || actor.kind === "agent") throw errors.forbidden("Weave creation is restricted to keepers");
     await assertInstanceKeeperFresh(db, actor);
   }
+  const agentId = actor?.kind === "agent" ? actor.agent.id : null;
   const title = input.title.trim();
   if (title.length === 0 || title.length > 200) throw errors.validation("Title must be 1-200 characters");
   const name = validateName(input.creator.name);
@@ -56,7 +61,7 @@ export async function createWeave(db: Db, bus: EventBus, input: CreateWeaveInput
   const { result, committed } = await db.transaction(async (tx) => {
     const [w] = await tx.insert(weaves).values({ id: weaveId, secret, title }).returning();
     const [t] = await tx.insert(threads).values({ id: threadId, weaveId, name: "General", isGeneral: true, createdBy: participantId }).returning();
-    const [p] = await tx.insert(participants).values({ id: participantId, weaveId, name, kind: input.creator.kind, role: "keeper", token }).returning();
+    const [p] = await tx.insert(participants).values({ id: participantId, weaveId, name, kind: agentId ? "agent" : input.creator.kind, role: "keeper", token, agentId }).returning();
     const pub = toPublicParticipant(p!);
     const committed = await appendInTx(tx, w!, [
       { threadId, type: "thread.created", actor: participantId, payload: { threadId, name: "General" } },
@@ -79,19 +84,27 @@ export async function getWeave(db: Db, actor: Actor, weaveId: string): Promise<W
   return { weave: toPublicWeave(w), threads: ts.map(toPublicThread), participants: ps.map(toPublicParticipant) };
 }
 
-export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { name: string; kind: Kind }) {
+export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { name: string; kind: Kind }, actor?: Actor): Promise<JoinResult> {
   const name = validateName(who.name);
   if (who.kind !== "human" && who.kind !== "agent") throw errors.validation("kind must be human or agent");
   const [found] = await db.select().from(weaves).where(eq(weaves.secret, secret));
   if (!found) throw errors.weaveNotFound();
   const [general] = await db.select().from(threads).where(eq(threads.weaveId, found.id)).orderBy(asc(threads.createdAt)).limit(1);
   if (!general) throw errors.weaveNotFound();
+  const agentId = actor?.kind === "agent" ? actor.agent.id : null;
+  if (agentId) {
+    // An agent owns at most one participant per Weave: joining again is a lookup, not a new identity.
+    const [mine] = await db.select().from(participants)
+      .where(and(eq(participants.agentId, agentId), eq(participants.weaveId, found.id))).limit(1);
+    if (mine) return { weaveId: found.id, weave: toPublicWeave(found), generalThreadId: general.id,
+      participant: toPublicParticipant(mine), token: mine.token, alreadyJoined: true };
+  }
   const token = newSecret();
   const participantId = newId();
   try {
     const participant = await withWeaveLock(db, bus, found.id, async (tx, weave) => {
       if (weave.archivedAt) throw errors.weaveArchived();
-      const [p] = await tx.insert(participants).values({ id: participantId, weaveId: weave.id, name, kind: who.kind, role: "member", token }).returning();
+      const [p] = await tx.insert(participants).values({ id: participantId, weaveId: weave.id, name, kind: agentId ? "agent" : who.kind, role: "member", token, agentId }).returning();
       const pub = toPublicParticipant(p!);
       return { result: pub, events: [{ threadId: general.id, type: "participant.joined" as const, actor: participantId,
         payload: { participantId, name: pub.name, kind: pub.kind, role: pub.role } }] };
