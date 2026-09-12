@@ -36,7 +36,8 @@ export function createCore(db: Db) {
       if (!w) throw errors.weaveNotFound();
       return readEvents(db, weaveId, opts);
     },
-    createThread: (actor: Actor, weaveId: string, name: string) => threads.createThread(db, bus, actor, weaveId, name),
+    createThread: (actor: Actor, weaveId: string, name: string, url?: string | null) => threads.createThread(db, bus, actor, weaveId, name, url),
+    setThreadUrl: (actor: Actor, threadId: string, url: string | null) => threads.setThreadUrl(db, bus, actor, threadId, url),
     closeThread: (actor: Actor, threadId: string) => threads.closeThread(db, bus, actor, threadId),
     getThreadWeaveId: async (threadId: string) => (await threads.getThread(db, threadId)).weaveId,
     postMessage: (actor: Actor, threadId: string, text: string) => postMessage(db, bus, actor, threadId, text),
