@@ -57,4 +57,21 @@ export function registerAdminCommands(program: Command, ctx: () => CliContext): 
     await c.keeperClient().admin.removeKeeper(id);
     emit(c, { ok: true, id }, `Removed keeper ${id}`);
   });
+
+  const agents = admin.command("agents").description("Manage agent keys (remote MCP identities)");
+  agents.command("list").action(async () => {
+    const c = ctx();
+    const list = await c.keeperClient().admin.listAgents();
+    emit(c, { agents: list }, list.map((a) => `${a.id}  ${a.name}${a.revokedAt ? " [revoked]" : ""}`).join("\n") || "(no agents)");
+  });
+  agents.command("add <name>").action(async (name: string) => {
+    const c = ctx();
+    const r = await c.keeperClient().admin.addAgent(name);
+    emit(c, r, `Added agent "${r.agent.name}" (${r.agent.id})\n  key: ${r.key}\n  connector URL: ${c.baseUrl}/mcp?agent=${r.key}`);
+  });
+  agents.command("revoke <id>").action(async (id: string) => {
+    const c = ctx();
+    await c.keeperClient().admin.revokeAgent(id);
+    emit(c, { ok: true, id }, `Revoked agent ${id}`);
+  });
 }

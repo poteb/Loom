@@ -37,7 +37,9 @@ export function registerWeaveCommands(program: Command, ctx: () => CliContext): 
     .addOption(kindOption())
     .action(async (secret: string, o: { name: string; kind: Kind }) => {
       const c = ctx();
-      const j = await c.client().joinWeave(secret, { name: o.name, kind: o.kind });
+      // An agent key presented on join links the new participant to that agent identity; the
+      // per-Weave token the server returns is still what gets stored and used afterwards.
+      const j = await c.client(c.io.env.LOOM_AGENT_KEY).joinWeave(secret, { name: o.name, kind: o.kind });
       // Persist before anything else can fail: the token is the only copy of this identity and
       // re-joining under the same name would be refused as name_taken.
       await c.remember(j.weaveId, {
