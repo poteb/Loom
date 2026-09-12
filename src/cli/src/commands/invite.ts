@@ -16,7 +16,7 @@ export function registerInviteCommands(program: Command, ctx: () => CliContext):
     .description("Invites and mentions addressed to you in the current Weave")
     // InvalidArgumentError (not a plain Error) is what commander turns into a usage error and exit 2,
     // matching `read --since` / `read --count`.
-    .option("--since <seq>", "Only events after this seq", (v) => { const n = Number(v); if (!Number.isInteger(n) || n < 0) throw new InvalidArgumentError("must be an integer >= 0"); return n; })
+    .option("--since <seq>", "Only events after this seq (omit for the most recent)", (v) => { const n = Number(v); if (!Number.isInteger(n) || n < 0) throw new InvalidArgumentError("must be an integer >= 0"); return n; })
     .option("--limit <n>", "Max events (1-1000)", (v) => { const n = Number(v); if (!Number.isInteger(n) || n < 1 || n > 1000) throw new InvalidArgumentError("must be an integer between 1 and 1000"); return n; })
     .action(async (o: { since?: number; limit?: number }) => {
       const c = ctx();

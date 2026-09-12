@@ -35,8 +35,12 @@ describe("inbox", () => {
     expect(mine.map((e) => [e.type, e.seq])).toEqual([["thread.invited", inv.seq], ["message", m1.seq], ["message", m2.seq]]);
     const later = await inbox(db, bot, r.weave.id, { since: m1.seq });
     expect(later.map((e) => e.seq)).toEqual([m2.seq]);
+    // No `since`: the most recent addressed events, not the oldest page (a remote agent with no
+    // cursor wants what it just missed).
     const one = await inbox(db, bot, r.weave.id, { limit: 1 });
-    expect(one.map((e) => e.seq)).toEqual([inv.seq]);
+    expect(one.map((e) => e.seq)).toEqual([m2.seq]);
+    const two = await inbox(db, bot, r.weave.id, { limit: 2 });
+    expect(two.map((e) => e.seq)).toEqual([m1.seq, m2.seq]);   // newest two, still ascending
   });
   it("needs a participant credential of that Weave", async () => {
     const r = await createWeave(db, bus, { title: "T", opener: "", creator: { name: "Paw", kind: "human" } });
@@ -54,7 +58,7 @@ describe("inbox", () => {
     const inv = await inviteParticipant(db, bus, paw, t.id, b.participant.id);
     const m1 = await postMessage(db, bus, paw, t.id, "@Bot please review");
     const m2 = await postMessage(db, bus, paw, t.id, "@Bot again");
-    expect((await inbox(db, bot, r.weave.id, { limit: 0 })).map((e) => e.seq)).toEqual([inv.seq]);
+    expect((await inbox(db, bot, r.weave.id, { limit: 0 })).map((e) => e.seq)).toEqual([m2.seq]);   // clamped to 1: the newest
     expect((await inbox(db, bot, r.weave.id, { limit: 5000 })).map((e) => e.seq)).toEqual([inv.seq, m1.seq, m2.seq]);
     await expect(inbox(db, bot, "nope", {})).rejects.toMatchObject({ code: "weave_not_found" });
     await seedKeepers(db, [keeperToken("k1")]);

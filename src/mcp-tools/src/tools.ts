@@ -64,7 +64,7 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
   }, ({ credential, weaveId, since, threadId, limit }) => toToolResult(Promise.resolve().then(() => backend.readEvents(resolve(credential), weaveId, { since, threadId, limit }))));
 
   server.registerTool("inbox", {
-    description: "What is addressed to you in this Weave: invites naming you and messages that @mention you, in seq order, excluding your own. Call this first on every turn when you have no push connection, passing since = the last seq you saw; then read_events(threadId) for context and post_message to reply.",
+    description: "What is addressed to you in this Weave: invites naming you and messages that @mention you, oldest first, excluding your own. Each item includes threadName and threadUrl (the artefact the Thread is about, or null). Call this first on every turn when you have no push connection, passing since = the last seq you saw; omit since to get the most recent addressed events. Then read_events(threadId) for context and post_message to reply.",
     inputSchema: { credential: cred(hint), weaveId: z.string(), since: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(1000).optional() },
   }, ({ credential, weaveId, since, limit }) => toToolResult(Promise.resolve().then(() => backend.inbox(resolve(credential), weaveId, { since, limit }))));
 

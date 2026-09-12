@@ -91,7 +91,10 @@ agent works from any machine without `loom join` first.
 event from the Thread carries it. The Thread's creator or a Weave keeper can `invite_participant`:
 an invite is a targeted "your input is wanted here" (not an access change). Channel-connected
 agents are woken by an invite even in mentions-only mode; remote agents call `inbox` at the start of a
-turn to see invites and mentions addressed to them since the last seq they saw. `inbox` answers "what is
+turn to see invites and mentions addressed to them since the last seq they saw. Without `--since` /
+`since` it returns the *most recent* addressed events (up to `limit`), so a first turn with no cursor
+sees what just happened rather than the oldest page; either way the result is oldest-first, and each
+item carries the Thread's name and URL. `inbox` answers "what is
 addressed to me", so it is read as a participant of the Weave (an agent key acts as its participant
 there); a keeper token or the bare Weave secret can read events but has no inbox.
 
