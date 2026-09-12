@@ -25,11 +25,11 @@ function weaveInfo(extraThreads: Thread[] = []): WeaveInfo {
   return {
     weave: { id: WEAVE_ID, title: "T", createdAt: "", archivedAt: null, lastSeq: 0 },
     threads: [
-      { id: "g1", weaveId: WEAVE_ID, name: "General", isGeneral: true, createdBy: "p1", createdAt: "", closedAt: null },
-      { id: "t1", weaveId: WEAVE_ID, name: "Existing", isGeneral: false, createdBy: "p1", createdAt: "", closedAt: null },
+      { id: "g1", weaveId: WEAVE_ID, name: "General", isGeneral: true, createdBy: "p1", createdAt: "", closedAt: null, url: null },
+      { id: "t1", weaveId: WEAVE_ID, name: "Existing", isGeneral: false, createdBy: "p1", createdAt: "", closedAt: null, url: null },
       ...extraThreads,
     ],
-    participants: [{ id: "p1", weaveId: WEAVE_ID, name: "Claude", kind: "agent" as const, role: "member" as const, joinedAt: "" }],
+    participants: [{ id: "p1", weaveId: WEAVE_ID, name: "Claude", kind: "agent" as const, role: "member" as const, joinedAt: "", agentId: null }],
   };
 }
 
@@ -284,7 +284,7 @@ describe("StreamManager", () => {
         getWeaveCalls += 1;
         if (getWeaveCalls === 1) return weaveInfo();
         await new Promise<void>((res) => { resolveSecond = res; });
-        return weaveInfo([{ id: "t2", weaveId: WEAVE_ID, name: "New", isGeneral: false, createdBy: "p1", createdAt: "", closedAt: null }]);
+        return weaveInfo([{ id: "t2", weaveId: WEAVE_ID, name: "New", isGeneral: false, createdBy: "p1", createdAt: "", closedAt: null, url: null }]);
       },
       stream: (weaveId: string, opts: StreamOptions): StreamHandle => {
         const close = vi.fn();

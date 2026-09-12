@@ -71,12 +71,18 @@ describe("channel tools", () => {
       let cfg = readState(stateDir);
       expect(cfg.weaves[created.weave.id]).toMatchObject({ token: created.token, participantId: created.participant.id, wake: "all", lastSeq: 0, generalThreadId: created.generalThread.id });
       const listed = json(await c.callTool({ name: "list_joined", arguments: {} }));
-      expect(listed).toEqual([expect.objectContaining({ weaveId: created.weave.id, title: "T", participantName: "Claude", wake: "all" })]);
-      const waked = await c.callTool({ name: "set_wake", arguments: { weaveId: created.weave.id, wake: "mentions" } });
+      expect(listed).toEqual([expect.objectContaining({ weaveId: created.weave.id, title: "T", participantName: "Claude", wake: "all", invites: true })]);
+      const waked = await c.callTool({ name: "set_wake", arguments: { weaveId: created.weave.id, wake: "mentions", invites: false } });
       expect(waked.isError).toBeFalsy();
-      expect(json(waked)).toEqual({ weaveId: created.weave.id, wake: "mentions" });
+      expect(json(waked)).toEqual({ weaveId: created.weave.id, wake: "mentions", invites: false });
       cfg = readState(stateDir);
-      expect(cfg.weaves[created.weave.id].wake).toBe("mentions");
+      // Preferences live under this session's entry, not on the machine-wide Weave record.
+      expect(cfg.weaves[created.weave.id].wake).toBe("all");
+      expect(Object.values(cfg.sessions as Record<string, { prefs?: Record<string, unknown> }>).map((sess) => sess.prefs?.[created.weave.id]))
+        .toContainEqual({ wake: "mentions", invites: false });
+      const nothing = await c.callTool({ name: "set_wake", arguments: { weaveId: created.weave.id } });
+      expect(nothing.isError).toBe(true);
+      expect(json(nothing)).toEqual({ code: "validation", message: expect.any(String) });
       const left = await c.callTool({ name: "leave_weave", arguments: { weaveId: created.weave.id } });
       expect(left.isError).toBeFalsy();
       expect(json(left)).toEqual({ weaveId: created.weave.id, left: true });
@@ -115,7 +121,7 @@ describe("channel tools", () => {
           generalThreadId: created.generalThread.id, wake: "all", lastSeq: 0, title: created.weave.title,
         });
         const listed = json(await b.callTool({ name: "list_joined", arguments: {} }));
-        expect(listed).toEqual([expect.objectContaining({ weaveId: created.weave.id, title: created.weave.title, participantName: "Other", wake: "all" })]);
+        expect(listed).toEqual([expect.objectContaining({ weaveId: created.weave.id, title: created.weave.title, participantName: "Other", wake: "all", invites: true })]);
       });
     });
   });

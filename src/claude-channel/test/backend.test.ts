@@ -16,15 +16,15 @@ function makeState(): ChannelState {
 }
 
 function participant(name: string): Participant {
-  return { id: "p2", weaveId: WEAVE_ID, name, kind: "agent", role: "member", joinedAt: "" };
+  return { id: "p2", weaveId: WEAVE_ID, name, kind: "agent", role: "member", joinedAt: "", agentId: null };
 }
 
 function weaveInfo(): WeaveInfo {
   return {
     weave: { id: WEAVE_ID, title: "Design review", createdAt: "", archivedAt: null, lastSeq: 0 },
     threads: [
-      { id: "t1", weaveId: WEAVE_ID, name: "Side", isGeneral: false, createdBy: "p1", createdAt: "", closedAt: null },
-      { id: "g1", weaveId: WEAVE_ID, name: "General", isGeneral: true, createdBy: "p1", createdAt: "", closedAt: null },
+      { id: "t1", weaveId: WEAVE_ID, name: "Side", isGeneral: false, createdBy: "p1", createdAt: "", closedAt: null, url: null },
+      { id: "g1", weaveId: WEAVE_ID, name: "General", isGeneral: true, createdBy: "p1", createdAt: "", closedAt: null, url: null },
     ],
     participants: [],
   };

@@ -1,9 +1,9 @@
 import type { LoomClient, LoomEvent, StreamHandle } from "@loom/client";
-import type { ChannelState, JoinedWeave, Wake } from "./state.js";
+import type { ChannelState, JoinedWeave, Prefs } from "./state.js";
 import { formatEvent, shouldWake, type Names } from "./format.js";
 
 type Active = {
-  handle?: StreamHandle; names: Names; title: string; wake: Wake; participantId: string; chain: Promise<void>; stopped: boolean;
+  handle?: StreamHandle; names: Names; title: string; prefs: Prefs; participantId: string; chain: Promise<void>; stopped: boolean;
   threadIds: Set<string>; restartTimer?: ReturnType<typeof setTimeout>; backoffMs: number;
 };
 
@@ -48,7 +48,7 @@ export class StreamManager {
 
   restoreAll(): void { for (const [id, w] of Object.entries(this.state.load().weaves)) this.start(id, w); }
   closeAll(): void { for (const id of [...this.active.keys()]) this.stop(id); }
-  setWake(weaveId: string, wake: Wake): void { const a = this.active.get(weaveId); if (a) a.wake = wake; }
+  setPrefs(weaveId: string, prefs: Prefs): void { const a = this.active.get(weaveId); if (a) a.prefs = prefs; }
 
   stop(weaveId: string): void {
     const a = this.active.get(weaveId);
@@ -93,7 +93,7 @@ export class StreamManager {
     this.stop(weaveId);
     const reader = this.client.withToken(w.token);
     const entry: Active = {
-      names: { threads: new Map(), participants: new Map() }, title: w.title, wake: w.wake, participantId: w.participantId,
+      names: { threads: new Map(), participants: new Map() }, title: w.title, prefs: this.state.prefs(weaveId), participantId: w.participantId,
       chain: Promise.resolve(), stopped: false, threadIds: new Set(), backoffMs,
     };
     this.active.set(weaveId, entry);
@@ -101,18 +101,18 @@ export class StreamManager {
       const info = await reader.getWeave(weaveId);
       if (entry.stopped) return; // stop() raced ahead of this refresh; don't resurrect thread ownership for a dead entry
       entry.title = info.weave.title;
-      entry.names.threads = new Map(info.threads.map((t) => [t.id, t.name]));
+      entry.names.threads = new Map(info.threads.map((t) => [t.id, { name: t.name, url: t.url }]));
       entry.names.participants = new Map(info.participants.map((p) => [p.id, { name: p.name, kind: p.kind }]));
       for (const t of info.threads) { this.threadToWeave.set(t.id, weaveId); entry.threadIds.add(t.id); }
     };
     const onEvent = (e: LoomEvent) => {
       entry.chain = entry.chain.then(async () => {
         if (entry.stopped) return;
-        if (e.type === "thread.created" || e.type === "participant.joined" || e.type === "participant.role_changed") {
+        if (e.type === "thread.created" || e.type === "thread.url_changed" || e.type === "participant.joined" || e.type === "participant.role_changed") {
           await refresh().catch((err) => this.log(`name refresh failed for weave ${weaveId}: ${(err as Error).message}`));
         }
-        if (shouldWake(e, { participantId: entry.participantId, wake: entry.wake })) {
-          await this.notify(formatEvent(e, { id: weaveId, title: entry.title }, entry.names));
+        if (shouldWake(e, { participantId: entry.participantId, ...entry.prefs })) {
+          await this.notify(formatEvent(e, { id: weaveId, title: entry.title }, entry.names, entry.participantId));
         }
         await this.state.setLastSeq(weaveId, e.seq);
         entry.backoffMs = this.restartBackoffMs.initial;

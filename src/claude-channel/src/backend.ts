@@ -34,8 +34,9 @@ export class ClientToolBackend implements LoomToolBackend {
   /** Reads the Weave's metadata with the secret (a read-only credential) *before* joining: joining is
    * irreversible and consumes the chosen name, so a metadata failure after a successful join would
    * lose the issued token and make a retry fail with `name_taken`. Order: lookup -> getWeave -> join
-   * -> persist the token -> hooks. */
-  async joinWeave(secret: string, who: { name: string; kind: Kind }) {
+   * -> persist the token -> hooks. The connection-wide agent key other backends pass through is
+   * ignored here: the channel stores the participant identity it creates and reuses that instead. */
+  async joinWeave(secret: string, who: { name: string; kind: Kind }, _credential?: string) {
     const weaveId = await this.client.lookupWeave(secret);
     // Already joined under this name: hand back the stored identity rather than consuming the name
     // a second time (which the server refuses with name_taken). Falls through to a fresh join if the
@@ -90,12 +91,15 @@ export class ClientToolBackend implements LoomToolBackend {
   async lookupWeave(secret: string) { return { weaveId: await this.client.lookupWeave(secret) }; }
   getWeave(c: string, weaveId: string) { return this.as(c).getWeave(weaveId); }
   readEvents(c: string, weaveId: string, opts: { since?: number; threadId?: string; limit?: number }) { return this.as(c).readEvents(weaveId, opts); }
+  inbox(c: string, weaveId: string, opts: { since?: number; limit?: number }) { return this.as(c).inbox(weaveId, opts); }
   postMessage(c: string, threadId: string, text: string) { return this.as(c).postMessage(threadId, text); }
-  async createThread(c: string, weaveId: string, name: string) {
-    const t = await this.as(c).createThread(weaveId, name);
+  async createThread(c: string, weaveId: string, name: string, url?: string | null) {
+    const t = await this.as(c).createThread(weaveId, name, url);
     this.hooks.onThreadCreated?.(weaveId, t.id);
     return t;
   }
+  setThreadUrl(c: string, threadId: string, url: string | null) { return this.as(c).setThreadUrl(threadId, url); }
+  inviteParticipant(c: string, threadId: string, participantId: string) { return this.as(c).inviteParticipant(threadId, participantId); }
   closeThread(c: string, threadId: string) { return this.as(c).closeThread(threadId); }
   archiveWeave(c: string, weaveId: string) { return this.as(c).archiveWeave(weaveId); }
   setRole(c: string, weaveId: string, participantId: string, role: Role) { return this.as(c).setRole(weaveId, participantId, role); }
@@ -106,4 +110,7 @@ export class ClientToolBackend implements LoomToolBackend {
   keeperList(c: string) { return this.as(c).admin.listKeepers(); }
   keeperAdd(c: string, name: string) { return this.as(c).admin.addKeeper(name); }
   keeperRemove(c: string, id: string) { return this.as(c).admin.removeKeeper(id); }
+  keeperAgentsList(c: string) { return this.as(c).admin.listAgents(); }
+  keeperAgentsAdd(c: string, name: string) { return this.as(c).admin.addAgent(name); }
+  keeperAgentsRevoke(c: string, id: string) { return this.as(c).admin.revokeAgent(id); }
 }
