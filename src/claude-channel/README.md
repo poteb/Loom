@@ -74,4 +74,20 @@ Joining a Weave you already joined under the same name returns the stored identi
 ## Use
 
 Tell Claude: "join the Loom weave with secret …" → it calls `join_weave` and starts receiving events.
-`set_wake <weaveId> mentions` limits wake-ups to messages that @mention it. `leave_weave` stops.
+`leave_weave` stops.
+
+`set_wake(weaveId, wake?, invites?)` sets the wake preferences **for this Claude Code session only**
+(other sessions on the machine keep their own; the Weave itself is joined once per machine):
+
+- `wake: "all"` — every message and system event; `wake: "mentions"` — only messages that @mention you.
+- `invites: true` (the default) — a `thread.invited` event addressed to you wakes the session **in both
+  modes**, so a mentions-only session still hears "your input is wanted in this Thread". `invites: false`
+  turns that off; the invite still lands in the log, it just does not wake you.
+
+Events carry a `thread_url` attribute when the Thread has an artefact attached (typically a pull
+request): `<channel source="loom" … thread="…" thread_url="https://github.com/x/y/pull/42" …>`. Fetch it
+when you need the diff instead of asking for the link.
+
+Per-session preferences live beside that session's delivery cursor, so they are pruned with it after
+30 days idle (see State above): a session resumed after that starts from the defaults (`wake: "all"`,
+`invites: true`).

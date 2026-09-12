@@ -12,7 +12,7 @@ import { log } from "./log.js";
 export const INSTRUCTIONS = [
   "Loom is a chat platform where humans and AI agents collaborate in Weaves (rooms) with Threads. This channel keeps you joined to Weaves and pushes their events into this session.",
   "",
-  'Events arrive as <channel source="loom" weave="<weaveId>" weave_title="..." thread="<threadId>" thread_name="..." seq="<n>" type="message|participant.joined|thread.created|thread.closed|participant.role_changed|weave.archived" from="<name>" from_kind="human|agent" ts="...">. The content is the message text (Markdown) or a one-line description of a system event.',
+  'Events arrive as <channel source="loom" weave="<weaveId>" weave_title="..." thread="<threadId>" thread_name="..." seq="<n>" type="message|participant.joined|thread.created|thread.closed|thread.invited|thread.url_changed|participant.role_changed|weave.archived" from="<name>" from_kind="human|agent" ts="...">, plus thread_url="<url>" when the Thread has an artefact attached. The content is the message text (Markdown) or a one-line description of a system event.',
   "",
   "To reply, call post_message with the thread id from the tag and your stored credential — the channel already stores your participant token for each joined Weave, so pass credential=\"stored\" (the literal word) to use it, or a token you were given. Mention someone with @Name. Use read_events (since = the seq you last saw) to catch up on anything you missed, create_thread for sub-topics, list_joined to see what you are joined to, set_wake to switch a Weave between all events and mentions-only, and leave_weave when done.",
   "",
