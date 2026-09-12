@@ -33,6 +33,11 @@ const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
  * Every mutation is a locked read-merge-write against the file so concurrent processes never lose
  * each other's updates; reads serve the last snapshot this process saw (`get()`) or reload (`load()`).
  */
+function processAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
 export class ChannelState {
   private cache: ChannelConfig | undefined;
   readonly file: string;
@@ -76,6 +81,18 @@ export class ChannelState {
   cursor(weaveId: string): number {
     const c = this.get();
     return c.sessions[this.sessionId]?.cursors[weaveId] ?? c.weaves[weaveId]?.lastSeq ?? 0;
+  }
+
+  /** Records where this session starts listening to a Weave (its own cursor if it has one, else
+   * the current watermark) and returns it. Persisting the starting point matters for quiet
+   * sessions: without it a session that received nothing would have no entry, and on resume it
+   * would fall back to a watermark other sessions have since moved past, skipping those events. */
+  ensureCursor(id: string): Promise<number> {
+    return this.mutate((c) => {
+      const s = this.session(c);
+      s.cursors[id] ??= c.weaves[id]?.lastSeq ?? 0;
+      return s.cursors[id];
+    });
   }
 
   upsertWeave(id: string, w: JoinedWeave): Promise<void> {
@@ -131,17 +148,18 @@ export class ChannelState {
   }
 
   /** Locked read-modify-write; the merged result becomes this process's snapshot. */
-  private async mutate(fn: (c: ChannelConfig) => void): Promise<void> {
+  private async mutate<T = void>(fn: (c: ChannelConfig) => T): Promise<T> {
     await this.acquireLock();
     try {
       const c = this.read();
-      fn(c);
+      const result = fn(c);
       this.prune(c);
       // If another process judged this lock stale and took it over while we were in here, our
       // snapshot is no longer authoritative: abort rather than overwrite its write.
       if (!this.ownsLock()) throw new Error(`channel state lock ${this.lockFile} was taken over by another process; write aborted`);
       this.write(c);
       this.cache = c;
+      return result;
     } finally {
       if (this.ownsLock()) rmSync(this.lockFile, { force: true });
     }
@@ -173,7 +191,11 @@ export class ChannelState {
     renameSync(tmp, this.file);
   }
 
-  /** O_EXCL lock file; a lock older than STALE_LOCK_MS is assumed abandoned by a crashed process. */
+  /** O_EXCL lock file holding "<pid>:<uuid>". A lock is only ever taken over from an owner that is
+   * demonstrably dead (its pid no longer exists); a live owner keeps it however long it takes, and
+   * we give up after LOCK_TIMEOUT_MS instead. Time-based takeover would let a merely paused owner
+   * resume and overwrite the new owner's write. A lock without a readable pid (older tooling, or a
+   * corrupt file) falls back to the age rule. */
   private async acquireLock(): Promise<void> {
     mkdirSync(this.dir, { recursive: true });
     const t0 = Date.now();
@@ -184,11 +206,17 @@ export class ChannelState {
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
         try {
-          if (Date.now() - statSync(this.lockFile).mtimeMs > STALE_LOCK_MS) { rmSync(this.lockFile, { force: true }); continue; }
-        } catch { continue; /* lock vanished between the failed create and the stat: retry now */ }
+          if (this.lockAbandoned()) { rmSync(this.lockFile, { force: true }); continue; }
+        } catch { continue; /* lock vanished between the failed create and the inspection: retry now */ }
         if (Date.now() - t0 > LOCK_TIMEOUT_MS) throw new Error(`Timed out waiting for channel state lock ${this.lockFile}`);
         await new Promise((r) => setTimeout(r, 10 + Math.random() * 20));
       }
     }
+  }
+
+  private lockAbandoned(): boolean {
+    const owner = /^(\d+):/.exec(readFileSync(this.lockFile, "utf8"));
+    if (owner) return !processAlive(Number(owner[1]));
+    return Date.now() - statSync(this.lockFile).mtimeMs > STALE_LOCK_MS;
   }
 }

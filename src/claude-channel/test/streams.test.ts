@@ -62,6 +62,20 @@ function waitFor(pred: () => boolean, ms = 2000): Promise<void> {
 }
 
 describe("StreamManager", () => {
+  it("start() records this session's starting cursor before opening the stream, even if no event ever arrives", async () => {
+    const seed = await makeState(makeWeave(), "s0"); // joined by some earlier session
+    const other = new ChannelState(seed.dir, "s2");
+    await other.setLastSeq(WEAVE_ID, 7);              // watermark moves to 7
+    const state = new ChannelState(seed.dir, "s1");   // s1 has never listened to this Weave
+    const { client, streams } = makeFakeClient();
+    const sm = new StreamManager(client, state, async () => {}, () => {});
+    sm.start(WEAVE_ID, state.get().weaves[WEAVE_ID]!);
+    await waitFor(() => streams.length === 1);
+    expect(streams[0]!.opts.since).toBe(7);
+    expect(new ChannelState(seed.dir, "s1").cursor(WEAVE_ID)).toBe(7); // persisted, not just in memory
+    sm.closeAll();
+  });
+
   it("opens the stream from this session's own cursor, not the machine-wide watermark", async () => {
     const state = await makeState(makeWeave(), "s1");
     await state.setLastSeq(WEAVE_ID, 5);

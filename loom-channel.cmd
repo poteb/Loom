@@ -11,10 +11,7 @@ rem Set LOOM_URL to point at a deployed Loom instead of the local dev server.
 setlocal
 set "ROOT=%~dp0"
 set "ROOT=%ROOT:\=/%"
-if not exist "%~dp0src\claude-channel\dist\server.js" (
-  echo %~dp0src\claude-channel\dist\server.js missing - run build.ps1 or pnpm build first
-  exit /b 1
-)
+if not exist "%~dp0src\claude-channel\dist\server.js" goto :missing
 if not defined LOOM_URL set "LOOM_URL=http://127.0.0.1:3000"
 if not defined LOOM_ALLOW_INSECURE set "LOOM_ALLOW_INSECURE=1"
 set "CFG=%TEMP%\loom-channel-%RANDOM%%RANDOM%.mcp.json"
@@ -23,3 +20,7 @@ call claude --mcp-config "%CFG%" --dangerously-load-development-channels server:
 set "RC=%errorlevel%"
 del "%CFG%" >nul 2>&1
 exit /b %RC%
+
+:missing
+echo "%~dp0src\claude-channel\dist\server.js" missing - run build.ps1 or pnpm build first
+exit /b 1

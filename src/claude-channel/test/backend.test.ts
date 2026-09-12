@@ -100,6 +100,16 @@ describe("ClientToolBackend.joinWeave", () => {
     expect(onJoined).toHaveBeenCalledWith(WEAVE_ID, stored); // re-arms the stream
   });
 
+  it("matches the stored name the way the server does: case-insensitively and trimmed", async () => {
+    const state = makeState();
+    await state.upsertWeave(WEAVE_ID, { title: "Design review", token: "stored-token", participantId: "p9", participantName: "Claude", generalThreadId: "g1", wake: "all", lastSeq: 7 });
+    const { client, joinWeave } = makeFakeClient({ getWeave: async () => ({ ...weaveInfo(), participants: [{ ...participant("Claude"), id: "p9" }] }) });
+    const backend = new ClientToolBackend(client, state, { onJoined: vi.fn() });
+    const r = await backend.joinWeave(SECRET, { name: " claude ", kind: "agent" }) as { alreadyJoined?: boolean; token: string };
+    expect(joinWeave).not.toHaveBeenCalled();
+    expect(r).toMatchObject({ alreadyJoined: true, token: "stored-token" });
+  });
+
   it("joins afresh when the stored identity no longer works (participant gone or token rejected)", async () => {
     const state = makeState();
     await state.upsertWeave(WEAVE_ID, { title: "Design review", token: "dead-token", participantId: "p9", participantName: "Claude", generalThreadId: "g1", wake: "all", lastSeq: 7 });

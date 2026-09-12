@@ -10,6 +10,9 @@ export type JoinHooks = {
   onThreadCreated?(weaveId: string, threadId: string): void;
 };
 
+/** Participant names are unique per Weave case-insensitively (core: unique index on lower(name)), and trimmed. */
+const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
 /** Error codes that prove a stored credential can never work again. */
 const DEAD_IDENTITY = new Set(["invalid_token", "forbidden", "weave_not_found"]);
 
@@ -38,7 +41,7 @@ export class ClientToolBackend implements LoomToolBackend {
     // a second time (which the server refuses with name_taken). Falls through to a fresh join if the
     // stored token no longer works or the participant is gone.
     const stored = this.state.load().weaves[weaveId];
-    if (stored && stored.participantName === who.name) {
+    if (stored && sameName(stored.participantName, who.name)) {
       const reused = await this.reuseStored(weaveId, stored);
       if (reused) return reused;
     }
@@ -52,7 +55,7 @@ export class ClientToolBackend implements LoomToolBackend {
       // already persisted the identity: the state lock does not cover the network round trip.
       if (e instanceof LoomClientError && e.code === "name_taken") {
         const raced = this.state.load().weaves[weaveId];
-        if (raced && raced.participantName === who.name) {
+        if (raced && sameName(raced.participantName, who.name)) {
           const reused = await this.reuseStored(weaveId, raced);
           if (reused) return reused;
         }

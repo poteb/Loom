@@ -130,12 +130,15 @@ export class StreamManager {
         this.scheduleRestart(weaveId, entry);
       });
     };
-    void refresh().catch((err) => this.log(`initial name fetch failed for weave ${weaveId}: ${(err as Error).message}`)).then(() => {
+    void refresh().catch((err) => this.log(`initial name fetch failed for weave ${weaveId}: ${(err as Error).message}`)).then(async () => {
+      if (entry.stopped) return;
+      // This session's own cursor (resume replays exactly what *it* missed), or the machine-wide
+      // watermark for a session that has never listened to this Weave — persisted either way, so a
+      // session that receives nothing still resumes from where it started listening.
+      const since = await this.state.ensureCursor(weaveId);
       if (entry.stopped) return;
       const handle = reader.stream(weaveId, {
-        // This session's own cursor (resume replays exactly what *it* missed); the machine-wide
-        // watermark for a session that has never listened to this Weave.
-        since: this.state.cursor(weaveId),
+        since,
         onEvent,
         onStatus: (st, d) => {
           if (st === "closed" && d?.error && !entry.stopped) {

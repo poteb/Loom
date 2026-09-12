@@ -56,6 +56,44 @@ describe("ChannelState", () => {
     expect(new ChannelState(dir, "s1").get().weaves.w1!.lastSeq).toBe(9); // watermark = max over sessions
   });
 
+  it("ensureCursor pins a quiet session's starting point so it resumes from there, not from a later watermark", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+    const a = new ChannelState(dir, "sA");
+    await a.upsertWeave("w1", w);
+    await a.setLastSeq("w1", 5);
+    const b = new ChannelState(dir, "sB");
+    expect(await b.ensureCursor("w1")).toBe(5); // B starts listening at the watermark and *records* that
+    await a.setLastSeq("w1", 9);                 // A moves on while B is away without ever receiving an event
+    expect(new ChannelState(dir, "sB").cursor("w1")).toBe(5); // B resumes at 5, so 6..9 are not skipped
+    expect(await new ChannelState(dir, "sB").ensureCursor("w1")).toBe(5); // idempotent
+  });
+
+  it("waits for a lock whose owner process is alive instead of taking it over, however old it is", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+    const st = new ChannelState(dir, "s1");
+    await st.upsertWeave("w1", w);
+    const lock = path.join(dir, "config.json.lock");
+    writeFileSync(lock, `${process.pid}:someone-else-in-this-process`); // a live pid that is not us
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(lock, past, past);
+    await expect(st.setLastSeq("w1", 2)).rejects.toThrow(/lock/);
+    expect(readFileSync(lock, "utf8")).toBe(`${process.pid}:someone-else-in-this-process`);
+    expect(new ChannelState(dir, "s1").cursor("w1")).toBe(0);
+  }, 15_000);
+
+  it("takes over a lock whose owner process is dead right away", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+    const st = new ChannelState(dir, "s1");
+    await st.upsertWeave("w1", w);
+    const lock = path.join(dir, "config.json.lock");
+    writeFileSync(lock, "999999999:dead"); // no such pid
+    const t0 = Date.now();
+    await st.setLastSeq("w1", 2);
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(st.cursor("w1")).toBe(2);
+    expect(existsSync(lock)).toBe(false);
+  });
+
   it("cursors and the watermark only move forward", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
     const st = new ChannelState(dir, "s1");
