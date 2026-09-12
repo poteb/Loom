@@ -192,4 +192,32 @@ describe("agents inside Weaves: malformed ids and concurrent joins", () => {
     const info = await getWeave(db, await resolveCredential(db, r.token), r.weave.id);
     expect(info.participants.filter((p) => p.agentId !== null)).toHaveLength(1);
   });
+
+  it("two concurrent first joins by one agent key under the SAME name converge too, instead of name_taken", async () => {
+    const r = await createWeave(db, new EventBus(), { title: "T", opener: "", creator: { name: "P", kind: "human" } });
+    const { key } = await addAgent(db, await keeper(), "Bot");
+    const agent = await resolveCredential(db, key);
+    const bus = new EventBus();
+    // Same name: the loser can hit participants_weave_name_idx before participants_weave_agent_idx,
+    // and must still adopt the winner's identity rather than fail as a taken name.
+    const [a, b] = await Promise.all([
+      joinWeave(db, bus, r.secret, { name: "Bot", kind: "agent" }, agent),
+      joinWeave(db, bus, r.secret, { name: "Bot", kind: "agent" }, agent),
+    ]);
+    expect(b.participant.id).toBe(a.participant.id);
+    expect(b.token).toBe(a.token);
+    expect(a.alreadyJoined === true || b.alreadyJoined === true).toBe(true);
+    const info = await getWeave(db, await resolveCredential(db, r.token), r.weave.id);
+    expect(info.participants.filter((p) => p.agentId !== null)).toHaveLength(1);
+  });
+
+  it("a different agent joining under a name someone else already holds still gets name_taken", async () => {
+    const r = await createWeave(db, new EventBus(), { title: "T", opener: "", creator: { name: "P", kind: "human" } });
+    const bus = new EventBus();
+    const first = await addAgent(db, await keeper(), "One");
+    const second = await addAgent(db, await keeper(), "Two");
+    await joinWeave(db, bus, r.secret, { name: "Shared", kind: "agent" }, await resolveCredential(db, first.key));
+    await expect(joinWeave(db, bus, r.secret, { name: "Shared", kind: "agent" }, await resolveCredential(db, second.key)))
+      .rejects.toMatchObject({ code: "name_taken" });
+  });
 });

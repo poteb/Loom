@@ -131,9 +131,12 @@ export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { na
     return { weaveId: found.id, weave: toPublicWeave(found), generalThreadId: general.id, participant, token };
   } catch (e) {
     // The lookup above runs outside the Weave lock, so two concurrent first joins by one key can
-    // both miss it. The unique index rejects the loser; it adopts the winner's identity, which is
-    // the same idempotent answer a later join would have got.
-    if (agentId && isAgentAlreadyJoinedViolation(e)) {
+    // both miss it. The loser trips a unique index -- which one depends on the names: the agent
+    // index when they differ, the name index when they are the same -- so either violation means
+    // "check whether I already own a participant here" and, if so, adopt the winner's identity,
+    // the same idempotent answer a later join would have got. A genuine clash with someone else's
+    // name finds no owned participant and falls through to name_taken below.
+    if (agentId && (isAgentAlreadyJoinedViolation(e) || isNameTakenViolation(e))) {
       const winner = await myParticipant();
       if (winner) return asAlreadyJoined(winner);
     }
