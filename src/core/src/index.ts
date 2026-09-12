@@ -9,6 +9,7 @@ import { readEvents } from "./events.js";
 import * as weaves from "./weaves.js";
 import * as threads from "./threads.js";
 import { postMessage } from "./messages.js";
+import { inviteParticipant } from "./invites.js";
 import { setRole } from "./participants.js";
 import { exportWeave } from "./export.js";
 import { getSettings, updateSettings } from "./settings.js";
@@ -41,6 +42,7 @@ export function createCore(db: Db) {
     closeThread: (actor: Actor, threadId: string) => threads.closeThread(db, bus, actor, threadId),
     getThreadWeaveId: async (threadId: string) => (await threads.getThread(db, threadId)).weaveId,
     postMessage: (actor: Actor, threadId: string, text: string) => postMessage(db, bus, actor, threadId, text),
+    inviteParticipant: (actor: Actor, threadId: string, participantId: string) => inviteParticipant(db, bus, actor, threadId, participantId),
     setRole: (actor: Actor, weaveId: string, participantId: string, role: Role) => setRole(db, bus, actor, weaveId, participantId, role),
     exportWeave: (actor: Actor, weaveId: string, format: "md" | "json") => exportWeave(db, actor, weaveId, format),
     // No unauthenticated getSettings on the facade: adapters go through readSettings, which
