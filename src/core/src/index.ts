@@ -10,6 +10,7 @@ import * as weaves from "./weaves.js";
 import * as threads from "./threads.js";
 import { postMessage } from "./messages.js";
 import { inviteParticipant } from "./invites.js";
+import { inbox } from "./inbox.js";
 import { setRole } from "./participants.js";
 import { exportWeave } from "./export.js";
 import { getSettings, updateSettings } from "./settings.js";
@@ -41,6 +42,7 @@ export function createCore(db: Db) {
       if (!w) throw errors.weaveNotFound();
       return readEvents(db, weaveId, opts);
     },
+    inbox: async (actor: Actor, weaveId: string, opts: { since?: number; limit?: number }) => inbox(db, await resolveInWeave(db, actor, weaveId), weaveId, opts),
     createThread: async (actor: Actor, weaveId: string, name: string, url?: string | null) => threads.createThread(db, bus, await resolveInWeave(db, actor, weaveId), weaveId, name, url),
     setThreadUrl: async (actor: Actor, threadId: string, url: string | null) => threads.setThreadUrl(db, bus, await forThread(actor, threadId), threadId, url),
     closeThread: async (actor: Actor, threadId: string) => threads.closeThread(db, bus, await forThread(actor, threadId), threadId),
