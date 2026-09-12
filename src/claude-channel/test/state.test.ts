@@ -171,6 +171,24 @@ describe("ChannelState", () => {
     expect(applications).toBe(2); // `now` runs twice per attempt here (prune, writer stamp): removeWeave ran once
   });
 
+  it("keeps a live writer's receipt however long ago it was written, and drops a dead writer's", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+    const a = new ChannelState(dir, "sA", () => new Date("2026-01-01T00:00:00Z"));
+    await a.upsertWeave("w1", w);
+    // Plant a receipt of a writer whose process is gone next to A's (A's process is this one: alive).
+    const cur = JSON.parse(readFileSync(a.file, "utf8"));
+    cur.writers["999999999:gone"] = { id: "g", at: "2026-01-01T00:00:00Z" };
+    cur.commit = { id: "planted", parent: cur.commit.id };
+    writeFileSync(path.join(dir, "config.2.json"), JSON.stringify(cur));
+    const aReceipt = Object.keys(cur.writers).find((k) => k !== "999999999:gone")!;
+    // B commits a week later: A may still be suspended and resume, so its receipt must survive.
+    const b = new ChannelState(dir, "sB", () => new Date("2026-01-08T00:00:00Z"));
+    await b.setLastSeq("w1", 3);
+    const writers = new ChannelState(dir, "x").get().writers;
+    expect(writers[aReceipt]).toBeDefined();
+    expect(writers["999999999:gone"]).toBeUndefined();
+  });
+
   it("re-applying a join over state that already holds the same token keeps the advanced watermark and cursors", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
     const a = new ChannelState(dir, "sA");

@@ -15,14 +15,15 @@ export type ChannelConfig = {
   url?: string; allowInsecure?: boolean;
   weaves: Record<string, JoinedWeave>;
   sessions: Record<string, SessionCursors>;
-  /** Per writer (process), the id of its most recent commit. Carried forward by every descendant
-   * version, so a writer can prove its commit is in the lineage no matter how many commits and
-   * sweeps followed. Internal bookkeeping; entries older than WRITER_TTL_MS are pruned. */
+  /** Per writer (process, keyed "<pid>:<uuid>"), the id of its most recent commit. Carried forward
+   * by every descendant version, so a writer can prove its commit is in the lineage no matter how
+   * many commits and sweeps followed. Internal bookkeeping. An entry is dropped only once its
+   * writer's process no longer exists — a process that is gone cannot resume and re-check, whereas
+   * a live one may have been suspended for any length of time. */
   writers: Record<string, { id: string; at: string }>;
 };
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-const WRITER_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_COMMIT_ATTEMPTS = 100;
 const MAX_SNAPSHOT_ATTEMPTS = 10;
 const STALE_TMP_MS = 60_000;
@@ -56,8 +57,10 @@ type Parsed = { config: ChannelConfig; dirty: boolean; id: string | undefined; p
  * the id it just committed, its change is in the lineage (however many commits and sweeps
  * followed). If not, the newest state does not descend from its version — a stale claim of a swept
  * number — and the mutation is re-applied on a fresh snapshot. Mutations are never re-applied over
- * their own descendants. No lock file, hence nothing to reclaim from a crashed or paused process.
- * Filesystems without hard links are refused.
+ * their own descendants. Writer entries are pruned only when the writer's process is gone (it can
+ * no longer resume), never by age: a live process may have been suspended for days. No lock file,
+ * hence nothing to reclaim from a crashed or paused process. Filesystems without hard links are
+ * refused.
  */
 export class ChannelState {
   private cache: ChannelConfig | undefined;
@@ -259,10 +262,8 @@ export class ChannelState {
     const target = this.versionPath(base + 1);
     const tmp = path.join(this.dir, `config.${base + 1}.${process.pid}.${randomUUID()}.tmp`);
     const id = randomUUID();
-    const now = this.now();
-    const cutoff = now.getTime() - WRITER_TTL_MS;
-    for (const [w, e] of Object.entries(c.writers)) if (w !== this.writerId && Date.parse(e.at) < cutoff) delete c.writers[w];
-    c.writers[this.writerId] = { id, at: now.toISOString() };
+    for (const w of Object.keys(c.writers)) if (w !== this.writerId && !writerAlive(w)) delete c.writers[w];
+    c.writers[this.writerId] = { id, at: this.now().toISOString() };
     writeFileDurably(tmp, JSON.stringify({ ...c, commit: { id, parent } }, null, 2) + "\n");
     try {
       this.publish(tmp, target);
@@ -302,6 +303,13 @@ export class ChannelState {
       try { if (statSync(p).mtimeMs < cutoff) rmSync(p, { force: true }); } catch { /* already gone */ }
     }
   }
+}
+
+/** A writer entry belongs to a process that still exists (and could therefore still resume and re-check). */
+function writerAlive(writerId: string): boolean {
+  const pid = Number(/^(\d+):/.exec(writerId)?.[1]);
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
 }
 
 /** Writes and fsyncs a whole file (mode 0600). */

@@ -61,9 +61,10 @@ mode (shared by every session on this machine: one participant per machine), plu
 per Claude Code session (`CLAUDE_CODE_SESSION_ID`, stable across `--resume`/`--continue`). A resumed
 session replays exactly what it missed; a new session starts at the machine-wide watermark. Writes
 are lock-free: a change is committed by hard-linking a fully written file to the next version name
-(atomic claim + publish); every version carries, per writer, the id of that writer's latest commit, so a
-writer can tell a landed commit from a stale one and only a writer that really lost the race re-applies
-its change to the fresh state. Concurrent channel processes never lose each other's updates. The state dir must be on a filesystem
+(atomic claim + publish); every version carries, per writer process, the id of that writer's latest
+commit (kept as long as the process exists), so a writer can tell a landed commit from a stale one and
+only a writer that really lost the race re-applies its change to the fresh state. Concurrent channel
+processes never lose each other's updates. The state dir must be on a filesystem
 with hard links (NTFS, ext4, APFS); the default under `~/.claude` is. Sessions unseen for 30 days are
 pruned. A pre-existing `config.json` is migrated on first start.
 
