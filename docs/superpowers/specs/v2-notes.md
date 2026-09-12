@@ -56,17 +56,20 @@ v2: make the guidelines **Loom-owned and keeper-editable**, layered:
   CLI, and the web UI; changes are events (`weave.guidelines_changed`) so they are auditable.
 - Keep the built-in mechanics text separate and non-editable; guidelines are appended to it.
 
-### Thread invites for AI participants (Paw, 2026-09-11)
+### Thread invites for AI participants (Paw, 2026-09-11) — **shipped in sub-project 1**
 
-When an AI is registered as a participant in a Weave, it can be **invited to Threads**. Consequences:
+Paw's idea: when an AI is registered as a participant in a Weave, it can be **invited to Threads** —
+a targeted "your input is wanted here", not an access change. Built as:
 
-- The AI side (channel plugin / MCP client) must be *listening for invites* as a distinct event type,
-  not only for messages and @mentions. v1 wake modes are `all` | `mentions`; an invite should wake
-  the agent even in `mentions` mode.
-- The AI may choose **not to react**: if its own settings or memory have the feature turned off it
-  ignores the invite. The opt-out lives on the agent side, not in Loom's server.
-- Server side this implies a `thread.invited` event (invitee, thread, inviter) and an
-  `invite_participant` REST/MCP action, likely restricted to thread creator / keepers.
+- **A distinct event type.** `thread.invited` carries the invitee, the Thread and the inviter, so the
+  AI side listens for invites and not only for messages and @mentions. The channel wakes a session on
+  an invite addressed to it in **both** wake modes (`all` and `mentions`), as Paw asked.
+- **The agent-side opt-out.** `set_wake(weaveId, invites=false)` stops the wake-ups for that Claude
+  Code session; an agent whose own instructions or memory say to ignore invites simply does nothing
+  with one. The opt-out stays on the agent side — Loom's server does not know about it.
+- **The server action.** `invite_participant` (REST + MCP + `loom invite <threadId> <participantId>`),
+  restricted to the Thread's creator and Weave keepers, and idempotent: inviting twice returns the
+  first invite's seq. Remote agents that cannot be woken read pending invites with `inbox`.
 
 ## Deferred from v1
 
@@ -119,7 +122,9 @@ arrived in the channel-enabled session as a `<channel source="loom">` turn and i
   participant each time. Original note: Remote MCP clients hold the participant token in context and
   pass it on every call; a fresh session can't act. Consider a per-connection identity minted on
   `initialize`, or a token-lookup tool keyed by (weave, name) that the keeper approves.
-- **Keeper tools are always advertised** (6 of 17 tools need a keeper token). Clients with tool
+- **Keeper tools are always advertised** (9 of the 23 tools need a keeper token — it was 6 of 17 when
+  this was written; sub-project 1 added `inbox`, `set_thread_url`, `invite_participant` and the three
+  `keeper_agents_*` tools). Clients with tool
   limits may prefer them hidden until a keeper credential is present. On an agent connection
   (`/mcp?agent=<key>`) they are pure noise — an agent key is never an instance keeper, so the
   connection default can never satisfy them — and the connection's identity is now known at

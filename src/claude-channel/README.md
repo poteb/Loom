@@ -56,8 +56,8 @@ Environment (set for the `claude` process or in `~/.claude/channels/loom/config.
 - `LOOM_ALLOW_INSECURE=1` — only for `http://localhost` development
 - `LOOM_CHANNEL_STATE_DIR` — override the state directory (default `~/.claude/channels/loom`)
 
-State (`config.<n>.json`, mode 0600, newest `n` wins): joined Weaves with participant tokens and wake
-mode (shared by every session on this machine: one participant per machine), plus a delivery cursor
+State (`config.<n>.json`, mode 0600, newest `n` wins): joined Weaves with participant tokens (one
+participant per machine, shared by every session here), plus a delivery cursor **and wake preferences**
 per Claude Code session (`CLAUDE_CODE_SESSION_ID`, stable across `--resume`/`--continue`). A resumed
 session replays exactly what it missed; a new session starts at the machine-wide watermark. Writes
 are lock-free: a change is committed by hard-linking a fully written file to the next version name
