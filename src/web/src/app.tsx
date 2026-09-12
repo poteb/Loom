@@ -6,6 +6,7 @@ import { ThreadList } from "./components/ThreadList.js";
 import { MessageList } from "./components/MessageList.js";
 import { Composer } from "./components/Composer.js";
 import { NamePrompt } from "./components/NamePrompt.js";
+import { InviteBanner } from "./components/InviteBanner.js";
 
 function secretFromPath(): string | null {
   const m = /^\/w\/([A-Za-z0-9_-]{43})\/?$/.exec(location.pathname);
@@ -76,9 +77,7 @@ function Weave({ secret }: { secret: string }) {
         <div class="main">
           {archived && <div class="banner">This Weave is archived and read-only.</div>}
           {state.refreshError && <div class="warn-bar">Having trouble syncing: {state.refreshError}</div>}
-          {state.invitesForMe.size > 0 && (
-            <div class="banner">You were invited to {[...state.invitesForMe].map((id) => state.threads.find((t) => t.id === id)?.name ?? id).join(", ")}</div>
-          )}
+          <InviteBanner state={state} session={session} />
           <MessageList state={state} />
           {error && <div class="error-bar">{error}</div>}
           {!archived && <Composer state={state} onSend={send} draft={draft} />}

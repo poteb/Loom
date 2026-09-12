@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/preact";
 import { ThreadList } from "../src/components/ThreadList.js";
 import { MessageList } from "../src/components/MessageList.js";
+import { InviteBanner } from "../src/components/InviteBanner.js";
 import type { Session, SessionState } from "../src/session.js";
 
 const me = { id: "p1", weaveId: "w1", name: "Paw", kind: "human" as const, role: "member" as const, joinedAt: "", agentId: null };
@@ -28,6 +29,12 @@ describe("ThreadList", () => {
     expect(screen.getByText("PR 12").closest("li")!.className).toContain("invited");
     expect(screen.getByText(/invited/i)).toBeTruthy();
   });
+  it("renders a non-http url as plain text, never as a link", () => {
+    const evil = { ...pr, url: "javascript:alert(1)" };
+    render(<ThreadList state={state({ threads: [general, evil] })} session={session()} onError={() => {}} />);
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.getByText("javascript:alert(1)")).toBeTruthy();
+  });
   it("new-thread form sends the url; invite button only for creator/keeper and only for others", async () => {
     const s = session();
     render(<ThreadList state={state({ currentThreadId: "t1" })} session={s} onError={() => {}} />);
@@ -48,6 +55,27 @@ describe("ThreadList", () => {
     expect(screen.getByTitle("invited")).toBeTruthy();
     render(<ThreadList state={state({ currentThreadId: "t1" })} session={session({ canEditThread: () => false })} onError={() => {}} />);
     expect(screen.queryAllByRole("button", { name: /^invite /i })).toHaveLength(0);
+  });
+});
+
+describe("InviteBanner", () => {
+  const invite = (seq: number, actor: string) => ({ weaveId: "w1", seq, threadId: "t1", type: "thread.invited" as const,
+    actor, at: new Date().toISOString(), payload: { threadId: "t1", participantId: "p1", invitedBy: actor } });
+
+  it("names the inviter and the thread, and dismissing marks the thread seen", () => {
+    const s = session({ markSeen: vi.fn() });
+    render(<InviteBanner state={state({ invitesForMe: new Set(["t1"]), events: [invite(1, "p2")] })} session={s} />);
+    expect(screen.getByText("Bot invited you to PR 12")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("dismiss"));
+    expect(s.markSeen).toHaveBeenCalledWith("t1");
+  });
+  it("uses the latest invite addressed to me, and calls a keeper actor Keeper", () => {
+    render(<InviteBanner state={state({ invitesForMe: new Set(["t1"]), events: [invite(1, "p2"), invite(2, "keeper:k1")] })} session={session()} />);
+    expect(screen.getByText("Keeper invited you to PR 12")).toBeTruthy();
+  });
+  it("renders nothing without an unread invite", () => {
+    const { container } = render(<InviteBanner state={state()} session={session()} />);
+    expect(container.innerHTML).toBe("");
   });
 });
 

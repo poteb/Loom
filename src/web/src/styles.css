@@ -15,7 +15,8 @@ body { margin: 0; font: 14px/1.45 system-ui, sans-serif; background: var(--bg); 
 .threads li .thread-pick { flex: 1; display: flex; gap: 6px; align-items: center; text-align: left; padding: 6px 0; border: none; background: none; color: inherit; font: inherit; cursor: pointer; }
 .threads li.active { background: var(--mention); }
 .threads li.invited > .thread-pick { font-weight: 600; }
-.badge-invited { background: #e9d8fd; color: #44337a; }
+/* Themed like .badge, but inverted so it stands out — including on the active row, whose background is --mention. */
+.badge-invited { background: var(--accent); color: var(--bg); }
 .thread-url { display: block; flex-basis: 100%; font-size: 0.8em; opacity: 0.8; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; padding-bottom: 4px; }
 .thread-form { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; } .thread-form input { flex: 1 1 100%; }
 .thread-tools { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 8px; }
@@ -35,6 +36,7 @@ body { margin: 0; font: 14px/1.45 system-ui, sans-serif; background: var(--bg); 
 .suggest li { padding: 4px 8px; cursor: pointer; border-radius: 4px; } .suggest li.active { background: var(--mention); }
 .badge { font-size: 11px; padding: 1px 6px; border-radius: 10px; background: var(--line); color: var(--muted); margin-left: 6px; }
 .banner { padding: 8px 16px; background: var(--line); color: var(--muted); }
+.invite-banner { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .error, .error-bar { color: var(--danger); } .error-bar { padding: 4px 16px; }
 .warn-bar { color: var(--warn); padding: 4px 16px; font-size: 12px; }
 .center { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; }

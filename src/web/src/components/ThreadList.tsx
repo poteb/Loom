@@ -2,6 +2,12 @@ import { useState } from "preact/hooks";
 import type { Session, SessionState } from "../session.js";
 import { ThreadTools } from "./ThreadTools.js";
 
+/** Defence in depth: the server validates thread urls, but a link is only rendered for a scheme we
+ *  know is safe, so a stored `javascript:`/`data:` url could never become a clickable href here. */
+function isHttpUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url);
+}
+
 /** The bare host and path of a url, short enough to sit under a thread name. */
 function shortUrl(url: string): string {
   const bare = url.replace(/^https?:\/\//, "");
@@ -47,7 +53,9 @@ export function ThreadList({ state, session, onError }: { state: SessionState; s
               {t.closedAt && <span class="badge">closed</span>}
               {state.invitesForMe.has(t.id) && <span class="badge badge-invited">invited</span>}
             </button>
-            {t.url && <a class="thread-url" href={t.url} target="_blank" rel="noreferrer">{shortUrl(t.url)}</a>}
+            {t.url && (isHttpUrl(t.url)
+              ? <a class="thread-url" href={t.url} target="_blank" rel="noreferrer">{shortUrl(t.url)}</a>
+              : <span class="thread-url">{shortUrl(t.url)}</span>)}
             {session.canModerate() && !t.isGeneral && !t.closedAt && (
               <button class="link" onClick={() => void close(t.id)}>close</button>
             )}
