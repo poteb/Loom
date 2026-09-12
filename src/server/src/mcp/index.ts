@@ -75,7 +75,8 @@ export function mountMcp(app: Hono<Env>, core: Core, opts?: MountMcpOptions): { 
     // them before handling the request — that's this session's own, independent connect attempt.
     // An agent key on the connection (Bearer, or ?agent= for connectors that only take a URL)
     // becomes this session's default credential. Only the *name* is cached here: revocation needs
-    // no session bookkeeping, because every tool call re-resolves the key in CoreToolBackend.
+    // no session bookkeeping, because every credential-using tool call re-resolves the key in
+    // CoreToolBackend (credential-free lookups such as lookup_weave keep working, as for anyone).
     const credential = c.get("credential");
     let agent: { credential: string; name: string } | undefined;
     if (credential) {

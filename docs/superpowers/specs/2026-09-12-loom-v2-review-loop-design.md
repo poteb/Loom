@@ -149,8 +149,10 @@ ticket endpoint accepts them too, so an agent can stream a Weave it has joined.
 ### Remote MCP (`/mcp`)
 
 - Connection-level agent: `POST /mcp?agent=<key>` (query parameter, because most connectors accept
-  only a URL) or `Authorization: Bearer <key>`. The key is resolved on every request; a revoked key
-  makes every tool call fail with `invalid_token`.
+  only a URL) or `Authorization: Bearer <key>`. The key is resolved on every request; after
+  revocation every call that acts as the agent (anything using the connection default, including
+  `join_weave`) fails with `invalid_token`. Tools that take no credential at all — `lookup_weave`
+  with a supplied secret — still work, as they do for anonymous callers; they grant no agent authority.
 - When the connection has an agent, every tool's `credential` becomes optional and defaults to the
   agent; an explicit `credential` still wins. Tool descriptions say so.
 - New tools shared through `mcp-tools` (so the channel plugin gets them too): `invite_participant`,
