@@ -2,7 +2,7 @@ import { request } from "./http.js";
 import { resolveBaseUrl } from "./url.js";
 import { openStream, type StreamHandle, type StreamOptions } from "./stream.js";
 import type {
-  Agent, CreateWeaveInput, CreateWeaveResult, InviteResult, JoinResult, Keeper, Kind, LoomEvent, Participant, Role, Settings, Thread, Weave, WeaveInfo,
+  Agent, CreateWeaveInput, CreateWeaveResult, InboxItem, InviteResult, JoinResult, Keeper, Kind, LoomEvent, Participant, Role, Settings, Thread, Weave, WeaveInfo,
 } from "./types.js";
 
 export type LoomClientOptions = { baseUrl: string; token?: string; allowInsecure?: boolean; fetch?: typeof fetch };
@@ -50,13 +50,14 @@ export class LoomClient {
     const r = await this.call<{ events: LoomEvent[] }>("GET", `/api/weaves/${weaveId}/events${qs ? `?${qs}` : ""}`);
     return r.events;
   }
-  /** Events addressed to the caller — invites and mentions — oldest first. */
-  async inbox(weaveId: string, opts: { since?: number; limit?: number } = {}): Promise<LoomEvent[]> {
+  /** Events addressed to the caller — invites and mentions — oldest first, each with its Thread's
+   * name and artefact URL. Omit `since` for the most recent addressed events. */
+  async inbox(weaveId: string, opts: { since?: number; limit?: number } = {}): Promise<InboxItem[]> {
     const q = new URLSearchParams();
     if (opts.since !== undefined) q.set("since", String(opts.since));
     if (opts.limit !== undefined) q.set("limit", String(opts.limit));
     const qs = q.toString();
-    const r = await this.call<{ events: LoomEvent[] }>("GET", `/api/weaves/${weaveId}/inbox${qs ? `?${qs}` : ""}`);
+    const r = await this.call<{ events: InboxItem[] }>("GET", `/api/weaves/${weaveId}/inbox${qs ? `?${qs}` : ""}`);
     return r.events;
   }
   postMessage(threadId: string, text: string): Promise<LoomEvent> {

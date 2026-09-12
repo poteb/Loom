@@ -328,6 +328,7 @@ describe("v2: thread url, invite, inbox, agents", () => {
     expect(box.code).toBe(0); expect(box.json().events.map((e: { type: string }) => e.type)).toEqual(["thread.invited"]);
     const boxHuman = await run(["inbox"], { LOOM_CONFIG: cfg2 });
     expect(boxHuman.out).toContain("invited");
+    expect(boxHuman.out).toContain("[PR 1]");   // the thread name comes from the inbox item itself
     const paged = await run(["inbox", "--since", "0", "--limit", "5", "--json"], { LOOM_CONFIG: cfg2 });
     expect(paged.code).toBe(0); expect(paged.json().events).toHaveLength(1);
     // A bad numeric option is a usage error, like read --since / --count.

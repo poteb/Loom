@@ -23,12 +23,18 @@ export function registerInviteCommands(program: Command, ctx: () => CliContext):
       const { weaveId, entry } = c.resolveWeave();
       const client = c.client(entry.token);
       const events = await client.inbox(weaveId, { since: o.since, limit: o.limit });
-      const info = await client.getWeave(weaveId);
-      const name = (id: string) => info.participants.find((p) => p.id === id)?.name ?? id;
-      const thread = (id: string) => info.threads.find((t) => t.id === id)?.name ?? id;
-      const lines = events.map((e) => e.type === "thread.invited"
-        ? `#${e.seq} [${thread(e.threadId)}] invited by ${name(e.actor)}`
-        : `#${e.seq} [${thread(e.threadId)}] ${name(e.actor)}: ${String(e.payload.text ?? "")}`);
-      emit(c, { events }, lines.join("\n") || "(nothing addressed to you)");
+      // Each item already carries its Thread's name and artefact URL. Actor names still need the
+      // Weave, so that lookup is made only for the human rendering: --json no longer pays for a
+      // round-trip whose result it never printed.
+      const human = async () => {
+        const info = await client.getWeave(weaveId);
+        const name = (id: string) => info.participants.find((p) => p.id === id)?.name ?? id;
+        const where = (e: { threadName: string; threadUrl: string | null }) => `[${e.threadName}]${e.threadUrl ? ` ${e.threadUrl}` : ""}`;
+        const lines = events.map((e) => e.type === "thread.invited"
+          ? `#${e.seq} ${where(e)} invited by ${name(e.actor)}`
+          : `#${e.seq} ${where(e)} ${name(e.actor)}: ${String(e.payload.text ?? "")}`);
+        return lines.join("\n") || "(nothing addressed to you)";
+      };
+      emit(c, { events }, c.opts.json ? "" : await human());
     });
 }

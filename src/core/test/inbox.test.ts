@@ -33,6 +33,9 @@ describe("inbox", () => {
     const m2 = await postMessage(db, bus, paw, r.generalThread.id, "ping @Bot again");
     const mine = await inbox(db, bot, r.weave.id, {});
     expect(mine.map((e) => [e.type, e.seq])).toEqual([["thread.invited", inv.seq], ["message", m1.seq], ["message", m2.seq]]);
+    // Each item carries its Thread, so an invite arrives with the artefact's URL in one call.
+    expect(mine[0]).toMatchObject({ threadName: "PR 1", threadUrl: "https://e.com/1" });
+    expect(mine[2]).toMatchObject({ threadName: "General", threadUrl: null });
     const later = await inbox(db, bot, r.weave.id, { since: m1.seq });
     expect(later.map((e) => e.seq)).toEqual([m2.seq]);
     // No `since`: the most recent addressed events, not the oldest page (a remote agent with no

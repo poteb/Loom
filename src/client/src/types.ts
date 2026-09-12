@@ -16,6 +16,9 @@ export type LoomEvent = {
   actor: string; at: string; payload: Record<string, unknown>;
 };
 
+/** An inbox entry: the event plus the Thread it belongs to, so one call is enough to act on it. */
+export type InboxItem = LoomEvent & { threadName: string; threadUrl: string | null };
+
 export type WeaveInfo = { weave: Weave; threads: Thread[]; participants: Participant[] };
 export type CreateWeaveInput = { title: string; opener: string; creator: { name: string; kind: Kind } };
 export type CreateWeaveResult = { weave: Weave; secret: string; participant: Participant; token: string; generalThread: Thread };

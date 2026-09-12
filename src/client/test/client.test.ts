@@ -107,6 +107,9 @@ describe("v2 client wrappers", () => {
     expect((await me.inviteParticipant(t.id, j.participant.id))).toEqual({ seq: inv.seq, created: false });
     const box = await anon.withToken(j.token).inbox(r.weave.id);
     expect(box.map((e) => e.type)).toEqual(["thread.invited"]);
+    expect(box[0]).toMatchObject({ threadName: "PR", threadUrl: null });
+    await me.setThreadUrl(t.id, "https://e.com/pr2");
+    expect((await anon.withToken(j.token).inbox(r.weave.id))[0]).toMatchObject({ threadName: "PR", threadUrl: "https://e.com/pr2" });
     expect(await anon.withToken(j.token).inbox(r.weave.id, { since: inv.seq })).toEqual([]);
     const k = anon.withToken(keeperToken("k1"));
     const added = await k.admin.addAgent("ChatGPT");

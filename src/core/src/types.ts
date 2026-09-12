@@ -7,6 +7,9 @@ export type LoomEvent = {
   actor: string; at: string; payload: Record<string, unknown>;
 };
 
+/** An inbox entry: the event plus the Thread it belongs to, so one call is enough to act on it. */
+export type InboxItem = LoomEvent & { threadName: string; threadUrl: string | null };
+
 export type Role = "member" | "keeper";
 export type Kind = "human" | "agent";
 
