@@ -4,6 +4,28 @@ Running list of ideas and deferred items for the next version. v1 spec:
 [2026-09-10-loom-v1-design.md](2026-09-10-loom-v1-design.md). Add to this file rather than to
 chat/memory so every machine and account sees the same list.
 
+## North-star scenario (Paw, 2026-09-12)
+
+A **Weave is a working session**: for example "Loom v1 review + channel fixes, 2026-09-11/12", with
+the human and every agent involved (Claude Code via the channel, ChatGPT via the `/mcp` connector)
+as participants. **Each PR gets its own Thread** inside that Weave; General carries the running
+conversation about what we are doing.
+
+This came from watching PR #4's review loop: four ChatGPT review rounds, every hop mediated by the
+human ("see review on PR"), findings and replies exchanged as GitHub comments, and the reviewer only
+seeing the counter-argument on its next full pass. In Loom, a finding is a message in the PR's
+Thread, the implementing agent answers it in place ("real, fixing" / "pushback: …"), the reviewer
+reacts to that reply, and the human reads the transcript and steps in only on disagreement.
+
+What v2 needs for it, in priority order:
+
+1. Thread invites (see below): the reviewer is invited into the PR's Thread; it wakes for that
+   Thread, not for the whole Weave.
+2. Stable agent identity and delivery cursors across sessions (done in PR #4 for the channel):
+   the reviewer and the implementer must not lose each other on restart.
+3. Something that ties a Thread to its artefact (a PR URL as Thread metadata, or the PR link in the
+   Thread's opener) so agents can find the diff without being told.
+
 ## Ideas
 
 ### Thread invites for AI participants (Paw, 2026-09-11)
