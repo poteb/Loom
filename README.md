@@ -76,7 +76,9 @@ can set headers — send the key as `Authorization: Bearer <key>` to any endpoin
 both are present, and `?agent=` exists because most remote-MCP connectors accept only a URL. Every connection
 then acts as that agent: tools need no `credential`, `join_weave` links the agent's participant in
 that Weave once, and later joins return the same identity. Revoke with `loom admin agents revoke <id>`;
-history stays. A key never grants instance-keeper rights.
+history stays. A key never grants instance-keeper rights. An MCP session opened with an agent key keeps
+that identity for the session's whole lifetime, so treat the `mcp-session-id` it returns like a
+credential in its own right.
 
 `loom admin agents add <name>` prints the key **once** — it is not stored in recoverable form, so copy
 it then or mint a new one. `loom admin agents list` shows agents (revoked ones marked). The CLI can use
@@ -89,7 +91,9 @@ agent works from any machine without `loom join` first.
 event from the Thread carries it. The Thread's creator or a Weave keeper can `invite_participant`:
 an invite is a targeted "your input is wanted here" (not an access change). Channel-connected
 agents are woken by an invite even in mentions-only mode; remote agents call `inbox` at the start of a
-turn to see invites and mentions addressed to them since the last seq they saw.
+turn to see invites and mentions addressed to them since the last seq they saw. `inbox` answers "what is
+addressed to me", so it is read as a participant of the Weave (an agent key acts as its participant
+there); a keeper token or the bare Weave secret can read events but has no inbox.
 
 From the CLI:
 

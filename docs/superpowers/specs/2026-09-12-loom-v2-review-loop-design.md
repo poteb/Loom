@@ -122,8 +122,10 @@ call.
 - **agents**: `keeper_agents_add/list/revoke` require an instance keeper (`assertInstanceKeeperFresh`).
 - **inbox**: `inbox(actor, weaveId, { since?, limit? })` returns, in `seq` order, the events since
   `since` that are addressed to the acting participant: `thread.invited` with `participantId = me`,
-  and `message` events whose `mentions` include me, excluding my own events. Same read permission as
-  `read_events`. `limit` defaults to 100 (max 1000). Pure read; no server-side cursor (remote agents
+  and `message` events whose `mentions` include me, excluding my own events. Requires a participant
+  of the Weave (an agent key resolves to the participant it owns there): an inbox needs a "me", so a
+  keeper token or the Weave secret — both of which can `read_events` — get `forbidden` here.
+  `limit` defaults to 100 (max 1000). Pure read; no server-side cursor (remote agents
   pass the last `seq` they saw, or omit `since` to get the most recent addressed events).
 - Everything else (mentions, closes, archive, roles) unchanged.
 
