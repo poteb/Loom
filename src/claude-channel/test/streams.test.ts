@@ -89,6 +89,32 @@ describe("StreamManager", () => {
     sm.closeAll();
   });
 
+  it("folds thread.url_changed into the names cache even when the metadata refresh fails", async () => {
+    const state = await makeState(makeWeave(), "s1");
+    const streams: Captured[] = [];
+    let failRefresh = false;
+    const fake = {
+      withToken: () => fake,
+      getWeave: async () => { if (failRefresh) throw new Error("refresh down"); return weaveInfo(); },
+      stream: (weaveId: string, opts: StreamOptions): StreamHandle => {
+        const close = vi.fn();
+        streams.push({ weaveId, opts, close });
+        return { close, get lastSeq() { return opts.since ?? 0; } };
+      },
+    };
+    const got: { content: string; meta: Record<string, string> }[] = [];
+    const sm = new StreamManager(fake as unknown as LoomClient, state, async (p) => { got.push(p); }, () => {});
+    sm.start(WEAVE_ID, state.get().weaves[WEAVE_ID]!);
+    await waitFor(() => streams.length === 1);
+    failRefresh = true;   // every later refresh fails; the cursor still advances, so the cache must not go stale
+    streams[0]!.opts.onEvent(event(4, { threadId: "t1", type: "thread.url_changed", payload: { threadId: "t1", url: "https://e.com/pr/9" } }));
+    streams[0]!.opts.onEvent(event(5, { threadId: "t1", payload: { text: "look @Claude", mentions: ["p1"] } }));
+    await waitFor(() => got.length === 2);
+    expect(got[0]!.content).toContain("https://e.com/pr/9");
+    expect(got[1]!.meta.thread_url).toBe("https://e.com/pr/9");
+    sm.closeAll();
+  });
+
   it("delivers events in order and persists lastSeq", async () => {
     const w = makeWeave();
     const state = await makeState(w);

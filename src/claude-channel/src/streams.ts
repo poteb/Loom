@@ -105,10 +105,29 @@ export class StreamManager {
       entry.names.participants = new Map(info.participants.map((p) => [p.id, { name: p.name, kind: p.kind }]));
       for (const t of info.threads) { this.threadToWeave.set(t.id, weaveId); entry.threadIds.add(t.id); }
     };
+    /** Folds what the event itself says into the names cache. The refresh below is the
+     * authoritative follow-up, but its failure is logged and swallowed while the cursor still
+     * advances — so without this the cache (and every later event's `thread_url`) would keep the
+     * old value forever. */
+    const applyToNames = (e: LoomEvent) => {
+      const str = (v: unknown, fallback: string) => (typeof v === "string" && v.length > 0 ? v : fallback);
+      const url = (v: unknown) => (typeof v === "string" && v.length > 0 ? v : null);
+      if (e.type === "thread.created") {
+        entry.names.threads.set(e.threadId, { name: str(e.payload.name, e.threadId), url: url(e.payload.url) });
+      } else if (e.type === "thread.url_changed") {
+        const t = entry.names.threads.get(e.threadId);
+        if (t) t.url = url(e.payload.url);
+        else entry.names.threads.set(e.threadId, { name: e.threadId, url: url(e.payload.url) });
+      } else if (e.type === "participant.joined") {
+        const id = str(e.payload.participantId, "");
+        if (id) entry.names.participants.set(id, { name: str(e.payload.name, id), kind: str(e.payload.kind, "agent") });
+      }
+    };
     const onEvent = (e: LoomEvent) => {
       entry.chain = entry.chain.then(async () => {
         if (entry.stopped) return;
         if (e.type === "thread.created" || e.type === "thread.url_changed" || e.type === "participant.joined" || e.type === "participant.role_changed") {
+          applyToNames(e);
           await refresh().catch((err) => this.log(`name refresh failed for weave ${weaveId}: ${(err as Error).message}`));
         }
         if (shouldWake(e, { participantId: entry.participantId, ...entry.prefs })) {
