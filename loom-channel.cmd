@@ -1,25 +1,25 @@
 @echo off
-rem Starts a Claude Code session with the Loom channel enabled.
+rem Starts a Claude Code session with the Loom channel enabled, for this session only.
 rem
-rem Claude Code's channel check only accepts servers from its config scopes (not --mcp-config), so
-rem this registers the channel server at *local* scope (this project, this user) for the lifetime of
-rem the session and removes it again when claude exits. Other sessions started in this project while
-rem it runs also spawn the channel process; that is safe (per-session cursors, locked state).
+rem The channel server is handed to claude with --mcp-config (a generated file with absolute paths),
+rem so no other Claude Code session spawns it and nothing is registered in your config. Claude Code
+rem 2.1.269 still prints "server:loom - no MCP server configured with that name" under the banner
+rem for --mcp-config servers; that line is cosmetic - delivery works (verified 2026-09-12).
 rem
-rem Extra arguments are passed to claude (e.g. loom-channel.cmd --resume).
+rem Works from any directory. Extra arguments are passed to claude (e.g. loom-channel.cmd --resume).
 rem Set LOOM_URL to point at a deployed Loom instead of the local dev server.
 setlocal
-cd /d "%~dp0"
-if not exist src\claude-channel\dist\server.js (
-  echo src\claude-channel\dist\server.js missing - run build.ps1 or pnpm build first
+set "ROOT=%~dp0"
+set "ROOT=%ROOT:\=/%"
+if not exist "%~dp0src\claude-channel\dist\server.js" (
+  echo %~dp0src\claude-channel\dist\server.js missing - run build.ps1 or pnpm build first
   exit /b 1
 )
 if not defined LOOM_URL set "LOOM_URL=http://127.0.0.1:3000"
 if not defined LOOM_ALLOW_INSECURE set "LOOM_ALLOW_INSECURE=1"
-call claude mcp remove loom -s local >nul 2>&1
-call claude mcp add --scope local --transport stdio loom -e LOOM_URL=%LOOM_URL% -e LOOM_ALLOW_INSECURE=%LOOM_ALLOW_INSECURE% -- node "%~dp0src\claude-channel\dist\server.js"
-if errorlevel 1 exit /b %errorlevel%
-call claude --dangerously-load-development-channels server:loom %*
+set "CFG=%TEMP%\loom-channel-%RANDOM%%RANDOM%.mcp.json"
+> "%CFG%" echo {"mcpServers":{"loom":{"command":"node","args":["%ROOT%src/claude-channel/dist/server.js"],"env":{"LOOM_URL":"%LOOM_URL%","LOOM_ALLOW_INSECURE":"%LOOM_ALLOW_INSECURE%"}}}}
+call claude --mcp-config "%CFG%" --dangerously-load-development-channels server:loom %*
 set "RC=%errorlevel%"
-call claude mcp remove loom -s local >nul 2>&1
+del "%CFG%" >nul 2>&1
 exit /b %RC%

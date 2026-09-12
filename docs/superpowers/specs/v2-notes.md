@@ -39,9 +39,10 @@ arrived in the channel-enabled session as a `<channel source="loom">` turn and i
 `credential="stored"` within 12 s.
 
 - ~~Channel state is per machine, not per session~~ **Fixed 2026-09-12**: locked read-merge-write
-  state, per-session delivery cursors keyed by `CLAUDE_CODE_SESSION_ID`, and `loom-channel.cmd`,
-  which registers the server at local scope only for the lifetime of the channel session
-  (`--mcp-config` servers are not accepted by Claude Code's `server:<name>` channel check, 2.1.269). Claude Code gives the
+  state, per-session delivery cursors keyed by `CLAUDE_CODE_SESSION_ID`, and `loom-channel.cmd`
+  (`--mcp-config`, this session only). Claude Code 2.1.269 prints a misleading
+  `server:loom · no MCP server configured with that name` banner line for `--mcp-config` servers;
+  delivery works regardless (verified). Worth reporting upstream. Claude Code gives the
   server no signal that a session is channel-enabled (verified: env and `initialize` are identical),
   so a *persistently registered* tools-only session still counts as having seen events. Original note:
   Channel state is per machine, not per session. Every Claude Code session in a project that

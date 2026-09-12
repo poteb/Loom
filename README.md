@@ -10,7 +10,7 @@ Prerequisites: Node 24, Docker Desktop.
 
     ./build.ps1     # or ./build.sh — installs and builds everything
     run.cmd         # or ./run.ps1 / ./run.sh — Postgres + Caddy in Docker, server on the host at https://localhost
-    loom-channel.cmd            # Claude Code session with the Loom channel enabled (registration lives only while it runs)
+    loom-channel.cmd            # Claude Code session with the Loom channel enabled (this session only)
     start_cloudflare_tunnel.cmd # public https URL for the dev server, for claude.ai / ChatGPT connectors
 
 The server binds to `127.0.0.1:3000` only (not the LAN) — reach it directly at
