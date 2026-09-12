@@ -71,12 +71,18 @@ describe("channel tools", () => {
       let cfg = readState(stateDir);
       expect(cfg.weaves[created.weave.id]).toMatchObject({ token: created.token, participantId: created.participant.id, wake: "all", lastSeq: 0, generalThreadId: created.generalThread.id });
       const listed = json(await c.callTool({ name: "list_joined", arguments: {} }));
-      expect(listed).toEqual([expect.objectContaining({ weaveId: created.weave.id, title: "T", participantName: "Claude", wake: "all" })]);
-      const waked = await c.callTool({ name: "set_wake", arguments: { weaveId: created.weave.id, wake: "mentions" } });
+      expect(listed).toEqual([expect.objectContaining({ weaveId: created.weave.id, title: "T", participantName: "Claude", wake: "all", invites: true })]);
+      const waked = await c.callTool({ name: "set_wake", arguments: { weaveId: created.weave.id, wake: "mentions", invites: false } });
       expect(waked.isError).toBeFalsy();
-      expect(json(waked)).toEqual({ weaveId: created.weave.id, wake: "mentions" });
+      expect(json(waked)).toEqual({ weaveId: created.weave.id, wake: "mentions", invites: false });
       cfg = readState(stateDir);
-      expect(cfg.weaves[created.weave.id].wake).toBe("mentions");
+      // Preferences live under this session's entry, not on the machine-wide Weave record.
+      expect(cfg.weaves[created.weave.id].wake).toBe("all");
+      expect(Object.values(cfg.sessions as Record<string, { prefs?: Record<string, unknown> }>).map((sess) => sess.prefs?.[created.weave.id]))
+        .toContainEqual({ wake: "mentions", invites: false });
+      const nothing = await c.callTool({ name: "set_wake", arguments: { weaveId: created.weave.id } });
+      expect(nothing.isError).toBe(true);
+      expect(json(nothing)).toEqual({ code: "validation", message: expect.any(String) });
       const left = await c.callTool({ name: "leave_weave", arguments: { weaveId: created.weave.id } });
       expect(left.isError).toBeFalsy();
       expect(json(left)).toEqual({ weaveId: created.weave.id, left: true });
@@ -115,7 +121,7 @@ describe("channel tools", () => {
           generalThreadId: created.generalThread.id, wake: "all", lastSeq: 0, title: created.weave.title,
         });
         const listed = json(await b.callTool({ name: "list_joined", arguments: {} }));
-        expect(listed).toEqual([expect.objectContaining({ weaveId: created.weave.id, title: created.weave.title, participantName: "Other", wake: "all" })]);
+        expect(listed).toEqual([expect.objectContaining({ weaveId: created.weave.id, title: created.weave.title, participantName: "Other", wake: "all", invites: true })]);
       });
     });
   });
@@ -329,6 +335,51 @@ describe("channel streaming", () => {
       await new Promise((r) => setTimeout(r, 500));
       expect(got.map((g) => g.meta.type)).toEqual(["participant.joined"]);
     });
+  });
+
+  it("an invite wakes a mentions-only session with thread_url; another session's prefs are its own", async () => {
+    await withChannel(stateDir, async (c) => {
+      const got = collectNotifications(c);
+      const created = json(await c.callTool({ name: "create_weave", arguments: { title: "T", opener: "start", name: "Claude" } }));
+      const gpt = await s!.core.joinWeave(created.secret, { name: "ChatGPT", kind: "agent" });
+      const gptActor = await s!.core.resolveCredential(gpt.token);
+      await waitFor(() => got.some((g) => g.meta.type === "participant.joined"));
+      const t = await s!.core.createThread(gptActor, created.weave.id, "PR 7", "https://github.com/poteb/Loom/pull/7");
+      // A url change is a system event, so it only reaches a session while wake is still "all" —
+      // do it here, before switching to "mentions", to cover the stream's url-refresh path.
+      const CHANGED = "https://github.com/poteb/Loom/pull/7#changed";
+      await s!.core.setThreadUrl(gptActor, t.id, CHANGED);
+      await waitFor(() => got.some((g) => g.meta.type === "thread.url_changed"));
+      const changed = got.find((g) => g.meta.type === "thread.url_changed")!;
+      expect(changed.meta).toMatchObject({ thread: t.id, thread_name: "PR 7", thread_url: CHANGED });
+      expect(changed.content).toBe(`Thread "PR 7" now links to ${CHANGED}`);
+      // …and the next event from that thread carries the refreshed url, not the stale one.
+      await s!.core.postMessage(gptActor, t.id, "@Claude new link?");
+      await waitFor(() => got.some((g) => g.content === "@Claude new link?"));
+      expect(got.find((g) => g.content === "@Claude new link?")!.meta).toMatchObject({ thread: t.id, type: "message", thread_url: CHANGED });
+
+      const prefs = json(await c.callTool({ name: "set_wake", arguments: { weaveId: created.weave.id, wake: "mentions" } }));
+      expect(prefs).toEqual({ weaveId: created.weave.id, wake: "mentions", invites: true });
+      await s!.core.postMessage(gptActor, t.id, "not for you");                 // suppressed in mentions mode
+      const inv = await s!.core.inviteParticipant(gptActor, t.id, created.participant.id);
+      await waitFor(() => got.some((g) => g.meta.type === "thread.invited"));
+      const wake = got.find((g) => g.meta.type === "thread.invited")!;
+      expect(wake.meta).toMatchObject({ thread: t.id, thread_name: "PR 7", thread_url: CHANGED, seq: String(inv.seq), from: "ChatGPT" });
+      expect(wake.content).toContain('You were invited to Thread "PR 7" by ChatGPT');
+      expect(got.some((g) => g.content === "not for you")).toBe(false);
+      // Session B on the same machine keeps default prefs and was never asked anything.
+      const dirB = stateDir;
+      await withChannel(dirB, async (b) => {
+        const listed = json(await b.callTool({ name: "list_joined", arguments: {} }));
+        expect(listed[0]).toMatchObject({ weaveId: created.weave.id, wake: "all", invites: true });
+      }, { CLAUDE_CODE_SESSION_ID: "session-B" });
+      await c.callTool({ name: "set_wake", arguments: { weaveId: created.weave.id, invites: false } });
+      const t2 = await s!.core.createThread(gptActor, created.weave.id, "PR 8");
+      await s!.core.inviteParticipant(gptActor, t2.id, created.participant.id);
+      await s!.core.postMessage(gptActor, t2.id, "@Claude wake up");
+      await waitFor(() => got.some((g) => g.content === "@Claude wake up"));
+      expect(got.filter((g) => g.meta.type === "thread.invited")).toHaveLength(1);  // the second invite did not wake
+    }, { CLAUDE_CODE_SESSION_ID: "session-A" });
   });
 });
 

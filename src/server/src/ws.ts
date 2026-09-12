@@ -106,7 +106,10 @@ async function stream(ws: WebSocket, weaveId: string, since: number, actor: Acto
     if (revoked) return false;
     if (Date.now() - authorizedAt < authTtlMs) return true;
     try {
-      const fresh = await deps.core.resolveCredential(credential);
+      // An agent key is an instance-level identity that grants nothing on its own: map it to the
+      // participant it owns in this Weave first, exactly as the upgrade path (and every core call)
+      // does, or a perfectly valid agent stream would read as revoked here.
+      const fresh = await deps.core.resolveInWeave(await deps.core.resolveCredential(credential), weaveId);
       assertCanRead(fresh, weaveId);
       currentActor = fresh;
       authorizedAt = Date.now();

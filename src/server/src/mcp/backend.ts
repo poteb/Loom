@@ -9,12 +9,19 @@ export class CoreToolBackend implements LoomToolBackend {
   async createWeave(input: { title: string; opener: string; creator: { name: string; kind: Kind } }, credential?: string) {
     return this.core.createWeave(input, credential ? await this.actor(credential) : undefined);
   }
-  joinWeave(secret: string, who: { name: string; kind: Kind }) { return this.core.joinWeave(secret, who); }
+  async joinWeave(secret: string, who: { name?: string; kind: Kind }, credential?: string) {
+    // Strict: a present-but-invalid credential (a revoked agent key) fails the join rather than
+    // silently joining as nobody.
+    return this.core.joinWeave(secret, who, credential ? await this.actor(credential) : undefined);
+  }
   async lookupWeave(secret: string) { return { weaveId: await this.core.lookupWeaveIdBySecret(secret) }; }
   async getWeave(c: string, weaveId: string) { return this.core.getWeave(await this.actor(c), weaveId); }
   async readEvents(c: string, weaveId: string, opts: { since?: number; threadId?: string; limit?: number }) { return this.core.readEvents(await this.actor(c), weaveId, opts); }
   async postMessage(c: string, threadId: string, text: string) { return this.core.postMessage(await this.actor(c), threadId, text); }
-  async createThread(c: string, weaveId: string, name: string) { return this.core.createThread(await this.actor(c), weaveId, name); }
+  async createThread(c: string, weaveId: string, name: string, url?: string | null) { return this.core.createThread(await this.actor(c), weaveId, name, url ?? null); }
+  async setThreadUrl(c: string, threadId: string, url: string | null) { return this.core.setThreadUrl(await this.actor(c), threadId, url); }
+  async inviteParticipant(c: string, threadId: string, participantId: string) { return this.core.inviteParticipant(await this.actor(c), threadId, participantId); }
+  async inbox(c: string, weaveId: string, opts: { since?: number; limit?: number }) { return this.core.inbox(await this.actor(c), weaveId, opts); }
   async closeThread(c: string, threadId: string) { await this.core.closeThread(await this.actor(c), threadId); }
   async archiveWeave(c: string, weaveId: string) { await this.core.archiveWeave(await this.actor(c), weaveId); }
   async setRole(c: string, weaveId: string, participantId: string, role: Role) { return this.core.setRole(await this.actor(c), weaveId, participantId, role); }
@@ -25,4 +32,7 @@ export class CoreToolBackend implements LoomToolBackend {
   async keeperList(c: string) { return this.core.listKeepers(await this.actor(c)); }
   async keeperAdd(c: string, name: string) { return this.core.addKeeper(await this.actor(c), name); }
   async keeperRemove(c: string, id: string) { await this.core.removeKeeper(await this.actor(c), id); }
+  async keeperAgentsList(c: string) { return this.core.listAgents(await this.actor(c)); }
+  async keeperAgentsAdd(c: string, name: string) { return this.core.addAgent(await this.actor(c), name); }
+  async keeperAgentsRevoke(c: string, id: string) { await this.core.revokeAgent(await this.actor(c), id); }
 }

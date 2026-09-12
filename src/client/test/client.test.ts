@@ -93,3 +93,32 @@ describe("LoomClient", () => {
     await expect(anon.withToken(r.token).admin.listWeaves()).rejects.toMatchObject({ code: "forbidden", status: 403 });
   });
 });
+
+describe("v2 client wrappers", () => {
+  it("thread url, invite, inbox and agent admin round-trip", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "o", creator: { name: "Paw", kind: "human" } });
+    const me = anon.withToken(r.token);
+    const j = await anon.joinWeave(r.secret, { name: "Bot", kind: "agent" });
+    const t = await me.createThread(r.weave.id, "PR", "https://e.com/pr");
+    expect(t.url).toBe("https://e.com/pr");
+    expect((await me.setThreadUrl(t.id, null)).url).toBeNull();
+    const inv = await me.inviteParticipant(t.id, j.participant.id);
+    expect(inv.created).toBe(true);
+    expect((await me.inviteParticipant(t.id, j.participant.id))).toEqual({ seq: inv.seq, created: false });
+    const box = await anon.withToken(j.token).inbox(r.weave.id);
+    expect(box.map((e) => e.type)).toEqual(["thread.invited"]);
+    expect(box[0]).toMatchObject({ threadName: "PR", threadUrl: null });
+    await me.setThreadUrl(t.id, "https://e.com/pr2");
+    expect((await anon.withToken(j.token).inbox(r.weave.id))[0]).toMatchObject({ threadName: "PR", threadUrl: "https://e.com/pr2" });
+    expect(await anon.withToken(j.token).inbox(r.weave.id, { since: inv.seq })).toEqual([]);
+    const k = anon.withToken(keeperToken("k1"));
+    const added = await k.admin.addAgent("ChatGPT");
+    expect(added.key).toHaveLength(43);
+    expect((await k.admin.listAgents()).map((a) => a.name)).toEqual(["ChatGPT"]);
+    const viaKey = await anon.withToken(added.key).joinWeave(r.secret, { name: "ChatGPT", kind: "agent" });
+    expect(viaKey.participant.agentId).toBe(added.agent.id);
+    expect((await anon.withToken(added.key).joinWeave(r.secret, { name: "ChatGPT", kind: "agent" })).alreadyJoined).toBe(true);
+    await k.admin.revokeAgent(added.agent.id);
+    await expect(anon.withToken(added.key).getWeave(r.weave.id)).rejects.toMatchObject({ code: "invalid_token" });
+  });
+});

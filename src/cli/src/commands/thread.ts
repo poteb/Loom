@@ -7,11 +7,21 @@ export function registerThreadCommands(program: Command, ctx: () => CliContext):
 
   thread.command("new <name>")
     .description("Create a thread")
-    .action(async (name: string) => {
+    .option("--url <url>", "Artefact the thread is about (e.g. a PR link)")
+    .action(async (name: string, o: { url?: string }) => {
       const c = ctx();
       const { weaveId, entry } = c.resolveWeave();
-      const t = await c.client(entry.token).createThread(weaveId, name);
-      emit(c, t, `Created thread "${t.name}" (${t.id})`);
+      const t = await c.client(entry.token).createThread(weaveId, name, o.url ?? null);
+      emit(c, t, `Created thread "${t.name}" (${t.id})${t.url ? `\n  url: ${t.url}` : ""}`);
+    });
+
+  thread.command("url <threadId> <url>")
+    .description("Set the thread's artefact URL, or clear it with -")
+    .action(async (threadId: string, url: string) => {
+      const c = ctx();
+      const { entry } = c.resolveWeave();
+      const t = await c.client(entry.token).setThreadUrl(threadId, url === "-" ? null : url);
+      emit(c, t, t.url ? `Thread "${t.name}" now links to ${t.url}` : `Thread "${t.name}" no longer links to an artefact`);
     });
 
   thread.command("close <threadId>")

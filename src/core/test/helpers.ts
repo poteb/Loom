@@ -19,7 +19,7 @@ export async function freshDb(): Promise<Db> {
   }
   db ??= createDb(url);
   if (!migrated) { await runMigrations(db); migrated = true; }
-  await db.execute(sql`truncate events, participants, threads, weaves, keepers, settings restart identity cascade`);
+  await db.execute(sql`truncate events, participants, threads, weaves, keepers, settings, agents restart identity cascade`);
   return db;
 }
 

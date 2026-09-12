@@ -27,12 +27,15 @@ export function withStoredCredential(inner: LoomToolBackend, state: ChannelState
   // exception thrown out of the tool handler before that catch is even installed.
   return {
     createWeave: (input, credential) => inner.createWeave(input, credential === STORED ? undefined : credential),
-    joinWeave: (s, who) => inner.joinWeave(s, who),
+    joinWeave: (s, who, cred) => inner.joinWeave(s, who, cred),
     lookupWeave: (s) => inner.lookupWeave(s),
     getWeave: async (c, w) => inner.getWeave(byWeave(c, w), w),
     readEvents: async (c, w, o) => inner.readEvents(byWeave(c, w), w, o),
+    inbox: async (c, w, o) => inner.inbox(byWeave(c, w), w, o),
     postMessage: async (c, t, text) => inner.postMessage(byThread(c, t), t, text),
-    createThread: async (c, w, n) => inner.createThread(byWeave(c, w), w, n),
+    createThread: async (c, w, n, u) => inner.createThread(byWeave(c, w), w, n, u),
+    setThreadUrl: async (c, t, u) => inner.setThreadUrl(byThread(c, t), t, u),
+    inviteParticipant: async (c, t, p) => inner.inviteParticipant(byThread(c, t), t, p),
     closeThread: async (c, t) => inner.closeThread(byThread(c, t), t),
     archiveWeave: async (c, w) => inner.archiveWeave(byWeave(c, w), w),
     setRole: async (c, w, p, r) => inner.setRole(byWeave(c, w), w, p, r),
@@ -43,5 +46,8 @@ export function withStoredCredential(inner: LoomToolBackend, state: ChannelState
     keeperList: async (c) => inner.keeperList(keeperOnly(c)),
     keeperAdd: async (c, n) => inner.keeperAdd(keeperOnly(c), n),
     keeperRemove: async (c, id) => inner.keeperRemove(keeperOnly(c), id),
+    keeperAgentsList: async (c) => inner.keeperAgentsList(keeperOnly(c)),
+    keeperAgentsAdd: async (c, n) => inner.keeperAgentsAdd(keeperOnly(c), n),
+    keeperAgentsRevoke: async (c, id) => inner.keeperAgentsRevoke(keeperOnly(c), id),
   };
 }

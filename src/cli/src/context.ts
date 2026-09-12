@@ -30,7 +30,10 @@ export function buildContext(opts: GlobalOpts, io: CliIo): CliContext {
     resolveWeave: () => {
       const weaveId = opts.weave ?? config.lastWeave;
       if (!weaveId) throw new CliError("no_weave", "No Weave selected: pass --weave <id> or create/join one first");
+      const agentKey = io.env.LOOM_AGENT_KEY;
       const entry = config.weaves[weaveId];
+      // An agent key is a stable identity across machines: it stands in for a stored participant token.
+      if (agentKey) return { weaveId, entry: { ...(entry ?? { title: weaveId, participantId: "", generalThreadId: "", participantName: "" }), token: agentKey } };
       if (!entry) throw new CliError("no_weave", `No stored credentials for Weave ${weaveId}; join it first`);
       return { weaveId, entry };
     },

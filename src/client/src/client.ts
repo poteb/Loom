@@ -2,7 +2,7 @@ import { request } from "./http.js";
 import { resolveBaseUrl } from "./url.js";
 import { openStream, type StreamHandle, type StreamOptions } from "./stream.js";
 import type {
-  CreateWeaveInput, CreateWeaveResult, JoinResult, Keeper, Kind, LoomEvent, Participant, Role, Settings, Thread, Weave, WeaveInfo,
+  Agent, CreateWeaveInput, CreateWeaveResult, InboxItem, InviteResult, JoinResult, Keeper, Kind, LoomEvent, Participant, Role, Settings, Thread, Weave, WeaveInfo,
 } from "./types.js";
 
 export type LoomClientOptions = { baseUrl: string; token?: string; allowInsecure?: boolean; fetch?: typeof fetch };
@@ -31,7 +31,8 @@ export class LoomClient {
   createWeave(input: CreateWeaveInput): Promise<CreateWeaveResult> {
     return this.call("POST", "/api/weaves", input);
   }
-  joinWeave(secret: string, who: { name: string; kind: Kind }): Promise<JoinResult> {
+  /** `name` may be omitted when this client's token is an agent key: the agent's own name is used. */
+  joinWeave(secret: string, who: { name?: string; kind: Kind }): Promise<JoinResult> {
     return this.call("POST", `/api/weaves/${encodeURIComponent(secret)}/join`, who);
   }
   getWeave(weaveId: string): Promise<WeaveInfo> {
@@ -50,11 +51,27 @@ export class LoomClient {
     const r = await this.call<{ events: LoomEvent[] }>("GET", `/api/weaves/${weaveId}/events${qs ? `?${qs}` : ""}`);
     return r.events;
   }
+  /** Events addressed to the caller — invites and mentions — oldest first, each with its Thread's
+   * name and artefact URL. Omit `since` for the most recent addressed events. */
+  async inbox(weaveId: string, opts: { since?: number; limit?: number } = {}): Promise<InboxItem[]> {
+    const q = new URLSearchParams();
+    if (opts.since !== undefined) q.set("since", String(opts.since));
+    if (opts.limit !== undefined) q.set("limit", String(opts.limit));
+    const qs = q.toString();
+    const r = await this.call<{ events: InboxItem[] }>("GET", `/api/weaves/${weaveId}/inbox${qs ? `?${qs}` : ""}`);
+    return r.events;
+  }
   postMessage(threadId: string, text: string): Promise<LoomEvent> {
     return this.call("POST", `/api/threads/${threadId}/messages`, { text });
   }
-  createThread(weaveId: string, name: string): Promise<Thread> {
-    return this.call("POST", `/api/weaves/${weaveId}/threads`, { name });
+  createThread(weaveId: string, name: string, url?: string | null): Promise<Thread> {
+    return this.call("POST", `/api/weaves/${weaveId}/threads`, url === undefined ? { name } : { name, url });
+  }
+  setThreadUrl(threadId: string, url: string | null): Promise<Thread> {
+    return this.call("PUT", `/api/threads/${threadId}/url`, { url });
+  }
+  inviteParticipant(threadId: string, participantId: string): Promise<InviteResult> {
+    return this.call("POST", `/api/threads/${threadId}/invites`, { participantId });
   }
   closeThread(threadId: string): Promise<void> {
     return this.call("POST", `/api/threads/${threadId}/close`);
@@ -83,5 +100,8 @@ export class LoomClient {
     listKeepers: async (): Promise<Keeper[]> => (await this.call<{ keepers: Keeper[] }>("GET", "/api/admin/keepers")).keepers,
     addKeeper: (name: string): Promise<{ keeper: Keeper; token: string }> => this.call("POST", "/api/admin/keepers", { name }),
     removeKeeper: (id: string): Promise<void> => this.call("DELETE", `/api/admin/keepers/${id}`),
+    listAgents: async (): Promise<Agent[]> => (await this.call<{ agents: Agent[] }>("GET", "/api/admin/agents")).agents,
+    addAgent: (name: string): Promise<{ agent: Agent; key: string }> => this.call("POST", "/api/admin/agents", { name }),
+    revokeAgent: (id: string): Promise<void> => this.call("DELETE", `/api/admin/agents/${id}`),
   };
 }

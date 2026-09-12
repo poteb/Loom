@@ -18,6 +18,8 @@
     "@loom/core": "workspace:*",
     "@loom/server": "workspace:*",
     "@preact/preset-vite": "2.10.6",
+    "@testing-library/preact": "3.2.4",
+    "happy-dom": "20.4.0",
     "vite": "7.3.6"
   }
 }

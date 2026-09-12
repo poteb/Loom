@@ -11,12 +11,19 @@ export type SessionState = {
   connection: Connection;
   needsName: boolean;
   refreshError?: string;
+  /** Thread ids with an invite to me newer than the last seq I had read there. */
+  invitesForMe: Set<string>;
+  /** Everyone invited to each thread, so the invite list can show who is already in. */
+  invited: Record<string, Set<string>>;
 };
 export type Session = {
   getState(): SessionState; subscribe(fn: () => void): () => void;
   load(): Promise<void>; join(name: string): Promise<void>; selectThread(id: string): void;
-  post(text: string): Promise<void>; createThread(name: string): Promise<void>; closeThread(id: string): Promise<void>; archive(): Promise<void>;
-  canModerate(): boolean; dismissNamePrompt(): void; dispose(): void;
+  post(text: string): Promise<void>; createThread(name: string, url?: string | null): Promise<void>;
+  setThreadUrl(id: string, url: string | null): Promise<void>; invite(threadId: string, participantId: string): Promise<void>;
+  closeThread(id: string): Promise<void>; archive(): Promise<void>;
+  canModerate(): boolean; canEditThread(t: Thread): boolean; markSeen(id: string): void;
+  dismissNamePrompt(): void; dispose(): void;
 };
 
 const PAGE = 1000;
@@ -38,7 +45,8 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
   const { client, secret, storage } = opts;
   const retry = opts.retry ?? DEFAULT_RETRY;
   const key = `loom:${secret}`;
-  let state: SessionState = { status: "loading", threads: [], participants: [], events: [], connection: "closed", needsName: false };
+  let state: SessionState = { status: "loading", threads: [], participants: [], events: [], connection: "closed", needsName: false,
+    invitesForMe: new Set(), invited: {} };
   const listeners = new Set<() => void>();
   let weaveId: string | undefined;
   let stream: StreamHandle | undefined;
@@ -46,6 +54,26 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
   const reader = client.withToken(secret);
 
   const set = (patch: Partial<SessionState>) => { state = { ...state, ...patch }; for (const l of listeners) l(); };
+
+  /** Derived from the log: who has been invited where, and which of those invites target me and are unopened. */
+  const deriveInvites = (events: LoomEvent[], meId: string | undefined, seen: Map<string, number>) => {
+    const invited: Record<string, Set<string>> = {};
+    const forMe = new Set<string>();
+    for (const e of events) {
+      if (e.type !== "thread.invited") continue;
+      const pid = String(e.payload.participantId ?? "");
+      (invited[e.threadId] ??= new Set()).add(pid);
+      if (meId && pid === meId && e.seq > (seen.get(e.threadId) ?? 0)) forMe.add(e.threadId);
+    }
+    return { invited, invitesForMe: forMe };
+  };
+  // How far this session has read each thread: the highest seq in the log at the moment the thread
+  // was opened (or explicitly marked seen). An invite counts as unread when it is newer than that —
+  // visiting a thread must not acknowledge invites that have not happened yet.
+  const seenUpTo = new Map<string, number>();
+  const maxSeq = (events: LoomEvent[]) => events.at(-1)?.seq ?? 0;
+  const markThreadSeen = (id: string) => { seenUpTo.set(id, maxSeq(state.events)); };
+
   const writer = (): LoomClient => {
     if (!state.me) { set({ needsName: true }); throw new LoomClientError("no_identity", "Choose a name to take part"); }
     return client.withToken(state.me.token);
@@ -97,8 +125,11 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
   const onEvent = (e: LoomEvent) => {
     if (state.events.some((x) => x.seq === e.seq)) return;
     const events = [...state.events, e].sort((a, b) => a.seq - b.seq);
-    set({ events });
-    if (e.type === "thread.created" || e.type === "thread.closed" || e.type === "participant.joined" || e.type === "participant.role_changed") {
+    set({ events, ...deriveInvites(events, state.me?.participant.id, seenUpTo) });
+    // thread.url_changed carries the new url in the event, but the url the UI renders lives on the
+    // Thread record, so it needs the same refresh as any other thread change.
+    if (e.type === "thread.created" || e.type === "thread.closed" || e.type === "thread.url_changed"
+      || e.type === "participant.joined" || e.type === "participant.role_changed") {
       scheduleRefresh();
     } else if (e.type === "weave.archived" && state.weave) {
       set({ weave: { ...state.weave, archivedAt: e.at } });
@@ -148,8 +179,11 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
             if (p && token) me = { token, participant: p };
           } catch { storage.remove(key); }
         }
+        // The thread this load lands on is on screen, so an invite to it is not an unopened one.
+        const first = info.threads.find((t) => t.isGeneral)?.id ?? info.threads[0]?.id;
+        if (first) seenUpTo.set(first, maxSeq(events));
         set({ status: "ready", weave: info.weave, threads: info.threads, participants: info.participants, events, me,
-          currentThreadId: info.threads.find((t) => t.isGeneral)?.id ?? info.threads[0]?.id });
+          currentThreadId: first, ...deriveInvites(events, me?.participant.id, seenUpTo) });
         let sawOpen = false;
         const opened = reader.stream(id, {
           since: events.at(-1)?.seq ?? 0,
@@ -185,11 +219,20 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
       const participants = state.participants.some((p) => p.id === j.participant.id)
         ? state.participants
         : [...state.participants, j.participant];
-      set({ me: { token: j.token, participant: j.participant }, needsName: false, participants });
+      // Invites are "for me" only once there is a me: recompute now that this session has an identity.
+      set({ me: { token: j.token, participant: j.participant }, needsName: false, participants,
+        ...deriveInvites(state.events, j.participant.id, seenUpTo) });
       scheduleRefresh();
     },
 
-    selectThread: (id) => set({ currentThreadId: id }),
+    selectThread: (id) => {
+      markThreadSeen(id);
+      set({ currentThreadId: id, ...deriveInvites(state.events, state.me?.participant.id, seenUpTo) });
+    },
+    markSeen: (id) => {
+      markThreadSeen(id);
+      set(deriveInvites(state.events, state.me?.participant.id, seenUpTo));
+    },
 
     async post(text) {
       const w = writer();
@@ -197,11 +240,24 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
       if (!threadId) throw new LoomClientError("validation", "No thread selected");
       onEvent(await w.postMessage(threadId, text));
     },
-    async createThread(name) {
+    async createThread(name, url = null) {
       const w = writer();
       if (!weaveId) throw new LoomClientError("validation", "Weave not loaded");
-      const t = await w.createThread(weaveId, name);
+      const t = await w.createThread(weaveId, name, url);
+      markThreadSeen(t.id);
       set({ threads: state.threads.some((x) => x.id === t.id) ? state.threads : [...state.threads, t], currentThreadId: t.id });
+    },
+    async setThreadUrl(id, url) {
+      const w = writer();
+      const t = await w.setThreadUrl(id, url);
+      set({ threads: state.threads.map((x) => (x.id === id ? t : x)) });
+    },
+    async invite(threadId, participantId) {
+      const w = writer();
+      await w.inviteParticipant(threadId, participantId);
+      // The thread.invited event arrives over the stream and updates `invited`; refresh in case the
+      // stream is down, exactly as the other already-committed mutations do.
+      scheduleRefresh();
     },
     async closeThread(id) {
       const w = writer();
@@ -220,6 +276,8 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
       scheduleRefresh();
     },
     canModerate: () => state.me?.participant.role === "keeper" && !state.weave?.archivedAt,
+    canEditThread: (t) => !!state.me && !state.weave?.archivedAt && !t.closedAt
+      && (state.me.participant.role === "keeper" || t.createdBy === state.me.participant.id),
     dismissNamePrompt: () => { if (state.needsName) set({ needsName: false }); },
     dispose: () => {
       disposed = true;

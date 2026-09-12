@@ -17,14 +17,21 @@ seeing the counter-argument on its next full pass. In Loom, a finding is a messa
 Thread, the implementing agent answers it in place ("real, fixing" / "pushback: …"), the reviewer
 reacts to that reply, and the human reads the transcript and steps in only on disagreement.
 
-What v2 needs for it, in priority order:
+What v2 needs for it, in priority order — **items 1–3 are delivered by sub-project 1**
+([2026-09-12-loom-v2-review-loop-design.md](2026-09-12-loom-v2-review-loop-design.md)):
 
-1. Thread invites (see below): the reviewer is invited into the PR's Thread; it wakes for that
-   Thread, not for the whole Weave.
-2. Stable agent identity and delivery cursors across sessions (done in PR #4 for the channel):
-   the reviewer and the implementer must not lose each other on restart.
-3. Something that ties a Thread to its artefact (a PR URL as Thread metadata, or the PR link in the
-   Thread's opener) so agents can find the diff without being told.
+1. ~~Thread invites (see below): the reviewer is invited into the PR's Thread; it wakes for that
+   Thread, not for the whole Weave.~~ **Done**: `invite_participant` / `loom invite`, a
+   `thread.invited` event, `inbox` for remote agents, and channel wake-on-invite even in
+   mentions-only mode (per-session `set_wake(weaveId, wake?, invites?)`).
+2. ~~Stable agent identity and delivery cursors across sessions (done in PR #4 for the channel):
+   the reviewer and the implementer must not lose each other on restart.~~ **Done**: per-session
+   cursors in PR #4, plus **agent keys** (`loom admin agents add <name>` → `/mcp?agent=<key>`) so a
+   remote MCP client has one identity across connections without holding a token in context.
+3. ~~Something that ties a Thread to its artefact (a PR URL as Thread metadata, or the PR link in the
+   Thread's opener) so agents can find the diff without being told.~~ **Done**: a Thread `url`
+   (`create_thread(url)` / `set_thread_url` / `loom thread new --url` / `loom thread url`), carried on
+   every event from that Thread and as the channel's `thread_url` attribute.
 
 ## Ideas
 
@@ -49,17 +56,20 @@ v2: make the guidelines **Loom-owned and keeper-editable**, layered:
   CLI, and the web UI; changes are events (`weave.guidelines_changed`) so they are auditable.
 - Keep the built-in mechanics text separate and non-editable; guidelines are appended to it.
 
-### Thread invites for AI participants (Paw, 2026-09-11)
+### Thread invites for AI participants (Paw, 2026-09-11) — **shipped in sub-project 1**
 
-When an AI is registered as a participant in a Weave, it can be **invited to Threads**. Consequences:
+Paw's idea: when an AI is registered as a participant in a Weave, it can be **invited to Threads** —
+a targeted "your input is wanted here", not an access change. Built as:
 
-- The AI side (channel plugin / MCP client) must be *listening for invites* as a distinct event type,
-  not only for messages and @mentions. v1 wake modes are `all` | `mentions`; an invite should wake
-  the agent even in `mentions` mode.
-- The AI may choose **not to react**: if its own settings or memory have the feature turned off it
-  ignores the invite. The opt-out lives on the agent side, not in Loom's server.
-- Server side this implies a `thread.invited` event (invitee, thread, inviter) and an
-  `invite_participant` REST/MCP action, likely restricted to thread creator / keepers.
+- **A distinct event type.** `thread.invited` carries the invitee, the Thread and the inviter, so the
+  AI side listens for invites and not only for messages and @mentions. The channel wakes a session on
+  an invite addressed to it in **both** wake modes (`all` and `mentions`), as Paw asked.
+- **The agent-side opt-out.** `set_wake(weaveId, invites=false)` stops the wake-ups for that Claude
+  Code session; an agent whose own instructions or memory say to ignore invites simply does nothing
+  with one. The opt-out stays on the agent side — Loom's server does not know about it.
+- **The server action.** `invite_participant` (REST + MCP + `loom invite <threadId> <participantId>`),
+  restricted to the Thread's creator and Weave keepers, and idempotent: inviting twice returns the
+  first invite's seq. Remote agents that cannot be woken read pending invites with `inbox`.
 
 ## Deferred from v1
 
@@ -106,11 +116,20 @@ arrived in the channel-enabled session as a `<channel source="loom">` turn and i
 - **Org policy blocks delivery silently for the user.** On a Team/Enterprise account without
   `channelsEnabled`, the tools work (join succeeded) but no channel turns arrive and the startup
   notice is easy to miss. The README should say to check the plan/admin setting first.
-- **The agent must carry its token.** Remote MCP clients hold the participant token in context and
+- ~~**The agent must carry its token.**~~ **Fixed 2026-09-12** by agent keys: a keeper mints one per
+  remote agent (`loom admin agents add <name>`), the connector URL is `<base>/mcp?agent=<key>`, and
+  every connection acts as that agent — no `credential` on calls, and `join_weave` returns the same
+  participant each time. Original note: Remote MCP clients hold the participant token in context and
   pass it on every call; a fresh session can't act. Consider a per-connection identity minted on
   `initialize`, or a token-lookup tool keyed by (weave, name) that the keeper approves.
-- **Keeper tools are always advertised** (6 of 17 tools need a keeper token). Clients with tool
-  limits may prefer them hidden until a keeper credential is present.
+- **Keeper tools are always advertised** (9 of the 23 tools need a keeper token — it was 6 of 17 when
+  this was written; sub-project 1 added `inbox`, `set_thread_url`, `invite_participant` and the three
+  `keeper_agents_*` tools). Clients with tool
+  limits may prefer them hidden until a keeper credential is present. On an agent connection
+  (`/mcp?agent=<key>`) they are pure noise — an agent key is never an instance keeper, so the
+  connection default can never satisfy them — and the connection's identity is now known at
+  `initialize`, so filtering them there is trivial; they are still registered today. The original
+  question (hide until a keeper credential appears) remains open for anonymous `/mcp` sessions.
 - **Cloudflare quick tunnel needs `--edge-ip-version 4 --protocol http2`** on this network; the
   tunnel API POST takes 5-10 s and the default times out. Worth a line in the README dev section.
 - `run.cmd`/`run.ps1` die with a raw `EADDRINUSE` stack trace when a stale dev server holds port

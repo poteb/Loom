@@ -144,3 +144,59 @@ describe("auth + admin", () => {
     expect((await api(s.baseUrl, "GET", "/api/admin/keepers", undefined, add.json.token)).status).toBe(401);
   });
 });
+
+describe("v2: threads url, invites, inbox, agents", () => {
+  it("thread url and invites over REST", async () => {
+    const r = (await api(s.baseUrl, "POST", "/api/weaves", { title: "T", opener: "o", creator: { name: "Paw", kind: "human" } })).json;
+    const j = (await api(s.baseUrl, "POST", `/api/weaves/${r.secret}/join`, { name: "Bot", kind: "agent" })).json;
+    const t = await api(s.baseUrl, "POST", `/api/weaves/${r.weave.id}/threads`, { name: "PR 1", url: "https://e.com/1" }, r.token);
+    expect(t.status).toBe(201); expect(t.json.url).toBe("https://e.com/1");
+    const bad = await api(s.baseUrl, "POST", `/api/weaves/${r.weave.id}/threads`, { name: "X", url: "ftp://no" }, r.token);
+    expect(bad.status).toBe(400);
+    const set = await api(s.baseUrl, "PUT", `/api/threads/${t.json.id}/url`, { url: null }, r.token);
+    expect(set.status).toBe(200); expect(set.json.url).toBeNull();
+    const inv = await api(s.baseUrl, "POST", `/api/threads/${t.json.id}/invites`, { participantId: j.participant.id }, r.token);
+    expect(inv.status).toBe(201); expect(inv.json).toMatchObject({ created: true });
+    const again = await api(s.baseUrl, "POST", `/api/threads/${t.json.id}/invites`, { participantId: j.participant.id }, r.token);
+    expect(again.status).toBe(200); expect(again.json).toEqual({ seq: inv.json.seq, created: false });
+    const denied = await api(s.baseUrl, "POST", `/api/threads/${t.json.id}/invites`, { participantId: r.participant.id }, j.token);
+    expect(denied.status).toBe(403);
+    const inbox = await api(s.baseUrl, "GET", `/api/weaves/${r.weave.id}/inbox`, undefined, j.token);
+    expect(inbox.status).toBe(200);
+    expect(inbox.json.events.map((e: { type: string }) => e.type)).toEqual(["thread.invited"]);
+    const since = await api(s.baseUrl, "GET", `/api/weaves/${r.weave.id}/inbox?since=${inv.json.seq}`, undefined, j.token);
+    expect(since.json.events).toEqual([]);
+  });
+  it("agent keys: keeper mints, key authenticates as Bearer, joins linked, is revocable", async () => {
+    const add = await api(s.baseUrl, "POST", "/api/admin/agents", { name: "ChatGPT" }, KEEPER);
+    expect(add.status).toBe(201); expect(add.json.key).toHaveLength(43);
+    const list = await api(s.baseUrl, "GET", "/api/admin/agents", undefined, KEEPER);
+    expect(list.json.agents.map((a: { name: string }) => a.name)).toEqual(["ChatGPT"]);
+    expect(JSON.stringify(list.json)).not.toContain(add.json.key);
+    const r = (await api(s.baseUrl, "POST", "/api/weaves", { title: "T", opener: "o", creator: { name: "Paw", kind: "human" } })).json;
+    const j = await api(s.baseUrl, "POST", `/api/weaves/${r.secret}/join`, { name: "ChatGPT", kind: "agent" }, add.json.key);
+    expect(j.status).toBe(201); expect(j.json.participant.agentId).toBe(add.json.agent.id);
+    const ev = await api(s.baseUrl, "GET", `/api/weaves/${r.weave.id}/events`, undefined, add.json.key);
+    expect(ev.status).toBe(200);
+    const ticket = await api(s.baseUrl, "POST", "/api/auth/ws-ticket", undefined, add.json.key);
+    expect(ticket.status).toBe(200);
+    const denied = await api(s.baseUrl, "GET", "/api/admin/settings", undefined, add.json.key);
+    expect(denied.status).toBe(403);
+    const rev = await api(s.baseUrl, "DELETE", `/api/admin/agents/${add.json.agent.id}`, undefined, KEEPER);
+    expect(rev.status).toBe(204);
+    expect((await api(s.baseUrl, "GET", `/api/weaves/${r.weave.id}/events`, undefined, add.json.key)).status).toBe(401);
+  });
+  it("join with a Bearer that does not resolve is 401, never an anonymous join", async () => {
+    const r = (await api(s.baseUrl, "POST", "/api/weaves", { title: "T", opener: "o", creator: { name: "Paw", kind: "human" } })).json;
+    // A revoked or junk credential must stop the join: silently dropping it would let a revoked
+    // agent key keep joining Weaves as an anonymous participant.
+    const junk = await api(s.baseUrl, "POST", `/api/weaves/${r.secret}/join`, { name: "Stale", kind: "human" }, "z".repeat(43));
+    expect(junk.status).toBe(401);
+    expect(junk.json.code).toBe("invalid_token");
+  });
+  it("?agent= is honoured on /mcp only, never on the REST API", async () => {
+    const add = await api(s.baseUrl, "POST", "/api/admin/agents", { name: "Query" }, KEEPER);
+    const r = (await api(s.baseUrl, "POST", "/api/weaves", { title: "T", opener: "o", creator: { name: "Paw", kind: "human" } })).json;
+    expect((await api(s.baseUrl, "GET", `/api/weaves/${r.weave.id}/events?agent=${add.json.key}`)).status).toBe(401);
+  });
+});

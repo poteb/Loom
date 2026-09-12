@@ -13,10 +13,11 @@ describe("ChannelState", () => {
     expect(st.get().weaves).toEqual({});
     await st.upsertWeave("w1", w);
     await st.setLastSeq("w1", 7);
-    await st.setWake("w1", "mentions");
+    await st.setWake("w1", "mentions"); // compatibility shim: records this session's preference
     expect(existsSync(st.file)).toBe(true);
     const again = new ChannelState(dir, "s1");
-    expect(again.get().weaves.w1).toEqual({ ...w, lastSeq: 7, wake: "mentions" });
+    expect(again.get().weaves.w1).toEqual({ ...w, lastSeq: 7 }); // the machine-wide field is no longer written
+    expect(again.prefs("w1")).toEqual({ wake: "mentions", invites: true });
     expect(again.cursor("w1")).toBe(7);
     await again.removeWeave("w1");
     expect(new ChannelState(dir, "s1").get().weaves).toEqual({});
@@ -35,11 +36,11 @@ describe("ChannelState", () => {
       b.upsertWeave("w2", { ...w, participantId: "p2" }),
     ]);
     await a.setLastSeq("w1", 5);
-    await b.setWake("w2", "mentions");
+    await b.setPrefs("w2", { wake: "mentions" });
     const disk = new ChannelState(dir, "sC").get();
     expect(Object.keys(disk.weaves).sort()).toEqual(["w1", "w2"]);
     expect(disk.weaves.w1!.lastSeq).toBe(5);
-    expect(disk.weaves.w2!.wake).toBe("mentions");
+    expect(new ChannelState(dir, "sB").prefs("w2").wake).toBe("mentions");
     // Only the newest version and its predecessor stay behind; no temp files, no legacy file.
     const files = readdirSync(dir).sort();
     expect(files.filter((f) => f.endsWith(".tmp"))).toEqual([]);
@@ -301,6 +302,18 @@ describe("ChannelState", () => {
     await now.setLastSeq("w1", 8);
     expect(new ChannelState(dir, "old").cursor("w1")).toBe(8); // pruned: treated as a new session
     expect(readFileSync(now.file, "utf8")).not.toContain('"old"');
+  });
+
+  it("preferences are per session, default all/invites-on, and inherit a legacy machine-wide wake", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+    const a = new ChannelState(dir, "sA");
+    await a.upsertWeave("w1", { ...w, wake: "mentions" });           // legacy machine-wide value
+    expect(a.prefs("w1")).toEqual({ wake: "mentions", invites: true });
+    expect(await a.setPrefs("w1", { invites: false })).toEqual({ wake: "mentions", invites: false });
+    await a.setPrefs("w1", { wake: "all" });
+    expect(new ChannelState(dir, "sA").prefs("w1")).toEqual({ wake: "all", invites: false });
+    expect(new ChannelState(dir, "sB").prefs("w1")).toEqual({ wake: "mentions", invites: true }); // untouched by sA
+    expect(new ChannelState(dir, "sB").prefs("unknown")).toEqual({ wake: "all", invites: true });
   });
 
   it("sessionIdFrom uses CLAUDE_CODE_SESSION_ID, else a per-process id", () => {

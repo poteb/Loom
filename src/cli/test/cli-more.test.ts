@@ -310,3 +310,72 @@ describe("admin", () => {
     expect(rm.code).toBe(0);
   });
 });
+
+describe("v2: thread url, invite, inbox, agents", () => {
+  it("thread new --url, thread url, invite, inbox", async () => {
+    const created = (await run(["create", "--title", "T", "--opener", "o", "--name", "Paw", "--kind", "human", "--json"])).json();
+    const cfg2 = path.join(mkdtempSync(path.join(tmpdir(), "loom-cli-")), "config.json");
+    const bot = (await run(["join", created.secret, "--name", "Bot", "--json"], { LOOM_CONFIG: cfg2 })).json();
+    const t = await run(["thread", "new", "PR 1", "--url", "https://e.com/1", "--json"]);
+    expect(t.code).toBe(0); expect(t.json().url).toBe("https://e.com/1");
+    const cleared = await run(["thread", "url", t.json().id, "-", "--json"]);
+    expect(cleared.code).toBe(0); expect(cleared.json().url).toBeNull();
+    const inv = await run(["invite", t.json().id, bot.participant.id, "--json"]);
+    expect(inv.code).toBe(0); expect(inv.json().created).toBe(true);
+    const human = await run(["invite", t.json().id, bot.participant.id]);
+    expect(human.out).toMatch(/already invited/i);
+    const box = await run(["inbox", "--json"], { LOOM_CONFIG: cfg2 });
+    expect(box.code).toBe(0); expect(box.json().events.map((e: { type: string }) => e.type)).toEqual(["thread.invited"]);
+    const boxHuman = await run(["inbox"], { LOOM_CONFIG: cfg2 });
+    expect(boxHuman.out).toContain("invited");
+    expect(boxHuman.out).toContain("[PR 1]");   // the thread name comes from the inbox item itself
+    const paged = await run(["inbox", "--since", "0", "--limit", "5", "--json"], { LOOM_CONFIG: cfg2 });
+    expect(paged.code).toBe(0); expect(paged.json().events).toHaveLength(1);
+    // A bad numeric option is a usage error, like read --since / --count.
+    expect((await run(["inbox", "--limit", "0", "--json"], { LOOM_CONFIG: cfg2 })).code).toBe(2);
+    const denied = await run(["invite", t.json().id, created.participant.id, "--json"], { LOOM_CONFIG: cfg2 });
+    expect(denied.code).toBe(1); expect(JSON.parse(denied.err).code).toBe("forbidden");
+  });
+  it("admin agents and LOOM_AGENT_KEY", async () => {
+    const K = { LOOM_KEEPER_TOKEN: keeperToken("k1") };
+    const add = await run(["admin", "agents", "add", "ChatGPT", "--json"], K);
+    expect(add.code).toBe(0); expect(add.json().key).toHaveLength(43);
+    const list = await run(["admin", "agents", "list"], K);
+    expect(list.out).toContain("ChatGPT"); expect(list.out).not.toContain(add.json().key);
+    const created = (await run(["create", "--title", "T", "--opener", "o", "--name", "Paw", "--json"])).json();
+    const emptyCfg = path.join(mkdtempSync(path.join(tmpdir(), "loom-cli-")), "config.json");
+    const A = { LOOM_CONFIG: emptyCfg, LOOM_AGENT_KEY: add.json().key };
+    // With LOOM_AGENT_KEY set, --name is optional: the server names the participant after the agent.
+    const joined = await run(["join", created.secret, "--json"], A);
+    expect(joined.code).toBe(0);
+    expect(joined.json().participant.agentId).toBe(add.json().agent.id);
+    expect(joined.json().participant.name).toBe("ChatGPT");
+    // Without a key it is still a usage error to omit it.
+    const noName = await run(["join", created.secret, "--json"], { LOOM_CONFIG: emptyCfg });
+    expect(noName.code).toBe(2);
+    // create with only an agent key links the creator to that agent, exactly as join does.
+    const mine = await run(["create", "--title", "Mine", "--opener", "o", "--name", "ChatGPT", "--json"], { ...A, LOOM_CONFIG: path.join(mkdtempSync(path.join(tmpdir(), "loom-cli-")), "config.json") });
+    expect(mine.code).toBe(0); expect(mine.json().participant.agentId).toBe(add.json().agent.id);
+    const posted = await run(["post", "--weave", created.weave.id, "hello", "--json"], { LOOM_CONFIG: path.join(mkdtempSync(path.join(tmpdir(), "loom-cli-")), "config.json"), LOOM_AGENT_KEY: add.json().key });
+    expect(posted.code).toBe(0); expect(posted.json().payload.text).toBe("hello");
+    const rev = await run(["admin", "agents", "revoke", add.json().agent.id, "--json"], K);
+    expect(rev.code).toBe(0);
+    const after = await run(["post", "--weave", created.weave.id, "again", "--json"], { LOOM_CONFIG: emptyCfg, LOOM_AGENT_KEY: add.json().key });
+    expect(after.code).toBe(1); expect(JSON.parse(after.err).code).toBe("invalid_token");
+  });
+});
+
+describe("global --url vs. the thread artefact --url", () => {
+  // Commander would otherwise hand every --url to the program: these two pin which one wins where.
+  it("takes the base URL only before the command name", async () => {
+    const created = await run(["--url", s.baseUrl, "create", "--title", "U", "--opener", "o", "--name", "Paw", "--json"], { LOOM_URL: "http://127.0.0.1:1" });
+    expect(created.code).toBe(0);
+    // Without a base URL anywhere, the --url after the command is the artefact link, not a fallback.
+    const t = await run(["thread", "new", "PR 9", "--url", "https://e.com/9", "--json"], { LOOM_URL: "" });
+    expect(t.code).toBe(1);
+    expect(JSON.parse(t.err).code).toBe("no_url");
+    const ok = await run(["--url", s.baseUrl, "thread", "new", "PR 9", "--url", "https://e.com/9", "--json"], { LOOM_URL: "http://127.0.0.1:1" });
+    expect(ok.code).toBe(0);
+    expect(ok.json().url).toBe("https://e.com/9");
+  });
+});

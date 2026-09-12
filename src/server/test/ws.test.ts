@@ -300,6 +300,32 @@ describe("stream", () => {
     ws2.close();
   });
 
+  it("keeps an agent-key stream open past the auth TTL", async () => {
+    const c = await api(s.baseUrl, "POST", "/api/weaves", creator);
+    const { weave, token, generalThread, secret } = c.json;
+    const { key } = await s.core.addAgent(await s.core.resolveCredential(KEEPER), "WsBot");
+    const joined = await api(s.baseUrl, `POST`, `/api/weaves/${secret}/join`, { name: "WsBot", kind: "agent" }, key);
+    expect(joined.status).toBe(201);   // seq 4: participant.joined
+
+    // An agent key is an instance-level identity: the mid-stream re-check must map it to its
+    // participant in this Weave before asking whether it may read, or it reads as revoked.
+    const received: LoomEvent[] = [];
+    const closes: number[] = [];
+    const ws = new WebSocket(`${s.wsUrl}/api/weaves/${weave.id}/stream?since=4&ticket=${await ticket(key)}`);
+    ws.on("message", (data) => received.push(JSON.parse(data.toString()) as LoomEvent));
+    ws.on("close", (code) => closes.push(code));
+    await new Promise<void>((resolve, reject) => { ws.once("open", () => resolve()); ws.once("error", reject); });
+
+    await new Promise((r) => setTimeout(r, 150));   // past the file-wide 50ms auth cache TTL
+    await api(s.baseUrl, "POST", `/api/threads/${generalThread.id}/messages`, { text: "after ttl" }, token);
+    await new Promise((r) => setTimeout(r, 300));
+
+    expect(closes).toEqual([]);
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    expect(received.map((e) => (e.payload as { text?: string }).text)).toContain("after ttl");
+    ws.close();
+  });
+
   it("rejects bad ticket, reused ticket, foreign credential, unknown weave", async () => {
     const a = await api(s.baseUrl, "POST", "/api/weaves", creator);
     const b = await api(s.baseUrl, "POST", "/api/weaves", creator);

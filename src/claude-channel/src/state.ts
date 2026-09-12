@@ -9,8 +9,10 @@ export type JoinedWeave = {
   /** Machine-wide watermark: the highest seq any session on this machine has delivered. */
   lastSeq: number;
 };
-/** Per-session delivery cursors, keyed by Claude Code session id (`CLAUDE_CODE_SESSION_ID`). */
-export type SessionCursors = { at: string; cursors: Record<string, number> };
+/** What a session wants woken for in a Weave. */
+export type Prefs = { wake: Wake; invites: boolean };
+/** Per-session delivery cursors and preferences, keyed by Claude Code session id (`CLAUDE_CODE_SESSION_ID`). */
+export type SessionCursors = { at: string; cursors: Record<string, number>; prefs?: Record<string, Partial<Prefs>> };
 export type ChannelConfig = {
   url?: string; allowInsecure?: boolean;
   weaves: Record<string, JoinedWeave>;
@@ -139,7 +141,7 @@ export class ChannelState {
   removeWeave(id: string): Promise<void> {
     return this.mutate((c) => {
       delete c.weaves[id];
-      for (const s of Object.values(c.sessions)) delete s.cursors[id];
+      for (const s of Object.values(c.sessions)) { delete s.cursors[id]; delete s.prefs?.[id]; }
     });
   }
 
@@ -154,8 +156,28 @@ export class ChannelState {
     });
   }
 
+  /** This session's effective preferences for a Weave: its own settings, else the legacy
+   * machine-wide `wake` (kept for compatibility, no longer written), else all / invites on. */
+  prefs(weaveId: string): Prefs {
+    const c = this.get();
+    const mine = c.sessions[this.sessionId]?.prefs?.[weaveId] ?? {};
+    return { wake: mine.wake ?? c.weaves[weaveId]?.wake ?? "all", invites: mine.invites ?? true };
+  }
+
+  setPrefs(weaveId: string, patch: Partial<Prefs>): Promise<Prefs> {
+    return this.mutate((c) => {
+      const s = this.session(c);
+      s.prefs ??= {};
+      const cur = s.prefs[weaveId] ?? {};
+      s.prefs[weaveId] = { ...cur, ...patch };
+      const p = s.prefs[weaveId];
+      return { wake: p.wake ?? c.weaves[weaveId]?.wake ?? "all", invites: p.invites ?? true };
+    });
+  }
+
+  /** @deprecated Kept for compatibility; preferences are per session — see setPrefs. */
   setWake(id: string, wake: Wake): Promise<void> {
-    return this.mutate((c) => { const w = c.weaves[id]; if (w) w.wake = wake; });
+    return this.setPrefs(id, { wake }).then(() => {});
   }
 
   private session(c: ChannelConfig): SessionCursors {

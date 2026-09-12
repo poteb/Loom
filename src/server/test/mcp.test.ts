@@ -223,7 +223,7 @@ describe("remote MCP at /mcp", () => {
     await withClient(async (c) => {
         const { tools } = await c.listTools();
         expect(tools.map((t) => t.name)).toContain("join_weave");
-        expect(tools).toHaveLength(17);
+        expect(tools).toHaveLength(23);
     });
   });
 
@@ -293,6 +293,80 @@ describe("remote MCP at /mcp", () => {
       expect(st.instanceName).toBe("Fragt Loom");
       const denied = await c.callTool({ name: "keeper_list", arguments: { credential: "x".repeat(43) } });
       expect(json(denied).code).toBe("invalid_token");
+    });
+  });
+});
+
+describe("remote MCP with an agent key", () => {
+  async function agentClient(key: string, via: "query" | "bearer") {
+    const c = new Client({ name: "chatgpt-like", version: "1.0" });
+    const url = new URL(`${s!.baseUrl}/mcp`);
+    if (via === "query") url.searchParams.set("agent", key);
+    const transport = via === "bearer"
+      ? new StreamableHTTPClientTransport(url, { requestInit: { headers: { authorization: `Bearer ${key}` } } })
+      : new StreamableHTTPClientTransport(url);
+    await c.connect(transport);
+    return c;
+  }
+  it("?agent= makes credential optional and defaults to the agent; create → read/write with the key alone; explicit credential still wins", async () => {
+    const { key } = await s!.core.addAgent(await s!.core.resolveCredential(keeperToken("k1")), "ChatGPT");
+    const c = await agentClient(key, "query");
+    try {
+      const schema = (await c.listTools()).tools.find((t) => t.name === "get_weave")!.inputSchema as { required?: string[] };
+      expect(schema.required ?? []).not.toContain("credential");
+      expect(c.getInstructions()).toMatch(/connected as agent ChatGPT/);
+      const created = json(await c.callTool({ name: "create_weave", arguments: { title: "Mine", opener: "start", name: "ChatGPT" } }));
+      expect(created.participant.agentId).toBeDefined();
+      const posted = json(await c.callTool({ name: "post_message", arguments: { threadId: created.generalThread.id, text: "key only" } }));
+      expect(posted.type).toBe("message");
+      const inbox = json(await c.callTool({ name: "inbox", arguments: { weaveId: created.weave.id } }));
+      expect(inbox).toEqual([]);
+      const other = await s!.core.createWeave({ title: "O", opener: "", creator: { name: "Q", kind: "human" } });
+      const explicit = json(await c.callTool({ name: "get_weave", arguments: { weaveId: other.weave.id, credential: other.token } }));
+      expect(explicit.weave.id).toBe(other.weave.id);
+      const denied = await c.callTool({ name: "get_weave", arguments: { weaveId: other.weave.id } });
+      expect(denied.isError).toBe(true); expect(json(denied).code).toBe("forbidden");
+    } finally { await c.close(); }
+  });
+  it("join_weave without a name takes the connection's agent name", async () => {
+    const { key } = await s!.core.addAgent(await s!.core.resolveCredential(keeperToken("k1")), "Nameless");
+    const other = await s!.core.createWeave({ title: "Host", opener: "", creator: { name: "Host", kind: "human" } });
+    const c = await agentClient(key, "query");
+    try {
+      const joined = json(await c.callTool({ name: "join_weave", arguments: { secret: other.secret } }));
+      expect(joined.participant.name).toBe("Nameless");
+      expect(joined.participant.agentId).toBeTruthy();
+    } finally { await c.close(); }
+  });
+  it("Bearer agent key works too; a revoked key fails every tool with invalid_token", async () => {
+    const keeper = await s!.core.resolveCredential(keeperToken("k1"));
+    const { agent, key } = await s!.core.addAgent(keeper, "Bot");
+    const c = await agentClient(key, "bearer");
+    try {
+      const created = json(await c.callTool({ name: "create_weave", arguments: { title: "B", opener: "", name: "Bot" } }));
+      await s!.core.revokeAgent(keeper, agent.id);
+      const r = await c.callTool({ name: "get_weave", arguments: { weaveId: created.weave.id } });
+      expect(r.isError).toBe(true); expect(json(r).code).toBe("invalid_token");
+    } finally { await c.close(); }
+  });
+  it("join_weave on a revoked connection fails with invalid_token instead of joining anonymously", async () => {
+    const keeper = await s!.core.resolveCredential(keeperToken("k1"));
+    const { agent, key } = await s!.core.addAgent(keeper, "Stale");
+    const c = await agentClient(key, "bearer");
+    try {
+      const created = json(await c.callTool({ name: "create_weave", arguments: { title: "J", opener: "", name: "Stale" } }));
+      await s!.core.revokeAgent(keeper, agent.id);
+      // Revocation means the key authenticates nothing: join is not a back door around it.
+      const joined = await c.callTool({ name: "join_weave", arguments: { secret: created.secret, name: "Guest" } });
+      expect(joined.isError).toBe(true);
+      expect(json(joined).code).toBe("invalid_token");
+    } finally { await c.close(); }
+  });
+  it("without an agent, credential stays required and there is no agent line in the instructions", async () => {
+    await withClient(async (c) => {
+      const schema = (await c.listTools()).tools.find((t) => t.name === "get_weave")!.inputSchema as { required?: string[] };
+      expect(schema.required).toContain("credential");
+      expect(c.getInstructions()).not.toMatch(/connected as agent/);
     });
   });
 });

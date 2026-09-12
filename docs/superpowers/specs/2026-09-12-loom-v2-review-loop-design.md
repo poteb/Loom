@@ -122,8 +122,10 @@ call.
 - **agents**: `keeper_agents_add/list/revoke` require an instance keeper (`assertInstanceKeeperFresh`).
 - **inbox**: `inbox(actor, weaveId, { since?, limit? })` returns, in `seq` order, the events since
   `since` that are addressed to the acting participant: `thread.invited` with `participantId = me`,
-  and `message` events whose `mentions` include me, excluding my own events. Same read permission as
-  `read_events`. `limit` defaults to 100 (max 1000). Pure read; no server-side cursor (remote agents
+  and `message` events whose `mentions` include me, excluding my own events. Requires a participant
+  of the Weave (an agent key resolves to the participant it owns there): an inbox needs a "me", so a
+  keeper token or the Weave secret — both of which can `read_events` — get `forbidden` here.
+  `limit` defaults to 100 (max 1000). Pure read; no server-side cursor (remote agents
   pass the last `seq` they saw, or omit `since` to get the most recent addressed events).
 - Everything else (mentions, closes, archive, roles) unchanged.
 
@@ -147,8 +149,10 @@ ticket endpoint accepts them too, so an agent can stream a Weave it has joined.
 ### Remote MCP (`/mcp`)
 
 - Connection-level agent: `POST /mcp?agent=<key>` (query parameter, because most connectors accept
-  only a URL) or `Authorization: Bearer <key>`. The key is resolved on every request; a revoked key
-  makes every tool call fail with `invalid_token`.
+  only a URL) or `Authorization: Bearer <key>`. The key is resolved on every request; after
+  revocation every call that acts as the agent (anything using the connection default, including
+  `join_weave`) fails with `invalid_token`. Tools that take no credential at all — `lookup_weave`
+  with a supplied secret — still work, as they do for anonymous callers; they grant no agent authority.
 - When the connection has an agent, every tool's `credential` becomes optional and defaults to the
   agent; an explicit `credential` still wins. Tool descriptions say so.
 - New tools shared through `mcp-tools` (so the channel plugin gets them too): `invite_participant`,

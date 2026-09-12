@@ -26,7 +26,7 @@ export async function exportWeave(db: Db, actor: Actor, weaveId: string, format:
   lines.push(`- Archived: ${info.weave.archivedAt ?? "no"}`);
   lines.push(`- Participants: ${info.participants.map((p: PublicParticipant) => `${p.name} (${p.kind}, ${p.role})`).join(", ")}`, "");
   for (const t of info.threads) {
-    lines.push(`## ${t.name}`, "");
+    lines.push(t.url ? `## ${t.name}\n\n<${t.url}>` : `## ${t.name}`, "");
     for (const e of all.filter((x) => x.threadId === t.id)) {
       if (e.type === "message") {
         lines.push(`**${who(e.actor)}** · ${e.at}`, String(e.payload.text ?? ""), "");
@@ -37,6 +37,8 @@ export async function exportWeave(db: Db, actor: Actor, weaveId: string, format:
         e.type === "participant.role_changed" ? `${nameOf(e.payload.participantId)} is now ${String(e.payload.role)}` :
         e.type === "thread.created" ? `Thread "${String(e.payload.name)}" created by ${who(e.actor)}` :
         e.type === "thread.closed" ? `Thread closed by ${who(e.actor)}` :
+        e.type === "thread.url_changed" ? (e.payload.url ? `Thread now links to ${String(e.payload.url)}` : "Thread no longer links to an artefact") :
+        e.type === "thread.invited" ? `${nameOf(e.payload.participantId)} invited by ${who(e.actor)}` :
         e.type === "weave.archived" ? "Weave archived" : e.type;
       lines.push(`_system: ${sys}_ · ${e.at}`, "");
     }

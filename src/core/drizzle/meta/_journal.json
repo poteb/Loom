@@ -8,6 +8,13 @@
       "when": 1789077443266,
       "tag": "0000_gray_harrier",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1789235878367,
+      "tag": "0001_fresh_mojo",
+      "breakpoints": true
     }
   ]
 }

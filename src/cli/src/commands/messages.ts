@@ -1,6 +1,6 @@
 import { InvalidArgumentError, type Command } from "commander";
 import type { LoomEvent, StreamHandle, Thread, Participant } from "@loom/client";
-import type { CliContext } from "../context.js";
+import { CliError, type CliContext } from "../context.js";
 import { emit } from "../output.js";
 
 export function formatEvent(e: LoomEvent, threads: Thread[], participants: Participant[]): string {
@@ -27,8 +27,13 @@ export function registerMessageCommands(program: Command, ctx: () => CliContext)
     .option("--thread <id>", "Thread id")
     .action(async (words: string[], o: { thread?: string }) => {
       const c = ctx();
-      const { entry } = c.resolveWeave();
-      const ev = await c.client(entry.token).postMessage(o.thread ?? entry.generalThreadId, words.join(" "));
+      const { weaveId, entry } = c.resolveWeave();
+      const client = c.client(entry.token);
+      // An agent key is an identity, not a stored join, so it carries no General thread id: ask the
+      // Weave which of its threads is the General one instead.
+      const threadId = o.thread ?? (entry.generalThreadId || (await client.getWeave(weaveId)).threads.find((t) => t.isGeneral)?.id);
+      if (!threadId) throw new CliError("thread_not_found", `Weave ${weaveId} has no General thread; pass --thread <id>`);
+      const ev = await client.postMessage(threadId, words.join(" "));
       emit(c, ev, `#${ev.seq} posted`);
     });
 

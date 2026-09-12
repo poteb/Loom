@@ -23,6 +23,8 @@ describe("createWeave", () => {
     expect(r.generalThread.name).toBe("General");
     const evs = await readEvents(db, r.weave.id, {});
     expect(evs.map((e) => e.type)).toEqual(["thread.created", "participant.joined", "message"]);
+    // Same payload shape as any other thread.created, so a reader never has to special-case General.
+    expect(evs[0]!.payload).toEqual({ threadId: r.generalThread.id, name: "General", url: null });
     expect(evs[2]!.payload).toEqual({ text: input.opener, mentions: [] });
     expect(evs[2]!.actor).toBe(r.participant.id);
     const me = await resolveCredential(db, r.token);
