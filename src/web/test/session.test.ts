@@ -65,6 +65,40 @@ describe("session", () => {
     b.dispose();
   });
 
+  it("visiting a thread does not acknowledge invites that arrive later", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Paw", kind: "human" } });
+    const storage = memoryStorage();
+    storage.set(`loom:${r.secret}`, JSON.stringify({ token: r.token, participantId: r.participant.id }));
+    const a = await makeSession(r.secret, storage);
+    await waitFor(() => a.getState().connection === "open");
+    await a.createThread("PR 1");
+    await waitFor(() => a.getState().threads.some((t) => t.name === "PR 1"));
+    const t1 = a.getState().threads.find((t) => t.name === "PR 1")!;
+    await a.createThread("PR 2");
+    await waitFor(() => a.getState().threads.some((t) => t.name === "PR 2"));
+    const t2 = a.getState().threads.find((t) => t.name === "PR 2")!;
+    // Both threads have been opened already; "seen" must mean "seen up to seq N", not "seen ever".
+    a.selectThread(t1.id);
+    a.selectThread(t2.id);
+    a.selectThread(r.generalThread.id);
+    // Someone else with the right to invite: a second participant promoted to Weave keeper.
+    const paw = await s.core.resolveCredential(r.token);
+    const b = await anon.joinWeave(r.secret, { name: "Bot", kind: "agent" });
+    await s.core.setRole(paw, r.weave.id, b.participant.id, "keeper");
+    const bot = await s.core.resolveCredential(b.token);
+    await s.core.inviteParticipant(bot, t1.id, r.participant.id);
+    await waitFor(() => a.getState().invitesForMe.has(t1.id));
+    await s.core.inviteParticipant(bot, t2.id, r.participant.id);
+    await waitFor(() => a.getState().invitesForMe.has(t2.id));
+    // markSeen clears only the thread it names...
+    a.markSeen(t2.id);
+    expect([...a.getState().invitesForMe]).toEqual([t1.id]);
+    // ...and opening the other one clears that.
+    a.selectThread(t1.id);
+    expect([...a.getState().invitesForMe]).toEqual([]);
+    a.dispose();
+  });
+
   it("keeper can close threads and archive; archived weave is read-only", async () => {
     const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
     const storage = memoryStorage();
