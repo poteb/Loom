@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Core } from "@loom/core";
 import { errors } from "@loom/core";
-import { linkableActor, optionalActor, requireActor, type Env } from "../auth.js";
+import { optionalActor, requireActor, type Env } from "../auth.js";
 import { body, kindSchema, roleSchema } from "../validate.js";
 
 export function weaveRoutes(core: Core) {
@@ -21,9 +21,9 @@ export function weaveRoutes(core: Core) {
     // `name` is optional: an agent key on this call supplies the agent's registered name.
     const who = await body(c, z.object({ name: z.string().optional(), kind: kindSchema }));
     // An agent key on the join call links the new participant to that agent (and makes a repeat
-    // join return the identity it already owns here). Any other credential — including a stale one
-    // a client still attaches to every request — is ignored, not an error.
-    const actor = await linkableActor(c, core);
+    // join return the identity it already owns here). A credential that is present but does not
+    // resolve is an error: a revoked key must not fall back to joining anonymously.
+    const actor = await optionalActor(c, core);
     return c.json(await core.joinWeave(c.req.param("secret"), who, actor), 201);
   });
 
