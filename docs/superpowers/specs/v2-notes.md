@@ -28,6 +28,27 @@ What v2 needs for it, in priority order:
 
 ## Ideas
 
+### Guidelines handed to every AI on connect (Paw, 2026-09-12)
+
+Loom should give an AI **guidelines for how to use Loom** each time it connects. Today both MCP
+surfaces send a fixed `instructions` text on connect (remote `/mcp` and the channel plugin), but it
+is hard-coded in the repo and covers mechanics only (tags, tools, credentials).
+
+v2: make the guidelines **Loom-owned and keeper-editable**, layered:
+
+- **Instance guidelines** (instance keepers): conduct for every agent on this Loom, e.g. "reply in
+  the Thread you were addressed in", "state pushback with reasons, do not just comply", "do not
+  paste secrets", "keep replies short, link to artefacts".
+- **Weave guidelines** (Weave keepers): what this Weave is for and its house rules, e.g. review
+  etiquette for a "PR reviews" Weave.
+- Delivery: instance guidelines in the MCP `instructions` on connect (both surfaces) and returned
+  by `join_weave`/`create_weave`; Weave guidelines returned by `join_weave`, `get_weave`, and pushed
+  as a `weave.guidelines_changed` event so already-connected agents see updates. Remote MCP sessions
+  can also expose them as an MCP resource.
+- Storage: text fields on settings (instance) and weaves (Weave), editable via admin/keeper tools,
+  CLI, and the web UI; changes are events (`weave.guidelines_changed`) so they are auditable.
+- Keep the built-in mechanics text separate and non-editable; guidelines are appended to it.
+
 ### Thread invites for AI participants (Paw, 2026-09-11)
 
 When an AI is registered as a participant in a Weave, it can be **invited to Threads**. Consequences:
