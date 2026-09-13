@@ -84,6 +84,29 @@ describe("keepers", () => {
     await expect(resolveCredential(db, b)).rejects.toMatchObject({ code: "invalid_token" });
     expect(await listKeepers(db, k)).toHaveLength(1);
   });
+  it("two keepers removing each other cannot empty the store", async () => {
+    // Both removals pass their own freshness check, then delete different rows — nothing conflicts,
+    // so both used to succeed and the table ended up empty. That is not just a lockout: seedKeepers
+    // treats an empty table as eligible for bootstrap, so the next restart resurrects the env
+    // tokens these keepers had replaced. The seam parks the first removal past its own check, which
+    // is exactly the interleaving two concurrent requests produce.
+    const a = keeperToken("tok-a"), b = keeperToken("tok-b");
+    await seedKeepers(db, [a, b]);
+    const ka = await resolveCredential(db, a) as Actor & { keeperId: string };
+    const kb = await resolveCredential(db, b) as Actor & { keeperId: string };
+
+    let release!: () => void;
+    const parked = new Promise<void>((r) => { release = r; });
+    const first = removeKeeper(db, ka, kb.keeperId, { afterAuth: () => parked });
+    await removeKeeper(db, kb, ka.keeperId);      // the other keeper wins and removes ka
+    release();
+
+    await expect(first).rejects.toMatchObject({ code: "validation", message: expect.stringContaining("last keeper") });
+    const left = await db.select().from(keepers);
+    expect(left).toHaveLength(1);
+    expect((await resolveCredential(db, left[0]!.token)).kind).toBe("keeper");
+  });
+
   it("ignores tokens that are not 43-char base64url", async () => {
     await seedKeepers(db, ["short"]);
     expect(await db.select().from(keepers)).toHaveLength(0);

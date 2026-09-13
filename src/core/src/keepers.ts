@@ -44,10 +44,25 @@ export async function addKeeper(db: Db, actor: Actor, name: string): Promise<{ k
   return { keeper: toPublic(row!), token };
 }
 
-export async function removeKeeper(db: Db, actor: Actor, id: string): Promise<void> {
+export type RemoveKeeperOptions = {
+  /** Test seam: runs after the freshness check, before the removal transaction opens. */
+  afterAuth?: () => Promise<void>;
+};
+
+export async function removeKeeper(db: Db, actor: Actor, id: string, opts: RemoveKeeperOptions = {}): Promise<void> {
   await assertInstanceKeeperFresh(db, actor);
   if (actor.kind === "keeper" && actor.keeperId === id) throw errors.validation("A keeper cannot remove itself");
   if (!isUuid(id)) throw errors.validation("No such keeper");
-  const deleted = await db.delete(keepers).where(eq(keepers.id, id)).returning({ id: keepers.id });
-  if (deleted.length === 0) throw errors.validation("No such keeper");
+  if (opts.afterAuth) await opts.afterAuth();
+  // Two removals that each passed their own freshness check delete different rows, so nothing in
+  // the database conflicts and both can commit — leaving no keeper at all. That is worse than a
+  // lockout: seedKeepers treats an empty table as a first boot, so the next restart re-seeds the
+  // env tokens these keepers had replaced. Locking every keeper row serializes removals, and the
+  // count is then read under that lock.
+  await db.transaction(async (tx) => {
+    const all = await tx.select({ id: keepers.id }).from(keepers).for("update");
+    if (!all.some((k) => k.id === id)) throw errors.validation("No such keeper");
+    if (all.length <= 1) throw errors.validation("Cannot remove the last keeper");
+    await tx.delete(keepers).where(eq(keepers.id, id));
+  });
 }
