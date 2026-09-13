@@ -300,6 +300,39 @@ describe("stream", () => {
     ws2.close();
   });
 
+  it("stops replay with 4401 when the streaming keeper is removed before a replay page", async () => {
+    const c = await api(s.baseUrl, "POST", "/api/weaves", creator);
+    const { weave, token, generalThread } = c.json;
+    // A backlog larger than replayPageSize (5), so replay is genuinely multi-page work rather than
+    // a single read that happens to finish before anything can change.
+    for (let i = 0; i < 6; i++) await api(s.baseUrl, "POST", `/api/threads/${generalThread.id}/messages`, { text: `b${i}` }, token);
+
+    const added = await api(s.baseUrl, "POST", "/api/admin/keepers", { name: "replay" }, KEEPER);
+    const tempKeeperToken = added.json.token as string;
+    const tempKeeperId = added.json.keeper.id as string;
+
+    gate = makeGate();
+    const received: LoomEvent[] = [];
+    const ws = new WebSocket(`${s.wsUrl}/api/weaves/${weave.id}/stream?since=0&ticket=${await ticket(tempKeeperToken)}`);
+    const closeEvent = new Promise<{ code: number; reason: string }>((resolve) => {
+      ws.on("message", (data) => received.push(JSON.parse(data.toString()) as LoomEvent));
+      ws.on("close", (code, reason) => resolve({ code, reason: reason.toString() }));
+    });
+    await gate.entered;   // subscribed, parked before the first replay page
+
+    await api(s.baseUrl, "DELETE", `/api/admin/keepers/${tempKeeperId}`, undefined, KEEPER);
+    await new Promise((r) => setTimeout(r, 150));   // past the file-wide 50ms auth cache TTL
+    await api(s.baseUrl, "POST", `/api/threads/${generalThread.id}/messages`, { text: "after revoke" }, token);
+    gate.release(); gate = undefined;
+
+    // Replay used to run on the Actor captured at connect time, so it read and delivered events
+    // committed after the removal — including ones the removed keeper had never been able to see.
+    const { code, reason } = await closeEvent;
+    expect(code).toBe(4401);
+    expect(reason).toBe("credential revoked");
+    expect(received).toEqual([]);
+  });
+
   it("keeps an agent-key stream open past the auth TTL", async () => {
     const c = await api(s.baseUrl, "POST", "/api/weaves", creator);
     const { weave, token, generalThread, secret } = c.json;

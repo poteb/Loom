@@ -125,6 +125,9 @@ async function stream(ws: WebSocket, weaveId: string, since: number, actor: Acto
     if (e.seq <= lastSent) return;
     if (!(await ensureAuthorized())) { ws.close(CREDENTIAL_REVOKED, "credential revoked"); return; }
     while (e.seq > lastSent + 1) {
+      // Each page of gap recovery is another read on the caller's behalf, and filling a large gap
+      // can outlast the TTL; re-check before every one rather than only on entry.
+      if (!(await ensureAuthorized())) { ws.close(CREDENTIAL_REVOKED, "credential revoked"); return; }
       const missing = await deps.core.readEvents(currentActor, weaveId, { since: lastSent, limit: Math.min(e.seq - lastSent - 1, page) });
       if (missing.length === 0) break;   // not committed yet; send what we have rather than spin
       for (const m of missing) if (m.seq > lastSent) { lastSent = m.seq; send(m); }
@@ -147,9 +150,13 @@ async function stream(ws: WebSocket, weaveId: string, since: number, actor: Acto
 
   try {
     if (deps.beforeReplay) await deps.beforeReplay();
-    // 2. Replay from the database.
+    // 2. Replay from the database. Replay is subject to the same reauthorization policy as live
+    //    delivery: a large backlog (or a slow client) can keep this loop running long after the
+    //    credential was revoked, and the Actor captured at connect time would happily read pages
+    //    committed after the removal. Check before every page and read with the refreshed Actor.
     for (;;) {
-      const events = await deps.core.readEvents(actor, weaveId, { since: lastSent, limit: page });
+      if (!(await ensureAuthorized())) { ws.close(CREDENTIAL_REVOKED, "credential revoked"); return; }
+      const events = await deps.core.readEvents(currentActor, weaveId, { since: lastSent, limit: page });
       for (const e of events) { lastSent = e.seq; send(e); }
       if (events.length < page) break;
     }
