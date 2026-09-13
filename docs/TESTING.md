@@ -115,10 +115,10 @@ guarded by `typeof document !== "undefined"` because the package runs Vitest wit
 
 ## Current totals
 
-As of the most recent merged PR (#5, commit `1e2a9b5`): **365 tests** — core 117, mcp-tools 10,
-server 73, client 29, cli 27, claude-channel 73, web 36 — with `pnpm -r build` and
-`pnpm -r typecheck` clean. Counts change with every feature; run the suites to see current
-numbers.
+As of the 2026-09-13 codebase-review fixes (commit `d550357`): **379 tests** — core 120,
+mcp-tools 11, server 76, client 30, cli 30, claude-channel 75, web 37 — run serially with
+`pnpm --workspace-concurrency=1 -r test`, and with `pnpm -r build` and `pnpm -r typecheck` clean.
+Counts change with every feature; run the suites to see current numbers.
 
 ## Manual smoke tests
 
