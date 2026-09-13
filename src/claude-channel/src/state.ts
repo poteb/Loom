@@ -30,6 +30,8 @@ const MAX_COMMIT_ATTEMPTS = 100;
 const MAX_SNAPSHOT_ATTEMPTS = 10;
 const STALE_TMP_MS = 60_000;
 const VERSION_FILE = /^config\.(\d+)\.json$/;
+/** A temp file written by `commit()`: `config.<version>.<pid>.<uuid>.tmp`. Group 1 is its writer's pid. */
+const TMP_FILE = /^config\.\d+\.(\d+)\.[0-9a-f-]{36}\.tmp$/;
 const LEGACY_FILE = "config.json";
 
 /** `id` is the commit id of the version the config came from (undefined for legacy/empty). */
@@ -286,11 +288,23 @@ export class ChannelState {
     const id = randomUUID();
     for (const w of Object.keys(c.writers)) if (w !== this.writerId && !writerAlive(w)) delete c.writers[w];
     c.writers[this.writerId] = { id, at: this.now().toISOString() };
-    writeFileDurably(tmp, JSON.stringify({ ...c, commit: { id, parent } }, null, 2) + "\n");
+    const body = JSON.stringify({ ...c, commit: { id, parent } }, null, 2) + "\n";
+    writeFileDurably(tmp, body);
     try {
-      this.publish(tmp, target);
+      try {
+        this.publish(tmp, target);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+        // The source is gone, not the filesystem's fault: something removed this writer's temp file
+        // while it was paused (an older sweeper, or a cleaner outside Loom). Write it again and link
+        // once more — the content is a pure function of the snapshot, so rewriting changes nothing.
+        writeFileDurably(tmp, body);
+        this.publish(tmp, target);
+      }
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === "EEXIST") return false;
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === "EEXIST") return false;
+      if (code === "ENOENT") throw new Error(`channel state temp file ${tmp} disappeared twice while publishing version ${base + 1}`);
       throw new Error(`channel state dir ${this.dir} must be on a filesystem that supports hard links (NTFS, ext4, APFS, …): ${(e as Error).message}`);
     } finally {
       rmSync(tmp, { force: true });
@@ -314,7 +328,12 @@ export class ChannelState {
 
   /** After a successful commit: drop versions older than the two before it (a concurrent reader may
    * still be on `committed - 1`; a delayed writer may need `committed - 1`'s parent link), the legacy
-   * file, and temp files abandoned by crashed writers. */
+   * file, and temp files abandoned by crashed writers.
+   *
+   * A temp file is abandoned when its writer's process is gone — the name carries that pid — not
+   * when it is merely old: a writer suspended past any age threshold still wakes up and links its
+   * file, and removing it under them turns a join into a lost participant token. Age remains the
+   * only signal for a temp file whose name says nothing about who owns it. */
   private sweep(committed: number): void {
     for (const v of this.versions()) if (v < committed - 2) rmSync(this.versionPath(v), { force: true });
     rmSync(path.join(this.dir, LEGACY_FILE), { force: true });
@@ -322,14 +341,22 @@ export class ChannelState {
     for (const f of readdirSync(this.dir)) {
       if (!f.endsWith(".tmp")) continue;
       const p = path.join(this.dir, f);
-      try { if (statSync(p).mtimeMs < cutoff) rmSync(p, { force: true }); } catch { /* already gone */ }
+      const owner = Number(TMP_FILE.exec(f)?.[1]);
+      try {
+        if (Number.isInteger(owner)) { if (!pidAlive(owner)) rmSync(p, { force: true }); }
+        else if (statSync(p).mtimeMs < cutoff) rmSync(p, { force: true });
+      } catch { /* already gone */ }
     }
   }
 }
 
 /** A writer entry belongs to a process that still exists (and could therefore still resume and re-check). */
 function writerAlive(writerId: string): boolean {
-  const pid = Number(/^(\d+):/.exec(writerId)?.[1]);
+  return pidAlive(Number(/^(\d+):/.exec(writerId)?.[1]));
+}
+
+/** Whether a process id is still in use. EPERM means it exists but belongs to someone else. */
+function pidAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
 }

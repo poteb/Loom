@@ -4,17 +4,31 @@ import { getWeave } from "./weaves.js";
 import { readEvents } from "./events.js";
 import type { Actor, LoomEvent, PublicParticipant } from "./types.js";
 
-export async function exportWeave(db: Db, actor: Actor, weaveId: string, format: "md" | "json"): Promise<string> {
+export type ExportOptions = {
+  /** Test seam: runs after the metadata read, before the event pages, to commit a concurrent write. */
+  afterMetadata?: () => Promise<void>;
+};
+
+export async function exportWeave(db: Db, actor: Actor, weaveId: string, format: "md" | "json", opts: ExportOptions = {}): Promise<string> {
   if (format !== "md" && format !== "json") throw errors.validation("format must be md or json");
-  const info = await getWeave(db, actor, weaveId);
-  const all: LoomEvent[] = [];
-  let since = 0;
-  for (;;) {
-    const page = await readEvents(db, weaveId, { since, limit: 1000 });
-    all.push(...page);
-    if (page.length < 1000) break;
-    since = page.at(-1)!.seq;
-  }
+  // One snapshot for the whole export. The metadata read and the event pages are many statements,
+  // and under READ COMMITTED each sees a different moment: a Thread created in between lands in the
+  // events but not in the Thread list, `lastSeq` describes older state than the events beside it,
+  // and the Markdown — which iterates the Thread list — drops those events entirely. REPEATABLE
+  // READ gives every statement the snapshot taken by the first; read-only says so to the server.
+  const { info, all } = await db.transaction(async (tx) => {
+    const info = await getWeave(tx, actor, weaveId);
+    if (opts.afterMetadata) await opts.afterMetadata();
+    const all: LoomEvent[] = [];
+    let since = 0;
+    for (;;) {
+      const page = await readEvents(tx, weaveId, { since, limit: 1000 });
+      all.push(...page);
+      if (page.length < 1000) break;
+      since = page.at(-1)!.seq;
+    }
+    return { info, all };
+  }, { isolationLevel: "repeatable read", accessMode: "read only" });
   if (format === "json") return JSON.stringify({ ...info, events: all }, null, 2);
 
   const byId = new Map(info.participants.map((p) => [p.id, p]));

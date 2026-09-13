@@ -1,5 +1,5 @@
 import { and, asc, eq } from "drizzle-orm";
-import type { Db } from "./db/index.js";
+import type { Db, Queryable } from "./db/index.js";
 import { weaves, threads, participants } from "./db/schema.js";
 import type { EventBus } from "./bus.js";
 import { errors } from "./errors.js";
@@ -83,7 +83,7 @@ export async function createWeave(db: Db, bus: EventBus, input: CreateWeaveInput
   return result;
 }
 
-export async function getWeave(db: Db, actor: Actor, weaveId: string): Promise<WeaveInfo> {
+export async function getWeave(db: Queryable, actor: Actor, weaveId: string): Promise<WeaveInfo> {
   assertCanRead(actor, weaveId);
   if (!isUuid(weaveId)) throw errors.weaveNotFound();
   const [w] = await db.select().from(weaves).where(eq(weaves.id, weaveId));

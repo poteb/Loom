@@ -282,6 +282,64 @@ describe("remote MCP at /mcp", () => {
       expect(json(forbidden).code).toBe("forbidden");
       const bad = await c.callTool({ name: "get_weave", arguments: { credential: "garbage", weaveId: created.weave.id } });
       expect(json(bad).code).toBe("invalid_token");
+      // Semantic rejections belong to core and must arrive in the same { code, message } envelope.
+      // A schema-level min(1)/url() check would fail first, as a plain-text "MCP error -32602".
+      const empty = await c.callTool({ name: "post_message", arguments: { credential: created.token, threadId: created.generalThread.id, text: "" } });
+      expect(empty.isError).toBe(true);
+      expect(json(empty).code).toBe("validation");
+      const noName = await c.callTool({ name: "create_thread", arguments: { credential: created.token, weaveId: created.weave.id, name: "" } });
+      expect(noName.isError).toBe(true);
+      expect(json(noName).code).toBe("validation");
+      const badUrl = await c.callTool({ name: "create_thread", arguments: { credential: created.token, weaveId: created.weave.id, name: "T", url: "ftp://no" } });
+      expect(badUrl.isError).toBe(true);
+      expect(json(badUrl).code).toBe("validation");
+      // A malformed Thread filter is a domain error too, not a raw Postgres 22P02 surfaced as
+      // `internal` with the SQL text in it.
+      const badThread = await c.callTool({ name: "read_events", arguments: { credential: created.token, weaveId: created.weave.id, threadId: "bad-id" } });
+      expect(badThread.isError).toBe(true);
+      expect(json(badThread).code).toBe("thread_not_found");
+    });
+  });
+
+  it("rejects an out-of-range page as a { code: validation } tool error on both paged tools", async () => {
+    // The tool schemas carry types only, so nothing but core stands between the client and SQL
+    // here: without core's own bounds `read_events(limit: 0)` quietly returned a one-event page
+    // over MCP while the identical REST call was a 400.
+    await withClient(async (c) => {
+      const created = json(await c.callTool({ name: "create_weave", arguments: { title: "T", opener: "o", name: "A" } }));
+      for (const name of ["read_events", "inbox"]) {
+        for (const page of [{ limit: 0 }, { since: -1 }]) {
+          const r = await c.callTool({ name, arguments: { credential: created.token, weaveId: created.weave.id, ...page } });
+          expect([name, page, r.isError]).toEqual([name, page, true]);
+          expect(json(r)).toMatchObject({ code: "validation" });
+        }
+      }
+    });
+  });
+
+  it("pins the inbox cursor contract: only inbox results may advance it", async () => {
+    // The documented rule used to be "since = the last seq you saw", which a turn reads as the seq
+    // of its own reply. This interleaving is why that skips work: an event addressed to the agent
+    // is committed between its inbox call and its reply, so the reply's seq is already past it.
+    await withTwoClients(async (bot, paw) => {
+      const created = json(await bot.callTool({ name: "create_weave", arguments: { title: "Cursor", opener: "start", name: "Bot" } }));
+      const joined = json(await paw.callTool({ name: "join_weave", arguments: { secret: created.secret, name: "Paw", kind: "human" } }));
+      const thread = created.generalThread.id;
+
+      await paw.callTool({ name: "post_message", arguments: { credential: joined.token, threadId: thread, text: "first @Bot" } });
+      const page = json(await bot.callTool({ name: "inbox", arguments: { credential: created.token, weaveId: created.weave.id } }));
+      expect(page).toHaveLength(1);
+      const cursor = page[0].seq as number;   // the inbox cursor: the last inbox item processed
+
+      const missed = json(await paw.callTool({ name: "post_message", arguments: { credential: joined.token, threadId: thread, text: "second @Bot" } }));
+      const reply = json(await bot.callTool({ name: "post_message", arguments: { credential: created.token, threadId: thread, text: "on it" } }));
+      expect(reply.seq).toBeGreaterThan(missed.seq);
+
+      // Advancing from the reply (or from any read_events page) loses "second @Bot" permanently.
+      expect(json(await bot.callTool({ name: "inbox", arguments: { credential: created.token, weaveId: created.weave.id, since: reply.seq } }))).toEqual([]);
+      // The dedicated inbox cursor still returns it.
+      const next = json(await bot.callTool({ name: "inbox", arguments: { credential: created.token, weaveId: created.weave.id, since: cursor } }));
+      expect(next.map((e: { seq: number }) => e.seq)).toEqual([missed.seq]);
     });
   });
 
@@ -289,10 +347,16 @@ describe("remote MCP at /mcp", () => {
     await withClient(async (c) => {
       const list = json(await c.callTool({ name: "keeper_list_weaves", arguments: { credential: keeperToken("k1") } }));
       expect(Array.isArray(list)).toBe(true);
-      const st = json(await c.callTool({ name: "keeper_set_settings", arguments: { credential: keeperToken("k1"), instanceName: "Fragt Loom" } }));
+      const st = json(await c.callTool({ name: "keeper_set_settings", arguments: { credential: keeperToken("k1"), patch: { instanceName: "Fragt Loom" } } }));
       expect(st.instanceName).toBe("Fragt Loom");
       const denied = await c.callTool({ name: "keeper_list", arguments: { credential: "x".repeat(43) } });
       expect(json(denied).code).toBe("invalid_token");
+      // A misspelled key reaches core, which rejects the whole patch rather than reporting success.
+      const typo = await c.callTool({ name: "keeper_set_settings", arguments: { credential: keeperToken("k1"), patch: { openWeaveCreaton: false } } });
+      expect(typo.isError).toBe(true);
+      expect(json(typo).code).toBe("validation");
+      const still = json(await c.callTool({ name: "keeper_get_settings", arguments: { credential: keeperToken("k1") } }));
+      expect(still.instanceName).toBe("Fragt Loom");
     });
   });
 });

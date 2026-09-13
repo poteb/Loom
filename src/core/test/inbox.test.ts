@@ -10,6 +10,7 @@ import { resolveCredential } from "../src/actors.js";
 import { seedKeepers } from "../src/keepers.js";
 import { createCore } from "../src/index.js";
 import { keeperToken } from "./helpers.js";
+import { MAX_PAGE_LIMIT } from "../src/paging.js";
 import type { Db } from "../src/db/index.js";
 
 afterAll(closeTestDb);
@@ -52,7 +53,7 @@ describe("inbox", () => {
     const other = await createWeave(db, bus, { title: "O", opener: "", creator: { name: "Q", kind: "human" } });
     await expect(inbox(db, await resolveCredential(db, other.token), r.weave.id, {})).rejects.toMatchObject({ code: "forbidden" });
   });
-  it("clamps limit, rejects malformed ids and keepers", async () => {
+  it("rejects an out-of-range page, malformed ids and keepers", async () => {
     const r = await createWeave(db, bus, { title: "T", opener: "hi", creator: { name: "Paw", kind: "human" } });
     const paw = await resolveCredential(db, r.token);
     const b = await joinWeave(db, bus, r.secret, { name: "Bot", kind: "agent" });
@@ -61,8 +62,10 @@ describe("inbox", () => {
     const inv = await inviteParticipant(db, bus, paw, t.id, b.participant.id);
     const m1 = await postMessage(db, bus, paw, t.id, "@Bot please review");
     const m2 = await postMessage(db, bus, paw, t.id, "@Bot again");
-    expect((await inbox(db, bot, r.weave.id, { limit: 0 })).map((e) => e.seq)).toEqual([m2.seq]);   // clamped to 1: the newest
-    expect((await inbox(db, bot, r.weave.id, { limit: 5000 })).map((e) => e.seq)).toEqual([inv.seq, m1.seq, m2.seq]);
+    await expect(inbox(db, bot, r.weave.id, { limit: 0 })).rejects.toMatchObject({ code: "validation" });
+    await expect(inbox(db, bot, r.weave.id, { limit: 5000 })).rejects.toMatchObject({ code: "validation" });
+    await expect(inbox(db, bot, r.weave.id, { since: -1 })).rejects.toMatchObject({ code: "validation" });
+    expect((await inbox(db, bot, r.weave.id, { limit: MAX_PAGE_LIMIT })).map((e) => e.seq)).toEqual([inv.seq, m1.seq, m2.seq]);
     await expect(inbox(db, bot, "nope", {})).rejects.toMatchObject({ code: "weave_not_found" });
     await seedKeepers(db, [keeperToken("k1")]);
     const keeper = await resolveCredential(db, keeperToken("k1"));

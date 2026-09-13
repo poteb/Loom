@@ -81,7 +81,11 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
   const refreshInfo = async () => {
     if (!weaveId) return;
     const info = await reader.getWeave(weaveId);
-    set({ weave: info.weave, threads: info.threads, participants: info.participants,
+    // A refresh can be in flight when the archive commits, and then answer from before it: archive
+    // state is one-way, so keep whichever of the two saw it. Without this the composer and the
+    // keeper controls come back on a Weave that is already read-only.
+    set({ weave: { ...info.weave, archivedAt: info.weave.archivedAt ?? state.weave?.archivedAt ?? null },
+      threads: info.threads, participants: info.participants,
       me: state.me && info.participants.some((p) => p.id === state.me!.participant.id)
         ? { token: state.me.token, participant: info.participants.find((p) => p.id === state.me!.participant.id)! }
         : state.me });
@@ -131,8 +135,11 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
     if (e.type === "thread.created" || e.type === "thread.closed" || e.type === "thread.url_changed"
       || e.type === "participant.joined" || e.type === "participant.role_changed") {
       scheduleRefresh();
-    } else if (e.type === "weave.archived" && state.weave) {
-      set({ weave: { ...state.weave, archivedAt: e.at } });
+    } else if (e.type === "weave.archived") {
+      if (state.weave) set({ weave: { ...state.weave, archivedAt: e.at } });
+      // Also refresh: a refresh that started before the archive is still going to land with stale
+      // metadata, and this one runs after it, so the rest of the Weave converges too.
+      scheduleRefresh();
     }
   };
 

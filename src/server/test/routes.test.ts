@@ -87,6 +87,22 @@ describe("weaves", () => {
     expect(notJson.status).toBe(400);
   });
 
+  it("an out-of-range page is 400 validation on both paged reads", async () => {
+    // The bounds now live in core, so REST answers exactly what MCP answers: the route schema
+    // parses the query string and core decides whether the numbers are acceptable.
+    const a = await api(s.baseUrl, "POST", "/api/weaves", creator);
+    const { weave, token } = a.json;
+    for (const path of [`/api/weaves/${weave.id}/events`, `/api/weaves/${weave.id}/inbox`]) {
+      for (const q of ["limit=0", "limit=1001", "since=-1", "limit=1.5"]) {
+        const r = await api(s.baseUrl, "GET", `${path}?${q}`, undefined, token);
+        expect([path, q, r.status]).toEqual([path, q, 400]);
+        expect(r.json.code).toBe("validation");
+      }
+      const ok = await api(s.baseUrl, "GET", `${path}?limit=1000&since=0`, undefined, token);
+      expect(ok.status).toBe(200);
+    }
+  });
+
   it("unknown and malformed ids are 404/400, never 500", async () => {
     const a = await api(s.baseUrl, "POST", "/api/weaves", creator);
     const unknown = "11111111-2222-3333-4444-555555555555";
@@ -142,6 +158,18 @@ describe("auth + admin", () => {
     expect((await api(s.baseUrl, "GET", "/api/admin/keepers", undefined, add.json.token)).status).toBe(200);
     expect((await api(s.baseUrl, "DELETE", `/api/admin/keepers/${add.json.keeper.id}`, undefined, KEEPER)).status).toBe(204);
     expect((await api(s.baseUrl, "GET", "/api/admin/keepers", undefined, add.json.token)).status).toBe(401);
+  });
+
+  it("rejects an unknown settings key instead of silently dropping it", async () => {
+    // A misspelled property used to be stripped by the route schema, so core's strict schema never
+    // saw it and the keeper got a 200 reporting settings it had not changed.
+    const before = await api(s.baseUrl, "GET", "/api/admin/settings", undefined, KEEPER);
+    const bad = await api(s.baseUrl, "PUT", "/api/admin/settings", { openWeaveCreaton: false }, KEEPER);
+    expect(bad.status).toBe(400);
+    expect(bad.json.code).toBe("validation");
+    expect(bad.json.message).toContain("openWeaveCreaton");
+    const after = await api(s.baseUrl, "GET", "/api/admin/settings", undefined, KEEPER);
+    expect(after.json).toEqual(before.json);
   });
 });
 

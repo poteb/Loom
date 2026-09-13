@@ -13,9 +13,12 @@ export function adminRoutes(core: Core) {
 
   r.put("/settings", async (c) => {
     const actor = await requireActor(c, core);
+    // .strict(): a schema that silently drops unknown keys would hand core an empty patch, and the
+    // keeper would get a 200 for a misspelled setting it never changed. Core is still the authority
+    // on the values themselves; this only stops the evidence being thrown away first.
     const patch = await body(c, z.object({
       instanceName: z.string().optional(), maxMessageLength: z.number().optional(), openWeaveCreation: z.boolean().optional(),
-    }));
+    }).strict());
     return c.json(await core.updateSettings(actor, patch));
   });
 

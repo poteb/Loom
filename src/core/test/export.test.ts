@@ -39,6 +39,28 @@ describe("exportWeave", () => {
     expect(md).toContain("_system: ChatGPT joined_");
     expect(md).toContain("_system: Weave archived_");
   });
+  it("reads metadata and events from one snapshot: a Thread created mid-export appears in neither", async () => {
+    // Metadata and the event pages used to be separate statements against the pool, so a Thread
+    // created between them landed in the events but not in the Thread list (and, in Markdown,
+    // vanished entirely because the rendering iterates the stale Thread list), with a lastSeq that
+    // described older state than the events beside it.
+    const r = await createWeave(db, bus, input);
+    const me = await resolveCredential(db, r.token);
+    const out = await exportWeave(db, me, r.weave.id, "json", {
+      afterMetadata: async () => {
+        const late = await createThread(db, bus, me, r.weave.id, "Late");
+        await postMessage(db, bus, me, late.id, "committed mid-export");
+      },
+    });
+    const json = JSON.parse(out);
+    expect(json.threads.map((t: { name: string }) => t.name)).toEqual(["General"]);
+    expect(json.events.map((e: { seq: number }) => e.seq)).toEqual([1, 2, 3]);
+    expect(json.weave.lastSeq).toBe(json.events.at(-1).seq);
+    expect(out).not.toContain("committed mid-export");
+    // The Weave really did move on; the export simply described one consistent point in time.
+    expect((await exportWeave(db, me, r.weave.id, "json")).includes("committed mid-export")).toBe(true);
+  });
+
   it("rejects bad format and foreign credential", async () => {
     const r = await createWeave(db, bus, input);
     const me = await resolveCredential(db, r.token);

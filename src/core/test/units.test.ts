@@ -4,6 +4,7 @@ import { newId, newSecret, isUuid } from "../src/ids.js";
 import { validateName } from "../src/names.js";
 import { parseMentions } from "../src/mentions.js";
 import { isNameTakenViolation } from "../src/weaves.js";
+import { MAX_PAGE_LIMIT, validatePage } from "../src/paging.js";
 
 describe("errors", () => {
   it("carries a code", () => {
@@ -88,5 +89,35 @@ describe("parseMentions", () => {
   });
   it("ignores emails", () => {
     expect(parseMentions("mail me@Claude", ps)).toEqual([]);
+  });
+});
+
+describe("validatePage", () => {
+  /** The code a call rejects with, or undefined when it is accepted. */
+  const codeOf = (fn: () => void): string | undefined => {
+    try { fn(); return undefined; } catch (e) { return (e as LoomError).code; }
+  };
+
+  it("accepts an omitted, zero or positive since and a limit inside 1..MAX_PAGE_LIMIT", () => {
+    expect(codeOf(() => validatePage({}))).toBeUndefined();
+    expect(codeOf(() => validatePage({ since: 0, limit: 1 }))).toBeUndefined();
+    expect(codeOf(() => validatePage({ since: 7, limit: MAX_PAGE_LIMIT }))).toBeUndefined();
+  });
+
+  it("rejects a since that is negative or not an integer", () => {
+    for (const since of [-1, -0.5, 1.5, NaN, Infinity]) {
+      expect(codeOf(() => validatePage({ since }))).toBe("validation");
+    }
+  });
+
+  it("rejects a limit below 1, above the maximum, or not an integer", () => {
+    for (const limit of [0, -1, 1.5, NaN, Infinity, MAX_PAGE_LIMIT + 1]) {
+      expect(codeOf(() => validatePage({ limit }))).toBe("validation");
+    }
+  });
+
+  it("honours a caller-supplied maximum", () => {
+    expect(codeOf(() => validatePage({ limit: 50 }, 50))).toBeUndefined();
+    expect(codeOf(() => validatePage({ limit: 51 }, 50))).toBe("validation");
   });
 });

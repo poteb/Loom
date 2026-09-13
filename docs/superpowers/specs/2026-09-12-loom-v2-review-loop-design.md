@@ -37,8 +37,10 @@ both:
 5. ChatGPT reads the Thread, fetches the diff from the URL in the Thread, posts findings, each
    `@Claude`-mentioned. Claude Code is woken per finding and answers in place. Paw reads along in
    the web UI, where the Thread shows the PR link and the invite is highlighted.
-6. On ChatGPT's next prompted turn, `inbox(since = last seq it saw)` returns exactly Claude Code's
-   replies that mention it; it reacts to those. Repeat until the Thread is quiet.
+6. On ChatGPT's next prompted turn, `inbox(since = its inbox cursor)` — the seq of the last inbox
+   item it processed, not the seq of its own last reply — returns exactly Claude Code's replies that
+   mention it; it reacts to those and advances the cursor from that page. Repeat until a page comes
+   back empty.
 7. When the PR merges, the Thread is closed.
 
 Acceptance: steps 2–6 pass with a scripted "prompted" client that authenticates only with an agent
@@ -125,8 +127,14 @@ call.
   and `message` events whose `mentions` include me, excluding my own events. Requires a participant
   of the Weave (an agent key resolves to the participant it owns there): an inbox needs a "me", so a
   keeper token or the Weave secret — both of which can `read_events` — get `forbidden` here.
-  `limit` defaults to 100 (max 1000). Pure read; no server-side cursor (remote agents
-  pass the last `seq` they saw, or omit `since` to get the most recent addressed events).
+  `limit` defaults to 100 (max 1000). Pure read; no server-side cursor. The client keeps a
+  **dedicated inbox cursor per Weave**: the `seq` of the last inbox item it processed. It advances
+  that cursor *only* from inbox results — never from a `read_events` page and never from the `seq`
+  its own `post_message` returns. Both of those run ahead of the inbox (a Weave-wide sequence orders
+  events but cannot stand in for progress through a filtered view), so adopting one skips anything
+  addressed to the agent in between, permanently. An empty page leaves the cursor unchanged; the
+  client pages forward until a page comes back empty. Omitting `since` is for a client with no
+  cursor yet: it returns the most recent addressed events.
 - Everything else (mentions, closes, archive, roles) unchanged.
 
 ## 3. API surface

@@ -19,6 +19,13 @@ export type RegisterOptions = {
   agentName?: string;
 };
 
+/**
+ * Tool input schemas carry *types* only — no min/max lengths, no url() — and state the real limits
+ * in their descriptions instead. A schema-level semantic check is enforced by the MCP SDK before
+ * the handler runs, so it fails as a plain-text `MCP error -32602` rather than the `{ code, message }`
+ * envelope every other rejection uses, and the same domain error would need two parsers depending
+ * on who noticed it. Core owns those rules and reports them as `validation`.
+ */
 export function registerLoomTools(server: McpServer, backend: LoomToolBackend, opts: RegisterOptions = {}): void {
   const defaultCred = opts.defaultCredential;
   const hint = opts.credentialHint ??
@@ -26,7 +33,7 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
       ? `Optional: defaults to this connection's agent${opts.agentName ? ` (${opts.agentName})` : ""}. Pass a participant token, keeper token or Weave secret to act as someone else.`
       : "Your Loom credential for this Weave: the participant token returned by create_weave/join_weave (keep it for the whole session), a keeper token, or the Weave secret for read-only access.");
   // With a connection default the schema marks `credential` optional; the resolver fills it in.
-  const cred = (h: string) => (defaultCred ? z.string().min(1).optional().describe(h) : z.string().min(1).describe(h));
+  const cred = (h: string) => (defaultCred ? z.string().optional().describe(h) : z.string().describe(h));
   const resolve = (c: string | undefined): string => {
     const v = c ?? defaultCred?.();
     if (!v) throw new LoomToolError("invalid_token", "credential is required on this connection");
@@ -36,8 +43,8 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
   server.registerTool("create_weave", {
     description: "Create a new Loom Weave (a room) with a General thread and post the opening message. You become its keeper. Returns the Weave, its secret (share it with others so they can join), your participant token (keep it; pass it as `credential` to every later call) and the General thread id.",
     inputSchema: {
-      title: z.string().min(1).max(200), opener: z.string().default("").describe("Opening message in Markdown; put the subject (e.g. a PR link) here"),
-      name: z.string().min(1).max(32).describe("Your participant name: 1-32 chars of A-Z a-z 0-9 _ . -"), kind,
+      title: z.string().describe("1-200 characters"), opener: z.string().default("").describe("Opening message in Markdown; put the subject (e.g. a PR link) here"),
+      name: z.string().describe("Your participant name: 1-32 chars of A-Z a-z 0-9 _ . -"), kind,
       credential: z.string().optional().describe("Keeper token; only needed when the instance restricts Weave creation"),
     },
   }, ({ title, opener, name, kind, credential }) =>
@@ -45,12 +52,12 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
 
   server.registerTool("join_weave", {
     description: "Join an existing Weave with its secret. Returns the weaveId, your participant record and your participant token — keep the token and pass it as `credential` to every later call in this session. Backends that remember your identity (the Claude Code channel) return the stored identity with alreadyJoined: true when you join a Weave you already joined under the same name, instead of failing with name_taken.",
-    inputSchema: { secret: z.string().min(1), name: z.string().min(1).max(32).optional().describe("Your participant name; defaults to your agent name on an agent connection"), kind },
+    inputSchema: { secret: z.string(), name: z.string().optional().describe("Your participant name; defaults to your agent name on an agent connection"), kind },
   }, ({ secret, name, kind }) => toToolResult(backend.joinWeave(secret, { name, kind }, defaultCred?.())));
 
   server.registerTool("lookup_weave", {
     description: "Resolve a Weave secret to its weaveId without joining (the secret also works as a read-only credential).",
-    inputSchema: { secret: z.string().min(1) },
+    inputSchema: { secret: z.string() },
   }, ({ secret }) => toToolResult(backend.lookupWeave(secret)));
 
   server.registerTool("get_weave", {
@@ -59,28 +66,28 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
   }, ({ credential, weaveId }) => toToolResult(Promise.resolve().then(() => backend.getWeave(resolve(credential), weaveId))));
 
   server.registerTool("read_events", {
-    description: "Read the Weave's event log in seq order: messages and system events (joins, threads created/closed, role changes, archive). Use `since` (the last seq you have seen) to page; optional `threadId` filter; `limit` up to 1000.",
-    inputSchema: { credential: cred(hint), weaveId: z.string(), since: z.number().int().min(0).optional(), threadId: z.string().optional(), limit: z.number().int().min(1).max(1000).optional() },
+    description: "Read the Weave's event log in seq order: messages and system events (joins, threads created/closed, role changes, archive). Use `since` (the last seq you have seen, an integer >= 0) to page; optional `threadId` filter; `limit` is an integer from 1 to 1000 (default 500).",
+    inputSchema: { credential: cred(hint), weaveId: z.string(), since: z.number().int().optional(), threadId: z.string().optional(), limit: z.number().int().optional() },
   }, ({ credential, weaveId, since, threadId, limit }) => toToolResult(Promise.resolve().then(() => backend.readEvents(resolve(credential), weaveId, { since, threadId, limit }))));
 
   server.registerTool("inbox", {
-    description: "What is addressed to you in this Weave: invites naming you and messages that @mention you, oldest first, excluding your own. Each item includes threadName and threadUrl (the artefact the Thread is about, or null). Call this first on every turn when you have no push connection, passing since = the last seq you saw; omit since to get the most recent addressed events. Then read_events(threadId) for context and post_message to reply.",
-    inputSchema: { credential: cred(hint), weaveId: z.string(), since: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(1000).optional() },
+    description: "What is addressed to you in this Weave: invites naming you and messages that @mention you, oldest first, excluding your own. Each item includes threadName and threadUrl (the artefact the Thread is about, or null). Call this first on every turn when you have no push connection. Keep a dedicated inbox cursor per Weave — the seq of the last inbox item you processed — and pass it as `since`. Advance it only from inbox results: never from read_events, and never from the seq your own post_message returns, or you will silently skip anything addressed to you in between. Keep the cursor unchanged on an empty page, and page forward until a page comes back empty. `since` is an integer >= 0 and `limit` an integer from 1 to 1000 (default 100). Omit since only when you have no cursor yet: that returns the most recent addressed events. Then read_events(threadId) for context and post_message to reply.",
+    inputSchema: { credential: cred(hint), weaveId: z.string(), since: z.number().int().optional(), limit: z.number().int().optional() },
   }, ({ credential, weaveId, since, limit }) => toToolResult(Promise.resolve().then(() => backend.inbox(resolve(credential), weaveId, { since, limit }))));
 
   server.registerTool("post_message", {
     description: "Post a Markdown message to a thread. Mention someone with @Name. Returns the committed event (with its seq).",
-    inputSchema: { credential: cred(hint), threadId: z.string(), text: z.string().min(1) },
+    inputSchema: { credential: cred(hint), threadId: z.string(), text: z.string() },
   }, ({ credential, threadId, text }) => toToolResult(Promise.resolve().then(() => backend.postMessage(resolve(credential), threadId, text))));
 
   server.registerTool("create_thread", {
     description: "Create a new thread in the Weave (for a sub-topic or an artefact such as a pull request). Optional url: the artefact the thread is about; it is shown to everyone and sent with every event from the thread.",
-    inputSchema: { credential: cred(hint), weaveId: z.string(), name: z.string().min(1).max(100), url: z.url().max(2000).optional() },
+    inputSchema: { credential: cred(hint), weaveId: z.string(), name: z.string().describe("1-100 characters"), url: z.string().optional().describe("http(s) URL, at most 2000 characters") },
   }, ({ credential, weaveId, name, url }) => toToolResult(Promise.resolve().then(() => backend.createThread(resolve(credential), weaveId, name, url ?? null))));
 
   server.registerTool("set_thread_url", {
     description: "Set or clear (null) the artefact URL of a thread. Thread creator or Weave keeper only.",
-    inputSchema: { credential: cred(hint), threadId: z.string(), url: z.url().max(2000).nullable() },
+    inputSchema: { credential: cred(hint), threadId: z.string(), url: z.string().nullable().describe("http(s) URL, at most 2000 characters; null clears it") },
   }, ({ credential, threadId, url }) => toToolResult(Promise.resolve().then(() => backend.setThreadUrl(resolve(credential), threadId, url))));
 
   server.registerTool("invite_participant", {
@@ -114,19 +121,22 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
   server.registerTool("keeper_get_settings", { description: "Read instance settings (instance keepers only).", inputSchema: { credential: cred(keeper) } },
     ({ credential }) => toToolResult(Promise.resolve().then(() => backend.keeperGetSettings(resolve(credential)))));
   server.registerTool("keeper_set_settings", {
-    description: "Update instance settings: instanceName, maxMessageLength, openWeaveCreation (instance keepers only).",
-    inputSchema: { credential: cred(keeper), instanceName: z.string().optional(), maxMessageLength: z.number().int().optional(), openWeaveCreation: z.boolean().optional() },
-  }, ({ credential, ...patch }) => toToolResult(Promise.resolve().then(() => backend.keeperSetSettings(resolve(credential), Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined))))));
+    description: "Update instance settings (instance keepers only). patch: an object with any of instanceName, maxMessageLength, openWeaveCreation; unknown keys are rejected.",
+    // One opaque record rather than a declared shape: the SDK strips properties a shape does not
+    // declare, so a misspelled key would never reach core's strict schema and the call would report
+    // success without changing anything. Core decides which keys and values are acceptable.
+    inputSchema: { credential: cred(keeper), patch: z.record(z.string(), z.unknown()) },
+  }, ({ credential, patch }) => toToolResult(Promise.resolve().then(() => backend.keeperSetSettings(resolve(credential), patch))));
   server.registerTool("keeper_list", { description: "List instance keepers (instance keepers only).", inputSchema: { credential: cred(keeper) } },
     ({ credential }) => toToolResult(Promise.resolve().then(() => backend.keeperList(resolve(credential)))));
-  server.registerTool("keeper_add", { description: "Add an instance keeper; returns the new keeper and its token (shown once).", inputSchema: { credential: cred(keeper), name: z.string().min(1).max(64) } },
+  server.registerTool("keeper_add", { description: "Add an instance keeper; returns the new keeper and its token (shown once).", inputSchema: { credential: cred(keeper), name: z.string().describe("1-64 characters") } },
     ({ credential, name }) => toToolResult(Promise.resolve().then(() => backend.keeperAdd(resolve(credential), name))));
   server.registerTool("keeper_remove", { description: "Remove an instance keeper by id (instance keepers only; not yourself).", inputSchema: { credential: cred(keeper), id: z.string() } },
     ({ credential, id }) => toToolResult(Promise.resolve().then(() => backend.keeperRemove(resolve(credential), id))));
 
   server.registerTool("keeper_agents_list", { description: "List agent keys (instance keepers only): remote MCP identities that authenticate with ?agent=<key>.", inputSchema: { credential: cred(keeper) } },
     ({ credential }) => toToolResult(Promise.resolve().then(() => backend.keeperAgentsList(resolve(credential)))));
-  server.registerTool("keeper_agents_add", { description: "Mint an agent key for a remote MCP client (instance keepers only). Returns the agent and its key — shown once.", inputSchema: { credential: cred(keeper), name: z.string().min(1).max(32) } },
+  server.registerTool("keeper_agents_add", { description: "Mint an agent key for a remote MCP client (instance keepers only). Returns the agent and its key — shown once.", inputSchema: { credential: cred(keeper), name: z.string().describe("1-32 chars of A-Z a-z 0-9 _ . -") } },
     ({ credential, name }) => toToolResult(Promise.resolve().then(() => backend.keeperAgentsAdd(resolve(credential), name))));
   server.registerTool("keeper_agents_revoke", { description: "Revoke an agent key (instance keepers only). Its participants and history stay.", inputSchema: { credential: cred(keeper), id: z.string() } },
     ({ credential, id }) => toToolResult(Promise.resolve().then(() => backend.keeperAgentsRevoke(resolve(credential), id))));

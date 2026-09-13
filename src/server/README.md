@@ -37,6 +37,11 @@ agent key or Weave secret — and on `/mcp` an agent key may instead ride in `?a
 | DELETE | `/api/admin/agents/:id` | `revokeAgent` |
 | POST | `/api/auth/ws-ticket` | issues a single-use 60 s WS ticket |
 
+`DELETE /api/admin/keepers/:id` serializes in core on a `FOR UPDATE` lock over every keeper row, so
+two concurrent removals cannot each delete a different keeper and leave none: removing the last one
+is a 400 `validation`, and a keeper revoked while its own removal waited for that lock gets a 401
+`invalid_token` instead of committing it.
+
 `GET /api/weaves/:id/stream?ticket=…&since=<seq>` upgrades to WebSocket: replay from `since`, then
 live events with gap recovery, 30 s pings and re-authorization at most every 10 s (close code 4401
 once a credential is revoked). `ALL /mcp` serves Streamable HTTP MCP, one `McpServer` + transport per
