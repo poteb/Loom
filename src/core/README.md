@@ -1,0 +1,65 @@
+# @loom/core
+
+The domain: Weaves, Threads, participants, the append-only event log, and every authorization rule
+over them. Plain functions on a Drizzle/Postgres handle, wrapped by the `Core` facade every adapter
+calls. Core knows nothing about HTTP, WebSockets, MCP or the CLI — no request types, no env reading;
+it raises `LoomError` and adapters map that onto their own wire shape.
+
+## Public surface
+
+`createCore(db)` returns the `Core` facade ([src/index.ts](src/index.ts)). Every method takes an
+`Actor` (from `resolveCredential`) first; agent actors are mapped to their participant in the target
+Weave before any rule runs.
+
+- **Weaves** — `createWeave`, `getWeave`, `joinWeave`, `lookupWeaveIdBySecret`, `archiveWeave`, `listWeaves`, `exportWeave`
+- **Threads** — `createThread`, `setThreadUrl`, `closeThread`, `getThreadWeaveId` · **Invites** — `inviteParticipant`
+- **Messages** — `postMessage`, `readEvents` · **Inbox** — `inbox` · **Settings** — `readSettings`, `updateSettings`
+- **Participants** — `setRole`, `resolveCredential`, `resolveInWeave`
+- **Keepers** — `seedKeepers`, `listKeepers`, `addKeeper`, `removeKeeper` · **Agents** — `addAgent`, `listAgents`, `revokeAgent`
+
+Also exported: `createDb(url)`, `runMigrations(db)` (SQL in [drizzle/](drizzle)), `closeDb`,
+`EventBus`, `assertCanRead`, `KEEPER_TOKEN_RE`, and the domain types. `LoomError` carries an
+`ErrorCode`: `validation`, `invalid_token`, `forbidden`, `weave_not_found`, `thread_not_found`,
+`weave_archived`, `thread_closed`, `name_taken`, `message_too_long`.
+
+## Internal layout
+
+- [src/index.ts](src/index.ts) — the `Core` facade and the package's exports
+- [src/actors.ts](src/actors.ts) — credential → `Actor`, agent→participant mapping, read/keeper assertions
+- [src/agents.ts](src/agents.ts) — agent key rows: add, list, revoke
+- [src/agent-keys.ts](src/agent-keys.ts) — SHA-256 hashing of agent keys; public agent projection
+- [src/bus.ts](src/bus.ts) — in-process pub/sub keyed by weave id
+- [src/db/index.ts](src/db/index.ts) — `createDb`, `runMigrations`, `closeDb`
+- [src/db/schema.ts](src/db/schema.ts) — tables: weaves, threads, agents, participants, keepers, settings, events
+- [src/errors.ts](src/errors.ts) — `LoomError`, `ErrorCode`, the `errors` constructors
+- [src/events.ts](src/events.ts) — `withWeaveLock`, `appendInTx` (seq allocation), `readEvents`
+- [src/export.ts](src/export.ts) — transcript export as Markdown or JSON
+- [src/ids.ts](src/ids.ts) — uuid/secret generation, `KEEPER_TOKEN_RE`, `isUuid`
+- [src/inbox.ts](src/inbox.ts) — events addressed to an actor: invites and @mentions
+- [src/invites.ts](src/invites.ts) — idempotent `thread.invited`
+- [src/keepers.ts](src/keepers.ts) — instance keepers: seed, list, add, remove
+- [src/mentions.ts](src/mentions.ts) — `@name` parsing against a participant list
+- [src/messages.ts](src/messages.ts) — `postMessage`: length limit, mention resolution
+- [src/names.ts](src/names.ts) — participant name validation (`NAME_RE`)
+- [src/participants.ts](src/participants.ts) — `setRole`
+- [src/settings.ts](src/settings.ts) — instance settings read/patch
+- [src/threads.ts](src/threads.ts) — create/close threads, artefact URL validation
+- [src/types.ts](src/types.ts) — `Actor`, `LoomEvent`, `InboxItem`, public row shapes
+- [src/weaves.ts](src/weaves.ts) — create/join/get/archive/list, unique-violation classification
+
+## Testing
+
+    cd src/core && npx vitest run
+
+Needs Postgres: the shared global setup ([test/global-setup.ts](test/global-setup.ts)) starts a
+`postgres:17-alpine` testcontainer, or falls back to a `loom_test` database on the compose server.
+`test/helpers.ts` truncates every table per test and refuses to run against the application database
+([test/db-guard.ts](test/db-guard.ts)). Coverage: `weaves`, `threads`, `messages`, `invites`,
+`inbox`, `participants`, `agents`, `authz`, `guards`, `events`, `export`, `settings-keepers`, `db`
+and `core`, plus pure units in `units.test.ts`.
+
+## Depends on / depended on by
+
+No workspace dependencies (drizzle-orm, postgres, zod). Depended on by [`@loom/server`](../server);
+used for types and test fixtures by [`@loom/client`](../client), [`@loom/cli`](../cli),
+[`@loom/web`](../web) and [`@loom/claude-channel`](../claude-channel).
