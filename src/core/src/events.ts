@@ -1,5 +1,5 @@
 import { and, asc, eq, gt } from "drizzle-orm";
-import type { Db } from "./db/index.js";
+import type { Db, Queryable, Tx } from "./db/index.js";
 import { events, weaves } from "./db/schema.js";
 import { errors } from "./errors.js";
 import { isUuid } from "./ids.js";
@@ -8,7 +8,7 @@ import type { EventType, LoomEvent } from "./types.js";
 
 export type NewEvent = { threadId: string; type: EventType; actor: string; payload: Record<string, unknown> };
 export type WeaveRow = typeof weaves.$inferSelect;
-export type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+export type { Tx };
 
 function toEvent(r: typeof events.$inferSelect): LoomEvent {
   return {
@@ -54,7 +54,7 @@ export async function withWeaveLock<T>(
 }
 
 export async function readEvents(
-  db: Db, weaveId: string, opts: { since?: number; threadId?: string; limit?: number },
+  db: Queryable, weaveId: string, opts: { since?: number; threadId?: string; limit?: number },
 ): Promise<LoomEvent[]> {
   // `events.thread_id` is a uuid column: an unguarded filter would reach Postgres as 22P02, an
   // untyped driver error that the MCP adapter reports as `internal` with the query in it. Every

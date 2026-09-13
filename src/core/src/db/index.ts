@@ -6,6 +6,13 @@ import path from "node:path";
 import * as schema from "./schema.js";
 
 export type Db = ReturnType<typeof createDb>;
+/** The handle `db.transaction(...)` hands its callback. */
+export type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+/**
+ * Anything a read can run against: the connection pool, or an open transaction. Reads that a caller
+ * may want inside one snapshot (the export) take this instead of `Db`.
+ */
+export type Queryable = Db | Tx;
 
 export function createDb(url: string) {
   const client = postgres(url, { max: 10 });
