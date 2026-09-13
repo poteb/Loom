@@ -282,6 +282,17 @@ describe("remote MCP at /mcp", () => {
       expect(json(forbidden).code).toBe("forbidden");
       const bad = await c.callTool({ name: "get_weave", arguments: { credential: "garbage", weaveId: created.weave.id } });
       expect(json(bad).code).toBe("invalid_token");
+      // Semantic rejections belong to core and must arrive in the same { code, message } envelope.
+      // A schema-level min(1)/url() check would fail first, as a plain-text "MCP error -32602".
+      const empty = await c.callTool({ name: "post_message", arguments: { credential: created.token, threadId: created.generalThread.id, text: "" } });
+      expect(empty.isError).toBe(true);
+      expect(json(empty).code).toBe("validation");
+      const noName = await c.callTool({ name: "create_thread", arguments: { credential: created.token, weaveId: created.weave.id, name: "" } });
+      expect(noName.isError).toBe(true);
+      expect(json(noName).code).toBe("validation");
+      const badUrl = await c.callTool({ name: "create_thread", arguments: { credential: created.token, weaveId: created.weave.id, name: "T", url: "ftp://no" } });
+      expect(badUrl.isError).toBe(true);
+      expect(json(badUrl).code).toBe("validation");
     });
   });
 
