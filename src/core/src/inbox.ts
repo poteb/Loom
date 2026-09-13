@@ -8,8 +8,12 @@ import type { Actor, EventType, InboxItem } from "./types.js";
 
 /**
  * What is addressed to the acting participant: invites naming it and messages mentioning it,
- * excluding its own events, always oldest-first. Pure read with an explicit `since`: remote agents
- * with no local state pass the last seq they saw, or omit it for the most recent addressed events.
+ * excluding its own events, always oldest-first. Pure read with an explicit `since`: the caller
+ * keeps a dedicated inbox cursor per Weave — the seq of the last inbox item it processed — and
+ * passes that. It is not the last seq the caller saw: a cursor advanced from `readEvents` or from
+ * the seq its own `postMessage` returned skips anything addressed to it in between, since those
+ * seqs run ahead of the inbox. An empty page leaves the cursor where it was. A caller with no
+ * cursor yet omits `since` and gets the most recent addressed events.
  */
 export async function inbox(db: Db, actor: Actor, weaveId: string, opts: { since?: number; limit?: number }): Promise<InboxItem[]> {
   if (!isUuid(weaveId)) throw errors.weaveNotFound();
