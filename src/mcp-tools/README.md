@@ -17,6 +17,15 @@ hosts expose identical tools.
 - **Messages** — `post_message`, `read_events`, `inbox` · **Participants** — `invite_participant`, `set_role`
 - **Keeper** — `keeper_list_weaves`, `keeper_get_settings`, `keeper_set_settings`, `keeper_list`, `keeper_add`, `keeper_remove`, `keeper_agents_list`, `keeper_agents_add`, `keeper_agents_revoke`
 
+**Input schemas carry types only.** No `min`/`max` lengths and no `url()`: a schema-level semantic
+check is enforced by the MCP SDK *before* the handler runs, so it comes back as a plain-text
+`MCP error -32602` rather than the `{ code, message }` envelope every other rejection uses. The real
+limits are stated in each parameter's description and enforced once in core, as `validation`. Enums
+stay, because they are type-level. For the same reason `keeper_set_settings` takes a single opaque
+`patch` object (`{ patch: { openWeaveCreation: false } }`, not flattened keys): a declared shape
+would let the SDK silently prune a misspelled key before core saw it, and core's strict schema
+rejects the unknown key as `validation` instead.
+
 `RegisterOptions.defaultCredential?: () => string | undefined` is for a connection already
 authenticated as itself (an agent key): when set, `credential` becomes **optional** in every tool's
 schema and is filled in by the resolver, and `create_weave` / `join_weave` pass it through so the new
