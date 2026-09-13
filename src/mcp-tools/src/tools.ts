@@ -114,9 +114,12 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
   server.registerTool("keeper_get_settings", { description: "Read instance settings (instance keepers only).", inputSchema: { credential: cred(keeper) } },
     ({ credential }) => toToolResult(Promise.resolve().then(() => backend.keeperGetSettings(resolve(credential)))));
   server.registerTool("keeper_set_settings", {
-    description: "Update instance settings: instanceName, maxMessageLength, openWeaveCreation (instance keepers only).",
-    inputSchema: { credential: cred(keeper), instanceName: z.string().optional(), maxMessageLength: z.number().int().optional(), openWeaveCreation: z.boolean().optional() },
-  }, ({ credential, ...patch }) => toToolResult(Promise.resolve().then(() => backend.keeperSetSettings(resolve(credential), Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined))))));
+    description: "Update instance settings (instance keepers only). patch: an object with any of instanceName, maxMessageLength, openWeaveCreation; unknown keys are rejected.",
+    // One opaque record rather than a declared shape: the SDK strips properties a shape does not
+    // declare, so a misspelled key would never reach core's strict schema and the call would report
+    // success without changing anything. Core decides which keys and values are acceptable.
+    inputSchema: { credential: cred(keeper), patch: z.record(z.string(), z.unknown()) },
+  }, ({ credential, patch }) => toToolResult(Promise.resolve().then(() => backend.keeperSetSettings(resolve(credential), patch))));
   server.registerTool("keeper_list", { description: "List instance keepers (instance keepers only).", inputSchema: { credential: cred(keeper) } },
     ({ credential }) => toToolResult(Promise.resolve().then(() => backend.keeperList(resolve(credential)))));
   server.registerTool("keeper_add", { description: "Add an instance keeper; returns the new keeper and its token (shown once).", inputSchema: { credential: cred(keeper), name: z.string().min(1).max(64) } },

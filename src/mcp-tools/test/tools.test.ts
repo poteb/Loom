@@ -74,6 +74,13 @@ describe("registerLoomTools", () => {
     const k = await client.callTool({ name: "keeper_remove", arguments: { credential: "k", id: "nope" } });
     expect(JSON.parse(text(k)).code).toBe("validation");
   });
+  it("keeper_set_settings hands the whole patch to the backend, unknown keys included", async () => {
+    // The SDK strips properties a raw shape does not declare, so a misspelled settings key used to
+    // vanish before core's strict schema could reject it. A single `patch` record keeps it.
+    const r = await client.callTool({ name: "keeper_set_settings", arguments: { credential: "k", patch: { instanceName: "X", openWeaveCreaton: false } } });
+    expect(r.isError).toBeFalsy();
+    expect(JSON.parse(text(r))).toEqual({ instanceName: "X", openWeaveCreaton: false });
+  });
   it("rejects invalid arguments before calling the backend", async () => {
     const before = calls.length;
     const r = await client.callTool({ name: "set_role", arguments: { credential: "c", weaveId: "w", participantId: "p", role: "boss" } });

@@ -289,10 +289,16 @@ describe("remote MCP at /mcp", () => {
     await withClient(async (c) => {
       const list = json(await c.callTool({ name: "keeper_list_weaves", arguments: { credential: keeperToken("k1") } }));
       expect(Array.isArray(list)).toBe(true);
-      const st = json(await c.callTool({ name: "keeper_set_settings", arguments: { credential: keeperToken("k1"), instanceName: "Fragt Loom" } }));
+      const st = json(await c.callTool({ name: "keeper_set_settings", arguments: { credential: keeperToken("k1"), patch: { instanceName: "Fragt Loom" } } }));
       expect(st.instanceName).toBe("Fragt Loom");
       const denied = await c.callTool({ name: "keeper_list", arguments: { credential: "x".repeat(43) } });
       expect(json(denied).code).toBe("invalid_token");
+      // A misspelled key reaches core, which rejects the whole patch rather than reporting success.
+      const typo = await c.callTool({ name: "keeper_set_settings", arguments: { credential: keeperToken("k1"), patch: { openWeaveCreaton: false } } });
+      expect(typo.isError).toBe(true);
+      expect(json(typo).code).toBe("validation");
+      const still = json(await c.callTool({ name: "keeper_get_settings", arguments: { credential: keeperToken("k1") } }));
+      expect(still.instanceName).toBe("Fragt Loom");
     });
   });
 });

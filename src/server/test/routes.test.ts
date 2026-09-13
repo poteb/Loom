@@ -143,6 +143,18 @@ describe("auth + admin", () => {
     expect((await api(s.baseUrl, "DELETE", `/api/admin/keepers/${add.json.keeper.id}`, undefined, KEEPER)).status).toBe(204);
     expect((await api(s.baseUrl, "GET", "/api/admin/keepers", undefined, add.json.token)).status).toBe(401);
   });
+
+  it("rejects an unknown settings key instead of silently dropping it", async () => {
+    // A misspelled property used to be stripped by the route schema, so core's strict schema never
+    // saw it and the keeper got a 200 reporting settings it had not changed.
+    const before = await api(s.baseUrl, "GET", "/api/admin/settings", undefined, KEEPER);
+    const bad = await api(s.baseUrl, "PUT", "/api/admin/settings", { openWeaveCreaton: false }, KEEPER);
+    expect(bad.status).toBe(400);
+    expect(bad.json.code).toBe("validation");
+    expect(bad.json.message).toContain("openWeaveCreaton");
+    const after = await api(s.baseUrl, "GET", "/api/admin/settings", undefined, KEEPER);
+    expect(after.json).toEqual(before.json);
+  });
 });
 
 describe("v2: threads url, invites, inbox, agents", () => {
