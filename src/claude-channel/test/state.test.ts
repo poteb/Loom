@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, existsSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ChannelState } from "../src/state.js";
@@ -188,6 +190,42 @@ describe("ChannelState", () => {
     const writers = new ChannelState(dir, "x").get().writers;
     expect(writers[aReceipt]).toBeDefined();
     expect(writers["999999999:gone"]).toBeUndefined();
+  });
+
+  it("a sibling's commit leaves a live writer's temp file alone, however old it is, and sweeps a dead one's", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+    const seed = new ChannelState(dir, "s0");
+    await seed.upsertWeave("w1", w);
+    // Two temp files written a minute ago: one by a process that still exists and could resume and
+    // link it, one by a process that is gone. Age alone says nothing about which is which.
+    const live = path.join(dir, `config.9.${process.pid}.${randomUUID()}.tmp`);
+    const dead = path.join(dir, `config.9.${spawnSync(process.execPath, ["-e", ""]).pid}.${randomUUID()}.tmp`);
+    const junk = path.join(dir, `config.9.not-a-writer.tmp`);
+    const old = new Date(Date.now() - 61_000);
+    for (const f of [live, dead, junk]) { writeFileSync(f, "{}"); utimesSync(f, old, old); }
+
+    await new ChannelState(dir, "s1").setLastSeq("w1", 4);   // a sibling commits, and sweeps
+
+    expect(existsSync(live)).toBe(true);
+    expect(existsSync(dead)).toBe(false);
+    expect(existsSync(junk)).toBe(false);                    // unattributable: the age rule still applies
+  });
+
+  it("re-writes and re-links a temp file that was swept away under a paused writer", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+    let swept = 0;
+    class Swept extends ChannelState {
+      protected override publish(tmp: string, target: string): void {
+        // The writer paused after writing its temp file; something removed it before the link.
+        if (swept++ === 0) rmSync(tmp, { force: true });
+        super.publish(tmp, target);
+      }
+    }
+    const a = new Swept(dir, "sA");
+    await a.upsertWeave("w1", w);                            // must not fail, and must persist the token
+    expect(swept).toBe(2);
+    expect(new ChannelState(dir, "x").get().weaves.w1).toEqual(w);
+    expect(readdirSync(dir).filter((f) => f.endsWith(".tmp"))).toEqual([]);
   });
 
   it("re-applying a join over state that already holds the same token keeps the advanced watermark and cursors", async () => {
