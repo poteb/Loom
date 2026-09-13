@@ -348,6 +348,56 @@ describe("session", () => {
     expect(session.getState().weave?.archivedAt).not.toBeNull();
     session.dispose();
   });
+
+  it("an archive that lands while a metadata refresh is in flight is not undone by the stale response", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Paw", kind: "human" } });
+    const storage = memoryStorage();
+    storage.set(`loom:${r.secret}`, JSON.stringify({ token: r.token, participantId: r.participant.id }));
+    const gate = makeGate();
+    let getWeaveCalls = 0;
+    const gated = new LoomClient({
+      baseUrl: s.baseUrl,
+      allowInsecure: true,
+      fetch: async (input, init) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (/^\/api\/weaves\/[^/]+$/.test(new URL(url).pathname)) {
+          getWeaveCalls++;
+          // Call 1 belongs to load(). Call 2 is the refresh this test suspends: the server answers
+          // it now — while the Weave is still unarchived — and the session only sees that answer
+          // after the archive has already been applied.
+          if (getWeaveCalls === 2) {
+            const captured = await fetch(url, init);
+            gate.markEntered();
+            await gate.released;
+            return captured;
+          }
+        }
+        return fetch(url, init);
+      },
+    });
+    const session = createSession({ client: gated, secret: r.secret, storage });
+    await session.load();
+    await waitFor(() => session.getState().connection === "open");
+    expect(session.canModerate()).toBe(true);
+
+    // A participant joining starts a metadata refresh, which parks holding pre-archive metadata.
+    await anon.joinWeave(r.secret, { name: "Other", kind: "human" });
+    await gate.entered;
+
+    // The archive commits and reaches the session over the stream while that refresh is suspended.
+    await s.core.archiveWeave(await s.core.resolveCredential(r.token), r.weave.id);
+    await waitFor(() => session.getState().weave?.archivedAt != null);
+    expect(session.canModerate()).toBe(false);
+
+    gate.release();
+    // Call 3 is the refresh the archive itself scheduled: it only runs once the stale one settled,
+    // so waiting for it also waits for the stale response to have been merged.
+    await waitFor(() => getWeaveCalls >= 3);
+    await waitFor(() => session.getState().participants.some((p) => p.name === "Other"));
+    expect(session.getState().weave?.archivedAt).not.toBeNull();
+    expect(session.canModerate()).toBe(false);
+    session.dispose();
+  });
 });
 
 /** One-shot rendezvous: the test learns the gated request arrived, the request waits for release. */
