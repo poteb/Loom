@@ -27,7 +27,6 @@ Product-level gaps (features not built yet, as opposed to defects) live in
 | [db/schema.ts](../src/core/src/db/schema.ts) | Agent names are not unique instance-wide; two agents may share a name | design choice: agents are addressed by key, participants are unique per Weave | unique index on `lower(name)` if names become addressable |
 | [db/schema.ts](../src/core/src/db/schema.ts) | No GIN index on `events.payload`: inbox (`->>'participantId'`, `? mentions`) and the invite idempotency predicate scan | scans are thread- or Weave-scoped and volumes are small | `jsonb_path_ops` GIN index when a Weave's log grows |
 | [inbox.ts](../src/core/src/inbox.ts) | Row→event mapping duplicates `toEvent` in [events.ts](../src/core/src/events.ts) (module-private there) | copied verbatim from the brief; drift is test-visible | export `toEvent` and reuse it |
-| [inbox.ts](../src/core/src/inbox.ts) | `limit` is clamped but not validated as an integer (`1.5` reaches SQL) | same as `readEvents`; every adapter validates first | shared clamp helper that rounds/validates |
 | [threads.ts](../src/core/src/threads.ts) | Thread URLs are not normalized: `…/pull/7` and `…/pull/7/` are distinct values | design choice — store what the human typed | normalize on write if dedupe ever matters |
 | [weaves.ts](../src/core/src/weaves.ts) | `joinWeave`'s `alreadyJoined` early return skips the archived check: an agent that already joined gets its token back for an archived Weave | ruled read-shaped in the v2 final review (writes still fail) | check `archivedAt` before returning |
 | [index.ts](../src/core/src/index.ts) | `forThread` loads the Thread, then the delegate loads it again (`setThreadUrl`, `closeThread`, `postMessage`, `inviteParticipant`) | one extra primary-key read | pass the loaded row through |
@@ -41,7 +40,7 @@ Product-level gaps (features not built yet, as opposed to defects) live in
 | [test/threads.test.ts](../src/core/test/threads.test.ts) | `setThreadUrl` against an unknown thread id untested | test coverage only | one `thread_not_found` case |
 | [test/invites.test.ts](../src/core/test/invites.test.ts) | Cross-Weave invitee (a real participant id from another Weave) untested; facade pass-through (`core.inviteParticipant`) untested | test coverage only | add both cases |
 | [test/agents.test.ts](../src/core/test/agents.test.ts) | Concurrent-join tests assert the invariant (`a \|\| b` already joined) rather than pinning the catch branch; `joinWeave`'s own per-Weave early-return lookup untested | the race cannot be forced deterministically | pin via an injected failure seam |
-| [test/inbox.test.ts](../src/core/test/inbox.test.ts) | Upper clamp of 1000 not independently proven (5000 against 3 events); default limit 100 unasserted; `helpers.js` imported twice | test coverage only | assert against a seeded page; merge the imports |
+| [test/inbox.test.ts](../src/core/test/inbox.test.ts) | The accepted upper bound is proven only against 3 events (`limit: 1000` returns all of them), so a page genuinely truncated at the maximum is untested; default limit 100 unasserted; `helpers.js` imported twice | test coverage only | assert against a seeded page; merge the imports |
 
 ## server
 
@@ -55,7 +54,6 @@ Product-level gaps (features not built yet, as opposed to defects) live in
 | [test/](../src/server/test) | No direct tests for bearer parsing / `requireActor` / error mapping beyond the route tests | test coverage only | unit-test the middleware |
 | [test/ws.test.ts](../src/server/test/ws.test.ts) | Live-phase tests use fixed 150 ms sleeps to prove the absence of duplicates | proving a negative needs a wait or a seam | inject a scheduler seam |
 | [test/mcp.test.ts](../src/server/test/mcp.test.ts) | `set_thread_url`, `invite_participant`, `create_thread(url)` and `keeper_agents_*` are not exercised at the MCP level (only against the fake backend in mcp-tools) | wiring is thin and typed | one round-trip per tool |
-| [test/routes.test.ts](../src/server/test/routes.test.ts) | `GET /inbox` with an invalid `since`/`limit` (400) untested | test coverage only | add the 400 case |
 
 ## mcp-tools
 

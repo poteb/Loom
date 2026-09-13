@@ -70,6 +70,7 @@ export { LoomError, errors, type ErrorCode } from "./errors.js";
 export { assertCanRead } from "./actors.js";
 export { createDb, runMigrations, closeDb, type Db } from "./db/index.js";
 export { KEEPER_TOKEN_RE } from "./ids.js";
+export { MAX_PAGE_LIMIT, validatePage, type PageOptions } from "./paging.js";
 export { EventBus } from "./bus.js";
 export type { CreateWeaveInput, CreateWeaveResult, WeaveInfo, JoinResult } from "./weaves.js";
 export type { PublicKeeper } from "./keepers.js";

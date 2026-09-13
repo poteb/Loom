@@ -36,10 +36,12 @@ export function weaveRoutes(core: Core) {
 
   r.get("/:id/events", async (c) => {
     const actor = await requireActor(c, core);
+    // Types only: the schema turns query strings into numbers, core decides whether the numbers
+    // are an acceptable page (so MCP, which has no schema-level bounds, answers identically).
     const q = z.object({
-      since: z.coerce.number().int().min(0).optional(),
+      since: z.coerce.number().optional(),
       thread: z.string().uuid().optional(),
-      limit: z.coerce.number().int().min(1).max(1000).optional(),
+      limit: z.coerce.number().optional(),
     }).safeParse(c.req.query());
     if (!q.success) throw errors.validation("Invalid query parameters");
     const events = await core.readEvents(actor, c.req.param("id"), { since: q.data.since, threadId: q.data.thread, limit: q.data.limit });
@@ -49,8 +51,8 @@ export function weaveRoutes(core: Core) {
   r.get("/:id/inbox", async (c) => {
     const actor = await requireActor(c, core);
     const q = z.object({
-      since: z.coerce.number().int().min(0).optional(),
-      limit: z.coerce.number().int().min(1).max(1000).optional(),
+      since: z.coerce.number().optional(),
+      limit: z.coerce.number().optional(),
     }).safeParse(c.req.query());
     if (!q.success) throw errors.validation("Invalid query parameters");
     return c.json({ events: await core.inbox(actor, c.req.param("id"), q.data) });

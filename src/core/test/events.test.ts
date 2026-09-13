@@ -3,6 +3,7 @@ import { freshDb, closeTestDb } from "./helpers.js";
 import { weaves, threads } from "../src/db/schema.js";
 import { EventBus } from "../src/bus.js";
 import { withWeaveLock, readEvents, appendInTx } from "../src/events.js";
+import { MAX_PAGE_LIMIT } from "../src/paging.js";
 import { newId, newSecret } from "../src/ids.js";
 import type { Db } from "../src/db/index.js";
 import type { LoomEvent } from "../src/types.js";
@@ -100,6 +101,15 @@ describe("readEvents", () => {
     expect((await readEvents(db, weaveId, { since: 1 })).map((e) => e.seq)).toEqual([2, 3]);
     expect((await readEvents(db, weaveId, { threadId: other })).map((e) => e.seq)).toEqual([2]);
     expect((await readEvents(db, weaveId, { limit: 2 })).map((e) => e.seq)).toEqual([1, 2]);
+  });
+
+  it("rejects an out-of-range page rather than clamping it", async () => {
+    // The bounds are core's, not an adapter's: over REST the query schema used to reject these and
+    // over MCP nothing did, so the same request answered differently depending on who asked.
+    await expect(readEvents(db, weaveId, { limit: 0 })).rejects.toMatchObject({ code: "validation" });
+    await expect(readEvents(db, weaveId, { limit: MAX_PAGE_LIMIT + 1 })).rejects.toMatchObject({ code: "validation" });
+    await expect(readEvents(db, weaveId, { limit: 1.5 })).rejects.toMatchObject({ code: "validation" });
+    await expect(readEvents(db, weaveId, { since: -1 })).rejects.toMatchObject({ code: "validation" });
   });
 
   it("rejects a malformed threadId filter rather than letting Postgres raise 22P02", async () => {

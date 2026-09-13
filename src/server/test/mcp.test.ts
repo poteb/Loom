@@ -301,6 +301,22 @@ describe("remote MCP at /mcp", () => {
     });
   });
 
+  it("rejects an out-of-range page as a { code: validation } tool error on both paged tools", async () => {
+    // The tool schemas carry types only, so nothing but core stands between the client and SQL
+    // here: without core's own bounds `read_events(limit: 0)` quietly returned a one-event page
+    // over MCP while the identical REST call was a 400.
+    await withClient(async (c) => {
+      const created = json(await c.callTool({ name: "create_weave", arguments: { title: "T", opener: "o", name: "A" } }));
+      for (const name of ["read_events", "inbox"]) {
+        for (const page of [{ limit: 0 }, { since: -1 }]) {
+          const r = await c.callTool({ name, arguments: { credential: created.token, weaveId: created.weave.id, ...page } });
+          expect([name, page, r.isError]).toEqual([name, page, true]);
+          expect(json(r)).toMatchObject({ code: "validation" });
+        }
+      }
+    });
+  });
+
   it("pins the inbox cursor contract: only inbox results may advance it", async () => {
     // The documented rule used to be "since = the last seq you saw", which a turn reads as the seq
     // of its own reply. This interleaving is why that skips work: an event addressed to the agent
