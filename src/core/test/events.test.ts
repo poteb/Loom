@@ -101,4 +101,8 @@ describe("readEvents", () => {
     expect((await readEvents(db, weaveId, { threadId: other })).map((e) => e.seq)).toEqual([2]);
     expect((await readEvents(db, weaveId, { limit: 2 })).map((e) => e.seq)).toEqual([1, 2]);
   });
+
+  it("rejects a malformed threadId filter rather than letting Postgres raise 22P02", async () => {
+    await expect(readEvents(db, weaveId, { threadId: "bad-id" })).rejects.toMatchObject({ code: "thread_not_found" });
+  });
 });

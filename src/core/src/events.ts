@@ -56,6 +56,10 @@ export async function withWeaveLock<T>(
 export async function readEvents(
   db: Db, weaveId: string, opts: { since?: number; threadId?: string; limit?: number },
 ): Promise<LoomEvent[]> {
+  // `events.thread_id` is a uuid column: an unguarded filter would reach Postgres as 22P02, an
+  // untyped driver error that the MCP adapter reports as `internal` with the query in it. Every
+  // other id entry point guards the same way, and REST already answered 404 here by accident.
+  if (opts.threadId !== undefined && !isUuid(opts.threadId)) throw errors.threadNotFound();
   const conds = [eq(events.weaveId, weaveId)];
   if (opts.since !== undefined) conds.push(gt(events.seq, opts.since));
   if (opts.threadId) conds.push(eq(events.threadId, opts.threadId));

@@ -293,6 +293,11 @@ describe("remote MCP at /mcp", () => {
       const badUrl = await c.callTool({ name: "create_thread", arguments: { credential: created.token, weaveId: created.weave.id, name: "T", url: "ftp://no" } });
       expect(badUrl.isError).toBe(true);
       expect(json(badUrl).code).toBe("validation");
+      // A malformed Thread filter is a domain error too, not a raw Postgres 22P02 surfaced as
+      // `internal` with the SQL text in it.
+      const badThread = await c.callTool({ name: "read_events", arguments: { credential: created.token, weaveId: created.weave.id, threadId: "bad-id" } });
+      expect(badThread.isError).toBe(true);
+      expect(json(badThread).code).toBe("thread_not_found");
     });
   });
 
