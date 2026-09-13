@@ -301,6 +301,32 @@ describe("remote MCP at /mcp", () => {
     });
   });
 
+  it("pins the inbox cursor contract: only inbox results may advance it", async () => {
+    // The documented rule used to be "since = the last seq you saw", which a turn reads as the seq
+    // of its own reply. This interleaving is why that skips work: an event addressed to the agent
+    // is committed between its inbox call and its reply, so the reply's seq is already past it.
+    await withTwoClients(async (bot, paw) => {
+      const created = json(await bot.callTool({ name: "create_weave", arguments: { title: "Cursor", opener: "start", name: "Bot" } }));
+      const joined = json(await paw.callTool({ name: "join_weave", arguments: { secret: created.secret, name: "Paw", kind: "human" } }));
+      const thread = created.generalThread.id;
+
+      await paw.callTool({ name: "post_message", arguments: { credential: joined.token, threadId: thread, text: "first @Bot" } });
+      const page = json(await bot.callTool({ name: "inbox", arguments: { credential: created.token, weaveId: created.weave.id } }));
+      expect(page).toHaveLength(1);
+      const cursor = page[0].seq as number;   // the inbox cursor: the last inbox item processed
+
+      const missed = json(await paw.callTool({ name: "post_message", arguments: { credential: joined.token, threadId: thread, text: "second @Bot" } }));
+      const reply = json(await bot.callTool({ name: "post_message", arguments: { credential: created.token, threadId: thread, text: "on it" } }));
+      expect(reply.seq).toBeGreaterThan(missed.seq);
+
+      // Advancing from the reply (or from any read_events page) loses "second @Bot" permanently.
+      expect(json(await bot.callTool({ name: "inbox", arguments: { credential: created.token, weaveId: created.weave.id, since: reply.seq } }))).toEqual([]);
+      // The dedicated inbox cursor still returns it.
+      const next = json(await bot.callTool({ name: "inbox", arguments: { credential: created.token, weaveId: created.weave.id, since: cursor } }));
+      expect(next.map((e: { seq: number }) => e.seq)).toEqual([missed.seq]);
+    });
+  });
+
   it("keeper tools work with a keeper token", async () => {
     await withClient(async (c) => {
       const list = json(await c.callTool({ name: "keeper_list_weaves", arguments: { credential: keeperToken("k1") } }));
