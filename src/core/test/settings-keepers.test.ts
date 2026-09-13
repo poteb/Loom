@@ -89,7 +89,10 @@ describe("keepers", () => {
     // so both used to succeed and the table ended up empty. That is not just a lockout: seedKeepers
     // treats an empty table as eligible for bootstrap, so the next restart resurrects the env
     // tokens these keepers had replaced. The seam parks the first removal past its own check, which
-    // is exactly the interleaving two concurrent requests produce.
+    // is exactly the interleaving two concurrent requests produce. In this interleaving ka has also
+    // been revoked by the time it takes the lock, so the in-lock actor re-check rejects it as a
+    // revoked credential before the last-keeper count is even reached; either way the store keeps
+    // exactly one keeper.
     const a = keeperToken("tok-a"), b = keeperToken("tok-b");
     await seedKeepers(db, [a, b]);
     const ka = await resolveCredential(db, a) as Actor & { keeperId: string };
@@ -101,10 +104,32 @@ describe("keepers", () => {
     await removeKeeper(db, kb, ka.keeperId);      // the other keeper wins and removes ka
     release();
 
-    await expect(first).rejects.toMatchObject({ code: "validation", message: expect.stringContaining("last keeper") });
+    await expect(first).rejects.toMatchObject({ code: "invalid_token" });
     const left = await db.select().from(keepers);
     expect(left).toHaveLength(1);
     expect((await resolveCredential(db, left[0]!.token)).kind).toBe("keeper");
+  });
+
+  it("a keeper removed while its own removal was in flight cannot commit it", async () => {
+    // The last-keeper guard only covers the two-keeper case. With three keepers the counts stay
+    // healthy, so A's removal of C used to commit even though B had already revoked A: authority
+    // was only ever checked before the transaction. CONTRIBUTING requires the re-check to happen
+    // inside the lock, so the actor's own row is verified against the same FOR UPDATE select.
+    const a = keeperToken("tok-a"), b = keeperToken("tok-b"), c = keeperToken("tok-c");
+    await seedKeepers(db, [a, b, c]);
+    const ka = await resolveCredential(db, a) as Actor & { keeperId: string };
+    const kb = await resolveCredential(db, b) as Actor & { keeperId: string };
+    const kc = await resolveCredential(db, c) as Actor & { keeperId: string };
+
+    let release!: () => void;
+    const parked = new Promise<void>((r) => { release = r; });
+    const first = removeKeeper(db, ka, kc.keeperId, { afterAuth: () => parked });
+    await removeKeeper(db, kb, ka.keeperId);      // B revokes A while A's own removal is parked
+    release();
+
+    await expect(first).rejects.toMatchObject({ code: "invalid_token" });
+    expect((await resolveCredential(db, c)).kind).toBe("keeper");
+    expect((await listKeepers(db, kb)).map((k) => k.id).sort()).toEqual([kb.keeperId, kc.keeperId].sort());
   });
 
   it("ignores tokens that are not 43-char base64url", async () => {

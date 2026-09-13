@@ -61,7 +61,16 @@ export async function removeKeeper(db: Db, actor: Actor, id: string, opts: Remov
   // count is then read under that lock.
   await db.transaction(async (tx) => {
     const all = await tx.select({ id: keepers.id }).from(keepers).for("update");
+    // The pre-transaction freshness check can be stale by the time the lock is granted: with three
+    // or more keepers the counts stay healthy, so a keeper revoked while its own removal waited for
+    // the lock would otherwise still commit it. The locked rows are the authoritative keeper set,
+    // so the actor's own row is re-checked against them and a revoked actor gets the same
+    // `invalid_token` the pre-transaction check raises.
+    if (actor.kind === "keeper" && !all.some((k) => k.id === actor.keeperId)) throw errors.invalidToken();
     if (!all.some((k) => k.id === id)) throw errors.validation("No such keeper");
+    // Kept as an explicit invariant. With the actor re-check above it is unreachable — actor and
+    // target are both in `all` and differ, so `all` holds at least two — but it is the guard that
+    // states the rule, and it is what catches an emptied store if the self-check is ever relaxed.
     if (all.length <= 1) throw errors.validation("Cannot remove the last keeper");
     await tx.delete(keepers).where(eq(keepers.id, id));
   });
