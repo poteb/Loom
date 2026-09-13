@@ -47,9 +47,15 @@ export class ConfigStore {
    * A lock is taken over only when its owner process is gone; a live owner is waited for however
    * long its lock has been sitting there, because "old" and "abandoned" are not the same thing —
    * a suspended process wakes up and finishes its write. The lease is re-checked just before the
-   * config is written, so a writer that did lose it (to a takeover of an unparsable lock, or to an
-   * older version of this code) never saves its stale snapshot over its successor's, and never
-   * removes a lock that is no longer its own; it retries the whole update instead.
+   * config is written, so a writer that lost it — to a takeover of an unparsable lock, to an older
+   * version of this code, or to a reclaimer that checked a dead owner and only then unlinked, by
+   * which time the lock was its successor's — retries the whole update rather than saving its
+   * stale snapshot, and releases only a lock still holding its own token.
+   *
+   * That narrows the window; it does not close it. The check and the write are two operations, as
+   * are the dead-owner check and the unlink that reclaims a lock, so a writer descheduled between
+   * a pair of them can still act on an observation that has gone stale. Closing it needs a
+   * compare-and-swap on the config file itself, the way the channel's `ChannelState` commits.
    *
    * `mutate` therefore runs again on a retry, against the fresh on-disk config: it must be a pure
    * function of the config it is handed.
