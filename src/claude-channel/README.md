@@ -94,3 +94,20 @@ instructions.
 Per-session preferences live beside that session's delivery cursor, so they are pruned with it after
 30 days idle (see State above): a session resumed after that starts from the defaults (`wake: "all"`,
 `invites: true`).
+
+### Guidelines
+
+Loom carries two layers of keeper-written rules: the instance's (set by an instance keeper with
+`loom admin settings --set guidelines=…`) and each Weave's (`set_weave_guidelines`, Weave keepers).
+
+- **At startup** the channel fetches the instance text once, under a **2 s deadline covering the
+  whole request**, and appends it to the MCP instructions under `## Loom guidelines`. A Loom that is
+  down, refusing connections or accepting the socket and never answering therefore costs at most
+  that deadline: the mechanics text is sent alone, one line lands on stderr, and there is no retry —
+  the text reaches the session through the first `join_weave`/`get_weave` result, `list_joined`, or
+  the per-Weave preamble instead.
+- **`list_joined`** returns `guidelines` per Weave (`null` plus `guidelinesError` when that one
+  Weave's fetch fails; the rest of the listing still comes back).
+- **Resources**: `loom://guidelines` is the instance text, `loom://weaves/<weaveId>/guidelines` the
+  combined text for a Weave, read with the token the channel stored when it joined — a Weave this
+  machine has not joined is refused with `forbidden`.

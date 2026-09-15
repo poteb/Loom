@@ -101,6 +101,22 @@ describe("ClientToolBackend.joinWeave", () => {
     expect(onJoined).toHaveBeenCalledWith(WEAVE_ID, stored); // re-arms the stream
   });
 
+  it("carries the Weave's current combined guidelines on the reused identity", async () => {
+    const state = makeState();
+    await state.upsertWeave(WEAVE_ID, { title: "Design review", token: "stored-token", participantId: "p9", participantName: "Claude", generalThreadId: "g1", wake: "all", lastSeq: 7 });
+    const combined = "## Loom guidelines\nbe terse\n\n## Guidelines for this Weave\none finding per message";
+    const { client } = makeFakeClient({
+      getWeave: async () => ({ ...weaveInfo(), participants: [{ ...participant("Claude"), id: "p9" }], guidelines: combined }),
+    });
+    const backend = new ClientToolBackend(client, state, { onJoined: vi.fn() });
+
+    const r = await backend.joinWeave(SECRET, { name: "Claude", kind: "agent" }) as { alreadyJoined?: boolean; guidelines: string };
+
+    // reuseStored builds its own join response; the rules an agent must read cannot go missing on
+    // the very path a restored session takes.
+    expect(r).toMatchObject({ alreadyJoined: true, guidelines: combined });
+  });
+
   it("matches the stored name the way the server does: case-insensitively and trimmed", async () => {
     const state = makeState();
     await state.upsertWeave(WEAVE_ID, { title: "Design review", token: "stored-token", participantId: "p9", participantName: "Claude", generalThreadId: "g1", wake: "all", lastSeq: 7 });

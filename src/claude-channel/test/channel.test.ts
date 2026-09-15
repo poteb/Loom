@@ -1,12 +1,16 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { startTestServer, type TestServer } from "../../server/test/helpers.js";
+import { DEFAULT_INSTANCE_GUIDELINES, INSTANCE_HEADING, WEAVE_HEADING } from "@loom/core";
+import { api, keeperToken, startTestServer, type TestServer } from "../../server/test/helpers.js";
 
 let s: TestServer | undefined;
 beforeAll(async () => { s = await startTestServer(); });
@@ -60,9 +64,40 @@ describe("channel tools", () => {
       expect(caps?.experimental).toHaveProperty("claude/channel");
       const { tools } = await c.listTools();
       const names = tools.map((t) => t.name);
-      for (const n of ["create_weave", "join_weave", "post_message", "read_events", "leave_weave", "set_wake", "list_joined"]) expect(names).toContain(n);
+      for (const n of ["create_weave", "join_weave", "post_message", "read_events", "leave_weave", "set_wake", "list_joined", "set_weave_guidelines"]) expect(names).toContain(n);
       expect(c.getInstructions()).toMatch(/<channel source="loom"/);
     });
+  });
+
+  it("serves the instance guidelines it fetched at startup as part of its instructions", async () => {
+    const instance = (await api(s!.baseUrl, "GET", "/api/guidelines")).json.guidelines as string;
+    expect(instance).toBe(DEFAULT_INSTANCE_GUIDELINES);
+    await withChannel(stateDir, async (c) => {
+      const text = c.getInstructions() ?? "";
+      expect(text).toContain(`${INSTANCE_HEADING}\n${instance}`);
+      expect(text).toMatch(/<channel source="loom"/);          // the mechanics text is still there
+      expect(text).toContain("weave.guidelines_changed");
+      expect(text).toContain('preamble="guidelines"');
+    });
+  });
+
+  it("starts within the deadline and serves the mechanics text alone when the instance endpoint stalls", async () => {
+    const stalled: Server = createServer(() => { /* socket accepted, request never answered */ });
+    await new Promise<void>((r) => stalled.listen(0, "127.0.0.1", () => r()));
+    const url = `http://127.0.0.1:${(stalled.address() as AddressInfo).port}`;
+    try {
+      const t0 = Date.now();
+      await withChannel(stateDir, async (c, getStderr) => {
+        const elapsed = Date.now() - t0;
+        expect(c.getInstructions()).not.toContain(INSTANCE_HEADING);
+        expect(c.getInstructions()).toMatch(/<channel source="loom"/);
+        await waitFor(() => /instance guidelines not fetched/.test(getStderr()));
+        expect(elapsed).toBeLessThan(5000);
+      }, { LOOM_URL: url });
+    } finally {
+      stalled.closeAllConnections();
+      await new Promise<void>((r) => stalled.close(() => r()));
+    }
   });
 
   it("create_weave and join_weave persist the token; leave_weave forgets it", async () => {
@@ -420,5 +455,68 @@ describe("subprocess stderr redaction", () => {
     } finally {
       await client.close();
     }
+  });
+});
+
+describe("guidelines over the channel", () => {
+  it("set_weave_guidelines takes the stored credential, and both joined Weaves' guidelines resources read", async () => {
+    await withChannel(stateDir, async (c) => {
+      const instance = (await api(s!.baseUrl, "GET", "/api/guidelines")).json.guidelines as string;
+      const a = json(await c.callTool({ name: "create_weave", arguments: { title: "A", opener: "o", name: "Claude" } }));
+      const b = json(await c.callTool({ name: "create_weave", arguments: { title: "B", opener: "o", name: "Claude", guidelines: "B rules" } }));
+
+      const set = await c.callTool({ name: "set_weave_guidelines", arguments: { credential: "stored", weaveId: a.weave.id, guidelines: "A rules" } });
+      expect(set.isError).toBeFalsy();
+      expect(json(set)).toMatchObject({ weave: { id: a.weave.id, guidelines: "A rules" }, seq: expect.any(Number) });
+
+      const textOf = async (id: string) => ((await c.readResource({ uri: `loom://weaves/${id}/guidelines` })).contents[0] as { text: string }).text;
+      const ta = await textOf(a.weave.id);
+      expect(ta).toContain(`${INSTANCE_HEADING}\n${instance}`);
+      expect(ta).toContain(`${WEAVE_HEADING}\nA rules`);
+      expect(await textOf(b.weave.id)).toContain(`${WEAVE_HEADING}\nB rules`);
+
+      // A Weave this channel never joined has no stored token to read it with.
+      await expect(c.readResource({ uri: `loom://weaves/${randomUUID()}/guidelines` })).rejects.toThrow(/forbidden/);
+
+      const instanceRes = ((await c.readResource({ uri: "loom://guidelines" })).contents[0] as { text: string }).text;
+      expect(instanceRes).toBe(instance);
+    });
+  });
+
+  it("list_joined carries each Weave's combined guidelines", async () => {
+    await withChannel(stateDir, async (c) => {
+      const a = json(await c.callTool({ name: "create_weave", arguments: { title: "A", opener: "o", name: "Claude", guidelines: "A rules" } }));
+      const listed = json(await c.callTool({ name: "list_joined", arguments: {} })) as { weaveId: string; guidelines: string }[];
+      const mine = listed.find((w) => w.weaveId === a.weave.id)!;
+      expect(mine.guidelines).toContain(`${WEAVE_HEADING}\nA rules`);
+      expect(mine.guidelines).toContain(INSTANCE_HEADING);
+    });
+  });
+
+  it("a repeat join_weave returns the stored identity carrying the guidelines as they stand now", async () => {
+    await s!.core.seedKeepers([keeperToken("k1")]);
+    const keeper = keeperToken("k1");
+    await withChannel(stateDir, async (c) => {
+      const created = json(await c.callTool({ name: "create_weave", arguments: { title: "G", opener: "o", name: "Claude" } }));
+      try {
+        await c.callTool({ name: "set_weave_guidelines", arguments: { credential: "stored", weaveId: created.weave.id, guidelines: "Weave: one finding per message." } });
+        const patched = await c.callTool({ name: "keeper_set_settings", arguments: { credential: keeper, patch: { guidelines: "Instance: be terse." } } });
+        expect(patched.isError).toBeFalsy();
+
+        const again = json(await c.callTool({ name: "join_weave", arguments: { secret: created.secret, name: "Claude" } }));
+        expect(again.alreadyJoined).toBe(true);
+        expect(again.guidelines).toContain("Instance: be terse.");
+        expect(again.guidelines).toContain("Weave: one finding per message.");
+
+        await c.callTool({ name: "set_weave_guidelines", arguments: { credential: "stored", weaveId: created.weave.id, guidelines: "" } });
+        await c.callTool({ name: "keeper_set_settings", arguments: { credential: keeper, patch: { guidelines: "" } } });
+        const cleared = json(await c.callTool({ name: "join_weave", arguments: { secret: created.secret, name: "Claude" } }));
+        expect(cleared.alreadyJoined).toBe(true);
+        expect(cleared.guidelines).toBe("");
+      } finally {
+        // Later files (and a re-run of this one) expect the shipped default on this instance.
+        await c.callTool({ name: "keeper_set_settings", arguments: { credential: keeper, patch: { guidelines: DEFAULT_INSTANCE_GUIDELINES } } });
+      }
+    });
   });
 });

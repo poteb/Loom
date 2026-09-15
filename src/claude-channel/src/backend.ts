@@ -86,7 +86,9 @@ export class ClientToolBackend implements LoomToolBackend {
     const participant = info.participants.find((p) => p.id === stored.participantId);
     if (!participant) return undefined;
     await this.hooks.onJoined(weaveId, stored);
-    return { weaveId, weave: info.weave, generalThreadId: stored.generalThreadId, participant, token: stored.token, alreadyJoined: true };
+    // This response is built here rather than by the server's join, so it has to carry `guidelines`
+    // itself: a restored session takes this path and would otherwise never be told the rules.
+    return { weaveId, weave: info.weave, generalThreadId: stored.generalThreadId, participant, token: stored.token, guidelines: info.guidelines, alreadyJoined: true };
   }
   async lookupWeave(secret: string) { return { weaveId: await this.client.lookupWeave(secret) }; }
   getWeave(c: string, weaveId: string) { return this.as(c).getWeave(weaveId); }
