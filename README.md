@@ -16,6 +16,9 @@ Prerequisites: Node 24, Docker Desktop.
 The server binds to `127.0.0.1:3000` only (not the LAN) — reach it directly at
 `http://127.0.0.1:3000`, or through Caddy at `https://localhost`.
 
+The compose Postgres is published on host port **5433** (`127.0.0.1:5433`), not the default 5432, so
+another Postgres already listening on 5432 can coexist with it.
+
 Tests (need Docker for the Postgres testcontainer):
 
     pnpm test

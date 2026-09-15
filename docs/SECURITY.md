@@ -82,7 +82,7 @@ for the `prod` profile; a `caddy-dev` reverse proxy for local work).
 **Binding.** `LOOM_HOST` defaults to `127.0.0.1` ([`loadConfig`](../src/server/src/config.ts)) so a
 host-run dev server is not exposed on the LAN. The image sets `LOOM_HOST=0.0.0.0`
 ([Dockerfile](../src/server/Dockerfile)), justified in its comment by compose not publishing port
-3000 — only Caddy's 80/443 are published (Postgres is published on `127.0.0.1:5432`).
+3000 — only Caddy's 80/443 are published (Postgres is published on `127.0.0.1:5433`).
 
 **Client-side scheme policy.** The shared client refuses anything but `https`, except `http` on
 `localhost` / `127.0.0.1` / `[::1]` when `LOOM_ALLOW_INSECURE=1`
@@ -266,7 +266,7 @@ presented as safe.
 10. **`openWeaveCreation` defaults to `true`** (settings table), so a publicly reachable instance
     accepts anonymous Weave creation until a keeper turns it off.
 11. **The compose Postgres uses the development credentials `loom` / `loom`** and publishes
-    `127.0.0.1:5432`; the `prod` profile inherits them.
+    `127.0.0.1:5433`; the `prod` profile inherits them.
 
 ## 10. Reporting
 

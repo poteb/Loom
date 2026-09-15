@@ -9,7 +9,7 @@ if not exist .env (
 )
 rem Load KEY=VALUE lines from .env into this process; lines starting with # are comments.
 for /f "usebackq eol=# tokens=1* delims==" %%A in (".env") do set "%%A=%%B"
-if not defined DATABASE_URL set "DATABASE_URL=postgres://loom:loom@localhost:5432/loom"
+if not defined DATABASE_URL set "DATABASE_URL=postgres://loom:loom@localhost:5433/loom"
 docker compose --profile dev up -d postgres caddy-dev
 if errorlevel 1 exit /b %errorlevel%
 echo waiting for postgres...
