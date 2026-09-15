@@ -363,6 +363,71 @@ describe("v2: thread url, invite, inbox, agents", () => {
     const after = await run(["post", "--weave", created.weave.id, "again", "--json"], { LOOM_CONFIG: emptyCfg, LOOM_AGENT_KEY: add.json().key });
     expect(after.code).toBe(1); expect(JSON.parse(after.err).code).toBe("invalid_token");
   });
+
+  // The id and the key are both opaque 40-odd-character strings, and the 2026-09-15 dogfood pasted
+  // the id into the connector URL. Each line now says what the value is for, and the URL — the only
+  // thing that goes into the MCP client — carries the key.
+  it("admin agents add labels the URL, the key and the id", async () => {
+    const K = { LOOM_KEEPER_TOKEN: keeperToken("k1") };
+    const add = await run(["admin", "agents", "add", "Labelled"], K);
+    expect(add.code).toBe(0);
+    const j = await run(["admin", "agents", "list", "--json"], K);
+    const agent = j.json().agents.find((a: { name: string }) => a.name === "Labelled");
+    const urlLine = add.out.split("\n").find((l) => l.includes("connector URL"))!;
+    const keyLine = add.out.split("\n").find((l) => l.trimStart().startsWith("key ("))!;
+    const idLine = add.out.split("\n").find((l) => l.trimStart().startsWith("id ("))!;
+    expect(add.out).toContain('Added agent "Labelled"');
+    expect(urlLine).toContain("copy this into the MCP client");
+    expect(urlLine).toContain(`${s.baseUrl}/mcp?agent=`);
+    expect(urlLine).not.toContain(agent.id);            // the id must never end up in the connector URL
+    expect(keyLine).toContain("shown once");
+    expect(idLine).toContain("revoke");
+    expect(idLine).toContain(agent.id);
+    // The key is the value in the URL, and the same value the key line prints.
+    const key = urlLine.slice(urlLine.indexOf("?agent=") + "?agent=".length).trim();
+    expect(key).toHaveLength(43);
+    expect(keyLine).toContain(key);
+    // --json is the machine contract: unchanged shape.
+    const j2 = await run(["admin", "agents", "add", "Jsonly", "--json"], K);
+    expect(Object.keys(j2.json()).sort()).toEqual(["agent", "key"]);
+    expect(j2.json().key).toHaveLength(43);
+    // list leads with the name, then the id.
+    const list = await run(["admin", "agents", "list"], K);
+    const row = list.out.split("\n").find((l) => l.startsWith("Jsonly"))!;
+    expect(row).toBe(`Jsonly  ${j2.json().agent.id}`);
+  });
+
+  it("admin agents revoke accepts a name when it is unambiguous", async () => {
+    const K = { LOOM_KEEPER_TOKEN: keeperToken("k1") };
+    const solo = await run(["admin", "agents", "add", "Solo", "--json"], K);
+    const byName = await run(["admin", "agents", "revoke", "Solo", "--json"], K);
+    expect(byName.code).toBe(0);
+    expect(byName.json()).toEqual({ ok: true, id: solo.json().agent.id });
+    const list = await run(["admin", "agents", "list"], K);
+    expect(list.out.split("\n").find((l) => l.startsWith("Solo"))).toContain("[revoked]");
+    // A revoked agent no longer answers to its name.
+    const again = await run(["admin", "agents", "revoke", "Solo", "--json"], K);
+    expect(again.code).toBe(1);
+    expect(JSON.parse(again.err).message).toContain("Solo");
+    // An unknown name is a lookup failure, not a request the server ever sees.
+    const missing = await run(["admin", "agents", "revoke", "Nobody", "--json"], K);
+    expect(missing.code).toBe(1);
+    expect(JSON.parse(missing.err).message).toContain('no agent named "Nobody"');
+  });
+
+  it("admin agents revoke refuses an ambiguous name and lists the ids", async () => {
+    const K = { LOOM_KEEPER_TOKEN: keeperToken("k1") };
+    const a = await run(["admin", "agents", "add", "Twin", "--json"], K);
+    const b = await run(["admin", "agents", "add", "Twin", "--json"], K);
+    const amb = await run(["admin", "agents", "revoke", "Twin", "--json"], K);
+    expect(amb.code).toBe(2);
+    const message = JSON.parse(amb.err).message;
+    expect(message).toContain(a.json().agent.id);
+    expect(message).toContain(b.json().agent.id);
+    // Nothing was revoked: the ids still work one at a time.
+    expect((await run(["admin", "agents", "revoke", a.json().agent.id, "--json"], K)).code).toBe(0);
+    expect((await run(["admin", "agents", "revoke", "Twin", "--json"], K)).code).toBe(0);   // now unambiguous
+  });
 });
 
 describe("global --url vs. the thread artefact --url", () => {

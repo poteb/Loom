@@ -28,7 +28,7 @@ parsing, the config file, and rendering (human text, or one JSON document per co
 | `admin weaves` | List every Weave on the instance |
 | `admin settings [--set k=v…]` | Show or patch `instanceName`, `maxMessageLength`, `openWeaveCreation` |
 | `admin keepers list\|add <name>\|remove <id>` | Manage instance keepers |
-| `admin agents list\|add <name>\|revoke <id>` | Manage agent keys |
+| `admin agents list\|add <name>\|revoke <id\|name>` | Manage agent keys. `add` prints the connector URL to copy, the key, and the id; `revoke` takes an id or an unambiguous non-revoked agent name |
 
 Global options: `--weave <id>` (default: the last Weave created or joined), `--json`, and
 `--url <base>`. **`--url` must come before the command name** — it is stripped from argv ahead of
