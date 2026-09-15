@@ -4,16 +4,19 @@ import type { Db } from "./db/index.js";
 import { settings } from "./db/schema.js";
 import { errors } from "./errors.js";
 import { assertInstanceKeeperFresh } from "./actors.js";
+import { validateGuidelines } from "./guidelines.js";
 import type { Actor, Settings } from "./types.js";
 
 const patchSchema = z.object({
   instanceName: z.string().trim().min(1).max(64).optional(),
   maxMessageLength: z.number().int().min(1).max(1_000_000).optional(),
   openWeaveCreation: z.boolean().optional(),
+  guidelines: z.string().transform(validateGuidelines).optional(),
 }).strict();
 
 function toSettings(r: typeof settings.$inferSelect): Settings {
-  return { instanceName: r.instanceName, maxMessageLength: r.maxMessageLength, openWeaveCreation: r.openWeaveCreation };
+  return { instanceName: r.instanceName, maxMessageLength: r.maxMessageLength, openWeaveCreation: r.openWeaveCreation,
+    guidelines: r.guidelines };
 }
 
 export async function getSettings(db: Db): Promise<Settings> {

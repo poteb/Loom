@@ -23,7 +23,8 @@ export type JoinResult = {
 
 export function toPublicWeave(w: typeof weaves.$inferSelect): PublicWeave {
   return { id: w.id, title: w.title, createdAt: w.createdAt.toISOString(),
-    archivedAt: w.archivedAt ? w.archivedAt.toISOString() : null, lastSeq: w.lastSeq };
+    archivedAt: w.archivedAt ? w.archivedAt.toISOString() : null, lastSeq: w.lastSeq,
+    guidelines: w.guidelines };
 }
 export function toPublicThread(t: typeof threads.$inferSelect): PublicThread {
   return { id: t.id, weaveId: t.weaveId, name: t.name, isGeneral: t.isGeneral, createdBy: t.createdBy,
