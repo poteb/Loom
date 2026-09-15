@@ -1,4 +1,4 @@
-import { InvalidArgumentError, type Command } from "commander";
+import type { Command } from "commander";
 import type { LoomClient, Settings } from "@loom/client";
 import { CliError, type CliContext } from "../context.js";
 import { emit } from "../output.js";
@@ -14,9 +14,10 @@ async function resolveAgentIdByName(k: LoomClient, name: string): Promise<string
   const matches = (await k.admin.listAgents()).filter((a) => a.revokedAt === null && a.name === name);
   if (matches.length === 1) return matches[0]!.id;
   if (matches.length === 0) throw new CliError("validation", `no agent named "${name}" (or it is already revoked); see 'loom admin agents list'`);
-  // InvalidArgumentError, not CliError: the argument itself cannot identify one agent, which is the
-  // usage error commander turns into exit 2 (see cli.ts).
-  throw new InvalidArgumentError(`several agents are named "${name}"; revoke one by id: ${matches.map((a) => a.id).join(", ")}`);
+  // Exit 2, not 1: the argument itself cannot identify one agent, which is a usage error. It stays
+  // a CliError so the CLI's own error path prints it in human mode as well — commander renders only
+  // what it throws while parsing, so an InvalidArgumentError raised here would exit 2 in silence.
+  throw new CliError("validation", `several agents are named "${name}"; revoke one by id: ${matches.map((a) => a.id).join(", ")}`, { exitCode: 2 });
 }
 
 /** Left-aligns the values of a labelled block so the reader can tell the three opaque strings apart. */

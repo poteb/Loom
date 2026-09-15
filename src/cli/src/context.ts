@@ -4,8 +4,20 @@ import { ConfigStore, type CliConfig, type WeaveEntry } from "./config.js";
 export type CliIo = { stdout: { write(s: string): unknown }; stderr: { write(s: string): unknown }; env: NodeJS.ProcessEnv };
 export type GlobalOpts = { url?: string; weave?: string; json?: boolean };
 
+/**
+ * A CLI-level failure carrying both the `{ code, message }` shape the CLI prints and the process
+ * exit code it should produce. It defaults to 1 (a runtime error); pass `exitCode: 2` when the
+ * argument the user typed is itself the problem, so the usage-error convention in
+ * `src/cli/README.md` holds without the diagnostic having to travel through commander — commander
+ * renders only the errors it throws itself while parsing, never one thrown from an action.
+ */
 export class CliError extends Error {
-  constructor(public readonly code: string, message: string) { super(message); this.name = "CliError"; }
+  readonly exitCode: number;
+  constructor(public readonly code: string, message: string, opts: { exitCode?: number } = {}) {
+    super(message);
+    this.name = "CliError";
+    this.exitCode = opts.exitCode ?? 1;
+  }
 }
 
 export type CliContext = {

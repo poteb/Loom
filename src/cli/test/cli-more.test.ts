@@ -428,6 +428,24 @@ describe("v2: thread url, invite, inbox, agents", () => {
     expect((await run(["admin", "agents", "revoke", a.json().agent.id, "--json"], K)).code).toBe(0);
     expect((await run(["admin", "agents", "revoke", "Twin", "--json"], K)).code).toBe(0);   // now unambiguous
   });
+
+  it("admin agents revoke explains an ambiguous name in human mode too", async () => {
+    // The 2026-09-15 review found this exiting 2 with both streams empty: the diagnostic only
+    // existed in --json mode, so a human was told nothing at all.
+    const K = { LOOM_KEEPER_TOKEN: keeperToken("k1") };
+    const a = await run(["admin", "agents", "add", "Double", "--json"], K);
+    const b = await run(["admin", "agents", "add", "Double", "--json"], K);
+    const amb = await run(["admin", "agents", "revoke", "Double"], K);
+    expect(amb.code).toBe(2);
+    expect(amb.out).toBe("");
+    expect(amb.err).toContain('several agents are named "Double"');
+    expect(amb.err).toContain(a.json().agent.id);
+    expect(amb.err).toContain(b.json().agent.id);
+    // Neither of them was revoked by the attempt.
+    const rows = (await run(["admin", "agents", "list"], K)).out.split("\n").filter((l) => l.startsWith("Double"));
+    expect(rows).toHaveLength(2);
+    expect(rows.filter((l) => l.includes("[revoked]"))).toEqual([]);
+  });
 });
 
 describe("global --url vs. the thread artefact --url", () => {
