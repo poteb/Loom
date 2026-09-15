@@ -27,6 +27,11 @@ export function formatEvent(e: LoomEvent, weave: { id: string; title: string }, 
     }
     case "thread.url_changed": content = e.payload.url ? `Thread "${threadName}" now links to ${String(e.payload.url)}` : `Thread "${threadName}" no longer links to an artefact`; break;
     case "weave.archived": content = `Weave archived by ${actor.name}`; break;
+    case "weave.guidelines_changed": {
+      const text = String(e.payload.guidelines ?? "");
+      content = text ? text : `Guidelines cleared by ${actor.name}`;
+      break;
+    }
     default: content = e.type;
   }
   const meta: Record<string, string> = {
@@ -41,9 +46,20 @@ export function formatEvent(e: LoomEvent, weave: { id: string; title: string }, 
 
 export function shouldWake(e: LoomEvent, w: { participantId: string; wake: Wake; invites: boolean }): boolean {
   if (e.actor === w.participantId) return false;
+  // A rules change concerns every participant, so it wakes regardless of the wake mode — like an
+  // invite addressed to this session, except that there is nothing to opt out of.
+  if (e.type === "weave.guidelines_changed") return true;
   if (e.type === "thread.invited" && e.payload.participantId === w.participantId) return w.invites;
   if (w.wake === "all") return true;
   if (e.type !== "message") return false;
   const mentions = Array.isArray(e.payload.mentions) ? (e.payload.mentions as string[]) : [];
   return mentions.includes(w.participantId);
+}
+
+/** Folds the current guidelines into the first woken notification for a Weave in this session: one
+ *  turn carrying rules and event together, so the agent never wakes with rules and nothing to act on
+ *  (two awaited sends would prove transport order, not one agent turn). No guidelines, no change. */
+export function withPreamble(n: { content: string; meta: Record<string, string> }, guidelines: string): { content: string; meta: Record<string, string> } {
+  if (!guidelines) return n;
+  return { content: `${guidelines}\n\n---\n\n${n.content}`, meta: { ...n.meta, preamble: "guidelines" } };
 }

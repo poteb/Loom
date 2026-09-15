@@ -210,6 +210,13 @@ function collectNotifications(c: Client): { content: string; meta: Record<string
   c.setNotificationHandler(ChannelNotification, (n) => { got.push(n.params); });
   return got;
 }
+/** The event text alone: the first turn a channel process delivers for a Weave carries the
+ * guidelines preamble ahead of it, which the tests below are not about. */
+function body(n: { content: string; meta: Record<string, string> }): string {
+  if (n.meta.preamble !== "guidelines") return n.content;
+  const sep = "\n\n---\n\n";
+  return n.content.slice(n.content.indexOf(sep) + sep.length);
+}
 function waitFor(pred: () => boolean, ms = 8000): Promise<void> {
   return new Promise((resolve, reject) => {
     const t0 = Date.now();
@@ -273,7 +280,7 @@ describe("channel streaming", () => {
     await withChannel(stateDir, async (c2) => {
       const got2 = collectNotifications(c2);
       await waitFor(() => got2.length >= 1);
-      expect(got2.map((g) => g.content)).toEqual(["two"]);
+      expect(got2.map(body)).toEqual(["two"]);
       await s!.core.postMessage(gptActor, created.generalThread.id, "three");
       await waitFor(() => got2.length >= 2);
       expect(got2[1]!.content).toBe("three");
@@ -290,23 +297,23 @@ describe("channel streaming", () => {
       const gpt = await s!.core.joinWeave(created.secret, { name: "ChatGPT", kind: "agent" });
       gptActor = await s!.core.resolveCredential(gpt.token);
       await s!.core.postMessage(gptActor, created.generalThread.id, "one");
-      await waitFor(() => got.some((g) => g.content === "one"));
+      await waitFor(() => got.some((g) => body(g) === "one"));
     }, A);
     await s!.core.postMessage(gptActor, created.generalThread.id, "two"); // while A is down
     await withChannel(stateDir, async (c) => {
       const got = collectNotifications(c);
-      await waitFor(() => got.some((g) => g.content === "two")); // B (a different session) consumes it
+      await waitFor(() => got.some((g) => body(g) === "two")); // B (a different session) consumes it
     }, { CLAUDE_CODE_SESSION_ID: "session-B" });
     await withChannel(stateDir, async (c) => {
       const got = collectNotifications(c);
-      await waitFor(() => got.some((g) => g.content === "two")); // A resumed: still gets "two"
-      expect(got.map((g) => g.content)).toEqual(["two"]);
+      await waitFor(() => got.some((g) => body(g) === "two")); // A resumed: still gets "two"
+      expect(got.map(body)).toEqual(["two"]);
     }, A);
     await withChannel(stateDir, async (c) => {
       const got = collectNotifications(c);
       await s!.core.postMessage(gptActor, created.generalThread.id, "three");
-      await waitFor(() => got.some((g) => g.content === "three"));
-      expect(got.map((g) => g.content)).toEqual(["three"]); // fresh session: no replay of "two"
+      await waitFor(() => got.some((g) => body(g) === "three"));
+      expect(got.map(body)).toEqual(["three"]); // fresh session: no replay of "two"
     }, { CLAUDE_CODE_SESSION_ID: "session-C" });
   });
 
@@ -351,7 +358,7 @@ describe("channel streaming", () => {
       send({ jsonrpc: "2.0", method: "notifications/initialized" });
       await waitFor(() => lines.some((l) => l.method === "notifications/claude/channel"));
       const n = lines.find((l) => l.method === "notifications/claude/channel") as { params: { content: string } };
-      expect(n.params.content).toBe("offline");
+      expect(n.params.content.endsWith("offline")).toBe(true);   // behind this session's guidelines preamble
       await waitFor(() => seqBefore() > saved);
     } finally {
       child.kill();
@@ -445,7 +452,7 @@ describe("subprocess stderr redaction", () => {
       // out a swallowed timeout: a silent channel would otherwise pass this test vacuously.
       // (The client's own stream reconnects forever on a network error, so the diagnostic that is
       // guaranteed here is the startup name fetch; both startup failure lines name the weave.)
-      await waitFor(() => /loom channel: (?:initial name fetch failed|stream start failed) for weave w1/.test(stderr), 10_000);
+      await waitFor(() => /loom channel: (?:initial metadata fetch failed|stream start failed) for weave w1/.test(stderr), 10_000);
       // A little extra margin past the first log line, in case more diagnostics land shortly after.
       await new Promise((r) => setTimeout(r, 500));
 
@@ -518,5 +525,41 @@ describe("guidelines over the channel", () => {
         await c.callTool({ name: "keeper_set_settings", arguments: { credential: keeper, patch: { guidelines: DEFAULT_INSTANCE_GUIDELINES } } });
       }
     });
+  });
+
+  it("a restored session whose cursor is already current still gets the guidelines, folded into its first event", async () => {
+    let created!: { secret: string; weave: { id: string }; generalThread: { id: string } };
+    let gptActor!: Awaited<ReturnType<TestServer["core"]["resolveCredential"]>>;
+    const SESSION = { CLAUDE_CODE_SESSION_ID: "session-preamble" };
+    // Session A consumes everything there is, so its cursor sits at the latest seq: a restart of it
+    // will replay nothing at all — not the weave.guidelines_changed the Weave was created with, and
+    // not the rules themselves.
+    await withChannel(stateDir, async (a) => {
+      const got = collectNotifications(a);
+      created = json(await a.callTool({ name: "create_weave", arguments: { title: "G", opener: "o", name: "Claude", guidelines: "one finding per message" } }));
+      const gpt = await s!.core.joinWeave(created.secret, { name: "ChatGPT", kind: "agent" });
+      gptActor = await s!.core.resolveCredential(gpt.token);
+      await s!.core.postMessage(gptActor, created.generalThread.id, "one");
+      await waitFor(() => got.some((g) => body(g) === "one"));
+      await waitFor(() => {
+        const st = readState(stateDir);
+        return st.sessions[SESSION.CLAUDE_CODE_SESSION_ID]?.cursors[created.weave.id] === st.weaves[created.weave.id].lastSeq;
+      });
+    }, SESSION);
+
+    await withChannel(stateDir, async (b) => {
+      const got = collectNotifications(b);
+      await s!.core.postMessage(gptActor, created.generalThread.id, "two");
+      await waitFor(() => got.length >= 1);
+      expect(got[0]!.meta).toMatchObject({ preamble: "guidelines", type: "message", weave: created.weave.id });
+      expect(got[0]!.content).toContain(INSTANCE_HEADING);
+      expect(got[0]!.content).toContain(`${WEAVE_HEADING}\none finding per message`);
+      expect(got[0]!.content.endsWith("\n\n---\n\ntwo")).toBe(true);   // one turn: the rules and the event
+
+      await s!.core.postMessage(gptActor, created.generalThread.id, "three");
+      await waitFor(() => got.length >= 2);
+      expect(got[1]!.content).toBe("three");
+      expect(got[1]!.meta.preamble).toBeUndefined();
+    }, SESSION);
   });
 });

@@ -21,7 +21,8 @@ async function makeState(w: JoinedWeave, sessionId = "s1"): Promise<ChannelState
   return st;
 }
 
-function weaveInfo(extraThreads: Thread[] = []): WeaveInfo {
+/** `guidelines` is the combined text the client reports for the Weave (instance layer + Weave layer). */
+function weaveInfo(extraThreads: Thread[] = [], guidelines = ""): WeaveInfo {
   return {
     weave: { id: WEAVE_ID, title: "T", createdAt: "", archivedAt: null, lastSeq: 0, guidelines: "" },
     threads: [
@@ -30,7 +31,7 @@ function weaveInfo(extraThreads: Thread[] = []): WeaveInfo {
       ...extraThreads,
     ],
     participants: [{ id: "p1", weaveId: WEAVE_ID, name: "Claude", kind: "agent" as const, role: "member" as const, joinedAt: "", agentId: null }],
-    guidelines: "",
+    guidelines,
   };
 }
 
@@ -40,18 +41,26 @@ function event(seq: number, over: Partial<LoomEvent> = {}): LoomEvent {
 
 type Captured = { weaveId: string; opts: StreamOptions; close: ReturnType<typeof vi.fn> };
 
-function makeFakeClient(): { client: LoomClient; streams: Captured[] } {
+/** `guidelines` is read on every getWeave, so a test can change what the metadata says mid-run;
+ * `failTimes` rejects that many leading getWeave calls, standing in for a Loom that is down. */
+function makeFakeClient(opts: { guidelines?: () => string; failTimes?: number } = {}): { client: LoomClient; streams: Captured[]; getWeaveCalls: () => number } {
   const streams: Captured[] = [];
+  let calls = 0;
+  let failsLeft = opts.failTimes ?? 0;
   const fake = {
     withToken: () => fake,
-    getWeave: async () => weaveInfo(),
-    stream: (weaveId: string, opts: StreamOptions): StreamHandle => {
+    getWeave: async () => {
+      calls += 1;
+      if (failsLeft > 0) { failsLeft -= 1; throw new Error("metadata down"); }
+      return weaveInfo([], opts.guidelines?.() ?? "");
+    },
+    stream: (weaveId: string, opts2: StreamOptions): StreamHandle => {
       const close = vi.fn();
-      streams.push({ weaveId, opts, close });
-      return { close, get lastSeq() { return opts.since ?? 0; } };
+      streams.push({ weaveId, opts: opts2, close });
+      return { close, get lastSeq() { return opts2.since ?? 0; } };
     },
   };
-  return { client: fake as unknown as LoomClient, streams };
+  return { client: fake as unknown as LoomClient, streams, getWeaveCalls: () => calls };
 }
 
 function waitFor(pred: () => boolean, ms = 2000): Promise<void> {
@@ -448,5 +457,144 @@ describe("StreamManager", () => {
 
     await state.removeWeave(WEAVE_ID); // simulates leave_weave, which removes the Weave from state too
     expect(sm.threadOwner(w.generalThreadId)).toBeUndefined();
+  });
+});
+
+const GUIDE = "## Loom guidelines\nbe brief";
+type Notification = { content: string; meta: Record<string, string> };
+
+/** Starts a manager whose notifications are collected, and waits until its first stream is open. */
+async function started(
+  opts: { guidelines?: () => string; failTimes?: number; backoff?: { initial: number; max: number } } = {},
+): Promise<{ sm: StreamManager; state: ChannelState; streams: Captured[]; got: Notification[]; getWeaveCalls: () => number }> {
+  const w = makeWeave();
+  const state = await makeState(w);
+  const got: Notification[] = [];
+  const { client, streams, getWeaveCalls } = makeFakeClient(opts);
+  const sm = new StreamManager(client, state, async (p) => { got.push(p); }, () => {}, opts.backoff);
+  sm.start(WEAVE_ID, w);
+  if (!opts.failTimes) await waitFor(() => streams.length === 1);
+  return { sm, state, streams, got, getWeaveCalls };
+}
+
+describe("guidelines preamble", () => {
+  it("(a) folds the current guidelines into the first woken event of a session, and only that one", async () => {
+    const { sm, state, streams, got } = await started({ guidelines: () => GUIDE });
+    streams[0]!.opts.onEvent(event(4));
+    streams[0]!.opts.onEvent(event(5));
+    await waitFor(() => got.length === 2);
+    expect(got[0]!.meta).toMatchObject({ preamble: "guidelines", type: "message", seq: "4" });
+    expect(got[0]!.content).toBe(`${GUIDE}\n\n---\n\nm4`);
+    expect(got[1]!.meta.preamble).toBeUndefined();
+    expect(got[1]!.content).toBe("m5");
+    await waitFor(() => state.get().weaves[WEAVE_ID]?.lastSeq === 5);
+    sm.closeAll();
+  });
+
+  it("(b) opens no stream and delivers nothing while the metadata fetch fails, then carries the preamble once it succeeds", async () => {
+    const { sm, state, streams, got, getWeaveCalls } = await started({ guidelines: () => GUIDE, failTimes: 1, backoff: { initial: 20, max: 40 } });
+    await waitFor(() => getWeaveCalls() === 1);
+    expect(streams).toHaveLength(0);          // the preamble is a precondition, not a nicety
+    expect(got).toHaveLength(0);
+    expect(state.load().sessions.s1?.cursors[WEAVE_ID]).toBe(3);  // cursor untouched by the failed attempt
+
+    await waitFor(() => streams.length === 1);
+    expect(streams[0]!.opts.since).toBe(3);   // resumes from the persisted cursor
+    streams[0]!.opts.onEvent(event(4));
+    streams[0]!.opts.onEvent(event(5));
+    await waitFor(() => got.length === 2);
+    expect(got[0]!.content).toBe(`${GUIDE}\n\n---\n\nm4`);
+    expect(got[1]!.meta.preamble).toBeUndefined();
+    sm.closeAll();
+  });
+
+  it("(c) an automatic restart is not a new session: the preamble is not sent again", async () => {
+    const { sm, streams, got } = await started({ guidelines: () => GUIDE, backoff: { initial: 20, max: 40 } });
+    streams[0]!.opts.onEvent(event(4));
+    await waitFor(() => got.length === 1);
+    streams[0]!.opts.onStatus?.("closed", { error: new LoomClientError("network", "boom") });
+    await waitFor(() => streams.length === 2);
+    streams[1]!.opts.onEvent(event(6));
+    await waitFor(() => got.length === 2);
+    expect(got[1]!.meta.preamble).toBeUndefined();
+    expect(got[1]!.content).toBe("m6");
+    sm.closeAll();
+  });
+
+  it("(d) leaving and rejoining the Weave sends the preamble again", async () => {
+    const { sm, state, streams, got } = await started({ guidelines: () => GUIDE });
+    streams[0]!.opts.onEvent(event(4));
+    await waitFor(() => got.length === 1);
+    sm.stop(WEAVE_ID);                                  // what leave_weave does
+    sm.start(WEAVE_ID, state.get().weaves[WEAVE_ID]!);  // …and a fresh join right after
+    await waitFor(() => streams.length === 2);
+    streams[1]!.opts.onEvent(event(6));
+    await waitFor(() => got.length === 2);
+    expect(got[1]!.meta.preamble).toBe("guidelines");
+    expect(got[1]!.content).toBe(`${GUIDE}\n\n---\n\nm6`);
+    sm.closeAll();
+  });
+
+  it("(e) re-arming the same identity is not a leave: no second preamble", async () => {
+    const { sm, state, streams, got } = await started({ guidelines: () => GUIDE });
+    streams[0]!.opts.onEvent(event(4));
+    await waitFor(() => got.length === 1);
+    sm.start(WEAVE_ID, state.get().weaves[WEAVE_ID]!);  // what onJoined does for a reused identity
+    await waitFor(() => streams.length === 2);
+    streams[1]!.opts.onEvent(event(6));
+    await waitFor(() => got.length === 2);
+    expect(got[1]!.meta.preamble).toBeUndefined();
+    sm.closeAll();
+  });
+
+  it("(f) empty guidelines deliver a plain first event, and still count as delivered", async () => {
+    let guidelines = "";
+    const { sm, streams, got } = await started({ guidelines: () => guidelines });
+    streams[0]!.opts.onEvent(event(4));
+    await waitFor(() => got.length === 1);
+    expect(got[0]!.content).toBe("m4");
+    expect(got[0]!.meta.preamble).toBeUndefined();
+
+    guidelines = GUIDE;   // rules appear later in the session; the change event carries them
+    streams[0]!.opts.onEvent(event(5, { type: "weave.guidelines_changed", payload: { guidelines: "be brief", previous: "" } }));
+    streams[0]!.opts.onEvent(event(6));
+    await waitFor(() => got.length === 3);
+    expect(got[2]!.content).toBe("m6");                 // the flag was set by the empty first turn
+    expect(got[2]!.meta.preamble).toBeUndefined();
+    sm.closeAll();
+  });
+
+  it("(g) in mentions mode the preamble rides on the first event that actually wakes the session", async () => {
+    const { sm, state, streams, got } = await started({ guidelines: () => GUIDE });
+    await state.setPrefs(WEAVE_ID, { wake: "mentions" });
+    sm.setPrefs(WEAVE_ID, state.prefs(WEAVE_ID));
+    streams[0]!.opts.onEvent(event(4));                                                  // no mention: not delivered
+    streams[0]!.opts.onEvent(event(5, { payload: { text: "hi @Claude", mentions: ["p1"] } }));
+    await waitFor(() => got.length === 1);
+    expect(got[0]!.meta).toMatchObject({ preamble: "guidelines", seq: "5" });
+    expect(got[0]!.content).toBe(`${GUIDE}\n\n---\n\nhi @Claude`);
+    sm.closeAll();
+  });
+
+  it("(h) a weave.guidelines_changed event refreshes the cached text a later preamble carries", async () => {
+    let guidelines = GUIDE;
+    const { sm, state, streams, got } = await started({ guidelines: () => guidelines });
+    streams[0]!.opts.onEvent(event(4));
+    await waitFor(() => got.length === 1);
+    expect(got[0]!.content).toBe(`${GUIDE}\n\n---\n\nm4`);
+
+    const UPDATED = `${GUIDE}\n\n## Guidelines for this Weave\nno emoji`;
+    guidelines = UPDATED;
+    streams[0]!.opts.onEvent(event(5, { type: "weave.guidelines_changed", payload: { guidelines: "no emoji", previous: "" } }));
+    await waitFor(() => got.length === 2);
+    expect(got[1]!.content).toBe("no emoji");
+
+    sm.stop(WEAVE_ID);
+    sm.start(WEAVE_ID, state.get().weaves[WEAVE_ID]!);
+    await waitFor(() => streams.length === 2);
+    streams[1]!.opts.onEvent(event(6));
+    await waitFor(() => got.length === 3);
+    expect(got[2]!.content).toBe(`${UPDATED}\n\n---\n\nm6`);
+    sm.closeAll();
   });
 });
