@@ -271,7 +271,9 @@ Test-first, one rule per test, real Postgres, no mocks (per `CONTRIBUTING.md`).
 - **client**: new wrappers round-trip against the real server; an aborted `signal` on a stalled response surfaces as `network` and the request is cancelled.
 - **claude-channel**: `shouldWake` wakes for the event in mentions-only and not for own change;
   `formatEvent` body; restore preamble (advanced cursor, no later change → preamble ahead of the first
-  message, none on the second; reset after leave + rejoin); `list_joined` carries `guidelines`; Weave
+  message, none on the second; reset after leave + rejoin; metadata failing first while events wait →
+  nothing delivered and cursor unchanged, then preamble + held events once the fetch succeeds);
+  `list_joined` carries `guidelines`; Weave
   resource resolves the stored token by `weaveId` (two joined readable, unjoined refused); e2e:
   startup instructions include the fetched text; startup against a refused connection **and** against
   a stalled endpoint (socket accepted, no response) both serve the mechanics text within the deadline
@@ -279,7 +281,9 @@ Test-first, one rule per test, real Postgres, no mocks (per `CONTRIBUTING.md`).
 - **cli**: `guidelines`, `guidelines set` (arg, stdin, clear, unchanged), `create --guidelines`,
   `admin settings --set guidelines=-`, `read` rendering; exit codes.
 - **web**: session applies the event and refreshes; a refresh gated before a change event and
-  released after it does not revert the text (once with new text, once with a clear to `''`); DOM
+  released after it does not revert the text (once with new text, once with a clear to `''`); a
+  replayed older change and clear after an accepted newer snapshot stay in history but do not touch
+  the panel; DOM
   tests for the panel (member read-only, keeper edit flow, counter at the limit, archived read-only).
 - **Manual smoke** (TESTING.md): set instance guidelines, connect a remote agent, confirm its
   instructions carry them; change the Weave text in the web UI, confirm a channel session in
