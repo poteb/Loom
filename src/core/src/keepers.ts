@@ -13,20 +13,34 @@ function toPublic(k: typeof keepers.$inferSelect): PublicKeeper {
 }
 
 /**
+ * What a seed run actually did, so the caller can say so instead of guessing from its own input.
+ * `seeded` is rows inserted, `existing` the keepers already in the table (which is what makes the
+ * run a no-op), and `ignored` the configured entries dropped as malformed or repeated.
+ */
+export type SeedKeepersResult = { seeded: number; existing: number; ignored: number };
+
+/**
  * Bootstraps the keeper store from the configured tokens. Only ever runs against an empty table:
  * after first boot keepers are managed through the admin API, and a removed one must stay removed
  * across restarts. Malformed tokens are ignored rather than seeded, and repeated ones are seeded once.
+ *
+ * The counts are returned rather than kept quiet because the skip is invisible from outside: a new
+ * token added to `.env` on a database that already has keepers does nothing at all, and the boot
+ * log has to be able to say that (dogfood finding, 2026-09-15).
  */
-export async function seedKeepers(db: Db, tokens: string[]): Promise<void> {
+export async function seedKeepers(db: Db, tokens: string[]): Promise<SeedKeepersResult> {
   // Deduplicated: the same token twice is one keeper, not one keeper and a dropped insert.
   const clean = [...new Set(tokens.map((t) => t.trim()).filter((t) => KEEPER_TOKEN_RE.test(t)))];
-  if (clean.length === 0) return;
-  await db.transaction(async (tx) => {
-    const [existing] = await tx.select({ id: keepers.id }).from(keepers).limit(1);
-    if (existing) return;
-    await tx.insert(keepers)
+  const ignored = tokens.length - clean.length;
+  return db.transaction(async (tx) => {
+    // The whole (tiny) set, not `limit(1)`: the count is what the caller reports when it skips.
+    const existing = await tx.select({ id: keepers.id }).from(keepers);
+    if (existing.length > 0 || clean.length === 0) return { seeded: 0, existing: existing.length, ignored };
+    const inserted = await tx.insert(keepers)
       .values(clean.map((token, i) => ({ id: newId(), name: `seed-${i + 1}`, token })))
-      .onConflictDoNothing({ target: keepers.token });
+      .onConflictDoNothing({ target: keepers.token })
+      .returning({ id: keepers.id });
+    return { seeded: inserted.length, existing: 0, ignored };
   });
 }
 

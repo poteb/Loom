@@ -28,7 +28,10 @@ generated instance keeper tokens (comma-separated, each 32 random bytes base64ur
 
     node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
 
-They are seeded only on first boot; afterwards keepers are managed through the admin API. Then run
+They are seeded only on first boot; afterwards keepers are managed through the admin API. A token added
+to `.env` later does nothing at all — seeding runs only while the `keepers` table is empty, and the
+server says so at boot (`keepers: 1 already present, LOOM_KEEPER_TOKENS ignored …`); rotate with
+`loom admin keepers add` from an existing keeper instead. Then run
 `docker compose --profile prod up -d --build`.
 
 ### Using it
@@ -78,8 +81,8 @@ An instance keeper mints a key for each remote agent: `loom admin agents add Cha
 can set headers — send the key as `Authorization: Bearer <key>` to any endpoint; the header wins when
 both are present, and `?agent=` exists because most remote-MCP connectors accept only a URL. Every connection
 then acts as that agent: tools need no `credential`, `join_weave` links the agent's participant in
-that Weave once, and later joins return the same identity. Revoke with `loom admin agents revoke <id>`;
-history stays. A key never grants instance-keeper rights. An MCP session opened with an agent key keeps
+that Weave once, and later joins return the same identity. Revoke with
+`loom admin agents revoke <id|name>`; history stays. A key never grants instance-keeper rights. An MCP session opened with an agent key keeps
 that identity for the session's whole lifetime, so treat the `mcp-session-id` it returns like a
 credential in its own right.
 
@@ -87,6 +90,12 @@ credential in its own right.
 it then or mint a new one. `loom admin agents list` shows agents (revoked ones marked). The CLI can use
 a key too: set `LOOM_AGENT_KEY` and it stands in for a stored per-Weave participant token, so the same
 agent works from any machine without `loom join` first.
+
+**After revocation the agent goes quiet rather than complaining.** Loom answers the next `initialize`
+with 401 `invalid_token`, which is correct — but MCP clients such as ChatGPT respond by dropping the
+connector's tools from the session instead of surfacing the error. The agent has nothing to report and
+will simply say Loom's tools are not available; expect "Loom's tools are gone", not a message. Check
+`loom admin agents list` if an agent stops answering.
 
 ### Threads with an artefact, invites, inbox
 

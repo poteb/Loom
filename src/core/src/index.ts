@@ -73,5 +73,5 @@ export { KEEPER_TOKEN_RE } from "./ids.js";
 export { MAX_PAGE_LIMIT, validatePage, type PageOptions } from "./paging.js";
 export { EventBus } from "./bus.js";
 export type { CreateWeaveInput, CreateWeaveResult, WeaveInfo, JoinResult } from "./weaves.js";
-export type { PublicKeeper } from "./keepers.js";
+export type { PublicKeeper, SeedKeepersResult } from "./keepers.js";
 export type * from "./types.js";

@@ -137,6 +137,30 @@ describe("keepers", () => {
     expect(await db.select().from(keepers)).toHaveLength(0);
     await expect(resolveCredential(db, "short")).rejects.toMatchObject({ code: "invalid_token" });
   });
+
+  // The boot log used to report the configured token count, which says nothing about what the
+  // seed actually did: on 2026-09-15 a fresh token in .env was announced as "seeded: 1" while the
+  // existing keeper made the seed a no-op. The counts below are what the server logs instead.
+  describe("seedKeepers reports what it did", () => {
+    it("counts the rows it inserted into an empty table", async () => {
+      const r = await seedKeepers(db, [keeperToken("tok-a"), keeperToken("tok-b")]);
+      expect(r).toEqual({ seeded: 2, existing: 0, ignored: 0 });
+    });
+    it("reports the keepers that made it skip, and seeds nothing", async () => {
+      await seedKeepers(db, [keeperToken("tok-a")]);
+      const r = await seedKeepers(db, [keeperToken("tok-new")]);
+      expect(r).toEqual({ seeded: 0, existing: 1, ignored: 0 });
+      await expect(resolveCredential(db, keeperToken("tok-new"))).rejects.toMatchObject({ code: "invalid_token" });
+    });
+    it("counts malformed and duplicate entries as ignored", async () => {
+      const a = keeperToken("tok-a");
+      const r = await seedKeepers(db, [a, a, "short"]);
+      expect(r).toEqual({ seeded: 1, existing: 0, ignored: 2 });
+    });
+    it("reports an empty instance with nothing configured", async () => {
+      expect(await seedKeepers(db, [])).toEqual({ seeded: 0, existing: 0, ignored: 0 });
+    });
+  });
   it("non-keepers are refused", async () => {
     const secret: Actor = { kind: "secret", weaveId: "x" };
     await expect(listKeepers(db, secret)).rejects.toMatchObject({ code: "forbidden" });

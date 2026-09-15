@@ -3,10 +3,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { closeDb, createCore, createDb, runMigrations } from "@loom/core";
-import { loadConfig } from "./config.js";
+import { loadConfig, describeSeeding } from "./config.js";
 import { buildApp } from "./app.js";
 import { TicketStore } from "./tickets.js";
-import { logError } from "./log.js";
+import { logError, redact } from "./log.js";
 import { attachWebSocket } from "./ws.js";
 
 async function main() {
@@ -14,14 +14,17 @@ async function main() {
   const db = createDb(config.databaseUrl);
   await runMigrations(db);
   const core = createCore(db);
-  await core.seedKeepers(config.keeperTokens);
+  // Say what the seed did, not what was configured: seeding is skipped whole on a non-empty table.
+  const seeding = describeSeeding(await core.seedKeepers(config.keeperTokens), config.keeperTokens.length);
+  console.log(redact(seeding.line));
+  if (seeding.warning) console.warn(redact(seeding.warning));
   const tickets = new TicketStore();
   const defaultWebDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
   const webDist = config.webDist ?? (existsSync(path.join(defaultWebDist, "index.html")) ? defaultWebDist : undefined);
   console.log(webDist ? `serving web UI from ${webDist}` : "web UI not built; /w/* disabled");
   const app = buildApp({ core, tickets, webDist });
   const server = serve({ fetch: app.fetch, port: config.port, hostname: config.host }, (info) => {
-    console.log(`loom server listening on http://${config.host}:${info.port} (keepers seeded: ${config.keeperTokens.length})`);
+    console.log(`loom server listening on http://${config.host}:${info.port}`);
   });
   attachWebSocket(server, { core, tickets });
 

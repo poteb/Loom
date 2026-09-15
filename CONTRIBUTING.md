@@ -89,7 +89,7 @@ same formatting applies (see `src/claude-channel/src/stored.ts`).
 **The CLI prints `{ code, message }` JSON and uses two exit codes**
 ([`src/cli/src/cli.ts`](src/cli/src/cli.ts)): a failed command writes
 `{"code":…,"message":…}` to stderr in `--json` mode (otherwise `error: <message> (<code>)`) and
-returns **1**; a usage error (any `CommanderError` that is not help or version) returns **2**;
+returns **1**; a usage error (any `CommanderError` that is not help or version, or a `CliError` thrown with `exitCode: 2` because the argument itself cannot be resolved) returns **2**;
 help and version return 0. `src/cli/src/main.ts` assigns the returned code to `process.exitCode`.
 
 ## Naming and value rules

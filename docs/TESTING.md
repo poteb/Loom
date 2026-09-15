@@ -118,8 +118,8 @@ guarded by `typeof document !== "undefined"` because the package runs Vitest wit
 
 ## Current totals
 
-As of the second re-review fix round (commit `337958d`): **387 tests** — core 126,
-mcp-tools 11, server 78, client 30, cli 30, claude-channel 75, web 37 — run serially with
+As of the 2026-09-15 dogfood UX fixes (commit `ed66046`): **400 tests** — core 130,
+mcp-tools 11, server 83, client 30, cli 34, claude-channel 75, web 37 — run serially with
 `pnpm --workspace-concurrency=1 -r test`, and with `pnpm -r build` and `pnpm -r typecheck` clean.
 Counts change with every feature; run the suites to see current numbers.
 

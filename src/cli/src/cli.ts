@@ -45,6 +45,10 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
   // mode that diagnostic is buffered here instead of reaching stderr, so the caller sees exactly one
   // JSON object on stderr rather than that diagnostic plus a JSON object appended after it.
   let errBuf = "";
+  // Whether commander has rendered a diagnostic of its own. A CommanderError thrown from inside an
+  // action rather than by the parser is never rendered, and the catch below would otherwise exit
+  // mute; this is the belt to that braces (actions throw CliError instead).
+  let wroteErr = false;
   const program = new Command("loom");
   program
     .description("Loom command line: create and join Weaves, read and post messages")
@@ -53,7 +57,7 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
     .exitOverride()
     .configureOutput({
       writeOut: (s) => io.stdout.write(s),
-      writeErr: (s) => { if (jsonMode) errBuf += s; else io.stderr.write(s); },
+      writeErr: (s) => { wroteErr = true; if (jsonMode) errBuf += s; else io.stderr.write(s); },
     });
 
   program.addHelpText("after", "\nGlobal option --url <url> (Loom base URL, default: $LOOM_URL) must be given before the command.");
@@ -82,6 +86,8 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
         const raw = (errBuf.length > 0 ? errBuf : e.message).trim();
         const message = (raw.split("\n")[0] ?? raw).trim();
         io.stderr.write(JSON.stringify({ code: "validation", message }) + "\n");
+      } else if (!wroteErr) {
+        io.stderr.write(`error: ${e.message} (validation)\n`);
       }
       return 2;
     }
@@ -90,6 +96,6 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
       ? { code: e.code, message: e.message }
       : { code: "internal", message: e instanceof Error ? e.message : String(e) };
     io.stderr.write(json ? JSON.stringify({ code, message }) + "\n" : `error: ${message} (${code})\n`);
-    return 1;
+    return e instanceof CliError ? e.exitCode : 1;
   }
 }
