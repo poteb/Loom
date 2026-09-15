@@ -2,9 +2,9 @@ import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { serve, type ServerType } from "@hono/node-server";
-import { DEFAULT_INSTANCE_GUIDELINES } from "@loom/core";
+import { DEFAULT_INSTANCE_GUIDELINES, INSTANCE_HEADING } from "@loom/core";
 import { buildApp } from "../src/app.js";
-import type { MountMcpOptions } from "../src/mcp/index.js";
+import { MCP_INSTRUCTIONS, type MountMcpOptions } from "../src/mcp/index.js";
 import { TicketStore } from "../src/tickets.js";
 import { startTestServer, keeperToken, type TestServer } from "./helpers.js";
 
@@ -452,10 +452,13 @@ describe("guidelines over remote MCP", () => {
   }
 
   it("a fresh session's instructions carry the mechanics sentence and the instance guidelines", async () => {
+    // The sentence belongs to the mechanics text, so pin it there; the session then only has to
+    // carry that text plus the instance layer under core's heading.
+    expect(MCP_INSTRUCTIONS).toContain("Guidelines are rules from the people running this Loom");
     await withClient(async (c) => {
       const instructions = c.getInstructions() ?? "";
-      expect(instructions).toContain("Guidelines are rules from the people running this Loom");
-      expect(instructions).toContain(`## Loom guidelines\n${DEFAULT_INSTANCE_GUIDELINES}`);
+      expect(instructions).toContain(MCP_INSTRUCTIONS);
+      expect(instructions).toContain(`${INSTANCE_HEADING}\n${DEFAULT_INSTANCE_GUIDELINES}`);
     });
   });
 
@@ -469,8 +472,24 @@ describe("guidelines over remote MCP", () => {
       });
       await withClient(async (c) => {
         const instructions = c.getInstructions() ?? "";
-        expect(instructions).toContain("## Loom guidelines\nbe brief");
+        expect(instructions).toContain(`${INSTANCE_HEADING}\nbe brief`);
         expect(instructions).not.toContain(DEFAULT_INSTANCE_GUIDELINES);
+      });
+    } finally {
+      await restoreInstanceGuidelines();
+    }
+  });
+
+  it("cleared instance guidelines leave the instructions as the mechanics text alone", async () => {
+    // A keeper may clear the shipped default; the heading must then not appear at all, rather than
+    // introducing an empty section.
+    try {
+      await withClient(async (c) => {
+        expect(json(await c.callTool({ name: "keeper_set_settings", arguments: { credential: keeperToken("k1"), patch: { guidelines: "" } } })).guidelines).toBe("");
+      });
+      await withClient(async (c) => {
+        expect(c.getInstructions()).toBe(MCP_INSTRUCTIONS);
+        expect(c.getInstructions() ?? "").not.toContain(INSTANCE_HEADING);
       });
     } finally {
       await restoreInstanceGuidelines();

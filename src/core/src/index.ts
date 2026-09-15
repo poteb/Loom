@@ -76,7 +76,7 @@ export { createDb, runMigrations, closeDb, type Db } from "./db/index.js";
 export { KEEPER_TOKEN_RE } from "./ids.js";
 export { MAX_PAGE_LIMIT, validatePage, type PageOptions } from "./paging.js";
 export { DEFAULT_INSTANCE_GUIDELINES } from "./guidelines-default.js";
-export { MAX_GUIDELINES_LENGTH, validateGuidelines, guidelinesFor, type SetGuidelinesOptions } from "./guidelines.js";
+export { MAX_GUIDELINES_LENGTH, INSTANCE_HEADING, WEAVE_HEADING, validateGuidelines, guidelinesFor, type SetGuidelinesOptions } from "./guidelines.js";
 export { EventBus } from "./bus.js";
 export type { CreateWeaveInput, CreateWeaveResult, WeaveInfo, JoinResult } from "./weaves.js";
 export type { PublicKeeper, SeedKeepersResult } from "./keepers.js";
