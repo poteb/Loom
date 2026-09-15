@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { serve, type ServerType } from "@hono/node-server";
+import { DEFAULT_INSTANCE_GUIDELINES } from "@loom/core";
 import { buildApp } from "../src/app.js";
 import type { MountMcpOptions } from "../src/mcp/index.js";
 import { TicketStore } from "../src/tickets.js";
@@ -42,15 +43,23 @@ afterAll(async () => { await s?.close(); });
  * leaked behind to hang teardown. So every Client is created up front (a cheap, synchronous, never-
  * failing step) before any connect() is attempted, and the try/finally that closes them wraps the
  * connecting too — not just the caller's `fn`. */
-async function withClients<T>(n: number, fn: (clients: Client[]) => Promise<T>): Promise<T> {
+async function withClientsAt<T>(url: URL, n: number, fn: (clients: Client[]) => Promise<T>): Promise<T> {
   const clients = Array.from({ length: n }, () => new Client({ name: "chatgpt-like", version: "1.0" }));
   try {
-    await Promise.all(clients.map((c) => c.connect(new StreamableHTTPClientTransport(new URL(`${s!.baseUrl}/mcp`)))));
+    await Promise.all(clients.map((c) => c.connect(new StreamableHTTPClientTransport(url))));
     return await fn(clients);
   } finally {
     await Promise.all(clients.map((c) => c.close().catch(() => {})));
   }
 }
+const withClients = <T>(n: number, fn: (clients: Client[]) => Promise<T>): Promise<T> =>
+  withClientsAt(new URL(`${s!.baseUrl}/mcp`), n, fn);
+/** Same, on a connection that authenticates as `key` — the shape a connector with only a URL uses. */
+const withAgentClient = <T>(key: string, fn: (c: Client) => Promise<T>): Promise<T> => {
+  const url = new URL(`${s!.baseUrl}/mcp`);
+  url.searchParams.set("agent", key);
+  return withClientsAt(url, 1, ([c]) => fn(c!));
+};
 const withClient = <T>(fn: (c: Client) => Promise<T>): Promise<T> => withClients(1, ([c]) => fn(c!));
 const withTwoClients = <T>(fn: (a: Client, b: Client) => Promise<T>): Promise<T> => withClients(2, ([a, b]) => fn(a!, b!));
 const text = (r: Awaited<ReturnType<Client["callTool"]>>) => (r.content as { text: string }[])[0]!.text;
@@ -431,6 +440,99 @@ describe("remote MCP with an agent key", () => {
       const schema = (await c.listTools()).tools.find((t) => t.name === "get_weave")!.inputSchema as { required?: string[] };
       expect(schema.required).toContain("credential");
       expect(c.getInstructions()).not.toMatch(/connected as agent/);
+    });
+  });
+});
+
+describe("guidelines over remote MCP", () => {
+  /** A patch made here would otherwise leak into every later session in this file, so put it back. */
+  async function restoreInstanceGuidelines(): Promise<void> {
+    const keeper = await s!.core.resolveCredential(keeperToken("k1"));
+    await s!.core.updateSettings(keeper, { guidelines: DEFAULT_INSTANCE_GUIDELINES });
+  }
+
+  it("a fresh session's instructions carry the mechanics sentence and the instance guidelines", async () => {
+    await withClient(async (c) => {
+      const instructions = c.getInstructions() ?? "";
+      expect(instructions).toContain("Guidelines are rules from the people running this Loom");
+      expect(instructions).toContain(`## Loom guidelines\n${DEFAULT_INSTANCE_GUIDELINES}`);
+    });
+  });
+
+  it("a keeper patch reaches the next session's instructions; the session that made it keeps the text it was built with", async () => {
+    // instructions are fixed at initialize, so the instance text is read per new session.
+    try {
+      await withClient(async (c) => {
+        const patched = json(await c.callTool({ name: "keeper_set_settings", arguments: { credential: keeperToken("k1"), patch: { guidelines: "be brief" } } }));
+        expect(patched.guidelines).toBe("be brief");
+        expect(c.getInstructions() ?? "").toContain(DEFAULT_INSTANCE_GUIDELINES);
+      });
+      await withClient(async (c) => {
+        const instructions = c.getInstructions() ?? "";
+        expect(instructions).toContain("## Loom guidelines\nbe brief");
+        expect(instructions).not.toContain(DEFAULT_INSTANCE_GUIDELINES);
+      });
+    } finally {
+      await restoreInstanceGuidelines();
+    }
+  });
+
+  it("join_weave, create_weave and get_weave results carry both guideline layers", async () => {
+    await withTwoClients(async (a, b) => {
+      const created = json(await a.callTool({ name: "create_weave", arguments: { title: "G", opener: "o", name: "A", guidelines: "rules" } }));
+      expect(created.guidelines).toContain(`## Loom guidelines\n${DEFAULT_INSTANCE_GUIDELINES}`);
+      expect(created.guidelines).toContain("## Guidelines for this Weave\nrules");
+      const joined = json(await b.callTool({ name: "join_weave", arguments: { secret: created.secret, name: "B" } }));
+      expect(joined.guidelines).toBe(created.guidelines);
+      const info = json(await b.callTool({ name: "get_weave", arguments: { credential: joined.token, weaveId: created.weave.id } }));
+      expect(info.guidelines).toBe(created.guidelines);
+    });
+  });
+
+  it("set_weave_guidelines: the creator sets them, a member is forbidden, over-long is a validation error", async () => {
+    await withTwoClients(async (a, b) => {
+      const created = json(await a.callTool({ name: "create_weave", arguments: { title: "SG", opener: "o", name: "A" } }));
+      // Creation appends three events (thread.created, participant.joined, message), so this is seq 4.
+      const set = json(await a.callTool({ name: "set_weave_guidelines", arguments: { credential: created.token, weaveId: created.weave.id, guidelines: "house rules" } }));
+      expect(set.seq).toBe(4);
+      expect(set.weave.guidelines).toBe("house rules");
+      const joined = json(await b.callTool({ name: "join_weave", arguments: { secret: created.secret, name: "B" } }));
+      expect(joined.guidelines).toContain("## Guidelines for this Weave\nhouse rules");
+      const denied = await b.callTool({ name: "set_weave_guidelines", arguments: { credential: joined.token, weaveId: created.weave.id, guidelines: "mine" } });
+      expect(denied.isError).toBe(true);
+      expect(json(denied)).toMatchObject({ code: "forbidden" });
+      const tooLong = await a.callTool({ name: "set_weave_guidelines", arguments: { credential: created.token, weaveId: created.weave.id, guidelines: "x".repeat(4001) } });
+      expect(tooLong.isError).toBe(true);
+      expect(json(tooLong)).toMatchObject({ code: "validation" });
+    });
+  });
+
+  it("loom://guidelines reads without a credential; the Weave resource on an anonymous session is refused", async () => {
+    await withClient(async (c) => {
+      const res = await c.readResource({ uri: "loom://guidelines" });
+      expect((res.contents[0] as { text: string }).text).toBe(DEFAULT_INSTANCE_GUIDELINES);
+      const created = json(await c.callTool({ name: "create_weave", arguments: { title: "R", opener: "o", name: "A" } }));
+      // Remote /mcp passes no resourceCredential: the connection's own agent key is the only one a
+      // resource read can use, and an anonymous session has none.
+      await expect(c.readResource({ uri: `loom://weaves/${created.weave.id}/guidelines` })).rejects.toThrow(/invalid_token/);
+    });
+  });
+
+  it("an agent-key session reads a joined Weave's guidelines and is refused a Weave it has not joined", async () => {
+    const { key } = await withClient(async (c) =>
+      json(await c.callTool({ name: "keeper_agents_add", arguments: { credential: keeperToken("k1"), name: "ResourceReader" } })));
+    const host = await withClient(async (c) => ({
+      joined: json(await c.callTool({ name: "create_weave", arguments: { title: "Joined", opener: "o", name: "Host", guidelines: "weave rules" } })),
+      other: json(await c.callTool({ name: "create_weave", arguments: { title: "Other", opener: "o", name: "Host" } })),
+    }));
+    await withAgentClient(key, async (c) => {
+      await c.callTool({ name: "join_weave", arguments: { secret: host.joined.secret } });
+      const res = await c.readResource({ uri: `loom://weaves/${host.joined.weave.id}/guidelines` });
+      const body = (res.contents[0] as { text: string }).text;
+      expect(body).toContain(`## Loom guidelines\n${DEFAULT_INSTANCE_GUIDELINES}`);
+      expect(body).toContain("## Guidelines for this Weave\nweave rules");
+      // An agent key grants nothing in a Weave it has not joined (core's resolveInWeave).
+      await expect(c.readResource({ uri: `loom://weaves/${host.other.weave.id}/guidelines` })).rejects.toThrow(/forbidden/);
     });
   });
 });
