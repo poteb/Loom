@@ -625,26 +625,29 @@ describe("session guidelines", () => {
     storage.set(`loom:${r.secret}`, JSON.stringify({ token: r.token, participantId: r.participant.id }));
     const gate = makeGate();
     const session = createSession({ client: staleSnapshotClient(s.baseUrl, gate), secret: r.secret, storage });
-    await session.load();
-    await waitFor(() => session.getState().connection === "open");
-    expect(session.getState().weave?.guidelines).toBe("old");
+    // The request the gate suspends is still parked until release(): without this, a failed
+    // assertion below would hang the suite on teardown instead of reporting the failure.
+    try {
+      await session.load();
+      await waitFor(() => session.getState().connection === "open");
+      expect(session.getState().weave?.guidelines).toBe("old");
 
-    // A participant joining starts a metadata refresh, which parks holding pre-change metadata.
-    await anon.joinWeave(r.secret, { name: "Other", kind: "human" });
-    await gate.entered;
+      // A participant joining starts a metadata refresh, which parks holding pre-change metadata.
+      await anon.joinWeave(r.secret, { name: "Other", kind: "human" });
+      await gate.entered;
 
-    await s.core.setWeaveGuidelines(await s.core.resolveCredential(r.token), r.weave.id, "new");
-    await waitFor(() => session.getState().weave?.guidelines === "new");
+      await s.core.setWeaveGuidelines(await s.core.resolveCredential(r.token), r.weave.id, "new");
+      await waitFor(() => session.getState().weave?.guidelines === "new");
 
-    // Every state the panel goes through from here must already be the new text: a momentary
-    // revert to "old" is exactly the flicker the watermark exists to prevent.
-    const panel: string[] = [];
-    session.subscribe(() => panel.push(session.getState().weave?.guidelines ?? "<none>"));
-    gate.release();
-    await waitFor(() => session.getState().participants.some((p) => p.name === "Other"));
-    expect(panel).not.toContain("old");
-    expect(session.getState().weave?.guidelines).toBe("new");
-    session.dispose();
+      // Every state the panel goes through from here must already be the new text: a momentary
+      // revert to "old" is exactly the flicker the watermark exists to prevent.
+      const panel: string[] = [];
+      session.subscribe(() => panel.push(session.getState().weave?.guidelines ?? "<none>"));
+      gate.release();
+      await waitFor(() => session.getState().participants.some((p) => p.name === "Other"));
+      expect(panel).not.toContain("old");
+      expect(session.getState().weave?.guidelines).toBe("new");
+    } finally { gate.release(); session.dispose(); }
   });
 
   it("a clear that lands while a metadata refresh is in flight is not undone by the stale snapshot", async () => {
@@ -653,23 +656,26 @@ describe("session guidelines", () => {
     storage.set(`loom:${r.secret}`, JSON.stringify({ token: r.token, participantId: r.participant.id }));
     const gate = makeGate();
     const session = createSession({ client: staleSnapshotClient(s.baseUrl, gate), secret: r.secret, storage });
-    await session.load();
-    await waitFor(() => session.getState().connection === "open");
-    expect(session.getState().weave?.guidelines).toBe("old");
+    // The request the gate suspends is still parked until release(): without this, a failed
+    // assertion below would hang the suite on teardown instead of reporting the failure.
+    try {
+      await session.load();
+      await waitFor(() => session.getState().connection === "open");
+      expect(session.getState().weave?.guidelines).toBe("old");
 
-    await anon.joinWeave(r.secret, { name: "Other", kind: "human" });
-    await gate.entered;
+      await anon.joinWeave(r.secret, { name: "Other", kind: "human" });
+      await gate.entered;
 
-    await s.core.setWeaveGuidelines(await s.core.resolveCredential(r.token), r.weave.id, "");
-    await waitFor(() => session.getState().weave?.guidelines === "");
+      await s.core.setWeaveGuidelines(await s.core.resolveCredential(r.token), r.weave.id, "");
+      await waitFor(() => session.getState().weave?.guidelines === "");
 
-    const panel: string[] = [];
-    session.subscribe(() => panel.push(session.getState().weave?.guidelines ?? "<none>"));
-    gate.release();
-    await waitFor(() => session.getState().participants.some((p) => p.name === "Other"));
-    expect(panel).not.toContain("old");
-    expect(session.getState().weave?.guidelines).toBe("");
-    session.dispose();
+      const panel: string[] = [];
+      session.subscribe(() => panel.push(session.getState().weave?.guidelines ?? "<none>"));
+      gate.release();
+      await waitFor(() => session.getState().participants.some((p) => p.name === "Other"));
+      expect(panel).not.toContain("old");
+      expect(session.getState().weave?.guidelines).toBe("");
+    } finally { gate.release(); session.dispose(); }
   });
 
   it("older replayed guidelines events after a newer snapshot stay in history but do not touch the panel", async () => {
@@ -712,6 +718,8 @@ describe("session guidelines", () => {
       if (st.events.some((e) => e.seq === 4)) panel.push(st.weave?.guidelines ?? "<none>");
     });
     await session.load();
+    // The snapshot is ahead of the history the backfill saw: the replay below is what closes the gap.
+    expect(session.getState().events.map((e) => e.seq)).toEqual([1, 2, 3]);
     expect(session.getState().weave?.guidelines).toBe("");
 
     await waitFor(() => session.getState().events.some((e) => e.seq === 5));

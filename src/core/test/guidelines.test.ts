@@ -97,6 +97,12 @@ describe("setWeaveGuidelines", () => {
     await seedKeepers(db, [keeperToken("ik")]);
     const ik = await resolveCredential(db, keeperToken("ik"));
     expect((await setWeaveGuidelines(db, bus, ik, w.weave.id, "by instance keeper")).seq).toBe(5);
+    // An instance keeper is not a participant of this Weave, so the event records the keeper
+    // identity (`keeper:<id>`) rather than a participant id — which is what export.ts renders
+    // as "Keeper" instead of looking the id up among the participants.
+    const byKeeper = (await readEvents(db, w.weave.id, {})).at(-1)!;
+    expect(byKeeper.type).toBe("weave.guidelines_changed");
+    expect(byKeeper.actor.startsWith("keeper:")).toBe(true);
     await expect(setWeaveGuidelines(db, bus, keeper, w.weave.id, "x".repeat(4001))).rejects.toMatchObject({ code: "validation" });
     // Through the instance keeper, as every other unknown-weave guard is tested (guards.test.ts):
     // a Weave participant's credential fails the authority check first, never reaching the lookup.

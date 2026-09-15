@@ -236,7 +236,7 @@ describe("channel streaming", () => {
       await s!.core.postMessage(gptActor, created.generalThread.id, "Hello @Claude, I joined");
       await waitFor(() => got.length >= 2);
       expect(got[0]!.meta).toMatchObject({ weave: created.weave.id, type: "participant.joined", from: "ChatGPT", seq: "4" });
-      expect(got[1]!.content).toBe("Hello @Claude, I joined");
+      expect(body(got[1]!)).toBe("Hello @Claude, I joined");
       expect(got[1]!.meta).toMatchObject({ thread: created.generalThread.id, thread_name: "General", type: "message", from: "ChatGPT", from_kind: "agent", seq: "5", mentions: created.participant.id });
       // own message is not pushed back
       await c.callTool({ name: "post_message", arguments: { credential: "stored", threadId: created.generalThread.id, text: "thanks" } });
@@ -283,7 +283,7 @@ describe("channel streaming", () => {
       expect(got2.map(body)).toEqual(["two"]);
       await s!.core.postMessage(gptActor, created.generalThread.id, "three");
       await waitFor(() => got2.length >= 2);
-      expect(got2[1]!.content).toBe("three");
+      expect(body(got2[1]!)).toBe("three");
     });
   });
 
@@ -357,8 +357,9 @@ describe("channel streaming", () => {
       await waitFor(() => lines.some((l) => l.id === 1));
       send({ jsonrpc: "2.0", method: "notifications/initialized" });
       await waitFor(() => lines.some((l) => l.method === "notifications/claude/channel"));
-      const n = lines.find((l) => l.method === "notifications/claude/channel") as { params: { content: string } };
-      expect(n.params.content.endsWith("offline")).toBe(true);   // behind this session's guidelines preamble
+      const n = lines.find((l) => l.method === "notifications/claude/channel") as { params: { content: string; meta: Record<string, string> } };
+      // Exactly the event, once the guidelines preamble this first turn carries is taken off.
+      expect(body(n.params)).toBe("offline");
       await waitFor(() => seqBefore() > saved);
     } finally {
       child.kill();
@@ -394,11 +395,11 @@ describe("channel streaming", () => {
       await waitFor(() => got.some((g) => g.meta.type === "thread.url_changed"));
       const changed = got.find((g) => g.meta.type === "thread.url_changed")!;
       expect(changed.meta).toMatchObject({ thread: t.id, thread_name: "PR 7", thread_url: CHANGED });
-      expect(changed.content).toBe(`Thread "PR 7" now links to ${CHANGED}`);
+      expect(body(changed)).toBe(`Thread "PR 7" now links to ${CHANGED}`);
       // …and the next event from that thread carries the refreshed url, not the stale one.
       await s!.core.postMessage(gptActor, t.id, "@Claude new link?");
-      await waitFor(() => got.some((g) => g.content === "@Claude new link?"));
-      expect(got.find((g) => g.content === "@Claude new link?")!.meta).toMatchObject({ thread: t.id, type: "message", thread_url: CHANGED });
+      await waitFor(() => got.some((g) => body(g) === "@Claude new link?"));
+      expect(got.find((g) => body(g) === "@Claude new link?")!.meta).toMatchObject({ thread: t.id, type: "message", thread_url: CHANGED });
 
       const prefs = json(await c.callTool({ name: "set_wake", arguments: { weaveId: created.weave.id, wake: "mentions" } }));
       expect(prefs).toEqual({ weaveId: created.weave.id, wake: "mentions", invites: true });
@@ -407,8 +408,8 @@ describe("channel streaming", () => {
       await waitFor(() => got.some((g) => g.meta.type === "thread.invited"));
       const wake = got.find((g) => g.meta.type === "thread.invited")!;
       expect(wake.meta).toMatchObject({ thread: t.id, thread_name: "PR 7", thread_url: CHANGED, seq: String(inv.seq), from: "ChatGPT" });
-      expect(wake.content).toContain('You were invited to Thread "PR 7" by ChatGPT');
-      expect(got.some((g) => g.content === "not for you")).toBe(false);
+      expect(body(wake)).toContain('You were invited to Thread "PR 7" by ChatGPT');
+      expect(got.some((g) => body(g) === "not for you")).toBe(false);
       // Session B on the same machine keeps default prefs and was never asked anything.
       const dirB = stateDir;
       await withChannel(dirB, async (b) => {
@@ -419,7 +420,7 @@ describe("channel streaming", () => {
       const t2 = await s!.core.createThread(gptActor, created.weave.id, "PR 8");
       await s!.core.inviteParticipant(gptActor, t2.id, created.participant.id);
       await s!.core.postMessage(gptActor, t2.id, "@Claude wake up");
-      await waitFor(() => got.some((g) => g.content === "@Claude wake up"));
+      await waitFor(() => got.some((g) => body(g) === "@Claude wake up"));
       expect(got.filter((g) => g.meta.type === "thread.invited")).toHaveLength(1);  // the second invite did not wake
     }, { CLAUDE_CODE_SESSION_ID: "session-A" });
   });
@@ -558,7 +559,7 @@ describe("guidelines over the channel", () => {
 
       await s!.core.postMessage(gptActor, created.generalThread.id, "three");
       await waitFor(() => got.length >= 2);
-      expect(got[1]!.content).toBe("three");
+      expect(body(got[1]!)).toBe("three");
       expect(got[1]!.meta.preamble).toBeUndefined();
     }, SESSION);
   });
