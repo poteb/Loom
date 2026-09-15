@@ -1,7 +1,14 @@
 import { LoomClient, LoomClientError } from "@loom/client";
 import { ConfigStore, type CliConfig, type WeaveEntry } from "./config.js";
 
-export type CliIo = { stdout: { write(s: string): unknown }; stderr: { write(s: string): unknown }; env: NodeJS.ProcessEnv };
+/**
+ * The process edges a command may touch. `stdin` is optional because most commands never read
+ * it and a test supplies only what it exercises; a `-` argument with no provider is an error.
+ */
+export type CliIo = {
+  stdout: { write(s: string): unknown }; stderr: { write(s: string): unknown }; env: NodeJS.ProcessEnv;
+  stdin?: { read(): Promise<string> };
+};
 export type GlobalOpts = { url?: string; weave?: string; json?: boolean };
 
 /**

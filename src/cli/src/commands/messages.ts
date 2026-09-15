@@ -7,6 +7,14 @@ export function formatEvent(e: LoomEvent, threads: Thread[], participants: Parti
   const thread = threads.find((t) => t.id === e.threadId)?.name ?? e.threadId;
   const who = e.actor.startsWith("keeper:") ? "Keeper" : (participants.find((p) => p.id === e.actor)?.name ?? e.actor);
   if (e.type === "message") return `#${e.seq} [${thread}] ${who}: ${String(e.payload.text ?? "")}`;
+  if (e.type === "weave.guidelines_changed") {
+    // The payload carries the new rules, so print them: a reader catching up must not have to run a
+    // second command to learn what the Weave now expects. Indented four spaces to mark the text as
+    // the event's body rather than more log lines (and, in Markdown, as a block).
+    const text = String(e.payload.guidelines ?? "");
+    if (text === "") return `#${e.seq} [${thread}] * guidelines cleared by ${who}`;
+    return `#${e.seq} [${thread}] * guidelines changed by ${who}\n${text.split("\n").map((l) => "    " + l).join("\n")}`;
+  }
   return `#${e.seq} [${thread}] * ${e.type}`;
 }
 
