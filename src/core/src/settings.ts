@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { z } from "zod";
-import type { Db } from "./db/index.js";
+import type { Db, Queryable } from "./db/index.js";
 import { settings } from "./db/schema.js";
 import { errors } from "./errors.js";
 import { assertInstanceKeeperFresh } from "./actors.js";
@@ -19,7 +19,7 @@ function toSettings(r: typeof settings.$inferSelect): Settings {
     guidelines: r.guidelines };
 }
 
-export async function getSettings(db: Db): Promise<Settings> {
+export async function getSettings(db: Queryable): Promise<Settings> {
   const [row] = await db.select().from(settings).where(eq(settings.id, 1));
   if (row) return toSettings(row);
   const [created] = await db.insert(settings).values({ id: 1 }).onConflictDoNothing().returning();
