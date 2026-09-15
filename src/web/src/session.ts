@@ -11,6 +11,8 @@ export type SessionState = {
   connection: Connection;
   needsName: boolean;
   refreshError?: string;
+  /** The instance layer of the guidelines; the Weave's own layer is `weave.guidelines`. */
+  instanceGuidelines: string;
   /** Thread ids with an invite to me newer than the last seq I had read there. */
   invitesForMe: Set<string>;
   /** Everyone invited to each thread, so the invite list can show who is already in. */
@@ -21,7 +23,7 @@ export type Session = {
   load(): Promise<void>; join(name: string): Promise<void>; selectThread(id: string): void;
   post(text: string): Promise<void>; createThread(name: string, url?: string | null): Promise<void>;
   setThreadUrl(id: string, url: string | null): Promise<void>; invite(threadId: string, participantId: string): Promise<void>;
-  closeThread(id: string): Promise<void>; archive(): Promise<void>;
+  closeThread(id: string): Promise<void>; archive(): Promise<void>; setGuidelines(text: string): Promise<void>;
   canModerate(): boolean; canEditThread(t: Thread): boolean; markSeen(id: string): void;
   dismissNamePrompt(): void; dispose(): void;
 };
@@ -46,9 +48,14 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
   const retry = opts.retry ?? DEFAULT_RETRY;
   const key = `loom:${secret}`;
   let state: SessionState = { status: "loading", threads: [], participants: [], events: [], connection: "closed", needsName: false,
-    invitesForMe: new Set(), invited: {} };
+    invitesForMe: new Set(), invited: {}, instanceGuidelines: "" };
   const listeners = new Set<() => void>();
   let weaveId: string | undefined;
+  // How far the guidelines text in `state.weave` has been advanced, as a Weave seq. Guidelines are
+  // not one-way (they change repeatedly and can be cleared), so the archive trick of "keep whichever
+  // saw it" cannot be used: only the seq decides. A snapshot is applied when its `lastSeq` is at
+  // least the watermark, an event when its seq is past it, and either one that wins moves it up.
+  let guidelinesSeq = 0;
   let stream: StreamHandle | undefined;
   let generation = 0;
   const reader = client.withToken(secret);
@@ -80,11 +87,22 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
   };
   const refreshInfo = async () => {
     if (!weaveId) return;
-    const info = await reader.getWeave(weaveId);
+    // The instance text is not part of the Weave, so a failure to read it must not fail the refresh
+    // the rest of the UI depends on: keep what is on screen and try again on the next refresh.
+    const [info, instance] = await Promise.all([
+      reader.getWeave(weaveId),
+      client.getInstanceGuidelines().catch(() => state.instanceGuidelines),
+    ]);
+    // A snapshot that predates the last applied guidelines change keeps the text that change
+    // delivered; one that is at least as new is authoritative and moves the watermark up.
+    const accept = info.weave.lastSeq >= guidelinesSeq;
+    if (accept) guidelinesSeq = info.weave.lastSeq;
     // A refresh can be in flight when the archive commits, and then answer from before it: archive
     // state is one-way, so keep whichever of the two saw it. Without this the composer and the
     // keeper controls come back on a Weave that is already read-only.
-    set({ weave: { ...info.weave, archivedAt: info.weave.archivedAt ?? state.weave?.archivedAt ?? null },
+    set({ weave: { ...info.weave, archivedAt: info.weave.archivedAt ?? state.weave?.archivedAt ?? null,
+        guidelines: accept ? info.weave.guidelines : (state.weave?.guidelines ?? info.weave.guidelines) },
+      instanceGuidelines: instance,
       threads: info.threads, participants: info.participants,
       me: state.me && info.participants.some((p) => p.id === state.me!.participant.id)
         ? { token: state.me.token, participant: info.participants.find((p) => p.id === state.me!.participant.id)! }
@@ -135,6 +153,15 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
     if (e.type === "thread.created" || e.type === "thread.closed" || e.type === "thread.url_changed"
       || e.type === "participant.joined" || e.type === "participant.role_changed") {
       scheduleRefresh();
+    } else if (e.type === "weave.guidelines_changed") {
+      // An older change can still be replayed after a newer snapshot was accepted (history, then
+      // metadata, then the stream from the history cursor): it belongs in the log and in the thread
+      // view, but it must not drag the panel backwards.
+      if (e.seq > guidelinesSeq && state.weave) {
+        guidelinesSeq = e.seq;
+        set({ weave: { ...state.weave, guidelines: String(e.payload.guidelines ?? "") } });
+      }
+      scheduleRefresh();
     } else if (e.type === "weave.archived") {
       if (state.weave) set({ weave: { ...state.weave, archivedAt: e.at } });
       // Also refresh: a refresh that started before the archive is still going to land with stale
@@ -174,9 +201,12 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
           if (page.length < PAGE) break;
           since = page.at(-1)!.seq;
         }
-        const info = await reader.getWeave(id);
+        // The instance guidelines are public and independent of this Weave, so they are fetched
+        // alongside the metadata and a failure only costs the panel its instance section.
+        const [info, instance] = await Promise.all([reader.getWeave(id), client.getInstanceGuidelines().catch(() => "")]);
         if (stale()) return;
         weaveId = id;
+        guidelinesSeq = info.weave.lastSeq;
         let me: SessionState["me"];
         const stored = storage.get(key);
         if (stored) {
@@ -190,7 +220,7 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
         const first = info.threads.find((t) => t.isGeneral)?.id ?? info.threads[0]?.id;
         if (first) seenUpTo.set(first, maxSeq(events));
         set({ status: "ready", weave: info.weave, threads: info.threads, participants: info.participants, events, me,
-          currentThreadId: first, ...deriveInvites(events, me?.participant.id, seenUpTo) });
+          instanceGuidelines: instance, currentThreadId: first, ...deriveInvites(events, me?.participant.id, seenUpTo) });
         let sawOpen = false;
         const opened = reader.stream(id, {
           since: events.at(-1)?.seq ?? 0,
@@ -280,6 +310,19 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
       await w.archiveWeave(weaveId);
       // Same reasoning as join()/closeThread(): the archive is already committed.
       set({ weave: state.weave && !state.weave.archivedAt ? { ...state.weave, archivedAt: new Date().toISOString() } : state.weave });
+      scheduleRefresh();
+    },
+    async setGuidelines(text) {
+      const w = writer();
+      if (!weaveId) throw new LoomClientError("validation", "Weave not loaded");
+      const r = await w.setWeaveGuidelines(weaveId, text);
+      // `seq` is null when the text already matched (nothing was appended, so nothing to watermark).
+      // Otherwise this change is the newest one this session knows of — apply it now rather than
+      // waiting for the event, exactly as the other already-committed mutations do.
+      if (r.seq !== null && r.seq > guidelinesSeq && state.weave) {
+        guidelinesSeq = r.seq;
+        set({ weave: { ...state.weave, guidelines: r.weave.guidelines } });
+      }
       scheduleRefresh();
     },
     canModerate: () => state.me?.participant.role === "keeper" && !state.weave?.archivedAt,
