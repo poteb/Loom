@@ -134,3 +134,43 @@ arrived in the channel-enabled session as a `<channel source="loom">` turn and i
   tunnel API POST takes 5-10 s and the default times out. Worth a line in the README dev section.
 - `run.cmd`/`run.ps1` die with a raw `EADDRINUSE` stack trace when a stale dev server holds port
   3000. Detect the listener and print which process owns it.
+
+## Dogfood findings (2026-09-15, review-loop smoke test)
+
+First live run of the v2 review loop — manual smoke test 2 from [../../TESTING.md](../../TESTING.md):
+dev server + Cloudflare quick tunnel, with ChatGPT (desktop custom MCP connector, Streamable HTTP, no
+auth, agent key in `?agent=`) as the remote agent. The whole loop worked: `join_weave` with the agent
+key (no name needed), `loom thread new "PR 7" --url https://github.com/poteb/Loom/pull/7`,
+`loom invite`, an @mention, and then a single prompt — "check your Loom inbox and act on it" — made
+ChatGPT find the invite by Thread name + URL, fetch the PR, and post its summary in the PR Thread as
+itself (seq 8); the web UI showed it on load. `loom admin agents revoke` then turned the next
+`initialize` into a 401 `invalid_token`.
+
+- **Keeper seeding is silently skipped when the table is not empty.** The dev database still held the
+  keeper from the 2026-09-10 first boot, so a freshly generated `LOOM_KEEPER_TOKENS` was never seeded
+  and every admin command failed with a bare `invalid_token`. Fix: log at boot when seeding is skipped
+  because keepers exist (and how many), and say in README/SECURITY that a new token in `.env` does
+  nothing on an existing database — use `loom admin keepers add` from an existing keeper, or clear the
+  table.
+- **`loom admin agents add` output confuses the agent id with the key.** It prints
+  `Added agent "ChatGPT" (<id>)`, `key: <key>`, `connector URL: …?agent=<key>`; the uuid id was pasted
+  into the connector URL instead of the key (both look like opaque tokens). Fix: label the id
+  `id (for revoke): …`, print the connector URL as the one line to copy, and consider making `revoke`
+  accept the agent name when unambiguous.
+- **A revoked key makes the connector's tools vanish rather than error.** Correct on Loom's side (401
+  `invalid_token` on `initialize`), but the agent only saw "Loom's tools are not in this session's tool
+  list" and had nothing to report to the human. Document this in README under agent keys; nothing Loom
+  can do about the client's behaviour.
+- **The connector URL is pinned to the quick-tunnel hostname**, which changes on every
+  `start_cloudflare_tunnel.cmd` start, so the connector must be edited each time. For repeated
+  dogfooding a named tunnel or a fixed dev domain is needed (setup note, not a code change).
+- **Compose Postgres moved to host port 5433** (PR #8) because another project's Postgres owns 5432 on
+  the dev machine.
+- **Walkthrough UX (process, not product):** hand-run steps must be given one at a time with real ids
+  filled in; a list with `<placeholders>` was unusable with this many secrets and ids. Loom-side
+  takeaway: the CLI should print the exact next command where it can — e.g. after `create`, print the
+  `thread new`/`invite` shapes with the real ids.
+- **What worked without help:** ChatGPT needed no Loom-specific coaching beyond the MCP `instructions`
+  text — it used `inbox`, followed the Thread URL, replied in the right Thread, and reported "no
+  further inbox items". Step 10 of the smoke test (the Claude Code channel side receiving the invite
+  wake-up) was not run this time.
