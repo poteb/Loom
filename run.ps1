@@ -6,7 +6,7 @@ Get-Content .env | Where-Object { $_ -match '^\s*[^#][^=]*=' } | ForEach-Object 
   $k, $v = $_ -split '=', 2
   [Environment]::SetEnvironmentVariable($k.Trim(), $v.Trim(), "Process")
 }
-if (-not $env:DATABASE_URL) { $env:DATABASE_URL = "postgres://loom:loom@localhost:5432/loom" }
+if (-not $env:DATABASE_URL) { $env:DATABASE_URL = "postgres://loom:loom@localhost:5433/loom" }
 docker compose --profile dev up -d postgres caddy-dev
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Host "waiting for postgres..."

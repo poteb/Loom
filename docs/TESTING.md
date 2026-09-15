@@ -22,11 +22,14 @@ which every DB-backed package loads as its `globalSetup`, in this order:
    running (`teardown()` stops the container).
 3. **Fallback to the compose Postgres** — if the container cannot start, the setup logs
    `testcontainer unavailable (…)`, creates a dedicated **`loom_test`** database on the compose
-   server via the admin URL `postgres://loom:loom@localhost:5432/postgres` (ignoring SQLSTATE
+   server via the admin URL `postgres://loom:loom@localhost:5433/postgres` (ignoring SQLSTATE
    `42P04`, "already exists"), and points `TEST_DATABASE_URL` at
-   `postgres://loom:loom@localhost:5432/loom_test` — same host, port and credentials as the
+   `postgres://loom:loom@localhost:5433/loom_test` — same host, port and credentials as the
    compose application database, different database name (`fallbackTestUrl` in
    [`src/core/test/db-guard.ts`](../src/core/test/db-guard.ts)).
+
+The host port is **5433**, not the default 5432: compose publishes the dev Postgres on
+`127.0.0.1:5433` so a second Postgres already using 5432 on the same machine can coexist with it.
 
 **The guard.** `freshDb()` truncates every table, so it must never run against the compose
 *application* database. `isProtectedDatabase()` returns true when the URL's database name is

@@ -3,9 +3,9 @@ import postgres from "postgres";
 import { fallbackTestUrl } from "./db-guard.js";
 
 /** The database `docker compose` brings up for local development — real, non-test data. */
-const COMPOSE_DATABASE_URL = "postgres://loom:loom@localhost:5432/loom";
+const COMPOSE_DATABASE_URL = "postgres://loom:loom@localhost:5433/loom";
 /** Always-present admin database on the same Postgres server, used only to create `loom_test`. */
-const ADMIN_DATABASE_URL = "postgres://loom:loom@localhost:5432/postgres";
+const ADMIN_DATABASE_URL = "postgres://loom:loom@localhost:5433/postgres";
 /** Postgres error code for "database already exists". */
 const DUPLICATE_DATABASE = "42P04";
 
