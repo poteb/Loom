@@ -710,4 +710,4 @@ Mount it in `app.tsx` inside `<ThreadList>`'s aside (pass through) or as a sibli
 - §8 additive migration → Task 1 (generated SQL inspected).
 - §9 docs → Task 12.
 
-Type consistency: `guidelines` (string) is the field name everywhere; combined text is always `guidelines` on results and `guidelinesFor()` in core; the channel preamble tag type is `weave.guidelines`, the event type `weave.guidelines_changed`; `setWeaveGuidelines` returns `{ weave, seq: number | null }` in core, client, tools, CLI and web.
+Type consistency: `guidelines` (string) is the field name everywhere; combined text is always `guidelines` on results and `guidelinesFor()` in core; the channel preamble is the `preamble="guidelines"` attribute on the first woken event's own tag (no separate tag type), the event type is `weave.guidelines_changed`; `setWeaveGuidelines` returns `{ weave, seq: number | null }` in core, client, tools, CLI and web.
