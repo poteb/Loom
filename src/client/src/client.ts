@@ -85,6 +85,15 @@ export class LoomClient {
   exportWeave(weaveId: string, format: "md" | "json"): Promise<string> {
     return this.call("GET", `/api/weaves/${weaveId}/export?format=${format}`, undefined, "text");
   }
+  /** Public on the server: no credential is needed, so this answers before the caller holds one. */
+  getInstanceGuidelines(opts: { signal?: AbortSignal } = {}): Promise<string> {
+    return request<{ guidelines: string }>({ method: "GET", url: `${this.baseUrl}/api/guidelines`, fetchImpl: this.fetchImpl, signal: opts.signal })
+      .then((r) => r.guidelines);
+  }
+  /** Weave keepers only. `seq` is null when the text already matched: nothing was appended. */
+  setWeaveGuidelines(weaveId: string, guidelines: string): Promise<{ weave: Weave; seq: number | null }> {
+    return this.call("PUT", `/api/weaves/${weaveId}/guidelines`, { guidelines });
+  }
   async wsTicket(): Promise<string> {
     const r = await this.call<{ ticket: string }>("POST", "/api/auth/ws-ticket");
     return r.ticket;

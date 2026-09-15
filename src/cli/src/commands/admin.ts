@@ -28,6 +28,7 @@ function labelled(rows: [label: string, value: string][]): string[] {
 
 const SETTING_PARSERS: Record<keyof Settings, (v: string) => unknown> = {
   instanceName: (v) => v,
+  guidelines: (v) => v,
   maxMessageLength: (v) => { const n = Number(v); if (!Number.isInteger(n)) throw new CliError("validation", "maxMessageLength must be an integer"); return n; },
   openWeaveCreation: (v) => { if (v !== "true" && v !== "false") throw new CliError("validation", "openWeaveCreation must be true or false"); return v === "true"; },
 };

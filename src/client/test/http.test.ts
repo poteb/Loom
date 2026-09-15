@@ -74,6 +74,26 @@ describe("request", () => {
     }
   });
 
+  it("an aborted signal cancels a response whose body never ends, as code network", async () => {
+    // The signal has to reach the body read, not only the connection: this server answers with
+    // headers and then holds the response open forever. Without it the request would hang until
+    // the socket died, which is exactly the startup stall the channel plugin has to bound.
+    const stalled = await listen((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.write("{");
+    });
+    try {
+      const startedAt = Date.now();
+      await expect(request({
+        method: "GET", url: `${stalled.url}/api/guidelines`, signal: AbortSignal.timeout(100),
+      })).rejects.toMatchObject({ code: "network" });
+      expect(Date.now() - startedAt).toBeLessThan(2000);
+    } finally {
+      stalled.server.closeAllConnections();
+      await stalled.close();
+    }
+  });
+
   it("returns the raw body when accept is text", async () => {
     const res = new Response("plain text body", { status: 200 });
     await expect(

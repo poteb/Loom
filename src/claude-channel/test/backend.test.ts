@@ -21,12 +21,13 @@ function participant(name: string): Participant {
 
 function weaveInfo(): WeaveInfo {
   return {
-    weave: { id: WEAVE_ID, title: "Design review", createdAt: "", archivedAt: null, lastSeq: 0 },
+    weave: { id: WEAVE_ID, title: "Design review", createdAt: "", archivedAt: null, lastSeq: 0, guidelines: "" },
     threads: [
       { id: "t1", weaveId: WEAVE_ID, name: "Side", isGeneral: false, createdBy: "p1", createdAt: "", closedAt: null, url: null },
       { id: "g1", weaveId: WEAVE_ID, name: "General", isGeneral: true, createdBy: "p1", createdAt: "", closedAt: null, url: null },
     ],
     participants: [],
+    guidelines: "",
   };
 }
 
@@ -36,7 +37,7 @@ function makeFakeClient(over: { getWeave?: () => Promise<WeaveInfo>; lookupWeave
   const calls: string[] = [];
   const joinWeave = vi.fn(async (): Promise<JoinResult> => {
     calls.push("joinWeave");
-    return { weaveId: WEAVE_ID, weave: weaveInfo().weave, generalThreadId: "g1", participant: participant("Claude"), token: TOKEN };
+    return { weaveId: WEAVE_ID, weave: weaveInfo().weave, generalThreadId: "g1", participant: participant("Claude"), token: TOKEN, guidelines: "" };
   });
   const fake = {
     withToken: () => fake,

@@ -12,7 +12,7 @@ const general = { id: "g1", weaveId: "w1", name: "General", isGeneral: true, cre
 const pr = { id: "t1", weaveId: "w1", name: "PR 12", isGeneral: false, createdBy: "p1", createdAt: "", closedAt: null, url: "https://github.com/poteb/Loom/pull/12" };
 
 function state(over: Partial<SessionState> = {}): SessionState {
-  return { status: "ready", weave: { id: "w1", title: "W", createdAt: "", archivedAt: null, lastSeq: 3 }, threads: [general, pr], participants: [me, bot],
+  return { status: "ready", weave: { id: "w1", title: "W", createdAt: "", archivedAt: null, lastSeq: 3, guidelines: "" }, threads: [general, pr], participants: [me, bot],
     events: [], me: { participant: me, token: "t" }, currentThreadId: "g1", connection: "open", needsName: false, invitesForMe: new Set(), invited: {}, ...over };
 }
 function session(over: Partial<Session> = {}): Session {
