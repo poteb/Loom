@@ -2,7 +2,10 @@ import { useState } from "preact/hooks";
 import type { Session, SessionState } from "../session.js";
 import { renderMarkdown } from "../markdown.js";
 
-const MAX = 4000;
+/** Core's `MAX_GUIDELINES_LENGTH`, restated here so the bundle carries no dependency on the core
+ *  package (and the database driver behind it). Exported so a test can pin the two together. */
+export const GUIDELINES_MAX = 4000;
+const MAX = GUIDELINES_MAX;
 
 /** The two layers of guidelines in the sidebar: the Weave's own text, editable by a keeper, and the
  *  instance text every agent is told, collapsed underneath because it is context, not this Weave's. */

@@ -31,7 +31,7 @@ export function ThreadList({ state, session, onError }: { state: SessionState; s
   };
   const current = state.threads.find((t) => t.id === state.currentThreadId);
   return (
-    <aside class="threads">
+    <nav class="threads">
       <div class="threads-head">
         <span>Threads</span>
         {!archived && <button onClick={() => setCreating((v) => !v)}>New thread</button>}
@@ -65,6 +65,6 @@ export function ThreadList({ state, session, onError }: { state: SessionState; s
       {current && session.canEditThread(current) && (
         <ThreadTools key={current.id} thread={current} state={state} session={session} onError={onError} />
       )}
-    </aside>
+    </nav>
   );
 }

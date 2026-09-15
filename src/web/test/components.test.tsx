@@ -4,7 +4,8 @@ import { render, screen, fireEvent } from "@testing-library/preact";
 import { ThreadList } from "../src/components/ThreadList.js";
 import { MessageList } from "../src/components/MessageList.js";
 import { InviteBanner } from "../src/components/InviteBanner.js";
-import { GuidelinesPanel } from "../src/components/GuidelinesPanel.js";
+import { GuidelinesPanel, GUIDELINES_MAX } from "../src/components/GuidelinesPanel.js";
+import { MAX_GUIDELINES_LENGTH } from "@loom/core";
 import type { Session, SessionState } from "../src/session.js";
 
 const me = { id: "p1", weaveId: "w1", name: "Paw", kind: "human" as const, role: "member" as const, joinedAt: "", agentId: null };
@@ -31,6 +32,13 @@ describe("ThreadList", () => {
     expect(screen.getByText("PR 12").closest("li")!.className).toContain("invited");
     expect(screen.getByText(/invited/i)).toBeTruthy();
   });
+  it("is a navigation landmark, not a second complementary one inside the sidebar aside", () => {
+    // app.tsx wraps this in <aside class="sidebar">; an <aside> here would nest two
+    // complementary landmarks, and a screen reader announces the inner one as unnamed context.
+    const { container } = render(<ThreadList state={state()} session={session()} onError={() => {}} />);
+    expect(container.querySelector(".threads")!.tagName).toBe("NAV");
+  });
+
   it("renders a non-http url as plain text, never as a link", () => {
     const evil = { ...pr, url: "javascript:alert(1)" };
     render(<ThreadList state={state({ threads: [general, evil] })} session={session()} onError={() => {}} />);
@@ -109,6 +117,12 @@ describe("GuidelinesPanel", () => {
   const keeperMe = { ...me, role: "keeper" as const };
   const keeperState = (over: Partial<SessionState> = {}) =>
     state({ me: { participant: keeperMe, token: "t" }, ...over });
+
+  it("counts against the same limit core enforces", () => {
+    // The counter and the Save gate are the only warning a keeper gets before the server refuses
+    // the text; a literal here would drift silently the day core raises or lowers the limit.
+    expect(GUIDELINES_MAX).toBe(MAX_GUIDELINES_LENGTH);
+  });
 
   it("renders the Weave text as Markdown and offers no Edit button to a member", () => {
     render(<GuidelinesPanel state={state({ weave: { id: "w1", title: "W", createdAt: "", archivedAt: null, lastSeq: 3, guidelines: "Be **kind**" } })}
