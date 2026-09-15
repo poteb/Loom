@@ -196,9 +196,17 @@ changes; today no request can be cancelled at all.
   `<channel source="loom" weave="…" type="weave.guidelines">` tag. Delivered once per Weave per
   session, tracked in process memory only (not in channel state), and reset when the Weave is left
   and rejoined. `list_joined` also returns `guidelines` per Weave so an agent can look them up on
-  demand. Test: a restored session whose cursor is beyond the last change, with no later change,
-  receives the preamble ahead of the first message; a second message in the same session carries no
-  preamble.
+  demand.
+  **When that metadata fetch fails** (today the stream logs and swallows it and streams on), the
+  preamble is a precondition, not a nicety: no event for that Weave is delivered and its delivery
+  cursor is not advanced until a `get_weave` has succeeded. The fetch is retried on the stream's
+  existing reconnect/backoff schedule, and events that arrived meanwhile are held and delivered in
+  order behind the preamble. The "preamble delivered" flag is set only after the turn carrying it has
+  been handed to Claude Code, so a failure to notify leaves the next attempt to carry it again.
+  Tests: a restored session whose cursor is beyond the last change, with no later change, receives
+  the preamble ahead of the first message and none on the second; metadata failing on the first
+  attempt while events are already available delivers nothing and leaves the cursor unchanged, then
+  delivers preamble + held events once the fetch succeeds.
 - **Wake.** `shouldWake`: `weave.guidelines_changed` wakes the session regardless of `wake`, like an
   invite addressed to it (a rules change concerns every participant). It still respects
   `e.actor === participantId` (your own change does not wake you).
@@ -220,12 +228,20 @@ changes; today no request can be cancelled at all.
   `weave.guidelines = payload.guidelines`, recording `guidelinesSeq = e.seq`, and scheduling a
   metadata refresh. Unlike `archivedAt`, guidelines are not one-way (they change repeatedly and can be
   cleared), so the archive trick of "keep whichever saw it" does not apply. The refresh merge is
-  **sequence-aware** instead: a `getWeave` snapshot carries `weave.lastSeq`, and the snapshot's
-  `guidelines` is applied only when `lastSeq >= guidelinesSeq`; a snapshot that predates the last
-  applied guidelines event keeps the text the event delivered. Test: a refresh gated before a change
-  event completes after it (text must stay the new one), and the same with a clear (text must stay
-  `''`). The thread view renders the event as a system line "<name> changed the Weave guidelines" with
-  the new text beneath.
+  **sequence-aware** in both directions, with one watermark `guidelinesSeq`:
+  - A `getWeave` snapshot carries `weave.lastSeq`. Its `guidelines` is applied only when
+    `lastSeq >= guidelinesSeq`, and accepting it advances `guidelinesSeq` to that `lastSeq`. A snapshot
+    that predates the last applied change keeps the text the event delivered.
+  - A `weave.guidelines_changed` event replaces the text only when `e.seq > guidelinesSeq`, and then
+    sets `guidelinesSeq = e.seq`. An older event — the session loads history, then metadata, then
+    streams from the history cursor, so a snapshot holding guidelines B (seq 12) can be followed by a
+    replayed change to A (seq 10) — is still appended to history and rendered as a system line, but
+    does not touch the panel.
+  Tests: a refresh gated before a change event completes after it (text stays the new one), the same
+  with a clear (text stays `''`); and the reverse order — snapshot at seq 12 accepted, then events at
+  seq 10 (a change) and seq 11 (a clear) replayed — leaves the panel on the snapshot's text while both
+  events appear in the thread. The thread view renders the event as a system line "<name> changed the
+  Weave guidelines" with the new text beneath.
 - **Archived Weaves**: panel read-only, no Edit button.
 
 ## 6. Error handling
