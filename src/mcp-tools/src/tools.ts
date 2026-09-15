@@ -40,6 +40,12 @@ export type RegisterOptions = {
    * channel resolves the stored participant token for that Weave. When present it decides alone —
    * returning `undefined` refuses the read (`invalid_token`) rather than falling back; only when the
    * option is absent does `defaultCredential` apply.
+   *
+   * The resolver may also **throw** a `LoomToolError` (or anything carrying string `code` and
+   * `message`) to refuse with a code of its own instead of the shared `invalid_token` — the channel
+   * throws `forbidden: not joined to this Weave…`, which says more than "invalid token" does. The
+   * return type cannot express that, so it is stated here: `forResource` is called *inside* the
+   * resource callback's `try`, where `resourceError` folds the code into the message.
    */
   resourceCredential?: (weaveId: string) => string | undefined;
 };
@@ -147,6 +153,7 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
   }, ({ credential, weaveId, guidelines }) => toToolResult(Promise.resolve().then(() => backend.setWeaveGuidelines(resolve(credential), weaveId, guidelines))));
 
   // A resource read carries no arguments of its own, so the credential comes from the surface.
+  // May throw, deliberately: see RegisterOptions.resourceCredential.
   const forResource = (weaveId: string): string => {
     const v = opts.resourceCredential ? opts.resourceCredential(weaveId) : defaultCred?.();
     if (!v) throw new Error("invalid_token: a credential for this Weave is required to read its guidelines");
@@ -164,6 +171,8 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
     async (uri, { weaveId }) => {
       const id = String(weaveId);
       try {
+        // forResource() stays inside the try on purpose — a resolver that throws its own
+        // { code, message } must reach resourceError() too. Do not hoist it above this line.
         return { contents: [{ uri: uri.href, mimeType: "text/markdown", text: await backend.getGuidelines(forResource(id), id) }] };
       } catch (e) { throw resourceError(e); }
     });

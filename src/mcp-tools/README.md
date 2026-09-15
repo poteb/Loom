@@ -41,6 +41,13 @@ that Weave. Without the option it falls back to `defaultCredential`; when neithe
 is refused. A resource error has no `{ code, message }` envelope, so the code is folded into the
 message instead (`invalid_token: …`, `forbidden: …`).
 
+The resolver may also **throw** a `LoomToolError` — or anything carrying a string `code` and
+`message` — to refuse the read with a code of its own instead of the shared `invalid_token`; the
+channel throws `forbidden: not joined to this Weave…`, which says more than "invalid token" does.
+The signature cannot express that, so it is a documented part of the contract, and the resolver is
+deliberately called **inside** the resource callback's `try` so the thrown code reaches
+`resourceError` and lands in the message. Do not hoist it out.
+
 `RegisterOptions.defaultCredential?: () => string | undefined` is for a connection already
 authenticated as itself (an agent key): when set, `credential` becomes **optional** in every tool's
 schema and is filled in by the resolver, and `create_weave` / `join_weave` pass it through so the new

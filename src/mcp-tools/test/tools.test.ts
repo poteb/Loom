@@ -213,4 +213,14 @@ describe("guidelines", () => {
       await expect(c.readResource({ uri: "loom://weaves/nope/guidelines" })).rejects.toThrow(/forbidden/);
     } finally { await c.close(); }
   });
+
+  it("lets the resolver itself refuse with its own code by throwing", async () => {
+    // The channel does exactly this for a Weave it has not joined. It works only because the
+    // resolver runs inside the resource callback's try, where resourceError folds the code into
+    // the message — pinning it here so a refactor cannot hoist the call out of the try.
+    const c = await connect({ resourceCredential: () => { throw new LoomToolError("forbidden", "not joined"); } });
+    try {
+      await expect(c.readResource({ uri: "loom://weaves/w1/guidelines" })).rejects.toThrow(/forbidden: not joined/);
+    } finally { await c.close(); }
+  });
 });
