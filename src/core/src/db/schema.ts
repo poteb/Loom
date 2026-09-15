@@ -2,11 +2,13 @@ import {
   pgTable, text, timestamp, integer, jsonb, uuid, boolean, uniqueIndex, index,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
+import { DEFAULT_INSTANCE_GUIDELINES } from "../guidelines-default.js";
 
 export const weaves = pgTable("weaves", {
   id: uuid("id").primaryKey(),
   secret: text("secret").notNull().unique(),
   title: text("title").notNull(),
+  guidelines: text("guidelines").notNull().default(""),
   lastSeq: integer("last_seq").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   archivedAt: timestamp("archived_at", { withTimezone: true }),
@@ -57,6 +59,7 @@ export const settings = pgTable("settings", {
   instanceName: text("instance_name").notNull().default("Loom"),
   maxMessageLength: integer("max_message_length").notNull().default(20000),
   openWeaveCreation: boolean("open_weave_creation").notNull().default(true),
+  guidelines: text("guidelines").notNull().default(DEFAULT_INSTANCE_GUIDELINES),
 });
 
 export const events = pgTable("events", {

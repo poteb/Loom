@@ -1,6 +1,6 @@
 import type { Command } from "commander";
 import type { LoomClient, Settings } from "@loom/client";
-import { CliError, type CliContext } from "../context.js";
+import { CliError, textArg, type CliContext, type CliIo } from "../context.js";
 import { emit } from "../output.js";
 
 /** Canonical 8-4-4-4-12 hex uuid — mirrors `isUuid` in core, which the CLI does not depend on at runtime. */
@@ -28,9 +28,19 @@ function labelled(rows: [label: string, value: string][]): string[] {
 
 const SETTING_PARSERS: Record<keyof Settings, (v: string) => unknown> = {
   instanceName: (v) => v,
+  guidelines: (v) => v,
   maxMessageLength: (v) => { const n = Number(v); if (!Number.isInteger(n)) throw new CliError("validation", "maxMessageLength must be an integer"); return n; },
   openWeaveCreation: (v) => { if (v !== "true" && v !== "false") throw new CliError("validation", "openWeaveCreation must be true or false"); return v === "true"; },
 };
+
+/**
+ * Substitutes stdin for a `guidelines=-` value before the patch is parsed: the instance guidelines
+ * are up to 4000 characters of Markdown, which nobody types as one shell argument. Only this key
+ * takes `-`; every other setting is short, and `-` could be a legitimate value for them.
+ */
+async function readStdinValues(pairs: string[], io: CliIo): Promise<string[]> {
+  return Promise.all(pairs.map(async (p) => (p === "guidelines=-" ? `guidelines=${await textArg("-", io)}` : p)));
+}
 
 export function parseSettingsPatch(pairs: string[]): Partial<Settings> {
   const patch: Record<string, unknown> = {};
@@ -56,11 +66,13 @@ export function registerAdminCommands(program: Command, ctx: () => CliContext): 
 
   admin.command("settings")
     .description("Show or update settings")
-    .option("--set <pair...>", "key=value (instanceName, maxMessageLength, openWeaveCreation)")
+    .option("--set <pair...>", "key=value (instanceName, maxMessageLength, openWeaveCreation, guidelines; guidelines=- reads stdin)")
     .action(async (o: { set?: string[] }) => {
       const c = ctx();
       const k = c.keeperClient();
-      const settings = o.set && o.set.length > 0 ? await k.admin.updateSettings(parseSettingsPatch(o.set)) : await k.admin.getSettings();
+      const settings = o.set && o.set.length > 0
+        ? await k.admin.updateSettings(parseSettingsPatch(await readStdinValues(o.set, c.io)))
+        : await k.admin.getSettings();
       emit(c, settings, Object.entries(settings).map(([key, v]) => `${key}: ${String(v)}`).join("\n"));
     });
 

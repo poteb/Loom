@@ -14,8 +14,11 @@ artefact (typically a pull request, whose URL the Thread carries). Everything is
 workspace: `core` holds every rule, and `server`, `client`, `mcp-tools`, `cli`, `claude-channel` and
 `web` are adapters over it.
 
-Current state: **v1 plus v2 sub-project 1** (PRs #1–#5). v2 sub-project 1 added Thread URLs, Thread
-invites, `inbox`, and instance-level agent keys.
+Current state: **v1 plus v2 sub-projects 1 and 2** (PRs #1–#5 and after). Sub-project 1 added Thread
+URLs, Thread invites, `inbox`, and instance-level agent keys. Sub-project 2 added **guidelines**:
+two layers of keeper-written Markdown (instance-wide on `settings`, per-Weave on `weaves`), composed
+and handed to every agent on connect, with a `weave.guidelines_changed` event, `set_weave_guidelines`,
+the public `GET /api/guidelines`, two MCP resources, CLI commands and a web panel.
 
 The north-star scenario these serve (from
 [superpowers/specs/v2-notes.md](superpowers/specs/v2-notes.md)): a Weave is a working session; each PR
@@ -27,11 +30,17 @@ Loom is meant to host.
 ## 2. Scope
 
 - **All of `src/` as it stands on `main`** — the seven packages, their tests, their configuration.
-- **The two specs are the binding requirements:**
+- **The three specs are the binding requirements:**
   - [superpowers/specs/2026-09-10-loom-v1-design.md](superpowers/specs/2026-09-10-loom-v1-design.md)
   - [superpowers/specs/2026-09-12-loom-v2-review-loop-design.md](superpowers/specs/2026-09-12-loom-v2-review-loop-design.md)
+  - [superpowers/specs/2026-09-15-loom-v2-guidelines-design.md](superpowers/specs/2026-09-15-loom-v2-guidelines-design.md)
+    — sub-project 2; it governs guidelines only and leaves everything else unchanged. Its §4
+    "Restored Weaves" carries a **Superseded during planning** note: the channel folds a Weave's
+    guidelines into the first event the session is woken for (`preamble="guidelines"` on that
+    event's own tag) instead of sending a separate `type="weave.guidelines"` turn. The folded form
+    is the requirement; do not report it as drift.
 
-  Where the two disagree, **v2 wins** — it was written later and says "everything not mentioned here is
+  Where they disagree, **the later spec wins** — each says "everything not mentioned here is
   unchanged". Known supersessions, so you do not report them as drift:
   - `thread.created` payload now carries `url`; Threads have a nullable `url` (v1 had neither).
   - New event types `thread.invited` and `thread.url_changed` (not in the v1 event table).
@@ -50,10 +59,10 @@ Loom is meant to host.
 
 ## 3. Out of scope — do not report
 
-1. **v2 sub-projects 2–6**, named in the v2 spec's "Explicitly out of this sub-project" and in
+1. **v2 sub-projects 3–6**, named in the v2 spec's "Explicitly out of this sub-project" and in
    v2-notes:
    1. (done — this codebase)
-   2. Keeper-editable guidelines (instance and Weave level, `weave.guidelines_changed`)
+   2. (done — keeper-editable guidelines; **in scope**, see §1 and §2)
    3. GitHub webhooks / posting back to GitHub
    4. Per-Thread roles beyond "creator or Weave keeper" (thread keepers, private Threads)
    5. `claude/channel/permission` relay and marketplace publishing of the channel plugin
@@ -79,16 +88,20 @@ line that documents it.
 ## 4. Where to start
 
 Suggested reading order; the files named are where the logic actually is (per
-[ARCHITECTURE.md](ARCHITECTURE.md)).
+[ARCHITECTURE.md](ARCHITECTURE.md)). For the guidelines feature specifically, read
+[superpowers/specs/2026-09-15-loom-v2-guidelines-design.md](superpowers/specs/2026-09-15-loom-v2-guidelines-design.md)
+alongside step 4 — it is the requirement, and [ARCHITECTURE.md](ARCHITECTURE.md) §11 is the
+implementation map (core `guidelines.ts` → the routes and the per-session MCP instructions → the
+channel's startup fetch and preamble → the web panel's seq watermark).
 
 | # | Read | Why / what carries the logic |
 | --- | --- | --- |
 | 1 | [ARCHITECTURE.md](ARCHITECTURE.md) | The map: package graph, the layering invariant, the event log, credential kinds |
 | 2 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | The standards you judge against |
 | 3 | [SECURITY.md](SECURITY.md) | The claims you verify |
-| 4 | `core` ([../src/core/README.md](../src/core/README.md)) | `src/core/src/actors.ts` (credential resolution, every authority check, `resolveInWeave`), `src/core/src/events.ts` (`withWeaveLock`, `appendInTx`, seq), then `weaves.ts`, `threads.ts`, `invites.ts`, `inbox.ts`, `index.ts` (the facade and `forThread`) |
+| 4 | `core` ([../src/core/README.md](../src/core/README.md)) | `src/core/src/actors.ts` (credential resolution, every authority check, `resolveInWeave`), `src/core/src/events.ts` (`withWeaveLock`, `appendInTx`, seq), then `weaves.ts`, `threads.ts`, `invites.ts`, `inbox.ts`, `guidelines.ts` (both layers, `guidelinesFor`, the idempotent `seq: null`), `index.ts` (the facade and `forThread`) |
 | 5 | `server` ([../src/server/README.md](../src/server/README.md)) | `src/server/src/ws.ts` (ticket redeem, replay/live handoff, mid-stream re-auth), `src/server/src/mcp/index.ts` + `mcp/backend.ts` (session identity, per-call re-resolve), `src/server/src/auth.ts` (bearer + `?agent=`), `routes/*` |
-| 6 | `mcp-tools` ([../src/mcp-tools/README.md](../src/mcp-tools/README.md)) and `client` ([../src/client/README.md](../src/client/README.md)) | `src/mcp-tools/src/tools.ts` (all 23 tools, `defaultCredential`), `src/client/src/client.ts` and `src/client/src/stream.ts` |
+| 6 | `mcp-tools` ([../src/mcp-tools/README.md](../src/mcp-tools/README.md)) and `client` ([../src/client/README.md](../src/client/README.md)) | `src/mcp-tools/src/tools.ts` (all 24 tools, `defaultCredential`, the two guidelines resources), `src/client/src/client.ts` and `src/client/src/stream.ts` |
 | 7 | `cli` ([../src/cli/README.md](../src/cli/README.md)) | `src/cli/src/cli.ts` (arg handling, exit codes), `src/cli/src/context.ts` (credential precedence), `src/cli/src/config.ts` |
 | 8 | `claude-channel` ([../src/claude-channel/README.md](../src/claude-channel/README.md)) | `src/claude-channel/src/state.ts` (lock-free versioned CAS), `src/claude-channel/src/streams.ts` (delivery chain, cursors), `src/claude-channel/src/format.ts` (`shouldWake`, `safe()`), `src/claude-channel/src/backend.ts` + `stored.ts` |
 | 9 | `web` ([../src/web/README.md](../src/web/README.md)) | `src/web/src/session.ts` (load order, backfill, derived invites), `src/web/src/markdown.ts`, `src/web/src/components/ThreadList.tsx` |

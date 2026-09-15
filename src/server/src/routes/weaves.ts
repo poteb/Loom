@@ -12,6 +12,7 @@ export function weaveRoutes(core: Core) {
     const input = await body(c, z.object({
       title: z.string(), opener: z.string().default(""),
       creator: z.object({ name: z.string(), kind: kindSchema }),
+      guidelines: z.string().optional(),
     }));
     const actor = await optionalActor(c, core);
     return c.json(await core.createWeave(input, actor), 201);
@@ -62,6 +63,12 @@ export function weaveRoutes(core: Core) {
     const actor = await requireActor(c, core);
     const { name, url } = await body(c, z.object({ name: z.string(), url: z.string().nullable().optional() }));
     return c.json(await core.createThread(actor, c.req.param("id"), name, url ?? null), 201);
+  });
+
+  r.put("/:id/guidelines", async (c) => {
+    const actor = await requireActor(c, core);
+    const { guidelines } = await body(c, z.object({ guidelines: z.string() }));   // type only; core owns the length rule
+    return c.json(await core.setWeaveGuidelines(actor, c.req.param("id"), guidelines));
   });
 
   r.post("/:id/archive", async (c) => {

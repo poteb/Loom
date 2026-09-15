@@ -18,6 +18,7 @@ export function adminRoutes(core: Core) {
     // on the values themselves; this only stops the evidence being thrown away first.
     const patch = await body(c, z.object({
       instanceName: z.string().optional(), maxMessageLength: z.number().optional(), openWeaveCreation: z.boolean().optional(),
+      guidelines: z.string().optional(),
     }).strict());
     return c.json(await core.updateSettings(actor, patch));
   });

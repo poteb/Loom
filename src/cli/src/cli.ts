@@ -5,6 +5,7 @@ import { registerMessageCommands } from "./commands/messages.js";
 import { registerThreadCommands } from "./commands/thread.js";
 import { registerAdminCommands } from "./commands/admin.js";
 import { registerInviteCommands } from "./commands/invite.js";
+import { registerGuidelinesCommands } from "./commands/guidelines.js";
 
 export type { CliIo } from "./context.js";
 
@@ -71,6 +72,7 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
   registerThreadCommands(program, ctx);
   registerAdminCommands(program, ctx);
   registerInviteCommands(program, ctx);
+  registerGuidelinesCommands(program, ctx, io);
 
   const commandNames = new Set(program.commands.flatMap((c) => [c.name(), ...c.aliases()]));
   const stripped = takeBaseUrl(argv, commandNames);

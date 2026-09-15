@@ -7,23 +7,28 @@ import { isUuid, newId, newSecret } from "./ids.js";
 import { validateName } from "./names.js";
 import { parseMentions } from "./mentions.js";
 import { getSettings } from "./settings.js";
+import { getInstanceGuidelines, guidelinesFor, validateGuidelines } from "./guidelines.js";
 import { appendInTx, withWeaveLock } from "./events.js";
 import { actorId, assertCanRead, assertInstanceKeeperFresh, assertIsKeeperOf, assertStillKeeperOf, toPublicParticipant } from "./actors.js";
 import type { Actor, Kind, PublicParticipant, PublicThread, PublicWeave } from "./types.js";
 
-export type CreateWeaveInput = { title: string; opener: string; creator: { name: string; kind: Kind } };
+export type CreateWeaveInput = { title: string; opener: string; creator: { name: string; kind: Kind }; guidelines?: string };
+// `guidelines` on these three results is the combined text an agent should read (instance layer
+// then Weave layer); `weave.guidelines` beside it is this Weave's layer alone.
 export type CreateWeaveResult = {
   weave: PublicWeave; secret: string; participant: PublicParticipant; token: string; generalThread: PublicThread;
+  guidelines: string;
 };
-export type WeaveInfo = { weave: PublicWeave; threads: PublicThread[]; participants: PublicParticipant[] };
+export type WeaveInfo = { weave: PublicWeave; threads: PublicThread[]; participants: PublicParticipant[]; guidelines: string };
 export type JoinResult = {
   weaveId: string; weave: PublicWeave; generalThreadId: string; participant: PublicParticipant;
-  token: string; alreadyJoined?: boolean;
+  token: string; alreadyJoined?: boolean; guidelines: string;
 };
 
 export function toPublicWeave(w: typeof weaves.$inferSelect): PublicWeave {
   return { id: w.id, title: w.title, createdAt: w.createdAt.toISOString(),
-    archivedAt: w.archivedAt ? w.archivedAt.toISOString() : null, lastSeq: w.lastSeq };
+    archivedAt: w.archivedAt ? w.archivedAt.toISOString() : null, lastSeq: w.lastSeq,
+    guidelines: w.guidelines };
 }
 export function toPublicThread(t: typeof threads.$inferSelect): PublicThread {
   return { id: t.id, weaveId: t.weaveId, name: t.name, isGeneral: t.isGeneral, createdBy: t.createdBy,
@@ -61,13 +66,15 @@ export async function createWeave(db: Db, bus: EventBus, input: CreateWeaveInput
   if (input.creator.kind !== "human" && input.creator.kind !== "agent") throw errors.validation("kind must be human or agent");
   const opener = input.opener ?? "";
   if (opener.length > settings.maxMessageLength) throw errors.messageTooLong(settings.maxMessageLength);
+  // Creation is the event: the Weave is born with these rules, so no weave.guidelines_changed.
+  const guidelines = validateGuidelines(input.guidelines ?? "");
 
   const secret = newSecret();
   const token = newSecret();
   const weaveId = newId(); const threadId = newId(); const participantId = newId();
 
   const { result, committed } = await db.transaction(async (tx) => {
-    const [w] = await tx.insert(weaves).values({ id: weaveId, secret, title }).returning();
+    const [w] = await tx.insert(weaves).values({ id: weaveId, secret, title, guidelines }).returning();
     const [t] = await tx.insert(threads).values({ id: threadId, weaveId, name: "General", isGeneral: true, createdBy: participantId }).returning();
     const [p] = await tx.insert(participants).values({ id: participantId, weaveId, name, kind: agentId ? "agent" : input.creator.kind, role: "keeper", token, agentId }).returning();
     const pub = toPublicParticipant(p!);
@@ -77,7 +84,8 @@ export async function createWeave(db: Db, bus: EventBus, input: CreateWeaveInput
       { threadId, type: "participant.joined", actor: participantId, payload: { participantId, name: pub.name, kind: pub.kind, role: pub.role } },
       { threadId, type: "message", actor: participantId, payload: { text: opener, mentions: parseMentions(opener, [pub]) } },
     ]);
-    return { result: { weave: toPublicWeave(w!), secret, participant: pub, token, generalThread: toPublicThread(t!) }, committed };
+    return { result: { weave: toPublicWeave(w!), secret, participant: pub, token, generalThread: toPublicThread(t!),
+      guidelines: guidelinesFor(settings.guidelines, w!) }, committed };
   });
   for (const e of committed) bus.publish(e);
   return result;
@@ -90,7 +98,8 @@ export async function getWeave(db: Queryable, actor: Actor, weaveId: string): Pr
   if (!w) throw errors.weaveNotFound();
   const ts = await db.select().from(threads).where(eq(threads.weaveId, weaveId)).orderBy(asc(threads.createdAt));
   const ps = await db.select().from(participants).where(eq(participants.weaveId, weaveId)).orderBy(asc(participants.joinedAt));
-  return { weave: toPublicWeave(w), threads: ts.map(toPublicThread), participants: ps.map(toPublicParticipant) };
+  return { weave: toPublicWeave(w), threads: ts.map(toPublicThread), participants: ps.map(toPublicParticipant),
+    guidelines: guidelinesFor(await getInstanceGuidelines(db), w) };
 }
 
 export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { name?: string; kind: Kind }, actor?: Actor): Promise<JoinResult> {
@@ -104,6 +113,8 @@ export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { na
   if (!found) throw errors.weaveNotFound();
   const [general] = await db.select().from(threads).where(eq(threads.weaveId, found.id)).orderBy(asc(threads.createdAt)).limit(1);
   if (!general) throw errors.weaveNotFound();
+  // Read once: both return paths below hand back the same combined text.
+  const instance = await getInstanceGuidelines(db);
   const agentId = actor?.kind === "agent" ? actor.agent.id : null;
   // The participant this agent already owns here, read raw: the caller needs its token, so
   // `participantForAgent` (which returns the public shape) is not enough.
@@ -116,6 +127,7 @@ export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { na
   const asAlreadyJoined = (p: typeof participants.$inferSelect): JoinResult => ({
     weaveId: found.id, weave: toPublicWeave(found), generalThreadId: general.id,
     participant: toPublicParticipant(p), token: p.token, alreadyJoined: true,
+    guidelines: guidelinesFor(instance, found),
   });
   // An agent owns at most one participant per Weave: joining again is a lookup, not a new identity.
   const existing = await myParticipant();
@@ -132,7 +144,8 @@ export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { na
     });
     // Everything a client needs to act right away, so the credential never has to be held
     // unsaved while a second (failable) metadata request runs.
-    return { weaveId: found.id, weave: toPublicWeave(found), generalThreadId: general.id, participant, token };
+    return { weaveId: found.id, weave: toPublicWeave(found), generalThreadId: general.id, participant, token,
+      guidelines: guidelinesFor(instance, found) };
   } catch (e) {
     // The lookup above runs outside the Weave lock, so two concurrent first joins by one key can
     // both miss it. The loser trips a unique index -- which one depends on the names: the agent

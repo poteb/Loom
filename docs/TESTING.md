@@ -96,13 +96,13 @@ missing — `dist`.
 
 | Package | Test files | Coverage |
 | --- | --- | --- |
-| `core` | 16 | Every domain rule, against a real database: weaves, threads (creation, close, URL), messages and mentions, participants and roles, invites, inbox, agents and agent keys, export, settings and keepers, event seq under the weave lock, the uuid/authority guards, and the pure units (ids, names, errors) |
-| `client` | 4 | The typed HTTP wrappers, base-URL/WS-URL resolution, and the reconnecting event stream — against a real server started by the server test helpers |
-| `mcp-tools` | 1 | Tool registration and wiring over an in-memory MCP transport against a fake `LoomToolBackend`; the only suite with no database |
-| `server` | 8 | REST routes, auth and admin, remote MCP at `/mcp` (including agent keys), the WebSocket stream (tickets, replay, mid-stream auth re-check), static hosting, config loading, log redaction, and one end-to-end scenario |
-| `cli` | 3 | Every command run in-process through `runCli()` against a live test server with a temp config file, asserting output, JSON shape and exit codes; plus the config store |
-| `claude-channel` | 6 | The channel end-to-end as a spawned `dist/server.js` (tools, streaming, stderr redaction), the lock-free `ChannelState`, event formatting and wake rules, the client-backed tool backend, and log redaction |
-| `web` | 4 | Session lifecycle against a real server, markdown rendering, mention-composer logic, and DOM tests of the Preact components |
+| `core` | 17 | Every domain rule, against a real database: weaves, threads (creation, close, URL), messages and mentions, participants and roles, invites, inbox, agents and agent keys, export, settings and keepers, event seq under the weave lock, the uuid/authority guards, guidelines (validation, both layers, composition, the idempotent `seq: null`, in-lock authority, archived/member/unknown-Weave refusals, the migration default and the export rendering), and the pure units (ids, names, errors) |
+| `client` | 4 | The typed HTTP wrappers (including the public `getInstanceGuidelines` and `setWeaveGuidelines`), base-URL/WS-URL resolution, the `signal` an aborted request honours, and the reconnecting event stream — against a real server started by the server test helpers |
+| `mcp-tools` | 1 | Tool registration and wiring over an in-memory MCP transport against a fake `LoomToolBackend`, asserted against `LOOM_TOOL_NAMES` (24 tools), plus the two guidelines resources and each `resourceCredential` outcome; the only suite with no database |
+| `server` | 8 | REST routes (including the public `GET /api/guidelines` and `PUT /api/weaves/:id/guidelines`), auth and admin, remote MCP at `/mcp` (including agent keys and the instructions carrying the instance guidelines), the WebSocket stream (tickets, replay, mid-stream auth re-check), static hosting, config loading, log redaction, and one end-to-end scenario |
+| `cli` | 4 | Every command run in-process through `runCli()` against a live test server with a temp config file, asserting output, JSON shape and exit codes; the guidelines commands including the `-`-reads-stdin path; plus the config store |
+| `claude-channel` | 7 | The channel end-to-end as a spawned `dist/server.js` (tools, streaming, stderr redaction), the lock-free `ChannelState`, event formatting and wake rules, the startup fetch under its deadline and the mechanics-only fallback, the guidelines preamble on the first woken event per Weave per session, the client-backed tool backend, and log redaction |
+| `web` | 4 | Session lifecycle against a real server (including the guidelines watermark in both directions — a stale snapshot and a replayed older event), markdown rendering, mention-composer logic, and DOM tests of the Preact components (the Guidelines panel: read for everyone, edit for keepers, the counter, archived read-only) |
 
 The web DOM tests use **happy-dom**, selected per file by a docblock on the first line of
 `src/web/test/components.test.tsx`:
@@ -118,15 +118,16 @@ guarded by `typeof document !== "undefined"` because the package runs Vitest wit
 
 ## Current totals
 
-As of the 2026-09-15 dogfood UX fixes (commit `ed66046`): **400 tests** — core 130,
-mcp-tools 11, server 83, client 30, cli 34, claude-channel 75, web 37 — run serially with
-`pnpm --workspace-concurrency=1 -r test`, and with `pnpm -r build` and `pnpm -r typecheck` clean.
+As of the guidelines sub-project's review fixes (last code commit `08552a0`): **491 tests in 46
+files** — core 143, mcp-tools 21, server 95, client 33, cli 40, claude-channel 106, web 53 — run
+serially with `pnpm --workspace-concurrency=1 -r test`, and with `pnpm -r build` and
+`pnpm -r typecheck` clean.
 Counts change with every feature; run the suites to see current numbers.
 
 ## Manual smoke tests
 
-Two things the automated suites cannot cover, because they need a live Claude Code session and a
-live third-party connector. Both are run by hand before calling a release done; the commands come
+Three things the automated suites cannot cover, because they need a live Claude Code session and a
+live third-party connector. All are run by hand before calling a release done; the commands come
 from the [README](../README.md) and `src/claude-channel/README.md`.
 
 **1. A live Claude Code channel session.**
@@ -154,3 +155,31 @@ Add the printed `https://<host>/mcp?agent=<key>` as a remote MCP connector in cl
 (`loom invite <threadId> <participantId>`), prompt it, and confirm its `inbox` returns the invite
 with the Thread name and URL and that its reply lands in the Thread. Finally
 `loom admin agents revoke <id>` and confirm the next call from that connector is refused.
+
+**3. Guidelines reaching a live agent.** Two halves; neither can be asserted from a test process,
+because what is being checked is what an agent is *told* at connect time and what lands in a real
+session's context.
+
+*Instance layer → a remote agent's instructions.* With the tunnel and an agent key from smoke test
+2:
+
+    loom admin settings --set guidelines=-        # paste the instance text, then Ctrl-D (Ctrl-Z, Enter on Windows)
+    curl -s https://<host>/api/guidelines          # the public read: the same text, no credential
+
+Then connect (or reconnect) the remote MCP client — a fresh `initialize` is what picks the text up,
+so an already-open connector session must be reloaded — and ask the agent what guidelines it is
+operating under. It should quote them back from its instructions, under the `## Loom guidelines`
+heading, without calling any tool.
+
+*Weave layer → a mentions-only channel session.* In a `loom-channel.cmd` session, join a Weave and
+put it in mentions-only mode (`set_wake(weaveId, "mentions")`); confirm an unmentioned message does
+**not** wake it. Then open `https://localhost/w/<secret>` as a keeper, edit the Weave's guidelines in
+the Guidelines panel and save. The session should wake even though nothing mentioned it — a
+`weave.guidelines_changed` event always wakes — and, if this is the session's first turn for that
+Weave, that turn carries `preamble="guidelines"` with the guidelines, a `---` separator, then the
+event. Check the web UI too: the change shows as a system line in the thread with the new text under
+it.
+
+Note two deliberate edges when reading the result: the "already delivered the preamble" flag is
+per channel process, so `--resume` re-sends it; and a mentions-only Weave that never mentions you
+never gets a preamble at all, because it has no first *woken* event to fold it into.

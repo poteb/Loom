@@ -21,12 +21,13 @@ function participant(name: string): Participant {
 
 function weaveInfo(): WeaveInfo {
   return {
-    weave: { id: WEAVE_ID, title: "Design review", createdAt: "", archivedAt: null, lastSeq: 0 },
+    weave: { id: WEAVE_ID, title: "Design review", createdAt: "", archivedAt: null, lastSeq: 0, guidelines: "" },
     threads: [
       { id: "t1", weaveId: WEAVE_ID, name: "Side", isGeneral: false, createdBy: "p1", createdAt: "", closedAt: null, url: null },
       { id: "g1", weaveId: WEAVE_ID, name: "General", isGeneral: true, createdBy: "p1", createdAt: "", closedAt: null, url: null },
     ],
     participants: [],
+    guidelines: "",
   };
 }
 
@@ -36,7 +37,7 @@ function makeFakeClient(over: { getWeave?: () => Promise<WeaveInfo>; lookupWeave
   const calls: string[] = [];
   const joinWeave = vi.fn(async (): Promise<JoinResult> => {
     calls.push("joinWeave");
-    return { weaveId: WEAVE_ID, weave: weaveInfo().weave, generalThreadId: "g1", participant: participant("Claude"), token: TOKEN };
+    return { weaveId: WEAVE_ID, weave: weaveInfo().weave, generalThreadId: "g1", participant: participant("Claude"), token: TOKEN, guidelines: "" };
   });
   const fake = {
     withToken: () => fake,
@@ -98,6 +99,22 @@ describe("ClientToolBackend.joinWeave", () => {
     expect(r).toMatchObject({ weaveId: WEAVE_ID, token: "stored-token", generalThreadId: "g1", participant: { id: "p9", name: "Claude" }, alreadyJoined: true });
     expect(state.get().weaves[WEAVE_ID]).toEqual(stored); // cursor and wake untouched
     expect(onJoined).toHaveBeenCalledWith(WEAVE_ID, stored); // re-arms the stream
+  });
+
+  it("carries the Weave's current combined guidelines on the reused identity", async () => {
+    const state = makeState();
+    await state.upsertWeave(WEAVE_ID, { title: "Design review", token: "stored-token", participantId: "p9", participantName: "Claude", generalThreadId: "g1", wake: "all", lastSeq: 7 });
+    const combined = "## Loom guidelines\nbe terse\n\n## Guidelines for this Weave\none finding per message";
+    const { client } = makeFakeClient({
+      getWeave: async () => ({ ...weaveInfo(), participants: [{ ...participant("Claude"), id: "p9" }], guidelines: combined }),
+    });
+    const backend = new ClientToolBackend(client, state, { onJoined: vi.fn() });
+
+    const r = await backend.joinWeave(SECRET, { name: "Claude", kind: "agent" }) as { alreadyJoined?: boolean; guidelines: string };
+
+    // reuseStored builds its own join response; the rules an agent must read cannot go missing on
+    // the very path a restored session takes.
+    expect(r).toMatchObject({ alreadyJoined: true, guidelines: combined });
   });
 
   it("matches the stored name the way the server does: case-insensitively and trimmed", async () => {

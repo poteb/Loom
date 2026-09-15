@@ -1,6 +1,7 @@
 export type EventType =
   | "message" | "participant.joined" | "participant.role_changed"
-  | "thread.created" | "thread.closed" | "thread.invited" | "thread.url_changed" | "weave.archived";
+  | "thread.created" | "thread.closed" | "thread.invited" | "thread.url_changed"
+  | "weave.archived" | "weave.guidelines_changed";
 
 export type LoomEvent = {
   weaveId: string; seq: number; threadId: string; type: EventType;
@@ -22,6 +23,7 @@ export type PublicThread = {
 };
 export type PublicWeave = {
   id: string; title: string; createdAt: string; archivedAt: string | null; lastSeq: number;
+  guidelines: string;
 };
 export type PublicAgent = { id: string; name: string; createdAt: string; revokedAt: string | null };
 
@@ -31,4 +33,4 @@ export type Actor =
   | { kind: "secret"; weaveId: string }
   | { kind: "agent"; agent: PublicAgent };
 
-export type Settings = { instanceName: string; maxMessageLength: number; openWeaveCreation: boolean };
+export type Settings = { instanceName: string; maxMessageLength: number; openWeaveCreation: boolean; guidelines: string };

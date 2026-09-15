@@ -74,6 +74,52 @@ describe("request", () => {
     }
   });
 
+  it("an aborted signal cancels a response whose body never ends, as code network", async () => {
+    // The signal has to reach the body read, not only the connection: this server answers with
+    // headers and then holds the response open forever. Without it the request would hang until
+    // the socket died, which is exactly the startup stall the channel plugin has to bound.
+    const stalled = await listen((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.write("{");
+    });
+    // Records that fetch itself resolved, so this case pins the *body-read* catch: if the abort
+    // were caught at the fetch instead, the two branches would be indistinguishable by message.
+    let headersArrived = false;
+    const watched = (async (...args: Parameters<typeof fetch>) => {
+      const res = await globalThis.fetch(...args);
+      headersArrived = true;
+      return res;
+    }) as typeof fetch;
+    try {
+      const startedAt = Date.now();
+      await expect(request({
+        method: "GET", url: `${stalled.url}/api/guidelines`, fetchImpl: watched, signal: AbortSignal.timeout(100),
+      })).rejects.toMatchObject({ code: "network", message: expect.stringContaining("timed out or was aborted") });
+      expect(headersArrived).toBe(true);
+      expect(Date.now() - startedAt).toBeLessThan(2000);
+    } finally {
+      stalled.server.closeAllConnections();
+      await stalled.close();
+    }
+  });
+
+  it("an abort raised by the fetch itself is the same network error, not a generic transport failure", async () => {
+    // The other half of the mapping: before any response exists the signal surfaces out of fetch.
+    // Distinguishing it from a dead connection is what lets a caller say "we gave up" rather than
+    // "the server is down" — so the message, not just the code, is asserted.
+    for (const name of ["AbortError", "TimeoutError"]) {
+      const fetchImpl = (async () => {
+        const e = new Error("This operation was aborted");
+        e.name = name;
+        throw e;
+      }) as unknown as typeof fetch;
+      await expect(request({ method: "GET", url: "http://x", fetchImpl })).rejects.toMatchObject({
+        code: "network",
+        message: "Request to Loom timed out or was aborted",
+      });
+    }
+  });
+
   it("returns the raw body when accept is text", async () => {
     const res = new Response("plain text body", { status: 200 });
     await expect(

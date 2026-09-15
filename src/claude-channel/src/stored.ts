@@ -49,5 +49,8 @@ export function withStoredCredential(inner: LoomToolBackend, state: ChannelState
     keeperAgentsList: async (c) => inner.keeperAgentsList(keeperOnly(c)),
     keeperAgentsAdd: async (c, n) => inner.keeperAgentsAdd(keeperOnly(c), n),
     keeperAgentsRevoke: async (c, id) => inner.keeperAgentsRevoke(keeperOnly(c), id),
+    setWeaveGuidelines: async (c, w, g) => inner.setWeaveGuidelines(byWeave(c, w), w, g),
+    getInstanceGuidelines: () => inner.getInstanceGuidelines(),
+    getGuidelines: async (c, w) => inner.getGuidelines(byWeave(c, w), w),
   };
 }

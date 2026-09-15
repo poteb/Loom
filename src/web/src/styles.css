@@ -8,7 +8,8 @@ body { margin: 0; font: 14px/1.45 system-ui, sans-serif; background: var(--bg); 
 .header-right { display: flex; gap: 12px; align-items: center; color: var(--muted); }
 .conn { font-size: 12px; } .conn-open { color: #16a34a; } .conn-reconnecting, .conn-connecting { color: #d97706; } .conn-closed { color: var(--danger); }
 .body { display: flex; flex: 1; min-height: 0; }
-.threads { width: 220px; border-right: 1px solid var(--line); padding: 8px; overflow-y: auto; }
+.sidebar { width: 220px; border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
+.threads { padding: 8px; }
 .threads-head { display: flex; justify-content: space-between; align-items: center; font-weight: 600; margin-bottom: 8px; }
 .threads ul { list-style: none; margin: 0; padding: 0; }
 .threads li { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 0 8px; border-radius: 6px; }
@@ -19,6 +20,12 @@ body { margin: 0; font: 14px/1.45 system-ui, sans-serif; background: var(--bg); 
 .badge-invited { background: var(--accent); color: var(--bg); }
 .thread-url { display: block; flex-basis: 100%; font-size: 0.8em; opacity: 0.8; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; padding-bottom: 4px; }
 .thread-form { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; } .thread-form input { flex: 1 1 100%; }
+.guidelines { padding: 8px; border-top: 1px solid var(--line); }
+.guidelines-head { display: flex; justify-content: space-between; align-items: center; font-weight: 600; margin-bottom: 8px; }
+.guidelines-body { font-size: 13px; } .guidelines-body > :first-child { margin-top: 0; } .guidelines-body > :last-child { margin-bottom: 0; }
+.guidelines-form { display: flex; flex-wrap: wrap; gap: 4px; } .guidelines-form textarea { flex: 1 1 100%; font: inherit; resize: vertical; }
+.counter { flex: 1 1 100%; color: var(--muted); font-size: 12px; } .counter.over { color: var(--danger); }
+.instance-guidelines { margin-top: 8px; font-size: 12px; color: var(--muted); } .instance-guidelines summary { cursor: pointer; }
 .thread-tools { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 8px; }
 .url-form { display: flex; gap: 4px; margin-bottom: 6px; } .url-form input { flex: 1; min-width: 0; }
 .invite-list { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; font-size: 12px; }
@@ -29,6 +36,7 @@ body { margin: 0; font: 14px/1.45 system-ui, sans-serif; background: var(--bg); 
 .msg { margin-bottom: 12px; } .msg-head { color: var(--muted); font-size: 12px; } .msg-body p { margin: 4px 0; }
 .msg-body pre { background: rgba(127,127,127,.15); padding: 8px; border-radius: 6px; overflow-x: auto; }
 .system { color: var(--muted); font-size: 12px; font-style: italic; margin: 6px 0; }
+.system-body { margin-left: 12px; font-style: normal; }
 .mention { background: var(--mention); border-radius: 4px; padding: 0 3px; }
 .composer { position: relative; display: flex; gap: 8px; padding: 8px 16px; border-top: 1px solid var(--line); }
 .composer textarea { flex: 1; resize: vertical; font: inherit; padding: 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }

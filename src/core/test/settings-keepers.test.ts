@@ -1,6 +1,7 @@
 import { describe, it, expect, afterAll, beforeEach } from "vitest";
 import { freshDb, closeTestDb, keeperToken } from "./helpers.js";
 import { getSettings, updateSettings } from "../src/settings.js";
+import { DEFAULT_INSTANCE_GUIDELINES } from "../src/guidelines-default.js";
 import { seedKeepers, listKeepers, addKeeper, removeKeeper } from "../src/keepers.js";
 import { resolveCredential } from "../src/actors.js";
 import { keepers } from "../src/db/schema.js";
@@ -18,7 +19,7 @@ async function keeperActor(): Promise<Actor> {
 
 describe("settings", () => {
   it("returns defaults on first read", async () => {
-    expect(await getSettings(db)).toEqual({ instanceName: "Loom", maxMessageLength: 20000, openWeaveCreation: true });
+    expect(await getSettings(db)).toEqual({ instanceName: "Loom", maxMessageLength: 20000, openWeaveCreation: true, guidelines: DEFAULT_INSTANCE_GUIDELINES });
   });
   it("keeper can update, others cannot", async () => {
     const k = await keeperActor();
