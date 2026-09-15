@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { loadConfig } from "../src/config.js";
+import { loadConfig, describeSeeding } from "../src/config.js";
 
 const TOKEN_A = "a".repeat(43);
 const TOKEN_B = "B_-9".padEnd(43, "z");
@@ -49,5 +49,39 @@ describe("loadConfig", () => {
   });
   it("accepts the top of the port range", () => {
     expect(loadConfig({ DATABASE_URL: "x", PORT: "65535" }).port).toBe(65535);
+  });
+});
+
+// The boot line the operator reads. It used to echo the configured token count ("keepers seeded: 1")
+// whether or not anything was seeded, which is what hid a no-op seed during the 2026-09-15 dogfood.
+describe("describeSeeding", () => {
+  it("reports what was seeded", () => {
+    const d = describeSeeding({ seeded: 1, existing: 0, ignored: 0 }, 1);
+    expect(d.line).toBe("keepers: seeded 1 from LOOM_KEEPER_TOKENS");
+    expect(d.warning).toBeUndefined();
+  });
+  it("says the configured tokens were ignored, and how to rotate instead", () => {
+    const d = describeSeeding({ seeded: 0, existing: 1, ignored: 0 }, 1);
+    expect(d.line).toContain("keepers: 1 already present, LOOM_KEEPER_TOKENS ignored");
+    expect(d.line).toContain("seeding only runs on an empty table");
+    expect(d.line).toContain("loom admin keepers add");
+    expect(d.warning).toContain("not seeded");
+  });
+  it("says the admin API is unavailable when nothing is configured or present", () => {
+    const d = describeSeeding({ seeded: 0, existing: 0, ignored: 0 }, 0);
+    expect(d.line).toBe("keepers: none configured, none present — admin API unavailable until LOOM_KEEPER_TOKENS is set on an empty table");
+    expect(d.warning).toBeUndefined();
+  });
+  it("stays quiet about LOOM_KEEPER_TOKENS when none are configured but keepers exist", () => {
+    const d = describeSeeding({ seeded: 0, existing: 2, ignored: 0 }, 0);
+    expect(d.line).toBe("keepers: 2 already present, LOOM_KEEPER_TOKENS not set");
+    expect(d.warning).toBeUndefined();
+  });
+  it("names ignored entries and never prints a token", () => {
+    const d = describeSeeding({ seeded: 1, existing: 0, ignored: 2 }, 3);
+    expect(d.line).toBe("keepers: seeded 1 from LOOM_KEEPER_TOKENS (2 configured entries ignored as malformed or duplicate)");
+    const allIgnored = describeSeeding({ seeded: 0, existing: 0, ignored: 1 }, 1);
+    expect(allIgnored.line).toContain("every configured LOOM_KEEPER_TOKENS entry was ignored");
+    expect(allIgnored.warning).toBeUndefined();
   });
 });

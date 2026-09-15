@@ -28,7 +28,10 @@ generated instance keeper tokens (comma-separated, each 32 random bytes base64ur
 
     node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
 
-They are seeded only on first boot; afterwards keepers are managed through the admin API. Then run
+They are seeded only on first boot; afterwards keepers are managed through the admin API. A token added
+to `.env` later does nothing at all — seeding runs only while the `keepers` table is empty, and the
+server says so at boot (`keepers: 1 already present, LOOM_KEEPER_TOKENS ignored …`); rotate with
+`loom admin keepers add` from an existing keeper instead. Then run
 `docker compose --profile prod up -d --build`.
 
 ### Using it
