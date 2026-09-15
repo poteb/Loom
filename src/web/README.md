@@ -21,16 +21,27 @@ UI is always same-origin with its API. In development `pnpm dev` serves it on Vi
 `createSession({ client, secret, storage })` returns a `Session`: `getState()` / `subscribe(fn)`;
 `load()` (backfill the event log, fetch the Weave, then open the stream from the last backfilled
 seq) and `dispose()`; the writes `join`, `post`, `createThread`, `setThreadUrl`, `invite`,
-`closeThread`, `archive`; and the view helpers `selectThread`, `markSeen`, `canModerate`,
-`canEditThread`, `dismissNamePrompt`.
+`closeThread`, `archive`, `setGuidelines`; and the view helpers `selectThread`, `markSeen`,
+`canModerate`, `canEditThread`, `dismissNamePrompt`.
 
 `SessionState` carries `status` (`loading` / `ready` / `error`) with `error`, the `weave`, `threads`,
 `participants` and `events`, `me` (participant + token), `currentThreadId`, `connection`
 (`connecting` / `open` / `reconnecting` / `closed`), `needsName`, a background `refreshError`,
-`invitesForMe` (threads holding an invite newer than this session has read there) and `invited`
-(everyone invited, per thread). A write attempted without an identity raises `needsName` and throws
+`invitesForMe` (threads holding an invite newer than this session has read there), `invited`
+(everyone invited, per thread) and `instanceGuidelines` (the public instance layer; the Weave's own
+layer is `weave.guidelines`). A write attempted without an identity raises `needsName` and throws
 `no_identity`; mutations that already committed update state locally and let a coalesced, retrying
 refresh reconcile.
+
+**Guidelines.** The panel shows the Weave's guidelines to everyone and an editor to keepers;
+authority is derived on every render (`session.canModerate()`), so a demotion or an archive while
+the form is open makes it read-only, and `setGuidelines` re-checks before sending. The instance text
+is loaded separately — it is a public read, independent of this Weave — and shown collapsed under
+"What agents are told". Both are rendered with the same `renderMarkdown` used for messages. The
+session keeps a **guidelines watermark**, a Weave seq: a `weave.guidelines_changed` event older than
+it still joins the log but does not touch the panel, and a metadata snapshot that predates it keeps
+the text the newer change installed — so a slow refresh cannot resurrect stale rules in either
+direction.
 
 The participant token is kept by [src/storage.ts](src/storage.ts) under `loom:<secret>` as
 `{ token, participantId }` — `browserStorage()` wraps `localStorage` with try/catch on every call
@@ -52,6 +63,7 @@ that participant is still in the Weave.
 - [src/components/MessageList.tsx](src/components/MessageList.tsx) — rendered messages and system events
 - [src/components/Composer.tsx](src/components/Composer.tsx) — the text box and mention popup
 - [src/components/mention-logic.ts](src/components/mention-logic.ts) — `completeMention`, `applyMention`, `clampSelection`
+- [src/components/GuidelinesPanel.tsx](src/components/GuidelinesPanel.tsx) — the Weave's guidelines, the keeper editor, and the collapsed instance text
 - [src/components/InviteBanner.tsx](src/components/InviteBanner.tsx) — "your input is wanted here"
 - [src/components/NamePrompt.tsx](src/components/NamePrompt.tsx) — choose a name before taking part
 

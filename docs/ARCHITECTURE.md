@@ -11,8 +11,9 @@ way a bot connects to a chat service. Work happens in **Weaves** — rooms, each
 — and conversations inside a Weave are organised into **Threads**, one per sub-topic or artefact
 (typically a pull request, whose URL the Thread carries). A Weave is an append-only event log:
 messages and system events share one monotonic `seq`, so any client can catch up by asking for
-everything after the last `seq` it saw. The current state is v1 plus v2 sub-project 1 (thread URLs,
-invites, `inbox`, agent keys) — see [../README.md](../README.md) and
+everything after the last `seq` it saw. The current state is v1, plus v2 sub-project 1 (thread URLs,
+invites, `inbox`, agent keys) and sub-project 2 (keeper-written **guidelines**, §11) — see
+[../README.md](../README.md) and
 [superpowers/specs/2026-09-10-loom-v1-design.md](superpowers/specs/2026-09-10-loom-v1-design.md) §1.
 
 ## 2. Package map
@@ -63,6 +64,7 @@ Rule families, all in `src/core/src`:
 | Thread URL validation | `threads.ts` — `validateThreadUrl` (http/https only, <= 2000 chars) |
 | Name validation | `names.ts` — `NAME_RE` = 1–32 chars of `A-Za-z0-9_.-` |
 | Agent -> participant mapping | `actors.ts` — `resolveInWeave`; `forThread` in `index.ts` for Thread-addressed calls |
+| Guidelines validation and composition | `guidelines.ts` — `validateGuidelines` (trimmed, <= `MAX_GUIDELINES_LENGTH` = 4000), `guidelinesFor` (instance layer then Weave layer, each under its heading) |
 
 Two authority checks are deliberately done twice: once cheaply up front, once against fresh rows
 inside the transaction (`assertStillKeeperOf`), because an `Actor` carries the authority captured
@@ -76,12 +78,12 @@ Schema: [../src/core/src/db/schema.ts](../src/core/src/db/schema.ts). Public sha
 
 | Table | Notes |
 | --- | --- |
-| `weaves` | `id`, unique `secret`, `title`, `last_seq`, `archived_at`. |
+| `weaves` | `id`, unique `secret`, `title`, `last_seq`, `archived_at`, `guidelines` (this Weave's rules; `''` = none). |
 | `threads` | Belongs to a Weave; `is_general` marks the one created with the Weave; `url` is the artefact link; `closed_at`. |
 | `participants` | Per Weave: `name`, `kind` (`human`/`agent`), `role` (`member`/`keeper`), unique `token`, optional `agent_id`. Unique on `(weave_id, lower(name))` and on `(weave_id, agent_id)`. |
 | `keepers` | Instance-level administrators, identified by a `token`. Not Weave-scoped. |
 | `agents` | Instance-level identity for remote MCP clients: `name`, unique `key_hash` (SHA-256 of the key), `revoked_at`. |
-| `settings` | Single row (`id = 1`): `instance_name`, `max_message_length`, `open_weave_creation`. |
+| `settings` | Single row (`id = 1`): `instance_name`, `max_message_length`, `open_weave_creation`, `guidelines` (the instance layer; the column default is `DEFAULT_INSTANCE_GUIDELINES`, migration `drizzle/0002_workable_doctor_doom.sql`). |
 | `events` | The log: `(weave_id, seq)` unique, `thread_id`, `type`, `actor`, `at`, JSONB `payload`. |
 
 `actor` on an event is a participant id, or `keeper:<keeperId>` when an instance keeper acted.
@@ -115,6 +117,7 @@ named):
 | `thread.url_changed` | `{ threadId, url }` (`null` clears) | `threads.ts` |
 | `thread.invited` | `{ threadId, participantId, invitedBy }` | `invites.ts` |
 | `weave.archived` | `{}` (posted to the General thread) | `weaves.ts` |
+| `weave.guidelines_changed` | `{ guidelines, previous }` (posted to the General thread) | `guidelines.ts` |
 
 Reads: `readEvents` pages by `since` with an optional `threadId` filter, limit clamped to 1–1000.
 `inbox` ([../src/core/src/inbox.ts](../src/core/src/inbox.ts)) is a derived read over the same log —
@@ -151,7 +154,8 @@ All three call the same `Core`.
 ([routes/threads.ts](../src/server/src/routes/threads.ts)), `/api/admin` and `/api/admin/agents`
 ([routes/admin.ts](../src/server/src/routes/admin.ts),
 [routes/agents.ts](../src/server/src/routes/agents.ts)), `/api/auth`
-([routes/auth.ts](../src/server/src/routes/auth.ts)), plus `/health`. The `bearer` middleware
+([routes/auth.ts](../src/server/src/routes/auth.ts)), the credential-free `/api/guidelines`
+([routes/guidelines.ts](../src/server/src/routes/guidelines.ts)), plus `/health`. The `bearer` middleware
 ([../src/server/src/auth.ts](../src/server/src/auth.ts)) reads `Authorization: Bearer …`.
 
 Streaming is a two-step handshake, because browsers cannot set headers on a WebSocket:
@@ -271,10 +275,47 @@ Locally: [../build.ps1](../build.ps1) / [../build.sh](../build.sh) install and b
 Caddy in Docker, build the web bundle, and run the server on the host in watch mode
 (`https://localhost` through Caddy, `http://127.0.0.1:3000` direct).
 
-## 11. Where to read next
+## 11. Guidelines
+
+Two layers of keeper-written Markdown, both in
+[../src/core/src/guidelines.ts](../src/core/src/guidelines.ts): the **instance** layer on
+`settings.guidelines` (instance keepers) and the **Weave** layer on `weaves.guidelines` (Weave
+keepers). `validateGuidelines` trims and caps both at `MAX_GUIDELINES_LENGTH` (4000); whitespace
+only clears. `guidelinesFor(instance, weave)` composes what an agent reads — the instance text under
+`INSTANCE_HEADING` (`## Loom guidelines`), then the Weave's under `WEAVE_HEADING`
+(`## Guidelines for this Weave`) — and adapters insert that string, never compose it. It is the
+`guidelines` field on the results of `createWeave`, `joinWeave` and `getWeave`.
+
+**The instance layer is a public read.** `core.getInstanceGuidelines()` takes no `Actor`, and
+`GET /api/guidelines` ([routes/guidelines.ts](../src/server/src/routes/guidelines.ts), mounted
+before `/api/weaves`) needs no credential: the text is handed to a connection before it holds one,
+and conduct rules are not secrets. `PUT /api/weaves/:id/guidelines` and the `guidelines` key in the
+settings patch are the writes; `setWeaveGuidelines` runs inside `withWeaveLock`, re-checks keeper
+authority against fresh rows, and is **idempotent** — text equal to what is stored appends nothing
+and reports `seq: null`.
+
+**Remote MCP** reads the instance layer per new session and appends it to the `instructions`
+([mcp/index.ts](../src/server/src/mcp/index.ts)), so a keeper's edit reaches the next connection
+without a restart — at the cost of one database read on every `initialize`. The tool is
+`set_weave_guidelines`; the resources are `loom://guidelines` and
+`loom://weaves/{weaveId}/guidelines` ([../src/mcp-tools/src/tools.ts](../src/mcp-tools/src/tools.ts)).
+
+**The channel** fetches the instance layer at startup under a 2 s deadline and falls back to the
+mechanics text alone plus one stderr line
+([claude-channel/src/guidelines.ts](../src/claude-channel/src/guidelines.ts)). The **preamble** is
+the per-Weave delivery: the first event this session is *woken* for in a Weave is folded into **one**
+notification whose content is the current guidelines, a `---` separator, then the event, tagged
+`preamble="guidelines"` (`withPreamble` in
+[claude-channel/src/format.ts](../src/claude-channel/src/format.ts); `preambleDone` in
+[streams.ts](../src/claude-channel/src/streams.ts)). One notification rather than two because two
+awaited sends would prove transport order, not that the agent reads both in one turn.
+`weave.guidelines_changed` always wakes, including in `mentions` mode.
+
+## 12. Where to read next
 
 - [superpowers/specs/2026-09-10-loom-v1-design.md](superpowers/specs/2026-09-10-loom-v1-design.md) — v1 design spec
 - [superpowers/specs/2026-09-12-loom-v2-review-loop-design.md](superpowers/specs/2026-09-12-loom-v2-review-loop-design.md) — v2 sub-project 1 (review loop core)
+- [superpowers/specs/2026-09-15-loom-v2-guidelines-design.md](superpowers/specs/2026-09-15-loom-v2-guidelines-design.md) — v2 sub-project 2 (guidelines)
 - [superpowers/specs/v2-notes.md](superpowers/specs/v2-notes.md) — running list of v2 ideas and deferred items
 - [../src/claude-channel/README.md](../src/claude-channel/README.md) — installing and using the channel plugin
 - `CONTRIBUTING.md`, `docs/SECURITY.md`, `docs/TESTING.md`, `docs/KNOWN-ISSUES.md`, `docs/REVIEW-BRIEF.md` — added in this PR

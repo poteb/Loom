@@ -35,7 +35,22 @@ What v2 needs for it, in priority order — **items 1–3 are delivered by sub-p
 
 ## Ideas
 
-### Guidelines handed to every AI on connect (Paw, 2026-09-12)
+### Guidelines handed to every AI on connect (Paw, 2026-09-12) — **shipped in sub-project 2**
+
+Built as specified below, to
+[2026-09-15-loom-v2-guidelines-design.md](2026-09-15-loom-v2-guidelines-design.md): two layers
+(`settings.guidelines`, `weaves.guidelines`), 4000 characters each, composed by `guidelinesFor` and
+returned as `guidelines` on `create_weave` / `join_weave` / `get_weave`; the instance layer in both
+surfaces' MCP `instructions` (read per new remote session, fetched under a 2 s deadline by the
+channel) and readable with no credential at `GET /api/guidelines`; the resources `loom://guidelines`
+and `loom://weaves/{weaveId}/guidelines`; a `weave.guidelines_changed` event carrying
+`{ guidelines, previous }`; `set_weave_guidelines`, `loom guidelines [set]`,
+`loom admin settings --set guidelines=…`, and a Guidelines panel in the web UI. One thing landed
+differently: the channel folds a Weave's guidelines into the *first woken event* of a session as a
+`preamble="guidelines"` attribute on that event's own turn, rather than sending a separate
+`type="weave.guidelines"` turn ahead of it — see the spec's §4 note.
+
+The original note:
 
 Loom should give an AI **guidelines for how to use Loom** each time it connects. Today both MCP
 surfaces send a fixed `instructions` text on connect (remote `/mcp` and the channel plugin), but it
@@ -122,9 +137,10 @@ arrived in the channel-enabled session as a `<channel source="loom">` turn and i
   participant each time. Original note: Remote MCP clients hold the participant token in context and
   pass it on every call; a fresh session can't act. Consider a per-connection identity minted on
   `initialize`, or a token-lookup tool keyed by (weave, name) that the keeper approves.
-- **Keeper tools are always advertised** (9 of the 23 tools need a keeper token — it was 6 of 17 when
+- **Keeper tools are always advertised** (9 of the 24 tools need a keeper token — it was 6 of 17 when
   this was written; sub-project 1 added `inbox`, `set_thread_url`, `invite_participant` and the three
-  `keeper_agents_*` tools). Clients with tool
+  `keeper_agents_*` tools, and sub-project 2 `set_weave_guidelines`, which needs a *Weave* keeper,
+  not an instance one). Clients with tool
   limits may prefer them hidden until a keeper credential is present. On an agent connection
   (`/mcp?agent=<key>`) they are pure noise — an agent key is never an instance keeper, so the
   connection default can never satisfy them — and the connection's identity is now known at

@@ -20,6 +20,7 @@ invariant, the event log, credentials, and the three ways in. Everything else as
 | [superpowers/specs/](superpowers/specs) | Design specs — the binding requirements for the code |
 | [superpowers/specs/2026-09-10-loom-v1-design.md](superpowers/specs/2026-09-10-loom-v1-design.md) | v1: domain model, API surface, rules, transport security, testing |
 | [superpowers/specs/2026-09-12-loom-v2-review-loop-design.md](superpowers/specs/2026-09-12-loom-v2-review-loop-design.md) | v2 sub-project 1: Thread URLs, invites, `inbox`, agent keys. Supersedes v1 where they differ |
+| [superpowers/specs/2026-09-15-loom-v2-guidelines-design.md](superpowers/specs/2026-09-15-loom-v2-guidelines-design.md) | v2 sub-project 2: instance and Weave guidelines — storage, delivery on connect, the `weave.guidelines_changed` event, the channel preamble |
 | [superpowers/specs/v2-notes.md](superpowers/specs/v2-notes.md) | Running list of v2 ideas and deferred items, the north-star scenario, and the dogfood findings |
 | [superpowers/plans/](superpowers/plans) | Implementation plans — one per sub-project, task-by-task, test-first |
 

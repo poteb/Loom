@@ -14,11 +14,14 @@ Weave before any rule runs.
 - **Weaves** — `createWeave`, `getWeave`, `joinWeave`, `lookupWeaveIdBySecret`, `archiveWeave`, `listWeaves`, `exportWeave`
 - **Threads** — `createThread`, `setThreadUrl`, `closeThread`, `getThreadWeaveId` · **Invites** — `inviteParticipant`
 - **Messages** — `postMessage`, `readEvents` · **Inbox** — `inbox` · **Settings** — `readSettings`, `updateSettings`
+- **Guidelines** — `getInstanceGuidelines` (the one facade method that takes **no `Actor`**: the text is handed to a connection before it has a credential), `setWeaveGuidelines`
 - **Participants** — `setRole`, `resolveCredential`, `resolveInWeave`
 - **Keepers** — `seedKeepers`, `listKeepers`, `addKeeper`, `removeKeeper` · **Agents** — `addAgent`, `listAgents`, `revokeAgent`
 
 Also exported: `createDb(url)`, `runMigrations(db)` (SQL in [drizzle/](drizzle)), `closeDb`,
-`EventBus`, `assertCanRead`, `KEEPER_TOKEN_RE`, and the domain types. `LoomError` carries an
+`EventBus`, `assertCanRead`, `KEEPER_TOKEN_RE`, the guidelines vocabulary
+(`MAX_GUIDELINES_LENGTH`, `INSTANCE_HEADING`, `WEAVE_HEADING`, `validateGuidelines`,
+`guidelinesFor`, `DEFAULT_INSTANCE_GUIDELINES`), and the domain types. `LoomError` carries an
 `ErrorCode`: `validation`, `invalid_token`, `forbidden`, `weave_not_found`, `thread_not_found`,
 `weave_archived`, `thread_closed`, `name_taken`, `message_too_long`.
 
@@ -34,6 +37,8 @@ Also exported: `createDb(url)`, `runMigrations(db)` (SQL in [drizzle/](drizzle))
 - [src/errors.ts](src/errors.ts) — `LoomError`, `ErrorCode`, the `errors` constructors
 - [src/events.ts](src/events.ts) — `withWeaveLock`, `appendInTx` (seq allocation), `readEvents`
 - [src/export.ts](src/export.ts) — transcript export as Markdown or JSON
+- [src/guidelines.ts](src/guidelines.ts) — the two keeper-written layers: `validateGuidelines` (trimmed, ≤ `MAX_GUIDELINES_LENGTH` = 4000; whitespace-only clears), `guidelinesFor` (instance text under `INSTANCE_HEADING`, then the Weave's under `WEAVE_HEADING` — adapters insert this, never compose it), the public `getInstanceGuidelines`, and `setWeaveGuidelines`, which appends `weave.guidelines_changed` `{ guidelines, previous }` to General inside the Weave lock and returns `seq: null` when the text is unchanged
+- [src/guidelines-default.ts](src/guidelines-default.ts) — `DEFAULT_INSTANCE_GUIDELINES`, the shipped text; dependency-free because the schema uses it as the `settings.guidelines` column default
 - [src/ids.ts](src/ids.ts) — uuid/secret generation, `KEEPER_TOKEN_RE`, `isUuid`
 - [src/inbox.ts](src/inbox.ts) — events addressed to an actor: invites and @mentions
 - [src/invites.ts](src/invites.ts) — idempotent `thread.invited`
@@ -55,8 +60,8 @@ Needs Postgres: the shared global setup ([test/global-setup.ts](test/global-setu
 `postgres:17-alpine` testcontainer, or falls back to a `loom_test` database on the compose server.
 `test/helpers.ts` truncates every table per test and refuses to run against the application database
 ([test/db-guard.ts](test/db-guard.ts)). Coverage: `weaves`, `threads`, `messages`, `invites`,
-`inbox`, `participants`, `agents`, `authz`, `guards`, `events`, `export`, `settings-keepers`, `db`
-and `core`, plus pure units in `units.test.ts`.
+`inbox`, `participants`, `agents`, `authz`, `guards`, `events`, `export`, `guidelines`,
+`settings-keepers`, `db` and `core`, plus pure units in `units.test.ts`.
 
 ## Depends on / depended on by
 

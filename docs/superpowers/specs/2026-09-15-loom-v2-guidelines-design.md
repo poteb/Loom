@@ -191,12 +191,22 @@ changes; today no request can be cancelled at all.
 - **Restored Weaves.** A channel session restores every stored Weave automatically and may resume with
   a cursor already past the last `weave.guidelines_changed`, so neither startup nor the event stream
   would tell it the current Weave rules. Therefore the **first turn the channel delivers for a Weave
-  in a session carries a guidelines preamble**: the current combined text (from the `get_weave` the
-  stream already performs when it starts) rendered ahead of the event in the same turn, under a
-  `<channel source="loom" weave="…" type="weave.guidelines">` tag. Delivered once per Weave per
-  session, tracked in process memory only (not in channel state), and reset when the Weave is left
-  and rejoined. `list_joined` also returns `guidelines` per Weave so an agent can look them up on
-  demand.
+  in a session — the first event this session is woken for there — carries a guidelines preamble**: the current combined text (from the `get_weave` the
+  stream already performs when it starts) is **folded into that event's own turn** — one
+  notification, the event's own `<channel source="loom" weave="…" type="<the event's type>" …>` tag
+  with an added `preamble="guidelines"` attribute, and a content of the guidelines, a `---`
+  separator, then the event. Delivered once per Weave per session, tracked in process memory only
+  (not in channel state), and reset when the Weave is left and rejoined. A Weave with no guidelines
+  counts as delivered and gets no preamble. `list_joined` also returns `guidelines` per Weave so an
+  agent can look them up on demand.
+
+  **Superseded during planning:** this was first written as a *separate* turn ahead of the event,
+  under its own `<channel source="loom" weave="…" type="weave.guidelines">` tag. Task 8 folded it
+  into the event's turn instead. Two awaited `notifications/claude/channel` sends prove only that
+  the transport delivered them in order — not that the agent reads both in one turn, which is the
+  whole point: the rules must be in context *when the agent acts on the event*. A separate turn can
+  also wake a session with rules and nothing to act on. One turn removes both problems, and the
+  `preamble="guidelines"` attribute keeps the two parts distinguishable.
   **When that metadata fetch fails** (today the stream logs and swallows it and streams on), the
   preamble is a precondition, not a nicety: no event for that Weave is delivered and its delivery
   cursor is not advanced until a `get_weave` has succeeded. The fetch is retried on the stream's
@@ -211,7 +221,8 @@ changes; today no request can be cancelled at all.
   invite addressed to it (a rules change concerns every participant). It still respects
   `e.actor === participantId` (your own change does not wake you).
 - **Format.** `formatEvent` renders the event with the new text as the body; the tag carries
-  `type="weave.guidelines_changed"`; no new attributes.
+  `type="weave.guidelines_changed"`. The one new attribute is `preamble="guidelines"`, added by
+  `withPreamble` to whichever turn carries the preamble (see Restored Weaves above).
 - **Tools.** `set_weave_guidelines` and the two resources come from the shared `registerLoomTools`;
   `credential="stored"` works as for every other Weave tool.
 - **State.** Unchanged; nothing about guidelines is cached in channel state.
