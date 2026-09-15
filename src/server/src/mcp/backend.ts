@@ -6,7 +6,7 @@ export class CoreToolBackend implements LoomToolBackend {
   constructor(private readonly core: Core) {}
   private actor(credential: string) { return this.core.resolveCredential(credential); }
 
-  async createWeave(input: { title: string; opener: string; creator: { name: string; kind: Kind } }, credential?: string) {
+  async createWeave(input: { title: string; opener: string; creator: { name: string; kind: Kind }; guidelines?: string }, credential?: string) {
     return this.core.createWeave(input, credential ? await this.actor(credential) : undefined);
   }
   async joinWeave(secret: string, who: { name?: string; kind: Kind }, credential?: string) {
@@ -35,4 +35,7 @@ export class CoreToolBackend implements LoomToolBackend {
   async keeperAgentsList(c: string) { return this.core.listAgents(await this.actor(c)); }
   async keeperAgentsAdd(c: string, name: string) { return this.core.addAgent(await this.actor(c), name); }
   async keeperAgentsRevoke(c: string, id: string) { await this.core.revokeAgent(await this.actor(c), id); }
+  async setWeaveGuidelines(c: string, w: string, g: string) { return this.core.setWeaveGuidelines(await this.actor(c), w, g); }
+  async getInstanceGuidelines() { return this.core.getInstanceGuidelines(); }
+  async getGuidelines(c: string, w: string) { return (await this.core.getWeave(await this.actor(c), w)).guidelines; }
 }

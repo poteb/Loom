@@ -223,7 +223,7 @@ describe("remote MCP at /mcp", () => {
     await withClient(async (c) => {
         const { tools } = await c.listTools();
         expect(tools.map((t) => t.name)).toContain("join_weave");
-        expect(tools).toHaveLength(23);
+        expect(tools).toHaveLength(24);
     });
   });
 

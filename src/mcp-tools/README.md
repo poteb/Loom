@@ -9,12 +9,13 @@ hosts expose identical tools.
 
 ## Public surface
 
-`registerLoomTools(server, backend, opts?)` registers all 23 tools; `LOOM_TOOL_NAMES` is the
-`as const` list of their names.
+`registerLoomTools(server, backend, opts?)` registers all 24 tools and two resources;
+`LOOM_TOOL_NAMES` is the `as const` list of the tool names, `LOOM_RESOURCE_URIS` of the resource URIs.
 
 - **Weaves** — `create_weave`, `join_weave`, `lookup_weave`, `get_weave`, `archive_weave`, `export_weave`
 - **Threads** — `create_thread`, `set_thread_url`, `close_thread`
 - **Messages** — `post_message`, `read_events`, `inbox` · **Participants** — `invite_participant`, `set_role`
+- **Guidelines** — `set_weave_guidelines`
 - **Keeper** — `keeper_list_weaves`, `keeper_get_settings`, `keeper_set_settings`, `keeper_list`, `keeper_add`, `keeper_remove`, `keeper_agents_list`, `keeper_agents_add`, `keeper_agents_revoke`
 
 **Input schemas carry types only.** No `min`/`max` lengths and no `url()`: a schema-level semantic
@@ -26,6 +27,20 @@ stay, because they are type-level. For the same reason `keeper_set_settings` tak
 would let the SDK silently prune a misspelled key before core saw it, and core's strict schema
 rejects the unknown key as `validation` instead.
 
+### Resources
+
+| URI | Kind | Credential | Body |
+| --- | --- | --- | --- |
+| `loom://guidelines` | fixed | none — conduct rules are not secrets | The instance guidelines, `text/markdown` |
+| `loom://weaves/{weaveId}/guidelines` | template (not listable) | `resourceCredential(weaveId)` | The combined text (instance layer then Weave layer) for that Weave, `text/markdown` |
+
+A resource read carries no arguments of its own, so the credential for the per-Weave read comes from
+the surface: `RegisterOptions.resourceCredential?: (weaveId: string) => string | undefined` — remote
+`/mcp` returns the connection's agent key, the Claude Code channel the stored participant token for
+that Weave. Without the option it falls back to `defaultCredential`; when neither yields one the read
+is refused. A resource error has no `{ code, message }` envelope, so the code is folded into the
+message instead (`invalid_token: …`, `forbidden: …`).
+
 `RegisterOptions.defaultCredential?: () => string | undefined` is for a connection already
 authenticated as itself (an agent key): when set, `credential` becomes **optional** in every tool's
 schema and is filled in by the resolver, and `create_weave` / `join_weave` pass it through so the new
@@ -34,8 +49,9 @@ participant is linked to that agent. Without it `credential` is required and a m
 `credentialHint` replaces that description outright.
 
 `LoomToolBackend` ([src/backend.ts](src/backend.ts)) is the port: one method per tool, credential
-first — except `createWeave` / `joinWeave`, where it is optional and last, and `lookupWeave`, which
-takes none.
+first — except `createWeave` / `joinWeave`, where it is optional and last, and `lookupWeave` and
+`getInstanceGuidelines`, which take none. `getGuidelines(credential, weaveId)` backs the per-Weave
+resource and has the same authority as `getWeave`.
 
 `toToolResult(promise)` awaits a backend call and returns `ok(value)` (the string as-is, otherwise
 pretty JSON), or — for anything with a string `code` and `message`, which core's `LoomError` and
@@ -55,8 +71,9 @@ body. Anything else becomes `fail("internal", …)`. So a backend never deals in
 
 No database and no server: [test/tools.test.ts](test/tools.test.ts) registers the tools against a
 stub backend and asserts the registered names against `LOOM_TOOL_NAMES`, argument routing, error
-mapping, schema rejection, and the credential-optional behaviour under `defaultCredential`. This is
-the one package whose suite needs no Postgres.
+mapping, schema rejection, the credential-optional behaviour under `defaultCredential`, and the two
+resources (listing, the instance read, and the per-Weave read under each `resourceCredential`
+outcome). This is the one package whose suite needs no Postgres.
 
 ## Depends on / depended on by
 

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { registerLoomTools, LOOM_TOOL_NAMES, LoomToolError, type LoomToolBackend } from "../src/index.js";
+import { registerLoomTools, LOOM_TOOL_NAMES, LOOM_RESOURCE_URIS, LoomToolError, type LoomToolBackend, type RegisterOptions } from "../src/index.js";
 
 const calls: unknown[][] = [];
 const fake: LoomToolBackend = {
@@ -29,20 +29,35 @@ const fake: LoomToolBackend = {
   keeperAgentsList: async () => [{ id: "a1", name: "ChatGPT" }],
   keeperAgentsAdd: async (_c, name) => ({ agent: { name }, key: "a".repeat(43) }),
   keeperAgentsRevoke: async () => {},
+  setWeaveGuidelines: async (c, w, g) => { calls.push(["setWeaveGuidelines", c, w, g]); return { weave: { id: w, guidelines: g }, seq: 7 }; },
+  getInstanceGuidelines: async () => "## Loom guidelines\nBe kind.",
+  getGuidelines: async (c, w) => {
+    calls.push(["getGuidelines", c, w]);
+    if (w === "nope") throw new LoomToolError("forbidden", "not joined; call join_weave");
+    return `combined:${w}:${c}`;
+  },
+};
+
+/** A fresh server+client pair over an in-memory transport, so per-connection options can be varied. */
+const connect = async (opts?: RegisterOptions): Promise<Client> => {
+  const server = new McpServer({ name: "test", version: "0.0.0" });
+  registerLoomTools(server, fake, opts);
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await server.connect(a);
+  const c = new Client({ name: "t", version: "0" });
+  await c.connect(b);
+  return c;
 };
 
 let client: Client;
 beforeAll(async () => {
-  const server = new McpServer({ name: "test", version: "0.0.0" });
-  registerLoomTools(server, fake);
-  const [a, b] = InMemoryTransport.createLinkedPair();
-  await server.connect(a);
-  client = new Client({ name: "t", version: "0" });
-  await client.connect(b);
+  client = await connect();
 });
 afterAll(async () => { await client.close(); });
 
 const text = (r: Awaited<ReturnType<Client["callTool"]>>) => (r.content as { type: string; text: string }[])[0]!.text;
+/** A resource content entry is text-or-blob in the SDK types; every Loom resource is text/markdown. */
+const first = (r: Awaited<ReturnType<Client["readResource"]>>) => r.contents[0] as { uri: string; mimeType?: string; text: string };
 
 describe("registerLoomTools", () => {
   it("lists all tools with descriptions", async () => {
@@ -126,5 +141,67 @@ describe("v2 tools", () => {
   it("without a connection default, credential stays required", async () => {
     const schema = (await client.listTools()).tools.find((t) => t.name === "get_weave")!.inputSchema as { required?: string[] };
     expect(schema.required).toContain("credential");
+  });
+});
+
+describe("guidelines", () => {
+  it("advertises set_weave_guidelines and forwards credential, weaveId and text", async () => {
+    expect((await client.listTools()).tools.map((t) => t.name)).toContain("set_weave_guidelines");
+    expect([...LOOM_TOOL_NAMES]).toContain("set_weave_guidelines");
+    const r = await client.callTool({ name: "set_weave_guidelines", arguments: { credential: "c", weaveId: "w1", guidelines: "Be brief." } });
+    expect(r.isError).toBeFalsy();
+    expect(JSON.parse(text(r))).toEqual({ weave: { id: "w1", guidelines: "Be brief." }, seq: 7 });
+    expect(calls.filter((c) => c[0] === "setWeaveGuidelines").at(-1)).toEqual(["setWeaveGuidelines", "c", "w1", "Be brief."]);
+  });
+
+  it("create_weave passes optional guidelines through; join/create/get descriptions point at them", async () => {
+    await client.callTool({ name: "create_weave", arguments: { title: "T", opener: "o", name: "Claude", kind: "agent", guidelines: "House rules" } });
+    expect(calls.filter((c) => c[0] === "createWeave").at(-1)![1]).toEqual({ title: "T", opener: "o", creator: { name: "Claude", kind: "agent" }, guidelines: "House rules" });
+    const tools = (await client.listTools()).tools;
+    for (const n of ["create_weave", "join_weave", "get_weave"]) expect(tools.find((t) => t.name === n)!.description).toMatch(/guidelines/i);
+    expect(tools.find((t) => t.name === "keeper_set_settings")!.description).toMatch(/guidelines/);
+  });
+
+  it("lists the instance resource and the Weave template", async () => {
+    expect((await client.listResources()).resources.map((r) => r.uri)).toContain("loom://guidelines");
+    expect((await client.listResourceTemplates()).resourceTemplates.map((t) => t.uriTemplate)).toContain("loom://weaves/{weaveId}/guidelines");
+    expect([...LOOM_RESOURCE_URIS]).toEqual(["loom://guidelines", "loom://weaves/{weaveId}/guidelines"]);
+  });
+
+  it("reads the instance guidelines without any credential", async () => {
+    const r = first(await client.readResource({ uri: "loom://guidelines" }));
+    expect(r.mimeType).toBe("text/markdown");
+    expect(r.text).toBe("## Loom guidelines\nBe kind.");
+  });
+
+  it("reads a Weave's guidelines with the credential the surface resolves", async () => {
+    const c = await connect({ resourceCredential: () => "tok" });
+    try {
+      const r = first(await c.readResource({ uri: "loom://weaves/w1/guidelines" }));
+      expect(r.mimeType).toBe("text/markdown");
+      expect(r.text).toBe("combined:w1:tok");
+      expect(calls.filter((x) => x[0] === "getGuidelines").at(-1)).toEqual(["getGuidelines", "tok", "w1"]);
+    } finally { await c.close(); }
+  });
+
+  it("refuses the Weave read with invalid_token when the surface resolves no credential", async () => {
+    const c = await connect({ resourceCredential: () => undefined });
+    try {
+      await expect(c.readResource({ uri: "loom://weaves/w1/guidelines" })).rejects.toThrow(/invalid_token/);
+    } finally { await c.close(); }
+  });
+
+  it("falls back to the connection default when no resourceCredential is given", async () => {
+    const c = await connect({ defaultCredential: () => "agent-key" });
+    try {
+      expect(first(await c.readResource({ uri: "loom://weaves/w2/guidelines" })).text).toBe("combined:w2:agent-key");
+    } finally { await c.close(); }
+  });
+
+  it("carries the backend's error code in the resource error message", async () => {
+    const c = await connect({ resourceCredential: () => "tok" });
+    try {
+      await expect(c.readResource({ uri: "loom://weaves/nope/guidelines" })).rejects.toThrow(/forbidden/);
+    } finally { await c.close(); }
   });
 });
