@@ -27,6 +27,17 @@ export class CliError extends Error {
   }
 }
 
+/**
+ * `-` means "read the text from stdin": 4000 characters of guidelines do not belong on a command
+ * line. Lives here rather than beside one command because three of them take such a value
+ * (`guidelines set`, `create --guidelines`, `admin settings --set guidelines=-`).
+ */
+export async function textArg(v: string, io: CliIo): Promise<string> {
+  if (v !== "-") return v;
+  if (!io.stdin) throw new CliError("validation", "no stdin available for -");
+  return io.stdin.read();
+}
+
 export type CliContext = {
   io: CliIo; store: ConfigStore; config: CliConfig; opts: GlobalOpts; baseUrl: string;
   client(token?: string): LoomClient;

@@ -1,8 +1,7 @@
 import type { Command } from "commander";
 import type { LoomClient, Settings } from "@loom/client";
-import { CliError, type CliContext, type CliIo } from "../context.js";
+import { CliError, textArg, type CliContext, type CliIo } from "../context.js";
 import { emit } from "../output.js";
-import { textArg } from "./guidelines.js";
 
 /** Canonical 8-4-4-4-12 hex uuid — mirrors `isUuid` in core, which the CLI does not depend on at runtime. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

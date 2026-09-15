@@ -1,8 +1,7 @@
 import { Argument, Option, type Command } from "commander";
 import type { Kind } from "@loom/client";
-import type { CliContext, CliIo } from "../context.js";
+import { textArg, type CliContext, type CliIo } from "../context.js";
 import { emit } from "../output.js";
-import { textArg } from "./guidelines.js";
 
 const kindOption = () => new Option("--kind <kind>", "agent | human").choices(["agent", "human"]).default("agent");
 

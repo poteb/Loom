@@ -6,6 +6,8 @@ import { LoomClient, type StreamHandle, type StreamOptions } from "@loom/client"
 import { startTestServer, keeperToken, type TestServer } from "../../server/test/helpers.js";
 import { runCli, type CliIo } from "../src/cli.js";
 import { ConfigStore } from "../src/config.js";
+import { stdinReader } from "../src/main.js";
+import { Readable } from "node:stream";
 
 /** A one-shot rendezvous: the awaiter of `entered` learns the pauser has reached the gate, then
  *  the pauser waits on `released` until the test calls `release()`. Mirrors server/test/ws.test.ts,
@@ -460,5 +462,25 @@ describe("global --url vs. the thread artefact --url", () => {
     const ok = await run(["--url", s.baseUrl, "thread", "new", "PR 9", "--url", "https://e.com/9", "--json"], { LOOM_URL: "http://127.0.0.1:1" });
     expect(ok.code).toBe(0);
     expect(ok.json().url).toBe("https://e.com/9");
+  });
+});
+
+describe("stdinReader", () => {
+  it("reads the stream once and answers a second `-` from the same promise", async () => {
+    // Two `-` arguments in one invocation (`create --guidelines -` piped, then a retry) used to
+    // attach a fresh listener set to a stream that had already ended, so the second read resolved
+    // "" and silently cleared what the first one had set.
+    const stream = Readable.from(["one ", "two"]);
+    const reader = stdinReader(stream);
+    expect(await reader.read()).toBe("one two");
+    expect(await reader.read()).toBe("one two");
+    expect(stream.listenerCount("data")).toBe(1);        // one listener set, not one per read
+  });
+
+  it("rejects on a stream error, and keeps rejecting rather than re-reading", async () => {
+    const stream = new Readable({ read() { this.destroy(new Error("pipe broke")); } });
+    const reader = stdinReader(stream);
+    await expect(reader.read()).rejects.toThrow("pipe broke");
+    await expect(reader.read()).rejects.toThrow("pipe broke");
   });
 });

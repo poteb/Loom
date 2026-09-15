@@ -1,13 +1,6 @@
 import type { Command } from "commander";
-import { CliError, type CliContext, type CliIo } from "../context.js";
+import { textArg, type CliContext, type CliIo } from "../context.js";
 import { emit } from "../output.js";
-
-/** `-` means "read the text from stdin": 4000 characters do not belong on a command line. */
-export async function textArg(v: string, io: CliIo): Promise<string> {
-  if (v !== "-") return v;
-  if (!io.stdin) throw new CliError("validation", "no stdin available for -");
-  return io.stdin.read();
-}
 
 export function registerGuidelinesCommands(program: Command, ctx: () => CliContext, io: CliIo): void {
   const g = program.command("guidelines").description("Show the guidelines agents get for the current Weave");
