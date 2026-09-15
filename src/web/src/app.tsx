@@ -7,6 +7,7 @@ import { MessageList } from "./components/MessageList.js";
 import { Composer } from "./components/Composer.js";
 import { NamePrompt } from "./components/NamePrompt.js";
 import { InviteBanner } from "./components/InviteBanner.js";
+import { GuidelinesPanel } from "./components/GuidelinesPanel.js";
 
 function secretFromPath(): string | null {
   const m = /^\/w\/([A-Za-z0-9_-]{43})\/?$/.exec(location.pathname);
@@ -73,7 +74,10 @@ function Weave({ secret }: { secret: string }) {
     <div class="layout">
       <Header state={state} session={session} onError={reportError} />
       <div class="body">
-        <ThreadList state={state} session={session} onError={reportError} />
+        <aside class="sidebar">
+          <ThreadList state={state} session={session} onError={reportError} />
+          <GuidelinesPanel state={state} session={session} onError={reportError} />
+        </aside>
         <div class="main">
           {archived && <div class="banner">This Weave is archived and read-only.</div>}
           {state.refreshError && <div class="warn-bar">Having trouble syncing: {state.refreshError}</div>}

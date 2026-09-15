@@ -4,6 +4,7 @@ import { render, screen, fireEvent } from "@testing-library/preact";
 import { ThreadList } from "../src/components/ThreadList.js";
 import { MessageList } from "../src/components/MessageList.js";
 import { InviteBanner } from "../src/components/InviteBanner.js";
+import { GuidelinesPanel } from "../src/components/GuidelinesPanel.js";
 import type { Session, SessionState } from "../src/session.js";
 
 const me = { id: "p1", weaveId: "w1", name: "Paw", kind: "human" as const, role: "member" as const, joinedAt: "", agentId: null };
@@ -90,4 +91,99 @@ describe("MessageList", () => {
     expect(screen.getByText(/Bot invited by Paw/)).toBeTruthy();
     expect(screen.getByText(/now links to https:\/\/e.com\/x/)).toBeTruthy();
   });
+
+  it("names the actor and renders the new text beneath a guidelines change, and says cleared for an empty one", () => {
+    const change = { weaveId: "w1", seq: 3, threadId: "t1", type: "weave.guidelines_changed" as const, actor: "p1",
+      at: new Date().toISOString(), payload: { guidelines: "Be **kind**", previous: "" } };
+    const { container, rerender } = render(<MessageList state={state({ currentThreadId: "t1", events: [change] })} />);
+    expect(screen.getByText(/Paw changed the Weave guidelines/)).toBeTruthy();
+    expect(container.querySelector(".system-body strong")!.textContent).toBe("kind");
+    const cleared = { ...change, seq: 4, payload: { guidelines: "", previous: "Be **kind**" } };
+    rerender(<MessageList state={state({ currentThreadId: "t1", events: [cleared] })} />);
+    expect(screen.getByText(/Paw cleared the Weave guidelines/)).toBeTruthy();
+    expect(container.querySelector(".system-body")).toBeNull();
+  });
+});
+
+describe("GuidelinesPanel", () => {
+  const keeperMe = { ...me, role: "keeper" as const };
+  const keeperState = (over: Partial<SessionState> = {}) =>
+    state({ me: { participant: keeperMe, token: "t" }, ...over });
+
+  it("renders the Weave text as Markdown and offers no Edit button to a member", () => {
+    render(<GuidelinesPanel state={state({ weave: { id: "w1", title: "W", createdAt: "", archivedAt: null, lastSeq: 3, guidelines: "Be **kind**" } })}
+      session={session()} onError={() => {}} />);
+    expect(screen.getByText("kind").tagName).toBe("STRONG");
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+  });
+
+  it("shows the instance text collapsed under 'What agents are told', and nothing when there is none", () => {
+    const { container, rerender } = render(<GuidelinesPanel state={state({ instanceGuidelines: "House **rules**" })} session={session()} onError={() => {}} />);
+    const details = container.querySelector("details")!;
+    expect(details.open).toBe(false);
+    expect(details.querySelector("summary")!.textContent).toBe("What agents are told");
+    expect(details.querySelector("strong")!.textContent).toBe("rules");
+    rerender(<GuidelinesPanel state={state()} session={session()} onError={() => {}} />);
+    expect(container.querySelector("details")).toBeNull();
+  });
+
+  it("says so when the Weave has no guidelines", () => {
+    render(<GuidelinesPanel state={state()} session={session()} onError={() => {}} />);
+    expect(screen.getByText("No Weave guidelines yet.")).toBeTruthy();
+  });
+
+  it("a keeper edits: prefilled textarea, live counter, Save disabled when unchanged, and the trimmed text is saved", async () => {
+    const s = session({ canModerate: () => true });
+    render(<GuidelinesPanel state={keeperState({ weave: { id: "w1", title: "W", createdAt: "", archivedAt: null, lastSeq: 3, guidelines: "Rules" } })}
+      session={s} onError={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const box = screen.getByLabelText("Weave guidelines") as HTMLTextAreaElement;
+    expect(box.value).toBe("Rules");
+    expect(screen.getByText("5 / 4000")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.input(box, { target: { value: "  Be kind  " } });
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.submit(box.closest("form")!);
+    await Promise.resolve();
+    expect(s.setGuidelines).toHaveBeenCalledWith("Be kind");
+  });
+
+  it("marks the counter over the limit and disables Save past 4000 characters", () => {
+    const s = session({ canModerate: () => true });
+    render(<GuidelinesPanel state={keeperState()} session={s} onError={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const box = screen.getByLabelText("Weave guidelines") as HTMLTextAreaElement;
+    fireEvent.input(box, { target: { value: "x".repeat(4001) } });
+    const counter = screen.getByText("4001 / 4000");
+    expect(counter.className).toContain("over");
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.input(box, { target: { value: "x".repeat(4000) } });
+    expect(screen.getByText("4000 / 4000").className).not.toContain("over");
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("offers no Edit button on an archived Weave", () => {
+    render(<GuidelinesPanel state={keeperState({ weave: { id: "w1", title: "W", createdAt: "", archivedAt: "2026-01-01T00:00:00.000Z", lastSeq: 3, guidelines: "Rules" } })}
+      session={session({ canModerate: () => false })} onError={() => {}} />);
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+  });
+
+  for (const [label, lost] of [
+    ["the Weave is archived", keeperState({ weave: { id: "w1", title: "W", createdAt: "", archivedAt: "2026-01-01T00:00:00.000Z", lastSeq: 3, guidelines: "Rules" } })],
+    ["this keeper is demoted", state({ weave: { id: "w1", title: "W", createdAt: "", archivedAt: null, lastSeq: 3, guidelines: "Rules" } })],
+  ] as const) {
+    it(`closes the open form and saves nothing when ${label} mid-edit`, () => {
+      const s = session({ canModerate: () => true });
+      const open = keeperState({ weave: { id: "w1", title: "W", createdAt: "", archivedAt: null, lastSeq: 3, guidelines: "Rules" } });
+      const { rerender } = render(<GuidelinesPanel state={open} session={s} onError={() => {}} />);
+      fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+      expect(screen.getByLabelText("Weave guidelines")).toBeTruthy();
+      const stale = session({ canModerate: () => false, setGuidelines: s.setGuidelines });
+      rerender(<GuidelinesPanel state={lost} session={stale} onError={() => {}} />);
+      expect(screen.queryByLabelText("Weave guidelines")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+      expect(screen.getByText("Rules")).toBeTruthy();
+      expect(s.setGuidelines).not.toHaveBeenCalled();
+    });
+  }
 });
