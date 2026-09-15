@@ -80,7 +80,7 @@ and it lives only here.
 
 - `Settings` gains `guidelines: string`. The strict settings patch schema accepts `guidelines` (via
   `validateGuidelines`), so `keeper_set_settings({ patch: { guidelines } })`,
-  `PATCH /api/admin/settings` and `loom admin settings --set guidelines=…` work with no new
+  `PUT /api/admin/settings` and `loom admin settings --set guidelines=…` work with no new
   operation.
 - New **public read** `getInstanceGuidelines(db): Promise<string>` — no actor. The text is handed to a
   connection before it has any credential, and conduct rules are not secrets. `getSettings` itself
@@ -134,7 +134,7 @@ rules in the same turn and the log is the full history.
 | `GET` | `/api/weaves/:id` | as today | `weave.guidelines` and top-level `guidelines` (combined) added |
 | `POST` | `/api/weaves` | as today | body may carry `guidelines`; result carries `guidelines` |
 | `POST` | `/api/weaves/:secret/join` | as today | result carries `guidelines` |
-| `PATCH` | `/api/admin/settings` | instance keeper | `guidelines` accepted in the strict body |
+| `PUT` | `/api/admin/settings` | instance keeper | `guidelines` accepted in the strict body |
 
 Body/query schemas carry types only (`z.string()`); the length rule is core's.
 

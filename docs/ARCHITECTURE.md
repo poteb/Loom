@@ -284,7 +284,10 @@ keepers). `validateGuidelines` trims and caps both at `MAX_GUIDELINES_LENGTH` (4
 only clears. `guidelinesFor(instance, weave)` composes what an agent reads — the instance text under
 `INSTANCE_HEADING` (`## Loom guidelines`), then the Weave's under `WEAVE_HEADING`
 (`## Guidelines for this Weave`) — and adapters insert that string, never compose it. It is the
-`guidelines` field on the results of `createWeave`, `joinWeave` and `getWeave`.
+`guidelines` field on the results of `createWeave`, `joinWeave` and `getWeave`. A **JSON export**
+is that same `WeaveInfo`, so it carries both: top-level `guidelines` (the composed text, instance
+layer included) beside `weave.guidelines` (the Weave layer alone). The **Markdown** export's
+metadata block prints only the Weave layer, under `- Guidelines:`.
 
 **The instance layer is a public read.** `core.getInstanceGuidelines()` takes no `Actor`, and
 `GET /api/guidelines` ([routes/guidelines.ts](../src/server/src/routes/guidelines.ts), mounted

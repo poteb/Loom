@@ -17,8 +17,10 @@ export class StreamManager {
   /** Next backoff delay per weaveId, surviving across the ephemeral `Active` entries that
    * scheduleRestart()/start() replace on each restart — otherwise exponential backoff would reset
    * to `initial` on every restart instead of growing across repeated failures. Reset to `initial`
-   * after a successful delivery, and dropped entirely on an explicit stop() (leave/rejoin should
-   * not inherit a dead stream's backoff history). */
+   * after a successful delivery, and dropped in teardown() — which start() also calls, so start()
+   * captures the value *before* tearing down and re-seeds the fresh entry from it. What teardown()
+   * alone leaves behind is therefore nothing: a leave/rejoin (stop()) or a restore starts clean and
+   * does not inherit a dead stream's backoff history. */
   private nextBackoffMs = new Map<string, number>();
   /** Weaves whose guidelines preamble this session has already handed over. Deliberately outside
    * `Active`, which start() replaces on every automatic restart and on a same-identity re-arm —
@@ -147,13 +149,16 @@ export class StreamManager {
         if (entry.stopped) return;
         if (e.type === "thread.created" || e.type === "thread.url_changed" || e.type === "participant.joined" || e.type === "participant.role_changed" || e.type === "weave.guidelines_changed") {
           applyToNames(e);
-          await refresh().catch((err) => this.log(`name refresh failed for weave ${weaveId}: ${(err as Error).message}`));
+          await refresh().catch((err) => this.log(`metadata refresh failed for weave ${weaveId}: ${(err as Error).message}`));
         }
         if (shouldWake(e, { participantId: entry.participantId, ...entry.prefs })) {
           let n = formatEvent(e, { id: weaveId, title: entry.title }, entry.names, entry.participantId);
           // The first turn this session receives for the Weave carries the rules with it; empty
           // guidelines still count as delivered — there was nothing to say, and a later change
-          // reaches the agent as a weave.guidelines_changed event.
+          // reaches the agent as a weave.guidelines_changed event. When that first woken event *is*
+          // a weave.guidelines_changed, the preamble and the event body both carry the new text:
+          // accepted, because the alternative (suppressing one of them) costs an agent either the
+          // rules or the notice that they changed, for a repeat of at most 4000 characters.
           const first = !this.preambleDone.has(weaveId);
           if (first) n = withPreamble(n, entry.guidelines);
           await this.notify(n);
