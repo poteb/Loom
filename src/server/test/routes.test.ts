@@ -1,4 +1,5 @@
 import { describe, it, expect, afterAll, beforeAll } from "vitest";
+import { DEFAULT_INSTANCE_GUIDELINES } from "@loom/core";
 import { startTestServer, api, keeperToken } from "./helpers.js";
 
 const KEEPER = keeperToken("keeper-token");
@@ -226,5 +227,76 @@ describe("v2: threads url, invites, inbox, agents", () => {
     const add = await api(s.baseUrl, "POST", "/api/admin/agents", { name: "Query" }, KEEPER);
     const r = (await api(s.baseUrl, "POST", "/api/weaves", { title: "T", opener: "o", creator: { name: "Paw", kind: "human" } })).json;
     expect((await api(s.baseUrl, "GET", `/api/weaves/${r.weave.id}/events?agent=${add.json.key}`)).status).toBe(401);
+  });
+});
+
+describe("v2: guidelines", () => {
+  it("GET /api/guidelines is public, ships the default, and reflects a settings patch", async () => {
+    const shipped = await api(s.baseUrl, "GET", "/api/guidelines");
+    expect(shipped.status).toBe(200);
+    expect(shipped.json).toEqual({ guidelines: DEFAULT_INSTANCE_GUIDELINES });
+
+    const patched = await api(s.baseUrl, "PUT", "/api/admin/settings", { guidelines: "x" }, KEEPER);
+    expect(patched.status).toBe(200);
+    expect(patched.json.guidelines).toBe("x");
+    expect((await api(s.baseUrl, "GET", "/api/guidelines")).json).toEqual({ guidelines: "x" });
+  });
+
+  it("the settings patch rejects over-long guidelines and a misspelled key", async () => {
+    const long = await api(s.baseUrl, "PUT", "/api/admin/settings", { guidelines: "x".repeat(4001) }, KEEPER);
+    expect(long.status).toBe(400);
+    expect(long.json.code).toBe("validation");
+    const typo = await api(s.baseUrl, "PUT", "/api/admin/settings", { guidelinez: "x" }, KEEPER);
+    expect(typo.status).toBe(400);
+    expect(typo.json.code).toBe("validation");
+    expect((await api(s.baseUrl, "GET", "/api/guidelines")).json.guidelines).toBe("x");
+  });
+
+  it("POST /api/weaves accepts guidelines and answers with the combined text", async () => {
+    const c = await api(s.baseUrl, "POST", "/api/weaves", { ...creator, guidelines: "rules" });
+    expect(c.status).toBe(201);
+    expect(c.json.weave.guidelines).toBe("rules");
+    expect(c.json.guidelines).toContain("## Guidelines for this Weave");
+    expect(c.json.guidelines).toContain("## Loom guidelines");
+  });
+
+  it("PUT /api/weaves/:id/guidelines: keeper 200 with seq, unchanged text seq null, member/secret 403, anon 401, unknown 404", async () => {
+    const c = (await api(s.baseUrl, "POST", "/api/weaves", creator)).json;
+    const set = await api(s.baseUrl, "PUT", `/api/weaves/${c.weave.id}/guidelines`, { guidelines: "r2" }, KEEPER);
+    expect(set.status).toBe(200);
+    expect(set.json.weave.guidelines).toBe("r2");
+    expect(set.json.seq).toBe(4);
+
+    const again = await api(s.baseUrl, "PUT", `/api/weaves/${c.weave.id}/guidelines`, { guidelines: "r2" }, KEEPER);
+    expect(again.status).toBe(200);
+    expect(again.json.seq).toBeNull();
+
+    const j = (await api(s.baseUrl, "POST", `/api/weaves/${c.secret}/join`, { name: "Member", kind: "human" })).json;
+    const member = await api(s.baseUrl, "PUT", `/api/weaves/${c.weave.id}/guidelines`, { guidelines: "nope" }, j.token);
+    expect(member.status).toBe(403);
+    expect(member.json.code).toBe("forbidden");
+
+    const bySecret = await api(s.baseUrl, "PUT", `/api/weaves/${c.weave.id}/guidelines`, { guidelines: "nope" }, c.secret);
+    expect(bySecret.status).toBe(403);
+
+    const anon = await api(s.baseUrl, "PUT", `/api/weaves/${c.weave.id}/guidelines`, { guidelines: "nope" });
+    expect(anon.status).toBe(401);
+
+    const unknown = await api(s.baseUrl, "PUT", "/api/weaves/11111111-2222-3333-4444-555555555555/guidelines", { guidelines: "nope" }, KEEPER);
+    expect(unknown.status).toBe(404);
+    expect(unknown.json.code).toBe("weave_not_found");
+  });
+
+  it("GET /api/weaves/:id and join carry weave.guidelines and the combined text", async () => {
+    const c = (await api(s.baseUrl, "POST", "/api/weaves", { ...creator, guidelines: "house rules" })).json;
+    const g = await api(s.baseUrl, "GET", `/api/weaves/${c.weave.id}`, undefined, c.token);
+    expect(g.status).toBe(200);
+    expect(g.json.weave.guidelines).toBe("house rules");
+    expect(g.json.guidelines).toContain("house rules");
+
+    const j = await api(s.baseUrl, "POST", `/api/weaves/${c.secret}/join`, { name: "Bot", kind: "agent" });
+    expect(j.status).toBe(201);
+    expect(j.json.weave.guidelines).toBe("house rules");
+    expect(j.json.guidelines).toContain("## Guidelines for this Weave");
   });
 });

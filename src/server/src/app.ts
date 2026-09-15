@@ -8,6 +8,7 @@ import { bearer, type Env } from "./auth.js";
 import { statusFor } from "./errors.js";
 import { logError } from "./log.js";
 import type { TicketStore } from "./tickets.js";
+import { guidelinesRoutes } from "./routes/guidelines.js";
 import { weaveRoutes } from "./routes/weaves.js";
 import { threadRoutes } from "./routes/threads.js";
 import { adminRoutes } from "./routes/admin.js";
@@ -37,6 +38,8 @@ export function buildApp(deps: AppDeps): Hono<Env> {
     return c.json({ code: "internal", message: "Internal error" }, 500);
   });
 
+  // Before /api/weaves: the public instance guidelines are their own resource, not a Weave read.
+  app.route("/api/guidelines", guidelinesRoutes(deps.core));
   app.route("/api/weaves", weaveRoutes(deps.core));
   app.route("/api/threads", threadRoutes(deps.core));
   // Before /api/admin: Hono matches in registration order, and adminRoutes has no /agents of its own.
