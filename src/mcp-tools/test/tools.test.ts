@@ -2,9 +2,11 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { registerLoomTools, LOOM_TOOL_NAMES, LOOM_RESOURCE_URIS, LoomToolError, type LoomToolBackend, type RegisterOptions } from "../src/index.js";
+import { registerLoomTools, LOOM_TOOL_NAMES, LOOM_RESOURCE_URIS, READ_GUIDELINES, LoomToolError, type LoomToolBackend, type RegisterOptions } from "../src/index.js";
 
 const calls: unknown[][] = [];
+/** Set by the one case that needs the credential-free instance read to fail; cleared straight after. */
+let instanceGuidelinesError: LoomToolError | undefined;
 const fake: LoomToolBackend = {
   createWeave: async (input, credential) => { calls.push(["createWeave", input, credential]); return { weave: { id: "w1" }, secret: "s".repeat(43), token: "t".repeat(43) }; },
   joinWeave: async (secret, who) => { calls.push(["joinWeave", secret, who]); if (secret === "bad") throw new LoomToolError("weave_not_found", "Weave not found"); return { weaveId: "w1", token: "j".repeat(43) }; },
@@ -30,7 +32,7 @@ const fake: LoomToolBackend = {
   keeperAgentsAdd: async (_c, name) => ({ agent: { name }, key: "a".repeat(43) }),
   keeperAgentsRevoke: async () => {},
   setWeaveGuidelines: async (c, w, g) => { calls.push(["setWeaveGuidelines", c, w, g]); return { weave: { id: w, guidelines: g }, seq: 7 }; },
-  getInstanceGuidelines: async () => "## Loom guidelines\nBe kind.",
+  getInstanceGuidelines: async () => { if (instanceGuidelinesError) throw instanceGuidelinesError; return "## Loom guidelines\nBe kind."; },
   getGuidelines: async (c, w) => {
     calls.push(["getGuidelines", c, w]);
     if (w === "nope") throw new LoomToolError("forbidden", "not joined; call join_weave");
@@ -158,7 +160,7 @@ describe("guidelines", () => {
     await client.callTool({ name: "create_weave", arguments: { title: "T", opener: "o", name: "Claude", kind: "agent", guidelines: "House rules" } });
     expect(calls.filter((c) => c[0] === "createWeave").at(-1)![1]).toEqual({ title: "T", opener: "o", creator: { name: "Claude", kind: "agent" }, guidelines: "House rules" });
     const tools = (await client.listTools()).tools;
-    for (const n of ["create_weave", "join_weave", "get_weave"]) expect(tools.find((t) => t.name === n)!.description).toMatch(/guidelines/i);
+    for (const n of ["create_weave", "join_weave", "get_weave"]) expect(tools.find((t) => t.name === n)!.description).toContain(READ_GUIDELINES);
     expect(tools.find((t) => t.name === "keeper_set_settings")!.description).toMatch(/guidelines/);
   });
 
@@ -196,6 +198,13 @@ describe("guidelines", () => {
     try {
       expect(first(await c.readResource({ uri: "loom://weaves/w2/guidelines" })).text).toBe("combined:w2:agent-key");
     } finally { await c.close(); }
+  });
+
+  it("carries the backend's error code on the credential-free instance read too", async () => {
+    instanceGuidelinesError = new LoomToolError("internal", "boom");
+    try {
+      await expect(client.readResource({ uri: "loom://guidelines" })).rejects.toThrow(/internal: boom/);
+    } finally { instanceGuidelinesError = undefined; }
   });
 
   it("carries the backend's error code in the resource error message", async () => {

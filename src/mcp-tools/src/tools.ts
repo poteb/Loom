@@ -17,7 +17,17 @@ export const LOOM_RESOURCE_URIS = ["loom://guidelines", "loom://weaves/{weaveId}
 const kind = z.enum(["human", "agent"]).default("agent");
 
 /** One sentence appended to the three results that carry the combined text, so an agent knows to read it. */
-const READ_GUIDELINES = "The result's `guidelines` is the instance's and this Weave's rules — read it before posting.";
+export const READ_GUIDELINES = "The result's `guidelines` is the instance's and this Weave's rules — read it before posting.";
+
+/**
+ * A resource read has no `{ code, message }` envelope the way a tool result does, so the code is
+ * folded into the message and the JSON-RPC error text still names it (`invalid_token: …`).
+ */
+function resourceError(e: unknown): Error {
+  const err = e as { code?: unknown; message?: unknown };
+  if (typeof err.code === "string") return new Error(typeof err.message === "string" && err.message ? `${err.code}: ${err.message}` : err.code);
+  return e instanceof Error ? e : new Error(String(e));
+}
 
 export type RegisterOptions = {
   credentialHint?: string;
@@ -27,8 +37,9 @@ export type RegisterOptions = {
   /**
    * Credential for reading `loom://weaves/{weaveId}/guidelines`. A resource read carries no arguments,
    * so the surface supplies the credential: remote `/mcp` hands over the connection's agent key, the
-   * channel resolves the stored participant token for that Weave. Falls back to `defaultCredential`;
-   * when neither yields one, the read is refused with `invalid_token`.
+   * channel resolves the stored participant token for that Weave. When present it decides alone —
+   * returning `undefined` refuses the read (`invalid_token`) rather than falling back; only when the
+   * option is absent does `defaultCredential` apply.
    */
   resourceCredential?: (weaveId: string) => string | undefined;
 };
@@ -143,19 +154,18 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
   };
   server.registerResource("loom-guidelines", "loom://guidelines",
     { title: "Loom guidelines", description: "Conduct for every agent on this Loom, set by its instance keepers.", mimeType: "text/markdown" },
-    async (uri) => ({ contents: [{ uri: uri.href, mimeType: "text/markdown", text: await backend.getInstanceGuidelines() }] }));
+    async (uri) => {
+      try {
+        return { contents: [{ uri: uri.href, mimeType: "text/markdown", text: await backend.getInstanceGuidelines() }] };
+      } catch (e) { throw resourceError(e); }
+    });
   server.registerResource("weave-guidelines", new ResourceTemplate("loom://weaves/{weaveId}/guidelines", { list: undefined }),
     { title: "Weave guidelines", description: "Instance guidelines followed by this Weave's own; what to read before posting.", mimeType: "text/markdown" },
     async (uri, { weaveId }) => {
       const id = String(weaveId);
       try {
         return { contents: [{ uri: uri.href, mimeType: "text/markdown", text: await backend.getGuidelines(forResource(id), id) }] };
-      } catch (e) {
-        // A resource read has no { code, message } envelope: fold the code into the message so the
-        // JSON-RPC error text still names it.
-        const err = e as { code?: unknown; message?: unknown };
-        throw new Error(typeof err.code === "string" ? `${err.code}: ${String(err.message)}` : (e instanceof Error ? e.message : String(e)));
-      }
+      } catch (e) { throw resourceError(e); }
     });
 
   const keeper = "Instance keeper token (LOOM_KEEPER_TOKENS / keeper_add).";
