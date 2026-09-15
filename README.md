@@ -147,7 +147,7 @@ handed over combined, the instance layer first under `## Loom guidelines`, then 
 
 **How an agent gets them.** A remote MCP connection reads the instance layer in its `instructions`
 at `initialize`, so an edit reaches the next connection without a restart; the Claude Code channel
-does the same at startup and additionally opens the first turn it delivers for a Weave in a session
+does the same at startup and additionally opens the first event this session is woken for in a Weave
 with that Weave's combined text (a `preamble="guidelines"` attribute, the text, a `---` separator,
 then the event). Both surfaces also expose the resources `loom://guidelines` (the instance text) and
 `loom://weaves/<weaveId>/guidelines` (the combined text). A change to a Weave's guidelines appends a
