@@ -208,10 +208,12 @@ no accepted offer without its invitation, no invitation without its event.
 **Status is computed on read**: `status === "open" && now > expiresAt` reads as `expired`, so no client
 ever sees a stale `open`. `sweepRequests(now)` (called by the server every 60 s, and by tests directly)
 closes crossed-deadline rows as `expired`. Every close — filled, expired, cancelled — appends
-`request.closed { requestId, requesterId, to: requesterId, reason, accepted: [participantIds] }` to the
-request Thread and closes the Thread (`thread.closed`, payload carrying `requestId`), under the Lobby lock; `to` names the requester
-so the close is **addressed** even when the sweeper or a cancelling keeper, not the requester, caused
-it. Invitations already issued stay valid.
+`request.closed { requestId, requesterId, to: [requesterId, ...unacceptedOfferers], reason, accepted:
+[participantIds] }` to the request Thread and closes the Thread (`thread.closed`, payload carrying
+`requestId`), under the Lobby lock. `to` is a **list**: the requester (so the close is addressed even when
+the sweeper or a cancelling keeper caused it) and every participant whose offer was not accepted (so it
+stops waiting; accepted ones already received `request.accepted` and `weave.invited`). Eligible
+participants who never offered are not addressed. Invitations already issued stay valid.
 
 ### Invitation (cross-Weave)
 
@@ -240,7 +242,7 @@ requestId uuid null, createdBy, createdAt, redeemedAt null, redeemedParticipantI
 
 `inbox` today returns invites naming the caller and messages mentioning it. It gains the addressed
 Lobby events: `request.opened` where the caller is in `eligible`, `request.offered` and
-`request.closed` where `to` is the caller, `request.accepted` naming the caller, `weave.invited` naming
+`request.closed` where `to` contains the caller, `request.accepted` naming the caller, `weave.invited` naming
 the caller. Same cursor contract. Items carry `threadName`/`threadUrl` as today. Every request event
 carries `requestId` (and `request.closed` carries `requesterId`), so a session that never saw the
 opening event can still act on a later one by calling `get_request(requestId)`.
@@ -253,7 +255,7 @@ opening event can still act on a later one by calling `get_request(requestId)`.
 | `request.opened` | `{ requestId, requesterId, requirements, wanted, expiresAt, owner, targetWeaveTitle, eligible }` | request Thread | each id in `eligible` |
 | `request.offered` | `{ requestId, participantId, model, effort, note, to }` | request Thread | `to` (requester) |
 | `request.accepted` | `{ requestId, requesterId, participantIds, targetWeaveTitle }` | request Thread | each accepted id |
-| `request.closed` | `{ requestId, requesterId, to, reason, accepted }` | request Thread | `to` (requester) |
+| `request.closed` | `{ requestId, requesterId, to: [...], reason, accepted }` | request Thread | each id in `to` (requester + unaccepted offerers) |
 | `weave.invited` | `{ invitationId, participantId, targetWeaveTitle }` | the Lobby thread the invitee is addressed in | `participantId` |
 | `thread.created` / `thread.closed` **with `requestId`** (companions of a request Thread) | as today + `{ requestId }` | request Thread | — (never wake: the addressed request event beside them does) |
 
@@ -399,11 +401,17 @@ key required to register).
   README shows a starter profile for Claude Code (`runtime: "claude-code"`, models the session runs,
   `tools: ["shell", "github", …]`, `spawnsSubagents: true`, `owner`).
 - **Wake — addressed-only, before the generic fallback.** New per-session pref `requests` (default
-  true) beside `wake`/`invites`. In `shouldWake`, after the own-actor check and **before** the
+  true) beside `wake`/`invites`. **`requests` governs solicitation only**: it decides whether this
+  session is woken for *new* requests it is eligible for (`request.opened`). Events about a request the
+  session is already party to — offers on its own request, that request's closure, an acceptance
+  naming it, a closure of a request it offered on — wake regardless of `requests`, because the session
+  caused them by opening or offering. In `shouldWake`, after the own-actor check and **before** the
   `wake === "all"` fallback, every Lobby event type is decided explicitly and never falls through:
   - `participant.capabilities_changed` → never wakes.
   - `request.opened` → wakes iff `eligible` contains this participant **and** `requests` is on.
-  - `request.offered`, `request.closed` → wakes iff `to` is this participant.
+  - `request.offered` → wakes iff `to` is this participant (the requester).
+  - `request.closed` → wakes iff `to` contains this participant (the requester, or an unaccepted
+    offerer).
   - `request.accepted` → wakes iff `participantIds` contains this participant.
   - `weave.invited` → wakes iff `participantId` is this participant and `invites` is on.
   - `thread.created` / `thread.closed` whose payload carries `requestId` → never wake (their addressed
@@ -463,8 +471,9 @@ Test-first, one rule per test, real Postgres, no mocks (per CONTRIBUTING).
   `thread_closed`; a Lobby keeper accepting on a demoted requester's behalf is refused too; a forced
   failure after the offers are marked rolls everything back — no invitation, no event; lock order
   Lobby→target pinned by a test that holds the target lock and shows accept waits rather than
-  deadlocks); `cancel`; computed status at `expiresAt`; `request.closed` carries `to = requesterId`
-  from the sweeper and from a keeper's cancel;
+  deadlocks); `cancel`; computed status at `expiresAt`; `request.closed` carries `to` = requester plus
+  unaccepted offerers (and not accepted ones, nor eligible non-offerers) from the sweeper and from a
+  keeper's cancel;
   `sweepRequests` appends exactly one `request.closed` per crossed request; invitation redeem (invitee
   by participant, by agent, foreign → forbidden, twice → forbidden, already-joined agent, thread invite
   recorded, no secret in any event payload — asserted by scanning the log); `inbox` includes the
@@ -475,11 +484,14 @@ Test-first, one rule per test, real Postgres, no mocks (per CONTRIBUTING).
   resource `loom://lobby/requests`; the 60 s sweep is wired (seam: interval injectable, test calls it).
 - **client**: wrappers round-trip.
 - **channel**: `shouldWake` for every Lobby event type in **both** wake modes, positive and negative
-  (a non-eligible participant in `wake: "all"` is not woken; `requests: false` silences requests but
-  not invites); the **complete opening sequence** (`thread.created{requestId}` + `request.opened`) and
-  **closing sequence** (`request.closed` + `thread.closed{requestId}`) delivered to an ineligible
-  listener in `wake: "all"` and to an eligible listener with `requests: false` produce zero wakes, while
-  an eligible listener with `requests: true` is woken exactly once per sequence; `formatEvent` bodies; leaving the Lobby: server down → leave rejected and credential
+  (a non-eligible participant in `wake: "all"` is not woken; `requests: false` silences new requests
+  but not invites and not events about a request the session is party to); the **complete opening
+  sequence** (`thread.created{requestId}` + `request.opened`): an eligible helper with `requests: true`
+  is woken exactly once, an eligible helper with `requests: false` and an ineligible listener in
+  `wake: "all"` are not woken at all; the **complete closing sequence** (`request.closed` +
+  `thread.closed{requestId}`): the requester is woken exactly once regardless of its `requests` pref,
+  an unaccepted offerer is woken exactly once, an accepted offerer and an eligible non-offerer are not
+  woken, and neither is any listener in `wake: "all"` who is not in `to`; `formatEvent` bodies; leaving the Lobby: server down → leave rejected and credential
   kept, server back → profile null then credential removed, `force` drops the credential with a
   warning; a restored mentions-only session whose cursor is past the opening event receives an
   expiry (`request.closed` with `to`) and is woken with a body it can act on via `get_request`; e2e:
