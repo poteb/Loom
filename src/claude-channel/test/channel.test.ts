@@ -109,7 +109,7 @@ describe("channel tools", () => {
       expect(listed).toEqual([expect.objectContaining({ weaveId: created.weave.id, title: "T", participantName: "Claude", wake: "all", invites: true })]);
       const waked = await c.callTool({ name: "set_wake", arguments: { weaveId: created.weave.id, wake: "mentions", invites: false } });
       expect(waked.isError).toBeFalsy();
-      expect(json(waked)).toEqual({ weaveId: created.weave.id, wake: "mentions", invites: false });
+      expect(json(waked)).toEqual({ weaveId: created.weave.id, wake: "mentions", invites: false, requests: true });
       cfg = readState(stateDir);
       // Preferences live under this session's entry, not on the machine-wide Weave record.
       expect(cfg.weaves[created.weave.id].wake).toBe("all");
@@ -402,7 +402,7 @@ describe("channel streaming", () => {
       expect(got.find((g) => body(g) === "@Claude new link?")!.meta).toMatchObject({ thread: t.id, type: "message", thread_url: CHANGED });
 
       const prefs = json(await c.callTool({ name: "set_wake", arguments: { weaveId: created.weave.id, wake: "mentions" } }));
-      expect(prefs).toEqual({ weaveId: created.weave.id, wake: "mentions", invites: true });
+      expect(prefs).toEqual({ weaveId: created.weave.id, wake: "mentions", invites: true, requests: true });
       await s!.core.postMessage(gptActor, t.id, "not for you");                 // suppressed in mentions mode
       const inv = await s!.core.inviteParticipant(gptActor, t.id, created.participant.id);
       await waitFor(() => got.some((g) => g.meta.type === "thread.invited"));

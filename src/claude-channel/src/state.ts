@@ -8,9 +8,15 @@ export type JoinedWeave = {
   generalThreadId: string; wake: Wake;
   /** Machine-wide watermark: the highest seq any session on this machine has delivered. */
   lastSeq: number;
+  /** Set when this Weave is the instance's Lobby (joined with join_lobby). Persisted rather than
+   * re-derived, so a restarted plugin holding a stored Lobby credential still knows to clear the
+   * profile before leaving — a decision that must not depend on reaching the server. */
+  isLobby?: true;
 };
-/** What a session wants woken for in a Weave. */
-export type Prefs = { wake: Wake; invites: boolean };
+/** What a session wants woken for in a Weave. `requests` governs solicitation only: whether a *new*
+ *  Lobby request this session is eligible for wakes it. Events of a request it is already party to
+ *  wake regardless — it caused them by opening or offering. */
+export type Prefs = { wake: Wake; invites: boolean; requests: boolean };
 /** Per-session delivery cursors and preferences, keyed by Claude Code session id (`CLAUDE_CODE_SESSION_ID`). */
 export type SessionCursors = { at: string; cursors: Record<string, number>; prefs?: Record<string, Partial<Prefs>> };
 export type ChannelConfig = {
@@ -163,7 +169,14 @@ export class ChannelState {
   prefs(weaveId: string): Prefs {
     const c = this.get();
     const mine = c.sessions[this.sessionId]?.prefs?.[weaveId] ?? {};
-    return { wake: mine.wake ?? c.weaves[weaveId]?.wake ?? "all", invites: mine.invites ?? true };
+    return { wake: mine.wake ?? c.weaves[weaveId]?.wake ?? "all", invites: mine.invites ?? true, requests: mine.requests ?? true };
+  }
+
+  /** The stored Lobby, if this machine has joined it: what `credential: "stored"` resolves to for
+   * every Lobby tool, and what makes leave_weave clear the profile first. */
+  lobbyEntry(): { weaveId: string; weave: JoinedWeave } | undefined {
+    const found = Object.entries(this.get().weaves).find(([, w]) => w.isLobby);
+    return found ? { weaveId: found[0], weave: found[1] } : undefined;
   }
 
   setPrefs(weaveId: string, patch: Partial<Prefs>): Promise<Prefs> {
@@ -173,7 +186,7 @@ export class ChannelState {
       const cur = s.prefs[weaveId] ?? {};
       s.prefs[weaveId] = { ...cur, ...patch };
       const p = s.prefs[weaveId];
-      return { wake: p.wake ?? c.weaves[weaveId]?.wake ?? "all", invites: p.invites ?? true };
+      return { wake: p.wake ?? c.weaves[weaveId]?.wake ?? "all", invites: p.invites ?? true, requests: p.requests ?? true };
     });
   }
 
@@ -267,9 +280,11 @@ export class ChannelState {
     let dirty = false;
     for (const [id, entry] of Object.entries(raw.weaves ?? {})) {
       // Only known fields survive a load, so a legacy `secret` field (or anything else) is dropped.
-      const { title, token, participantId, participantName, generalThreadId, wake, lastSeq } = entry;
-      weaves[id] = { title, token, participantId, participantName, generalThreadId, wake, lastSeq };
-      if (Object.keys(entry).length !== 7) dirty = true;
+      const { title, token, participantId, participantName, generalThreadId, wake, lastSeq, isLobby } = entry;
+      // `isLobby` is written only when true, so a file whose entry carries anything else — an
+      // explicit false, a dropped legacy field — counts as dirty and is rewritten.
+      weaves[id] = { title, token, participantId, participantName, generalThreadId, wake, lastSeq, ...(isLobby ? { isLobby: true as const } : {}) };
+      if (Object.keys(entry).length !== Object.keys(weaves[id]!).length) dirty = true;
     }
     return { config: { url: raw.url, allowInsecure: raw.allowInsecure, weaves, sessions: raw.sessions ?? {}, writers: raw.writers ?? {} }, dirty, id: raw.commit?.id, parent: raw.commit?.parent };
   }
