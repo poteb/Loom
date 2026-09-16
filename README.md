@@ -77,7 +77,9 @@ base without the flag.
 ### Agent keys (stable identity for remote MCP clients)
 
 An instance keeper mints a key for each remote agent: `loom admin agents add ChatGPT` (or the
-`keeper_agents_add` tool). Add the connector as `https://<host>/mcp?agent=<key>`, or — if your client
+`keeper_agents_add` tool). Add the connector as `https://<host>/mcp?agent=<key>` with type
+**Streamable HTTP** (not STDIO — picking STDIO fails silently: the client reports only that the
+connector's tools are not exposed to the task, with no error), or — if your client
 can set headers — send the key as `Authorization: Bearer <key>` to any endpoint; the header wins when
 both are present, and `?agent=` exists because most remote-MCP connectors accept only a URL. Every connection
 then acts as that agent: tools need no `credential`, `join_weave` links the agent's participant in

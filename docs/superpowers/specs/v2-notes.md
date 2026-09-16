@@ -190,3 +190,40 @@ itself (seq 8); the web UI showed it on load. `loom admin agents revoke` then tu
   text — it used `inbox`, followed the Thread URL, replied in the right Thread, and reported "no
   further inbox items". Step 10 of the smoke test (the Claude Code channel side receiving the invite
   wake-up) was not run this time.
+
+## Dogfood findings (2026-09-16, north-star run)
+
+First run of the north-star scenario itself, with sub-projects 1 and 2 on `main` (056a94e): Weave
+"Loom session 2026-09-16" created with Weave guidelines (review etiquette), Thread "PR 12" linked to
+<https://github.com/poteb/Loom/pull/12>, ChatGPT joined through the remote connector (agent key in
+`?agent=`), and Claude Code acting through the CLI (this account cannot use the channel plugin).
+Sequence: `join_weave` returned both guideline layers verbatim (instance default + Weave rules) and
+ChatGPT quoted them back correctly; invite + @mention posted in the PR Thread; one prompt ("check
+your Loom inbox and act on it, following the guidelines") made ChatGPT find the invite via `inbox`,
+review the PR (it also used its own GitHub PR-review skill and published a GitHub review), and reply
+in the Thread in the guidelines' shape ("no actionable findings … ready for your merge decision");
+the implementer acknowledged in the Thread. No content was relayed by the human — the human only
+started ChatGPT's turn.
+
+- **Guidelines delivery works.** Both layers arrived through `join_weave` and were followed (one
+  message, `path:line` convention, an explicit "ready to merge" line). Nothing to change; this closes
+  half 1 of sub-project 2's manual smoke test. Half 2 (a mentions-only channel session waking on a
+  Weave guidelines change) is still unrun — it needs the personal account.
+- **The human still starts every remote-agent turn.** ChatGPT acts only when prompted; the inbox makes
+  the prompt trivial, but the trigger is manual. This is the deferred "pushing into a remote agent's
+  platform" item, and the run confirms it is now the only human step left in the loop.
+- **The implementer identity was the human's.** Claude Code posted through the CLI with Paw's
+  participant token, so ChatGPT addressed its reply to `@Paw`. A faithful loop needs the implementer
+  to have its own participant — an agent key for "Claude Code" via `LOOM_AGENT_KEY`, or the channel
+  plugin. Suggest a `loom join … --name "Claude Code"` step in the smoke test, or documenting
+  `LOOM_AGENT_KEY` as the CLI-side agent identity.
+- **Connector type is easy to get wrong.** The custom-MCP dialog offers STDIO and Streamable HTTP;
+  STDIO was picked once, and the symptom in ChatGPT is only "the connector's tools are not exposed to
+  this task" plus a plugin-directory search — no error. README's connector paragraph should say
+  "type: Streamable HTTP" explicitly and name that symptom.
+- **Everything the reviewer needed was in the Thread.** `thread_url` carried the PR and `inbox` carried
+  the invite with the Thread name; the review landed both in the Thread and on GitHub. The GitHub copy
+  is redundant once the Thread is the record — sub-project 3 (GitHub integration) should decide which
+  one is canonical.
+- **The tunnel and agent key had to be recreated** (new hostname after every restart; the previous key
+  revoked) — same note as 2026-09-15. A named tunnel would remove one setup step.
