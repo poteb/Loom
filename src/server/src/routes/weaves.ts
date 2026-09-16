@@ -18,8 +18,9 @@ export function weaveRoutes(core: Core) {
     return c.json(await core.createWeave(input, actor), 201);
   });
 
-  // Before /:secret/join, and distinct from it: this is the secret-less redemption path, where the
-  // invitation says which Weave and the caller's own credential proves it is the invitee.
+  // A distinct path from /:secret/join, not a special case of it: this is the secret-less
+  // redemption, where the invitation says which Weave and the caller's own credential proves it is
+  // the invitee.
   r.post("/join", async (c) => {
     const actor = await requireActor(c, core);
     const { inviteId, name } = await body(c, z.object({ inviteId: z.string(), name: z.string().optional() }));

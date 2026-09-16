@@ -189,6 +189,8 @@ describe("Lobby wrappers", () => {
     const f = await lobby();
     const req = await f.claude.openRequest(f.input);
     expect(req).toMatchObject({ requesterId: f.claudeId, owner: f.owner, status: "open", wanted: 1 });
+    // The eligibility snapshot comes back with the open itself, not only on a later read.
+    expect(req.eligible).toEqual([f.botId]);
     expect((await f.claude.listRequests("open")).map((r) => r.id)).toContain(req.id);
     expect((await f.claude.getRequest(req.id)).eligible).toEqual([f.botId]);
 

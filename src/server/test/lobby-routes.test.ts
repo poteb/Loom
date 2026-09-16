@@ -139,6 +139,14 @@ describe("POST /api/lobby/join", () => {
     expect(r.json.participant.agentId).toBe(a.id);
     expect(r.json.participant.name).toBe(a.name);
   });
+
+  it("refuses a revoked agent key rather than joining anonymously", async () => {
+    const a = await agentKey(uniq("ChatGPT"));
+    expect((await api(s.baseUrl, "DELETE", `/api/admin/agents/${a.id}`, undefined, KEEPER)).status).toBe(204);
+    const r = await api(s.baseUrl, "POST", "/api/lobby/join", { name: uniq("Ghost"), kind: "agent" }, a.key);
+    expect(r.status).toBe(401);
+    expect(r.json.code).toBe("invalid_token");
+  });
 });
 
 describe("PUT /api/lobby/participants/me/capabilities", () => {
@@ -172,6 +180,13 @@ describe("PUT /api/lobby/participants/me/capabilities", () => {
     expect(bad.status).toBe(400);
     expect(bad.json.code).toBe("validation");
     expect((await api(s.baseUrl, "PUT", "/api/lobby/participants/me/capabilities", { owner: "paw" })).status).toBe(401);
+  });
+
+  it("refuses a credential that resolves but is not a Lobby identity", async () => {
+    const f = await scenario();
+    const r = await api(s.baseUrl, "PUT", "/api/lobby/participants/me/capabilities", { owner: "paw" }, f.target.keeper);
+    expect(r.status).toBe(403);
+    expect(r.json.code).toBe("forbidden");
   });
 });
 
@@ -209,6 +224,8 @@ describe("POST /api/requests", () => {
       targetWeaveId: f.target.weaveId, targetThreadId: f.target.threadId,
       targetWeaveTitle: "Loom session 2026-09-16", url: "https://example.com/pr/14",
     });
+    // The snapshot the open just recorded: only the listener this owner's requests admit.
+    expect(req.eligible).toEqual([f.pawbot.id]);
   });
 
   it("refuses a Lobby token with no target credential", async () => {
@@ -293,6 +310,14 @@ describe("GET /api/requests/:id", () => {
     expect(r.json.offers).toHaveLength(1);
     expect(r.json.offers[0]).toMatchObject({ participantId: f.pawbot.id, note: "can start now", accepted: false });
   });
+
+  it("answers the Lobby secret and refuses a stranger", async () => {
+    const f = await scenario();
+    const req = await openRequest(f);
+    expect((await api(s.baseUrl, "GET", `/api/requests/${req.id}`, undefined, await lobbySecret())).status).toBe(200);
+    expect((await api(s.baseUrl, "GET", `/api/requests/${req.id}`, undefined, f.target.keeper)).status).toBe(403);
+    expect((await api(s.baseUrl, "GET", `/api/requests/${req.id}`)).status).toBe(401);
+  });
 });
 
 describe("POST /api/requests/:id/offers", () => {
@@ -354,6 +379,23 @@ describe("POST /api/requests/:id/cancel", () => {
     expect(again.status).toBe(409);
     expect(again.json.code).toBe("request_closed");
   });
+
+  it("lets a Lobby keeper cancel on the requester's behalf", async () => {
+    const f = await scenario();
+    const req = await openRequest(f);
+    // An instance keeper is a keeper of every Weave, the Lobby included.
+    const r = await api(s.baseUrl, "POST", `/api/requests/${req.id}/cancel`, undefined, KEEPER);
+    expect(r.status).toBe(200);
+    expect(r.json.status).toBe("cancelled");
+  });
+
+  it("refuses a Lobby participant who is neither the requester nor a keeper", async () => {
+    const f = await scenario();
+    const req = await openRequest(f);
+    const r = await api(s.baseUrl, "POST", `/api/requests/${req.id}/cancel`, undefined, f.bobbot.token);
+    expect(r.status).toBe(403);
+    expect(r.json.code).toBe("forbidden");
+  });
 });
 
 describe("POST /api/weaves/:id/invitations", () => {
@@ -405,11 +447,12 @@ describe("the request sweep", () => {
       ...s.core,
       sweepRequests: (now?: Date) => { sweeps++; return s.core.sweepRequests(now ?? new Date(Date.now() + 120_000)); },
     } as Core;
-    const { stop } = buildApp({ core, tickets: new TicketStore(), requestSweepMs: 25 });
+    const tickets = new TicketStore();
+    const { stop } = buildApp({ core, tickets, requestSweepMs: 25 });
     try {
       await until(async () =>
         (await api(s.baseUrl, "GET", `/api/requests/${req.id}`, undefined, f.claude.token)).json.closedAt !== null);
-    } finally { stop(); }
+    } finally { stop(); tickets.stop(); }
     const after = sweeps;
     await new Promise((r) => setTimeout(r, 120));
     expect(sweeps).toBe(after);
@@ -418,10 +461,11 @@ describe("the request sweep", () => {
   it("exposes sweepNow so a caller can sweep without waiting for the interval", async () => {
     const f = await scenario();
     const req = await openRequest(f, { timeoutMs: 60_000 });
-    const { sweepNow, stop } = buildApp({ core: s.core, tickets: new TicketStore() });
+    const tickets = new TicketStore();
+    const { sweepNow, stop } = buildApp({ core: s.core, tickets });
     try {
       expect(await sweepNow(new Date(Date.now() + 120_000))).toBeGreaterThanOrEqual(1);
-    } finally { stop(); }
+    } finally { stop(); tickets.stop(); }
     const r = await api(s.baseUrl, "GET", `/api/requests/${req.id}`, undefined, f.claude.token);
     expect(r.json.status).toBe("expired");
     expect(r.json.closedAt).not.toBeNull();
