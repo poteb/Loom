@@ -27,7 +27,7 @@ export function withStoredCredential(inner: LoomToolBackend, state: ChannelState
   // exception thrown out of the tool handler before that catch is even installed.
   return {
     createWeave: (input, credential) => inner.createWeave(input, credential === STORED ? undefined : credential),
-    joinWeave: (s, who, cred) => inner.joinWeave(s, who, cred),
+    joinWeave: (s, who, cred, opts) => inner.joinWeave(s, who, cred, opts),
     lookupWeave: (s) => inner.lookupWeave(s),
     getWeave: async (c, w) => inner.getWeave(byWeave(c, w), w),
     readEvents: async (c, w, o) => inner.readEvents(byWeave(c, w), w, o),
@@ -52,5 +52,19 @@ export function withStoredCredential(inner: LoomToolBackend, state: ChannelState
     setWeaveGuidelines: async (c, w, g) => inner.setWeaveGuidelines(byWeave(c, w), w, g),
     getInstanceGuidelines: () => inner.getInstanceGuidelines(),
     getGuidelines: async (c, w) => inner.getGuidelines(byWeave(c, w), w),
+    // Lobby tools: passed straight through. What `"stored"` means for the Lobby (its own stored
+    // token, and `targetCredential: "stored"` for the target Weave) belongs with the channel's
+    // Lobby work; until then the backend below refuses them anyway.
+    getLobby: () => inner.getLobby(),
+    joinLobby: (who, cred) => inner.joinLobby(who, cred),
+    setCapabilities: (c, profile) => inner.setCapabilities(c, profile),
+    findAgents: (c, filter) => inner.findAgents(c, filter),
+    openRequest: (c, input) => inner.openRequest(c, input),
+    listRequests: (c, o) => inner.listRequests(c, o),
+    getRequest: (c, id) => inner.getRequest(c, id),
+    offer: (c, id, input) => inner.offer(c, id, input),
+    acceptRequest: (c, id, ids) => inner.acceptRequest(c, id, ids),
+    cancelRequest: (c, id) => inner.cancelRequest(c, id),
+    inviteToWeave: (c, p, w, t) => inner.inviteToWeave(c, p, w, t),
   };
 }

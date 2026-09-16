@@ -1,5 +1,5 @@
 import { LoomClient, LoomClientError, type Kind, type Role, type Settings } from "@loom/client";
-import type { LoomToolBackend } from "@loom/mcp-tools";
+import { LoomToolError, type JoinWeaveOptions, type LoomToolBackend } from "@loom/mcp-tools";
 import type { ChannelState, JoinedWeave } from "./state.js";
 
 export type JoinHooks = {
@@ -36,7 +36,10 @@ export class ClientToolBackend implements LoomToolBackend {
    * lose the issued token and make a retry fail with `name_taken`. Order: lookup -> getWeave -> join
    * -> persist the token -> hooks. The connection-wide agent key other backends pass through is
    * ignored here: the channel stores the participant identity it creates and reuses that instead. */
-  async joinWeave(secret: string, who: { name?: string; kind: Kind }, _credential?: string) {
+  async joinWeave(secret: string, who: { name?: string; kind: Kind }, _credential?: string, opts?: JoinWeaveOptions) {
+    // Redeeming a cross-Weave invitation is part of the channel's own Lobby work (its own task):
+    // refuse it here rather than falling through to a secret join with no secret.
+    if (opts?.inviteId !== undefined) this.notYet();
     const weaveId = await this.client.lookupWeave(secret);
     // Already joined under this name: hand back the stored identity rather than consuming the name
     // a second time (which the server refuses with name_taken). Falls through to a fresh join if the
@@ -118,4 +121,21 @@ export class ClientToolBackend implements LoomToolBackend {
   setWeaveGuidelines(c: string, w: string, g: string) { return this.as(c).setWeaveGuidelines(w, g); }
   getInstanceGuidelines() { return this.client.getInstanceGuidelines(); }
   async getGuidelines(c: string, w: string) { return (await this.as(c).getWeave(w)).guidelines; }
+
+  // --- Lobby: not wired into the channel yet -------------------------------
+  // The tool surface is shared, so these exist to satisfy the port. The channel's own Lobby work
+  // (storing the Lobby like any Weave, `"stored"` credentials, the two-step leave) is its own task;
+  // until then every Lobby tool refuses here instead of half-working.
+  private notYet(): never { throw new LoomToolError("validation", "The Lobby is not available on this channel yet"); }
+  async getLobby(): Promise<unknown> { return this.notYet(); }
+  async joinLobby(): Promise<unknown> { return this.notYet(); }
+  async setCapabilities(): Promise<unknown> { return this.notYet(); }
+  async findAgents(): Promise<unknown[]> { return this.notYet(); }
+  async openRequest(): Promise<unknown> { return this.notYet(); }
+  async listRequests(): Promise<unknown[]> { return this.notYet(); }
+  async getRequest(): Promise<unknown> { return this.notYet(); }
+  async offer(): Promise<unknown> { return this.notYet(); }
+  async acceptRequest(): Promise<unknown> { return this.notYet(); }
+  async cancelRequest(): Promise<unknown> { return this.notYet(); }
+  async inviteToWeave(): Promise<unknown> { return this.notYet(); }
 }
