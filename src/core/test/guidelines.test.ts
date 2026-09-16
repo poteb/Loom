@@ -120,6 +120,25 @@ describe("setWeaveGuidelines", () => {
     })).rejects.toMatchObject({ code: "forbidden" });
   });
 
+  it("a fresh join composes its guidelines from the locked Weave, not the pre-lock read", async () => {
+    const c = await createWeave(db, bus, { title: "Race", opener: "o", creator: { name: "Paw", kind: "human" } });
+    const owner = await resolveCredential(db, c.token);
+    // The rules change after joinWeave has read the Weave row and before it takes the lock -- the
+    // window a concurrent keeper edit really lands in. The new participant must be told the rules
+    // it is actually joining under, not the ones that were current a moment earlier.
+    const joined = await joinWeave(db, bus, c.secret, { name: "Bot2", kind: "agent" }, undefined, {
+      beforeLock: async () => { await setWeaveGuidelines(db, bus, owner, c.weave.id, "New rules"); },
+    });
+    expect(joined.weave.guidelines).toBe("New rules");
+    expect(joined.guidelines).toContain("New rules");
+    expect(joined.guidelines).toBe(guidelinesFor(DEFAULT_INSTANCE_GUIDELINES, { guidelines: "New rules" }));
+    // createWeave appends three events, the guidelines change is seq 4, this join's own event seq 5 --
+    // and the Weave the join reports is the Weave as of that event, as setWeaveGuidelines reports it too.
+    const last = (await readEvents(db, c.weave.id, {})).at(-1)!;
+    expect(last).toMatchObject({ type: "participant.joined", seq: 5 });
+    expect(joined.weave.lastSeq).toBe(last.seq);
+  });
+
   it("create with guidelines stores them without an event; create/join/get carry the combined text", async () => {
     const c = await createWeave(db, bus, { title: "T2", opener: "o", creator: { name: "Paw", kind: "human" }, guidelines: " house rules " });
     expect(c.weave.guidelines).toBe("house rules");

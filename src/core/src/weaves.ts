@@ -102,7 +102,12 @@ export async function getWeave(db: Queryable, actor: Actor, weaveId: string): Pr
     guidelines: guidelinesFor(await getInstanceGuidelines(db), w) };
 }
 
-export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { name?: string; kind: Kind }, actor?: Actor): Promise<JoinResult> {
+export type JoinWeaveOptions = {
+  /** Test seam: runs after the pre-lock reads, so a test can commit a change before the lock is taken. */
+  beforeLock?: () => Promise<void>;
+};
+
+export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { name?: string; kind: Kind }, actor?: Actor, opts: JoinWeaveOptions = {}): Promise<JoinResult> {
   // On an agent connection the name is optional (spec 2): the agent's registered name is the
   // default, so a remote client with only a key in its URL can join with nothing else.
   const wanted = who.name?.trim() ? who.name : actor?.kind === "agent" ? actor.agent.name : undefined;
@@ -132,20 +137,27 @@ export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { na
   // An agent owns at most one participant per Weave: joining again is a lookup, not a new identity.
   const existing = await myParticipant();
   if (existing) return asAlreadyJoined(existing);
+  if (opts.beforeLock) await opts.beforeLock();
   const token = newSecret();
   const participantId = newId();
   try {
-    const participant = await withWeaveLock(db, bus, found.id, async (tx, weave) => {
+    // The locked row comes back with the participant: `found` was read before the lock, so a
+    // keeper's setWeaveGuidelines committing in between would leave a new participant holding the
+    // rules of a moment earlier. `lastSeq` is advanced by the one event appendInTx is about to
+    // write, describing the Weave as it will be once this join commits -- the same shape
+    // setWeaveGuidelines reports.
+    const { participant, weave } = await withWeaveLock(db, bus, found.id, async (tx, weave) => {
       if (weave.archivedAt) throw errors.weaveArchived();
       const [p] = await tx.insert(participants).values({ id: participantId, weaveId: weave.id, name, kind: agentId ? "agent" : who.kind, role: "member", token, agentId }).returning();
       const pub = toPublicParticipant(p!);
-      return { result: pub, events: [{ threadId: general.id, type: "participant.joined" as const, actor: participantId,
-        payload: { participantId, name: pub.name, kind: pub.kind, role: pub.role } }] };
+      return { result: { participant: pub, weave: { ...weave, lastSeq: weave.lastSeq + 1 } },
+        events: [{ threadId: general.id, type: "participant.joined" as const, actor: participantId,
+          payload: { participantId, name: pub.name, kind: pub.kind, role: pub.role } }] };
     });
     // Everything a client needs to act right away, so the credential never has to be held
     // unsaved while a second (failable) metadata request runs.
-    return { weaveId: found.id, weave: toPublicWeave(found), generalThreadId: general.id, participant, token,
-      guidelines: guidelinesFor(instance, found) };
+    return { weaveId: found.id, weave: toPublicWeave(weave), generalThreadId: general.id, participant, token,
+      guidelines: guidelinesFor(instance, weave) };
   } catch (e) {
     // The lookup above runs outside the Weave lock, so two concurrent first joins by one key can
     // both miss it. The loser trips a unique index -- which one depends on the names: the agent
