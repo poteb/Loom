@@ -43,7 +43,12 @@ export type CliContext = {
   client(token?: string): LoomClient;
   resolveWeave(): { weaveId: string; entry: WeaveEntry };
   keeperClient(): LoomClient;
-  remember(weaveId: string, entry: WeaveEntry): Promise<void>;
+  /**
+   * Stores the credentials for one Weave and makes it the current one. `current: false` stores them
+   * without moving `lastWeave`: the Lobby is a place to be reached by name, not the Weave every
+   * later `post` / `read` / `request open` should default to.
+   */
+  remember(weaveId: string, entry: WeaveEntry, opts?: { current?: boolean }): Promise<void>;
 };
 
 export function buildContext(opts: GlobalOpts, io: CliIo): CliContext {
@@ -72,12 +77,12 @@ export function buildContext(opts: GlobalOpts, io: CliIo): CliContext {
       if (!t) throw new CliError("no_keeper_token", "Admin commands need LOOM_KEEPER_TOKEN");
       return root.withToken(t);
     },
-    remember: async (weaveId, entry) => {
+    remember: async (weaveId, entry, opts = {}) => {
       // Merge into whatever is on disk *now*, under a lock, rather than saving the snapshot loaded
       // at startup: two invocations racing (create + join) must both keep their new tokens.
       const latest = await store.update((c) => {
         c.weaves[weaveId] = entry;
-        c.lastWeave = weaveId;
+        if (opts.current !== false) c.lastWeave = weaveId;
       });
       config.weaves = latest.weaves;
       config.lastWeave = latest.lastWeave;

@@ -58,10 +58,13 @@ export function registerLobbyCommands(program: Command, ctx: () => CliContext, i
   join.action(async (o: { name?: string; kind: Kind }) => {
     const c = ctx();
     const j = await c.client(c.io.env.LOOM_AGENT_KEY).joinLobby({ name: o.name, kind: o.kind });
+    // Stored, but not made current: every Lobby command finds this token by the Lobby's own weave
+    // id, and a `--weave`-less `post` or `request open` must still mean the Weave you were working
+    // in — core refuses a request that targets the Lobby at all.
     await c.remember(j.weaveId, {
       title: j.weave.title, token: j.token, participantId: j.participant.id,
       generalThreadId: j.generalThreadId, participantName: j.participant.name,
-    });
+    }, { current: false });
     emit(c, j, `Joined the Lobby as ${j.participant.name} (weave ${j.weaveId}). Token stored in ${c.store.path}`);
   });
 

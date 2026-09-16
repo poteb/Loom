@@ -79,14 +79,30 @@ async function open(sc: Scenario, extra: string[] = []) {
 }
 
 describe("loom lobby", () => {
-  it("lobby join stores the token under the Lobby's weave id", async () => {
+  it("lobby join stores the token under the Lobby's weave id, and the Lobby commands use it", async () => {
     const cfg = newCfg();
     const j = await run(["lobby", "join", "--name", uniq("Solo"), "--json"], { cfg });
     expect(j.code).toBe(0);
     expect(j.json().weaveId).toBe(lobbyWeaveId);
-    const stored = new ConfigStore(cfg).load();
-    expect(stored.weaves[lobbyWeaveId]?.token).toBe(j.json().token);
-    expect(stored.lastWeave).toBe(lobbyWeaveId);
+    expect(new ConfigStore(cfg).load().weaves[lobbyWeaveId]?.token).toBe(j.json().token);
+    const me = await run(["lobby", "me", "--set", JSON.stringify({ owner: uniq("own") }), "--json"], { cfg });
+    expect(me.code).toBe(0);
+    expect(me.json().id).toBe(j.json().participant.id);
+  });
+
+  it("lobby join leaves the current Weave where it was", async () => {
+    // The Lobby is reached by name, never by default: a `--weave`-less command after joining it
+    // still means the Weave being worked in — and core refuses a request that targets the Lobby.
+    const cfg = newCfg();
+    const created = (await run(["create", "--title", "Working here", "--name", uniq("Paw"), "--json"], { cfg })).json();
+    await run(["lobby", "join", "--name", uniq("Paw"), "--json"], { cfg });
+    expect(new ConfigStore(cfg).load().lastWeave).toBe(created.weave.id);
+    expect((await run(["info", "--json"], { cfg })).json().weave.id).toBe(created.weave.id);
+    const thread = (await run(["thread", "new", "PR 15", "--json"], { cfg })).json();
+    const opened = await run(["request", "open", "--title", uniq("Review PR 15"), "--require", JSON.stringify(REQUIRE),
+      "--thread", thread.id, "--json"], { cfg });
+    expect(opened.code).toBe(0);
+    expect(opened.json().targetWeaveId).toBe(created.weave.id);
   });
 
   it("lobby prints the Lobby, its participants and a profile summary each", async () => {
@@ -311,15 +327,17 @@ describe("loom request", () => {
 describe("loom read renders the Lobby events", () => {
   it("renders request opened, offered, accepted, closed and the invitation as system lines", async () => {
     const sc = await scenario();
-    const r = await open(sc, ["--wanted", "1"]);
+    // Opened by hand rather than through `open()`: the title is what the opened line must name, and
+    // a request carries it only as the name of its own Thread.
+    const title = uniq("Review PR 14");
+    const r = (await run(["request", "open", "--title", title, "--require", JSON.stringify(REQUIRE),
+      "--wanted", "1", "--weave", sc.weaveId, "--thread", sc.threadId, "--json"], { cfg: sc.req })).json();
     await run(["request", "offer", r.id, "--model", MODEL.model, "--effort", MODEL.effort, "--note", "on it", "--json"], { cfg: sc.bot });
     await run(["request", "accept", r.id, sc.botId, "--json"], { cfg: sc.req });
 
     const read = await run(["read", "--weave", lobbyWeaveId, "--thread", r.threadId], { cfg: sc.req });
     expect(read.code).toBe(0);
-    const title = (await run(["request", "show", r.id, "--json"], { cfg: sc.req })).json();
-    expect(read.out).toContain(`* request opened: `);
-    expect(read.out).toContain(`(wants 1, expires ${hhmm(title.expiresAt)}) — eligible: 1`);
+    expect(read.out).toContain(`* request opened: ${title} (wants 1, expires ${hhmm(r.expiresAt)}) — eligible: 1`);
     expect(read.out).toContain(`* request offered by ${sc.botName} (gpt-5.6-sol/high): "on it"`);
     expect(read.out).toContain(`* request accepted: ${sc.botName} → "Loom session"`);
     expect(read.out).toContain(`* invited ${sc.botName} to "Loom session"`);
@@ -330,10 +348,12 @@ describe("loom read renders the Lobby events", () => {
     const cfg = newCfg();
     const name = uniq("Renderer");
     const joined = (await run(["lobby", "join", "--name", name, "--json"], { cfg })).json();
-    await run(["lobby", "me", "--set", JSON.stringify({ runtime: "node", owner: uniq("own") }), "--json"], { cfg });
+    // The two writes are checked, not assumed: a refused profile would otherwise show up only as a
+    // line missing from the read, which reads like a rendering bug and is not one.
+    expect((await run(["lobby", "me", "--set", JSON.stringify({ runtime: "node", owner: uniq("own") }), "--json"], { cfg })).code).toBe(0);
     const set = await run(["read", "--weave", lobbyWeaveId, "--thread", joined.generalThreadId], { cfg });
     expect(set.out).toContain(`* profile set by ${name}`);
-    await run(["lobby", "me", "--clear", "--json"], { cfg });
+    expect((await run(["lobby", "me", "--clear", "--json"], { cfg })).code).toBe(0);
     const cleared = await run(["read", "--weave", lobbyWeaveId, "--thread", joined.generalThreadId], { cfg });
     expect(cleared.out).toContain(`* profile cleared by ${name}`);
   });

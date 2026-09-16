@@ -17,7 +17,10 @@ export function formatEvent(e: LoomEvent, threads: Thread[], participants: Parti
   const head = `#${e.seq} [${thread}] *`;
   if (e.type === "request.opened") {
     const eligible = Array.isArray(e.payload.eligible) ? e.payload.eligible.length : 0;
-    return `${head} request opened: ${thread} (wants ${Number(e.payload.wanted ?? 1)}, expires ${hhmm(e.payload.expiresAt)}) — eligible: ${eligible}`;
+    // "?" rather than a default: a payload without `wanted` is one this CLI does not understand,
+    // and inventing "wants 1" would read as the request having asked for exactly one helper.
+    const wanted = typeof e.payload.wanted === "number" ? e.payload.wanted : "?";
+    return `${head} request opened: ${thread} (wants ${wanted}, expires ${hhmm(e.payload.expiresAt)}) — eligible: ${eligible}`;
   }
   if (e.type === "request.offered") {
     const s = [str(e.payload.model), str(e.payload.effort)].filter((v) => v).join("/");
