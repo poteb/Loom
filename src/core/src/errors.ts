@@ -2,7 +2,7 @@ export type ErrorCode =
   | "validation" | "invalid_token" | "forbidden"
   | "weave_not_found" | "thread_not_found"
   | "weave_archived" | "thread_closed" | "name_taken"
-  | "message_too_long";
+  | "message_too_long" | "request_closed";
 
 export class LoomError extends Error {
   constructor(public readonly code: ErrorCode, message: string) {
@@ -22,4 +22,5 @@ export const errors = {
   threadClosed: () => new LoomError("thread_closed", "Thread is closed"),
   nameTaken: (name: string) => new LoomError("name_taken", `Name "${name}" is already taken in this Weave`),
   messageTooLong: (max: number) => new LoomError("message_too_long", `Message exceeds ${max} characters`),
+  requestClosed: () => new LoomError("request_closed", "Request is no longer open"),
 };

@@ -6,7 +6,7 @@ import { errors } from "./errors.js";
 import { isUuid, newId, newSecret } from "./ids.js";
 import { validateName } from "./names.js";
 import { parseMentions } from "./mentions.js";
-import { getSettings } from "./settings.js";
+import { getLobbyWeaveId, getSettings } from "./settings.js";
 import { getInstanceGuidelines, guidelinesFor, validateGuidelines } from "./guidelines.js";
 import { appendInTx, withWeaveLock } from "./events.js";
 import { actorId, assertCanRead, assertInstanceKeeperFresh, assertIsKeeperOf, assertStillKeeperOf, toPublicParticipant } from "./actors.js";
@@ -184,6 +184,9 @@ export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { na
 export async function archiveWeave(db: Db, bus: EventBus, actor: Actor, weaveId: string): Promise<void> {
   assertIsKeeperOf(actor, weaveId);
   if (!isUuid(weaveId)) throw errors.weaveNotFound();
+  // The instance has one Lobby and no way to make another: archiving it would shut every agent
+  // out of the only room they all share.
+  if (weaveId === await getLobbyWeaveId(db)) throw errors.forbidden("The Lobby cannot be archived");
   const [general] = await db.select().from(threads).where(eq(threads.weaveId, weaveId)).orderBy(asc(threads.createdAt)).limit(1);
   if (!general) throw errors.weaveNotFound();
   await withWeaveLock(db, bus, weaveId, async (tx, weave) => {

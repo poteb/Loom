@@ -1,7 +1,13 @@
+import type { Profile } from "./lobby/matching.js";
+
 export type EventType =
   | "message" | "participant.joined" | "participant.role_changed"
   | "thread.created" | "thread.closed" | "thread.invited" | "thread.url_changed"
-  | "weave.archived" | "weave.guidelines_changed";
+  | "weave.archived" | "weave.guidelines_changed"
+  // Lobby. All of these are addressed-only: they never wake anyone through a Weave's "all events" mode.
+  | "participant.capabilities_changed"
+  | "request.opened" | "request.offered" | "request.accepted" | "request.closed"
+  | "weave.invited";
 
 export type LoomEvent = {
   weaveId: string; seq: number; threadId: string; type: EventType;
@@ -16,6 +22,8 @@ export type Kind = "human" | "agent";
 
 export type PublicParticipant = {
   id: string; weaveId: string; name: string; kind: Kind; role: Role; joinedAt: string; agentId: string | null;
+  /** The Lobby capability profile. Null everywhere but the Lobby, and there until one is set. */
+  capabilities: Profile | null;
 };
 export type PublicThread = {
   id: string; weaveId: string; name: string; isGeneral: boolean;
@@ -33,4 +41,6 @@ export type Actor =
   | { kind: "secret"; weaveId: string }
   | { kind: "agent"; agent: PublicAgent };
 
-export type Settings = { instanceName: string; maxMessageLength: number; openWeaveCreation: boolean; guidelines: string };
+export type Settings = { instanceName: string; maxMessageLength: number; openWeaveCreation: boolean; guidelines: string;
+  /** The title the Lobby Weave is created with at first boot. */
+  lobbyTitle: string };

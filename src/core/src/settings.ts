@@ -16,7 +16,7 @@ const patchSchema = z.object({
 
 function toSettings(r: typeof settings.$inferSelect): Settings {
   return { instanceName: r.instanceName, maxMessageLength: r.maxMessageLength, openWeaveCreation: r.openWeaveCreation,
-    guidelines: r.guidelines };
+    guidelines: r.guidelines, lobbyTitle: r.lobbyTitle };
 }
 
 export async function getSettings(db: Queryable): Promise<Settings> {
@@ -26,6 +26,15 @@ export async function getSettings(db: Queryable): Promise<Settings> {
   if (created) return toSettings(created);
   const [again] = await db.select().from(settings).where(eq(settings.id, 1));
   return toSettings(again!);
+}
+
+/**
+ * The Lobby pointer, read on its own: it is a link between rows rather than a knob an operator
+ * turns, so it stays off the public `Settings` shape that `readSettings` and the REST patch use.
+ */
+export async function getLobbyWeaveId(db: Queryable): Promise<string | null> {
+  const [row] = await db.select({ lobbyWeaveId: settings.lobbyWeaveId }).from(settings).where(eq(settings.id, 1));
+  return row?.lobbyWeaveId ?? null;
 }
 
 export async function updateSettings(db: Db, actor: Actor, patch: Partial<Settings>): Promise<Settings> {

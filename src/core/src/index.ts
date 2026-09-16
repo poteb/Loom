@@ -15,6 +15,8 @@ import { setRole } from "./participants.js";
 import { exportWeave } from "./export.js";
 import { getSettings, updateSettings } from "./settings.js";
 import { getInstanceGuidelines, setWeaveGuidelines } from "./guidelines.js";
+import * as lobby from "./lobby/lobby.js";
+import { findAgents, setCapabilities, type AgentFilter } from "./lobby/profile.js";
 import * as keepers from "./keepers.js";
 import * as agentsMod from "./agents.js";
 import type { Actor, Kind, Role, Settings } from "./types.js";
@@ -23,6 +25,9 @@ export type Core = ReturnType<typeof createCore>;
 
 export function createCore(db: Db) {
   const bus = new EventBus();
+  /** Lobby operations: map an agent actor through the Lobby. */
+  const resolveInLobby = async (actor: Actor) =>
+    actor.kind === "agent" ? resolveInWeave(db, actor, (await lobby.getLobby(db)).weaveId) : actor;
   /** Thread-addressed operations: map an agent actor through the Thread's Weave. */
   const forThread = async (actor: Actor, threadId: string) =>
     actor.kind === "agent" ? resolveInWeave(db, actor, (await threads.getThread(db, threadId)).weaveId) : actor;
@@ -59,6 +64,15 @@ export function createCore(db: Db) {
     // Public on purpose: the instance guidelines are handed to a connection before it has a credential.
     getInstanceGuidelines: () => getInstanceGuidelines(db),
     setWeaveGuidelines: async (actor: Actor, weaveId: string, text: string) => setWeaveGuidelines(db, bus, await resolveInWeave(db, actor, weaveId), weaveId, text),
+    ensureLobby: (opts?: lobby.EnsureLobbyOptions) => lobby.ensureLobby(db, opts),
+    getLobby: () => lobby.getLobby(db),
+    joinLobby: (who: { name?: string; kind: Kind }, actor?: Actor, opts?: weaves.JoinWeaveOptions) => lobby.joinLobby(db, bus, who, actor, opts),
+    // Every Lobby operation resolves an agent key against the Lobby first, exactly as the Weave
+    // operations above do: without it the registration flow join → set profile → find would need a
+    // participant token the agent never asked for.
+    setCapabilities: async (actor: Actor, profile: unknown | null) =>
+      setCapabilities(db, bus, await resolveInLobby(actor), profile),
+    findAgents: async (actor: Actor, filter: AgentFilter) => findAgents(db, await resolveInLobby(actor), filter),
     seedKeepers: (tokens: string[]) => keepers.seedKeepers(db, tokens),
     listKeepers: (actor: Actor) => keepers.listKeepers(db, actor),
     addKeeper: (actor: Actor, name: string) => keepers.addKeeper(db, actor, name),
@@ -80,4 +94,7 @@ export { MAX_GUIDELINES_LENGTH, INSTANCE_HEADING, WEAVE_HEADING, validateGuideli
 export { EventBus } from "./bus.js";
 export type { CreateWeaveInput, CreateWeaveResult, WeaveInfo, JoinResult } from "./weaves.js";
 export type { PublicKeeper, SeedKeepersResult } from "./keepers.js";
+export type { Lobby } from "./lobby/lobby.js";
+export { validateProfile, MAX_PROFILE_LENGTH, type AgentFilter, type FoundAgent } from "./lobby/profile.js";
+export { validateRequirements, matches, admits, eligible, type Profile, type ModelSpec, type Requirements } from "./lobby/matching.js";
 export type * from "./types.js";

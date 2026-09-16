@@ -5,11 +5,13 @@ import { participants, keepers, weaves, agents } from "./db/schema.js";
 import { errors } from "./errors.js";
 import { isUuid } from "./ids.js";
 import { hashKey, toPublicAgent } from "./agent-keys.js";
+import type { Profile } from "./lobby/matching.js";
 import type { Actor, PublicParticipant } from "./types.js";
 
 export function toPublicParticipant(p: typeof participants.$inferSelect): PublicParticipant {
   return { id: p.id, weaveId: p.weaveId, name: p.name, kind: p.kind, role: p.role,
-    joinedAt: p.joinedAt.toISOString(), agentId: p.agentId ?? null };
+    joinedAt: p.joinedAt.toISOString(), agentId: p.agentId ?? null,
+    capabilities: (p.capabilities as Profile | null) ?? null };
 }
 
 /** Resolves a bearer credential: participant token, keeper token, agent key, or weave secret. */

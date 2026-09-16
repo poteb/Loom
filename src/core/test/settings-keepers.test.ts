@@ -19,7 +19,7 @@ async function keeperActor(): Promise<Actor> {
 
 describe("settings", () => {
   it("returns defaults on first read", async () => {
-    expect(await getSettings(db)).toEqual({ instanceName: "Loom", maxMessageLength: 20000, openWeaveCreation: true, guidelines: DEFAULT_INSTANCE_GUIDELINES });
+    expect(await getSettings(db)).toEqual({ instanceName: "Loom", maxMessageLength: 20000, openWeaveCreation: true, guidelines: DEFAULT_INSTANCE_GUIDELINES, lobbyTitle: "Lobby" });
   });
   it("keeper can update, others cannot", async () => {
     const k = await keeperActor();
