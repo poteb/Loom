@@ -118,7 +118,6 @@ export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { na
   if (!found) throw errors.weaveNotFound();
   const [general] = await db.select().from(threads).where(eq(threads.weaveId, found.id)).orderBy(asc(threads.createdAt)).limit(1);
   if (!general) throw errors.weaveNotFound();
-  const instance = await getInstanceGuidelines(db);
   const agentId = actor?.kind === "agent" ? actor.agent.id : null;
   // The participant this agent already owns here, read raw: the caller needs its token, so
   // `participantForAgent` (which returns the public shape) is not enough.
@@ -128,7 +127,7 @@ export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { na
       .where(and(eq(participants.agentId, agentId), eq(participants.weaveId, found.id))).limit(1);
     return mine;
   };
-  // Both layers are re-read here rather than reused from above: `found` and `instance` were read
+  // Both layers are read here rather than up with the other pre-lock reads: `found` was read
   // before the lookup -- and, on the collision path below, before a competing join committed -- so
   // a keeper's setWeaveGuidelines landing in that window would otherwise hand this caller the rules
   // of a moment earlier. No lock is needed: these paths append no event, so what is owed is an
@@ -149,23 +148,23 @@ export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { na
   const token = newSecret();
   const participantId = newId();
   try {
-    // The locked row comes back with the participant: `found` was read before the lock, so a
-    // keeper's setWeaveGuidelines committing in between would leave a new participant holding the
-    // rules of a moment earlier. `lastSeq` is advanced by the one event appendInTx is about to
-    // write, describing the Weave as it will be once this join commits -- the same shape
-    // setWeaveGuidelines reports.
-    const { participant, weave } = await withWeaveLock(db, bus, found.id, async (tx, weave) => {
+    // Both layers are read from inside the lock: `found` and the instance text were read before
+    // it, so a keeper's setWeaveGuidelines -- or an instance keeper's settings patch -- committing
+    // in between would leave a new participant holding the rules of a moment earlier. `lastSeq` is
+    // advanced by the one event appendInTx is about to write, describing the Weave as it will be
+    // once this join commits -- the same shape setWeaveGuidelines reports.
+    const { participant, weave, guidelines } = await withWeaveLock(db, bus, found.id, async (tx, weave) => {
       if (weave.archivedAt) throw errors.weaveArchived();
       const [p] = await tx.insert(participants).values({ id: participantId, weaveId: weave.id, name, kind: agentId ? "agent" : who.kind, role: "member", token, agentId }).returning();
       const pub = toPublicParticipant(p!);
-      return { result: { participant: pub, weave: { ...weave, lastSeq: weave.lastSeq + 1 } },
+      return { result: { participant: pub, weave: { ...weave, lastSeq: weave.lastSeq + 1 },
+          guidelines: guidelinesFor(await getInstanceGuidelines(tx), weave) },
         events: [{ threadId: general.id, type: "participant.joined" as const, actor: participantId,
           payload: { participantId, name: pub.name, kind: pub.kind, role: pub.role } }] };
     });
     // Everything a client needs to act right away, so the credential never has to be held
     // unsaved while a second (failable) metadata request runs.
-    return { weaveId: found.id, weave: toPublicWeave(weave), generalThreadId: general.id, participant, token,
-      guidelines: guidelinesFor(instance, weave) };
+    return { weaveId: found.id, weave: toPublicWeave(weave), generalThreadId: general.id, participant, token, guidelines };
   } catch (e) {
     // The lookup above runs outside the Weave lock, so two concurrent first joins by one key can
     // both miss it. The loser trips a unique index -- which one depends on the names: the agent

@@ -154,6 +154,20 @@ describe("setWeaveGuidelines", () => {
     expect(joined.weave.lastSeq).toBe(last.seq);
   });
 
+  it("a fresh join reads the instance layer inside the lock too", async () => {
+    const c = await createWeave(db, bus, { title: "Race3", opener: "o", creator: { name: "Paw", kind: "human" } });
+    await seedKeepers(db, [keeperToken("ik4")]);
+    const ik = await resolveCredential(db, keeperToken("ik4"));
+    // Same window as the Weave layer, one level up: an instance keeper rewrites the house rules
+    // after joinWeave's pre-lock reads. Both layers of what the new participant is handed have to
+    // be the ones it is actually joining under.
+    const joined = await joinWeave(db, bus, c.secret, { name: "Bot3", kind: "agent" }, undefined, {
+      beforeLock: async () => { await updateSettings(db, ik, { guidelines: "New instance rules" }); },
+    });
+    expect(joined.guidelines).toContain("New instance rules");
+    expect(joined.guidelines).toBe(guidelinesFor("New instance rules", { guidelines: "" }));
+  });
+
   it("a join that loses the first-join race answers with the rules current at that moment", async () => {
     const c = await createWeave(db, bus, { title: "Race2", opener: "o", creator: { name: "Paw", kind: "human" } });
     const owner = await resolveCredential(db, c.token);
