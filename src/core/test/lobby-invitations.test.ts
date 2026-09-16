@@ -158,6 +158,27 @@ describe("redeemInvitation", () => {
     expect(p!.agentId).toBe(f.helper.keyActor.kind === "agent" ? f.helper.keyActor.agent.id : null);
   });
 
+  it("links the identity it creates to the agent behind the invitee, whichever credential redeems", async () => {
+    const f = await setup();
+    const invitationId = await invite(f);
+    const joined = await redeemInvitation(db, bus, f.helper.actor, invitationId, { kind: "agent" });
+    const [lobbyParticipant] = await db.select().from(participants).where(eq(participants.id, f.helper.id));
+    const [there] = await db.select().from(participants).where(eq(participants.id, joined.participant.id));
+    expect(lobbyParticipant!.agentId).not.toBeNull();
+    expect(there!.agentId).toBe(lobbyParticipant!.agentId);
+  });
+
+  it("adopts the agent's existing target identity even when the Lobby token redeems", async () => {
+    const f = await setup();
+    const first = await joinWeave(db, bus, f.target.secret, { name: "HelperThere", kind: "agent" }, f.helper.keyActor);
+    const invitationId = await invite(f);
+    const joined = await redeemInvitation(db, bus, f.helper.actor, invitationId, { kind: "agent" });
+    expect(joined.alreadyJoined).toBe(true);
+    expect(joined.participant.id).toBe(first.participant.id);
+    expect((await targetEvents(f)).filter((e) => e.type === "participant.joined" && e.payload.participantId === first.participant.id))
+      .toHaveLength(1);
+  });
+
   it("refuses anyone the invitation is not addressed to", async () => {
     const f = await setup();
     const invitationId = await invite(f);

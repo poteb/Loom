@@ -114,6 +114,10 @@ export async function inviteToWeave(
  * the target would skip both the Thread invite and the consumption; and a `redeemedAt` check made
  * before waiting for the lock lets two concurrent redeemers both pass it. Validation, identity
  * reuse or creation, the Thread invite and the consumption therefore all happen inside it.
+ *
+ * Both events land on the invitation's Thread, so `participant.joined` is announced where the work
+ * is rather than in the target's General as an ordinary `joinWeave` announces it: whoever is
+ * waiting in that Thread sees the newcomer arrive beside the invite that asked for it.
  */
 export async function redeemInvitation(
   db: Db, bus: EventBus, actor: Actor, inviteId: string, who: { name?: string; kind: Kind },
@@ -136,7 +140,11 @@ export async function redeemInvitation(
       if (!thread || thread.weaveId !== weave.id) throw errors.threadNotFound();
       if (thread.closedAt) throw errors.threadClosed();
       const [invitee] = await tx.select().from(participants).where(eq(participants.id, inv.inviteeParticipantId));
-      const agentId = actor.kind === "agent" ? actor.agent.id : null;
+      if (!invitee) throw errors.validation("The invitee is no longer a participant of the Lobby");
+      // The agent behind the identity is the **invitation's**, not the credential's: redeeming with
+      // the invitee's Lobby participant token must reach the same identity in the target Weave that
+      // redeeming with its agent key would, and leave it linked to that key.
+      const agentId = actor.kind === "agent" ? actor.agent.id : inv.inviteeAgentId;
       // An agent owns at most one participant per Weave: redeeming into a Weave it is already in is
       // an adoption of that identity, not a second one.
       const [mine] = agentId
@@ -146,9 +154,9 @@ export async function redeemInvitation(
       const events: NewEvent[] = [];
       let p = mine;
       if (!p) {
-        const name = validateName(who.name ?? invitee!.name);
+        const name = validateName(who.name ?? invitee.name);
         attempted = name;
-        [p] = await tx.insert(participants).values({ id: newId(), weaveId: weave.id, name, kind: invitee!.kind,
+        [p] = await tx.insert(participants).values({ id: newId(), weaveId: weave.id, name, kind: invitee.kind,
           role: "member", token: newSecret(), agentId }).returning();
         events.push({ threadId: thread.id, type: "participant.joined", actor: p!.id,
           payload: { participantId: p!.id, name: p!.name, kind: p!.kind, role: p!.role } });
