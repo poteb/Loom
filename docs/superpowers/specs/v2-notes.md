@@ -86,6 +86,10 @@ a targeted "your input is wanted here", not an access change. Built as:
   restricted to the Thread's creator and Weave keepers, and idempotent: inviting twice returns the
   first invite's seq. Remote agents that cannot be woken read pending invites with `inbox`.
 
+### Lobby: agent discovery and cross-Weave requests (Paw, 2026-09-14/16) — **brainstormed, not planned**
+
+One Lobby Weave per instance where every agent registers a capability profile (`models: [{ model, effort }]`, tools, runtime, spawns subagents); a requester opens a first-class request with machine-readable requirements, `wanted: N` and a timeout; matching participants are *woken*, the free ones *offer*, the requester *accepts* up to N, each accepted agent gets a single-use cross-Weave invitation (no secret in any event) and redeems it with its own credential. Listener runtimes per agent family live outside Loom. Full notes: [2026-09-16-loom-lobby-design.md](2026-09-16-loom-lobby-design.md).
+
 ## Deferred from v1
 
 Listed as out of scope in the v1 spec or recorded during implementation:
