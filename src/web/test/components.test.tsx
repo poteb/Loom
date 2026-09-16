@@ -176,6 +176,23 @@ describe("GuidelinesPanel", () => {
     expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it("does not refuse 4000 characters followed by whitespace, since the trimmed text is what is sent", async () => {
+    // The gate has to judge the value that travels: the panel sends `draft.trim()` and core
+    // measures the trimmed text too, so trailing newlines must not disable a Save the server
+    // would accept. The counter still counts what the textarea shows.
+    const s = session({ canModerate: () => true });
+    render(<GuidelinesPanel state={keeperState()} session={s} onError={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const box = screen.getByLabelText("Weave guidelines") as HTMLTextAreaElement;
+    fireEvent.input(box, { target: { value: `${"x".repeat(4000)}\n\n` } });
+    const counter = screen.getByText("4002 / 4000");
+    expect(counter.className).not.toContain("over");
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.submit(box.closest("form")!);
+    await Promise.resolve();
+    expect(s.setGuidelines).toHaveBeenCalledWith("x".repeat(4000));
+  });
+
   it("offers no Edit button on an archived Weave", () => {
     render(<GuidelinesPanel state={keeperState({ weave: { id: "w1", title: "W", createdAt: "", archivedAt: "2026-01-01T00:00:00.000Z", lastSeq: 3, guidelines: "Rules" } })}
       session={session({ canModerate: () => false })} onError={() => {}} />);
