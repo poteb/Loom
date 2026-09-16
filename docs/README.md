@@ -12,6 +12,7 @@ invariant, the event log, credentials, and the three ways in. Everything else as
 | [TESTING.md](TESTING.md) | How the suites are provisioned and run — test database, serial execution, build-before-test, per-package coverage, manual smoke tests |
 | [KNOWN-ISSUES.md](KNOWN-ISSUES.md) | Register of deliberately deferred findings, per package. Not to be re-reported; rows are deleted when fixed |
 | [REVIEW-BRIEF.md](REVIEW-BRIEF.md) | The brief handed to an external full-codebase reviewer: scope, what is out of scope, reading order, finding format |
+| [adr/](adr) | Architecture decision records: one short file per decision that is hard to reverse, surprising without context, and the result of a real trade-off. Numbered `0001-…` |
 
 ## Specs and plans
 

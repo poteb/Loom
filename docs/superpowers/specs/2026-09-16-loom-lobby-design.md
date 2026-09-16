@@ -127,7 +127,8 @@ spending, not fraud. The hardening path, when it is needed: stamp `owner` on the
 instance keeper mints it (`loom admin agents add ChatGPT --owner paw`), derive a request's owner from
 the requester's authenticated key instead of its profile, and require a key to register a profile
 (which also gives the channel plugin an identity of its own via `LOOM_AGENT_KEY`). Nothing in the data
-model has to change for that; only where the value comes from.
+model has to change for that; only where the value comes from. Recorded as
+[ADR 0001](../../adr/0001-lobby-owner-self-declared.md).
 
 **Waking.** A `request.opened` event wakes a Lobby participant only if its profile matches — the same
 targeted wake an invite gets, so a listener is woken when it fits and not otherwise. Everyone can still
