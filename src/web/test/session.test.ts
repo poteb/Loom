@@ -3,6 +3,7 @@ import { startTestServer, type TestServer } from "../../server/test/helpers.js";
 import { LoomClient } from "@loom/client";
 import { createSession, type Session } from "../src/session.js";
 import { memoryStorage } from "../src/storage.js";
+import { DEFAULT_INSTANCE_GUIDELINES } from "@loom/core";
 
 let s: TestServer;
 let anon: LoomClient;
@@ -554,6 +555,178 @@ describe("session lifecycle", () => {
     expect(session.getState().needsName).toBe(true);
     session.dismissNamePrompt();
     expect(session.getState().needsName).toBe(false);
+    session.dispose();
+  });
+});
+
+/**
+ * A client whose first history page is answered *before* `after()` runs, so the `getWeave` that
+ * load() issues next sees a Weave that has moved on: history stops at the old last seq while the
+ * snapshot carries the newer one, and the stream then replays the events in between.
+ */
+function racingHistoryClient(baseUrl: string, after: () => Promise<void>): LoomClient {
+  let raced = false;
+  return new LoomClient({
+    baseUrl, allowInsecure: true,
+    fetch: async (target, init) => {
+      const url = typeof target === "string" ? target : target.toString();
+      if (!raced && /\/events$/.test(new URL(url).pathname)) {
+        raced = true;
+        const captured = await fetch(url, init);
+        await after();
+        return captured;
+      }
+      return fetch(url, init);
+    },
+  });
+}
+
+/** A client whose second getWeave (the first refresh after load()) is answered now but delivered on release. */
+function staleSnapshotClient(baseUrl: string, gate: ReturnType<typeof makeGate>): LoomClient {
+  let calls = 0;
+  return new LoomClient({
+    baseUrl, allowInsecure: true,
+    fetch: async (target, init) => {
+      const url = typeof target === "string" ? target : target.toString();
+      if (/^\/api\/weaves\/[^/]+$/.test(new URL(url).pathname)) {
+        calls++;
+        if (calls === 2) {
+          const captured = await fetch(url, init);
+          gate.markEntered();
+          await gate.released;
+          return captured;
+        }
+      }
+      return fetch(url, init);
+    },
+  });
+}
+
+describe("session guidelines", () => {
+  it("loads the instance guidelines beside the Weave's own, and a keeper's change lands in state and in the log", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Paw", kind: "human" } });
+    const storage = memoryStorage();
+    storage.set(`loom:${r.secret}`, JSON.stringify({ token: r.token, participantId: r.participant.id }));
+    const session = await makeSession(r.secret, storage);
+    // The instance layer is the shipped default until a keeper edits it; this Weave has none of its own.
+    expect(session.getState().instanceGuidelines).toBe(DEFAULT_INSTANCE_GUIDELINES);
+    expect(session.getState().weave?.guidelines).toBe("");
+    await waitFor(() => session.getState().connection === "open");
+
+    await session.setGuidelines("r");
+    expect(session.getState().weave?.guidelines).toBe("r");
+    await waitFor(() => session.getState().events.some((e) => e.type === "weave.guidelines_changed" && e.payload.guidelines === "r"));
+    session.dispose();
+  });
+
+  it("a guidelines change that lands while a metadata refresh is in flight is not undone by the stale snapshot", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Paw", kind: "human" }, guidelines: "old" });
+    const storage = memoryStorage();
+    storage.set(`loom:${r.secret}`, JSON.stringify({ token: r.token, participantId: r.participant.id }));
+    const gate = makeGate();
+    const session = createSession({ client: staleSnapshotClient(s.baseUrl, gate), secret: r.secret, storage });
+    // The request the gate suspends is still parked until release(): without this, a failed
+    // assertion below would hang the suite on teardown instead of reporting the failure.
+    try {
+      await session.load();
+      await waitFor(() => session.getState().connection === "open");
+      expect(session.getState().weave?.guidelines).toBe("old");
+
+      // A participant joining starts a metadata refresh, which parks holding pre-change metadata.
+      await anon.joinWeave(r.secret, { name: "Other", kind: "human" });
+      await gate.entered;
+
+      await s.core.setWeaveGuidelines(await s.core.resolveCredential(r.token), r.weave.id, "new");
+      await waitFor(() => session.getState().weave?.guidelines === "new");
+
+      // Every state the panel goes through from here must already be the new text: a momentary
+      // revert to "old" is exactly the flicker the watermark exists to prevent.
+      const panel: string[] = [];
+      session.subscribe(() => panel.push(session.getState().weave?.guidelines ?? "<none>"));
+      gate.release();
+      await waitFor(() => session.getState().participants.some((p) => p.name === "Other"));
+      expect(panel).not.toContain("old");
+      expect(session.getState().weave?.guidelines).toBe("new");
+    } finally { gate.release(); session.dispose(); }
+  });
+
+  it("a clear that lands while a metadata refresh is in flight is not undone by the stale snapshot", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Paw", kind: "human" }, guidelines: "old" });
+    const storage = memoryStorage();
+    storage.set(`loom:${r.secret}`, JSON.stringify({ token: r.token, participantId: r.participant.id }));
+    const gate = makeGate();
+    const session = createSession({ client: staleSnapshotClient(s.baseUrl, gate), secret: r.secret, storage });
+    // The request the gate suspends is still parked until release(): without this, a failed
+    // assertion below would hang the suite on teardown instead of reporting the failure.
+    try {
+      await session.load();
+      await waitFor(() => session.getState().connection === "open");
+      expect(session.getState().weave?.guidelines).toBe("old");
+
+      await anon.joinWeave(r.secret, { name: "Other", kind: "human" });
+      await gate.entered;
+
+      await s.core.setWeaveGuidelines(await s.core.resolveCredential(r.token), r.weave.id, "");
+      await waitFor(() => session.getState().weave?.guidelines === "");
+
+      const panel: string[] = [];
+      session.subscribe(() => panel.push(session.getState().weave?.guidelines ?? "<none>"));
+      gate.release();
+      await waitFor(() => session.getState().participants.some((p) => p.name === "Other"));
+      expect(panel).not.toContain("old");
+      expect(session.getState().weave?.guidelines).toBe("");
+    } finally { gate.release(); session.dispose(); }
+  });
+
+  it("older replayed guidelines events after a newer snapshot stay in history but do not touch the panel", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Paw", kind: "human" } });
+    const keeper = await s.core.resolveCredential(r.token);
+    const client = racingHistoryClient(s.baseUrl, async () => {
+      await s.core.setWeaveGuidelines(keeper, r.weave.id, "A");   // seq 4
+      await s.core.setWeaveGuidelines(keeper, r.weave.id, "B");   // seq 5, the one the snapshot carries
+    });
+    const session = createSession({ client, secret: r.secret, storage: memoryStorage() });
+    const panel: string[] = [];
+    session.subscribe(() => {
+      const st = session.getState();
+      if (st.events.some((e) => e.seq === 4)) panel.push(st.weave?.guidelines ?? "<none>");
+    });
+    await session.load();
+    expect(session.getState().events.map((e) => e.seq)).toEqual([1, 2, 3]);
+    expect(session.getState().weave?.guidelines).toBe("B");
+
+    await waitFor(() => session.getState().events.some((e) => e.seq === 5));
+    expect(session.getState().events.map((e) => e.seq)).toEqual([1, 2, 3, 4, 5]);
+    // Both replayed changes are in the log, and the panel never showed the older text.
+    expect(panel.length).toBeGreaterThan(0);
+    expect([...new Set(panel)]).toEqual(["B"]);
+    expect(session.getState().weave?.guidelines).toBe("B");
+    session.dispose();
+  });
+
+  it("a replayed older change after a snapshot that cleared the guidelines does not bring the old text back", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Paw", kind: "human" } });
+    const keeper = await s.core.resolveCredential(r.token);
+    const client = racingHistoryClient(s.baseUrl, async () => {
+      await s.core.setWeaveGuidelines(keeper, r.weave.id, "A");   // seq 4
+      await s.core.setWeaveGuidelines(keeper, r.weave.id, "");    // seq 5: the clear the snapshot sees
+    });
+    const session = createSession({ client, secret: r.secret, storage: memoryStorage() });
+    const panel: string[] = [];
+    session.subscribe(() => {
+      const st = session.getState();
+      if (st.events.some((e) => e.seq === 4)) panel.push(st.weave?.guidelines ?? "<none>");
+    });
+    await session.load();
+    // The snapshot is ahead of the history the backfill saw: the replay below is what closes the gap.
+    expect(session.getState().events.map((e) => e.seq)).toEqual([1, 2, 3]);
+    expect(session.getState().weave?.guidelines).toBe("");
+
+    await waitFor(() => session.getState().events.some((e) => e.seq === 5));
+    expect(session.getState().events.map((e) => e.seq)).toEqual([1, 2, 3, 4, 5]);
+    expect(panel.length).toBeGreaterThan(0);
+    expect([...new Set(panel)]).toEqual([""]);
+    expect(session.getState().weave?.guidelines).toBe("");
     session.dispose();
   });
 });

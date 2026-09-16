@@ -21,15 +21,17 @@ async function makeState(w: JoinedWeave, sessionId = "s1"): Promise<ChannelState
   return st;
 }
 
-function weaveInfo(extraThreads: Thread[] = []): WeaveInfo {
+/** `guidelines` is the combined text the client reports for the Weave (instance layer + Weave layer). */
+function weaveInfo(extraThreads: Thread[] = [], guidelines = ""): WeaveInfo {
   return {
-    weave: { id: WEAVE_ID, title: "T", createdAt: "", archivedAt: null, lastSeq: 0 },
+    weave: { id: WEAVE_ID, title: "T", createdAt: "", archivedAt: null, lastSeq: 0, guidelines: "" },
     threads: [
       { id: "g1", weaveId: WEAVE_ID, name: "General", isGeneral: true, createdBy: "p1", createdAt: "", closedAt: null, url: null },
       { id: "t1", weaveId: WEAVE_ID, name: "Existing", isGeneral: false, createdBy: "p1", createdAt: "", closedAt: null, url: null },
       ...extraThreads,
     ],
     participants: [{ id: "p1", weaveId: WEAVE_ID, name: "Claude", kind: "agent" as const, role: "member" as const, joinedAt: "", agentId: null }],
+    guidelines,
   };
 }
 
@@ -39,18 +41,29 @@ function event(seq: number, over: Partial<LoomEvent> = {}): LoomEvent {
 
 type Captured = { weaveId: string; opts: StreamOptions; close: ReturnType<typeof vi.fn> };
 
-function makeFakeClient(): { client: LoomClient; streams: Captured[] } {
+/** `guidelines` is read on every getWeave, so a test can change what the metadata says mid-run;
+ * `failTimes` rejects that many leading getWeave calls, standing in for a Loom that is down.
+ * `onGetWeave` is awaited at the top of each call (numbered from 1), so a test that needs a
+ * particular ordering around a retry can hold the call open instead of racing the backoff timer. */
+function makeFakeClient(opts: { guidelines?: () => string; failTimes?: number; onGetWeave?: (call: number) => Promise<void> | void } = {}): { client: LoomClient; streams: Captured[]; getWeaveCalls: () => number } {
   const streams: Captured[] = [];
+  let calls = 0;
+  let failsLeft = opts.failTimes ?? 0;
   const fake = {
     withToken: () => fake,
-    getWeave: async () => weaveInfo(),
-    stream: (weaveId: string, opts: StreamOptions): StreamHandle => {
+    getWeave: async () => {
+      calls += 1;
+      await opts.onGetWeave?.(calls);
+      if (failsLeft > 0) { failsLeft -= 1; throw new Error("metadata down"); }
+      return weaveInfo([], opts.guidelines?.() ?? "");
+    },
+    stream: (weaveId: string, opts2: StreamOptions): StreamHandle => {
       const close = vi.fn();
-      streams.push({ weaveId, opts, close });
-      return { close, get lastSeq() { return opts.since ?? 0; } };
+      streams.push({ weaveId, opts: opts2, close });
+      return { close, get lastSeq() { return opts2.since ?? 0; } };
     },
   };
-  return { client: fake as unknown as LoomClient, streams };
+  return { client: fake as unknown as LoomClient, streams, getWeaveCalls: () => calls };
 }
 
 function waitFor(pred: () => boolean, ms = 2000): Promise<void> {
@@ -74,6 +87,46 @@ describe("StreamManager", () => {
     expect(streams[0]!.opts.since).toBe(7);
     expect(new ChannelState(seed.dir, "s1").cursor(WEAVE_ID)).toBe(7); // persisted, not just in memory
     sm.closeAll();
+  });
+
+  it("pins a new session's cursor before the first metadata fetch, so a retry does not adopt a sibling's watermark", async () => {
+    // One machine, one state directory, two sessions. s2 has never listened to this Weave, so its
+    // starting point can only come from the watermark -- and the watermark is machine-wide.
+    const seed = await makeState(makeWeave(), "s0");   // joined by an earlier session; watermark 3
+    const s1 = new ChannelState(seed.dir, "s1");
+    const s2 = new ChannelState(seed.dir, "s2");
+
+    let release = () => {};
+    const retryGate = new Promise<void>((r) => { release = r; });
+    // s2's first getWeave fails; its retry is held open until s1 has moved the watermark, which is
+    // the window the bug lived in -- no timer race, the ordering is forced.
+    const two = makeFakeClient({ failTimes: 1, onGetWeave: (call) => (call === 2 ? retryGate : undefined) });
+    const got2: { content: string; meta: Record<string, string> }[] = [];
+    const sm2 = new StreamManager(two.client, s2, async (p) => { got2.push(p); }, () => {}, { initial: 30, max: 60 });
+    sm2.start(WEAVE_ID, s2.get().weaves[WEAVE_ID]!);
+    await waitFor(() => two.getWeaveCalls() === 2);     // first attempt failed, retry is in flight
+    expect(two.streams).toHaveLength(0);                // no stream and no delivery before metadata succeeds
+    expect(got2).toHaveLength(0);
+    expect(s2.load().weaves[WEAVE_ID]?.lastSeq).toBe(3);
+
+    // Meanwhile a sibling session on the same machine delivers 4 and 5, advancing the watermark.
+    const one = makeFakeClient();
+    const sm1 = new StreamManager(one.client, s1, async () => {}, () => {});
+    sm1.start(WEAVE_ID, s1.get().weaves[WEAVE_ID]!);
+    await waitFor(() => one.streams.length === 1);
+    one.streams[0]!.opts.onEvent(event(4));
+    one.streams[0]!.opts.onEvent(event(5));
+    await waitFor(() => s1.load().weaves[WEAVE_ID]?.lastSeq === 5);
+    sm1.closeAll();
+
+    release();
+    await waitFor(() => two.streams.length === 1);
+    expect(two.streams[0]!.opts.since).toBe(3);         // 4 and 5 are still s2's to receive
+    expect(new ChannelState(seed.dir, "s2").cursor(WEAVE_ID)).toBe(3);   // and stay unread until it delivers them
+    two.streams[0]!.opts.onEvent(event(4));
+    await waitFor(() => got2.length === 1);
+    expect(new ChannelState(seed.dir, "s2").cursor(WEAVE_ID)).toBe(4);
+    sm2.closeAll();
   });
 
   it("opens the stream from this session's own cursor, not the machine-wide watermark", async () => {
@@ -447,5 +500,144 @@ describe("StreamManager", () => {
 
     await state.removeWeave(WEAVE_ID); // simulates leave_weave, which removes the Weave from state too
     expect(sm.threadOwner(w.generalThreadId)).toBeUndefined();
+  });
+});
+
+const GUIDE = "## Loom guidelines\nbe brief";
+type Notification = { content: string; meta: Record<string, string> };
+
+/** Starts a manager whose notifications are collected, and waits until its first stream is open. */
+async function started(
+  opts: { guidelines?: () => string; failTimes?: number; backoff?: { initial: number; max: number } } = {},
+): Promise<{ sm: StreamManager; state: ChannelState; streams: Captured[]; got: Notification[]; getWeaveCalls: () => number }> {
+  const w = makeWeave();
+  const state = await makeState(w);
+  const got: Notification[] = [];
+  const { client, streams, getWeaveCalls } = makeFakeClient(opts);
+  const sm = new StreamManager(client, state, async (p) => { got.push(p); }, () => {}, opts.backoff);
+  sm.start(WEAVE_ID, w);
+  if (!opts.failTimes) await waitFor(() => streams.length === 1);
+  return { sm, state, streams, got, getWeaveCalls };
+}
+
+describe("guidelines preamble", () => {
+  it("(a) folds the current guidelines into the first woken event of a session, and only that one", async () => {
+    const { sm, state, streams, got } = await started({ guidelines: () => GUIDE });
+    streams[0]!.opts.onEvent(event(4));
+    streams[0]!.opts.onEvent(event(5));
+    await waitFor(() => got.length === 2);
+    expect(got[0]!.meta).toMatchObject({ preamble: "guidelines", type: "message", seq: "4" });
+    expect(got[0]!.content).toBe(`${GUIDE}\n\n---\n\nm4`);
+    expect(got[1]!.meta.preamble).toBeUndefined();
+    expect(got[1]!.content).toBe("m5");
+    await waitFor(() => state.get().weaves[WEAVE_ID]?.lastSeq === 5);
+    sm.closeAll();
+  });
+
+  it("(b) opens no stream and delivers nothing while the metadata fetch fails, then carries the preamble once it succeeds", async () => {
+    const { sm, state, streams, got, getWeaveCalls } = await started({ guidelines: () => GUIDE, failTimes: 1, backoff: { initial: 20, max: 40 } });
+    await waitFor(() => getWeaveCalls() === 1);
+    expect(streams).toHaveLength(0);          // the preamble is a precondition, not a nicety
+    expect(got).toHaveLength(0);
+    expect(state.load().sessions.s1?.cursors[WEAVE_ID]).toBe(3);  // cursor untouched by the failed attempt
+
+    await waitFor(() => streams.length === 1);
+    expect(streams[0]!.opts.since).toBe(3);   // resumes from the persisted cursor
+    streams[0]!.opts.onEvent(event(4));
+    streams[0]!.opts.onEvent(event(5));
+    await waitFor(() => got.length === 2);
+    expect(got[0]!.content).toBe(`${GUIDE}\n\n---\n\nm4`);
+    expect(got[1]!.meta.preamble).toBeUndefined();
+    sm.closeAll();
+  });
+
+  it("(c) an automatic restart is not a new session: the preamble is not sent again", async () => {
+    const { sm, streams, got } = await started({ guidelines: () => GUIDE, backoff: { initial: 20, max: 40 } });
+    streams[0]!.opts.onEvent(event(4));
+    await waitFor(() => got.length === 1);
+    streams[0]!.opts.onStatus?.("closed", { error: new LoomClientError("network", "boom") });
+    await waitFor(() => streams.length === 2);
+    streams[1]!.opts.onEvent(event(6));
+    await waitFor(() => got.length === 2);
+    expect(got[1]!.meta.preamble).toBeUndefined();
+    expect(got[1]!.content).toBe("m6");
+    sm.closeAll();
+  });
+
+  it("(d) leaving and rejoining the Weave sends the preamble again", async () => {
+    const { sm, state, streams, got } = await started({ guidelines: () => GUIDE });
+    streams[0]!.opts.onEvent(event(4));
+    await waitFor(() => got.length === 1);
+    sm.stop(WEAVE_ID);                                  // what leave_weave does
+    sm.start(WEAVE_ID, state.get().weaves[WEAVE_ID]!);  // …and a fresh join right after
+    await waitFor(() => streams.length === 2);
+    streams[1]!.opts.onEvent(event(6));
+    await waitFor(() => got.length === 2);
+    expect(got[1]!.meta.preamble).toBe("guidelines");
+    expect(got[1]!.content).toBe(`${GUIDE}\n\n---\n\nm6`);
+    sm.closeAll();
+  });
+
+  it("(e) re-arming the same identity is not a leave: no second preamble", async () => {
+    const { sm, state, streams, got } = await started({ guidelines: () => GUIDE });
+    streams[0]!.opts.onEvent(event(4));
+    await waitFor(() => got.length === 1);
+    sm.start(WEAVE_ID, state.get().weaves[WEAVE_ID]!);  // what onJoined does for a reused identity
+    await waitFor(() => streams.length === 2);
+    streams[1]!.opts.onEvent(event(6));
+    await waitFor(() => got.length === 2);
+    expect(got[1]!.meta.preamble).toBeUndefined();
+    sm.closeAll();
+  });
+
+  it("(f) empty guidelines deliver a plain first event, and still count as delivered", async () => {
+    let guidelines = "";
+    const { sm, streams, got } = await started({ guidelines: () => guidelines });
+    streams[0]!.opts.onEvent(event(4));
+    await waitFor(() => got.length === 1);
+    expect(got[0]!.content).toBe("m4");
+    expect(got[0]!.meta.preamble).toBeUndefined();
+
+    guidelines = GUIDE;   // rules appear later in the session; the change event carries them
+    streams[0]!.opts.onEvent(event(5, { type: "weave.guidelines_changed", payload: { guidelines: "be brief", previous: "" } }));
+    streams[0]!.opts.onEvent(event(6));
+    await waitFor(() => got.length === 3);
+    expect(got[2]!.content).toBe("m6");                 // the flag was set by the empty first turn
+    expect(got[2]!.meta.preamble).toBeUndefined();
+    sm.closeAll();
+  });
+
+  it("(g) in mentions mode the preamble rides on the first event that actually wakes the session", async () => {
+    const { sm, state, streams, got } = await started({ guidelines: () => GUIDE });
+    await state.setPrefs(WEAVE_ID, { wake: "mentions" });
+    sm.setPrefs(WEAVE_ID, state.prefs(WEAVE_ID));
+    streams[0]!.opts.onEvent(event(4));                                                  // no mention: not delivered
+    streams[0]!.opts.onEvent(event(5, { payload: { text: "hi @Claude", mentions: ["p1"] } }));
+    await waitFor(() => got.length === 1);
+    expect(got[0]!.meta).toMatchObject({ preamble: "guidelines", seq: "5" });
+    expect(got[0]!.content).toBe(`${GUIDE}\n\n---\n\nhi @Claude`);
+    sm.closeAll();
+  });
+
+  it("(h) a weave.guidelines_changed event refreshes the cached text a later preamble carries", async () => {
+    let guidelines = GUIDE;
+    const { sm, state, streams, got } = await started({ guidelines: () => guidelines });
+    streams[0]!.opts.onEvent(event(4));
+    await waitFor(() => got.length === 1);
+    expect(got[0]!.content).toBe(`${GUIDE}\n\n---\n\nm4`);
+
+    const UPDATED = `${GUIDE}\n\n## Guidelines for this Weave\nno emoji`;
+    guidelines = UPDATED;
+    streams[0]!.opts.onEvent(event(5, { type: "weave.guidelines_changed", payload: { guidelines: "no emoji", previous: "" } }));
+    await waitFor(() => got.length === 2);
+    expect(got[1]!.content).toBe("no emoji");
+
+    sm.stop(WEAVE_ID);
+    sm.start(WEAVE_ID, state.get().weaves[WEAVE_ID]!);
+    await waitFor(() => streams.length === 2);
+    streams[1]!.opts.onEvent(event(6));
+    await waitFor(() => got.length === 3);
+    expect(got[2]!.content).toBe(`${UPDATED}\n\n---\n\nm6`);
+    sm.closeAll();
   });
 });

@@ -38,12 +38,22 @@ export async function exportWeave(db: Db, actor: Actor, weaveId: string, format:
   lines.push(`# ${info.weave.title}`, "");
   lines.push(`- Created: ${info.weave.createdAt}`);
   lines.push(`- Archived: ${info.weave.archivedAt ?? "no"}`);
+  if (info.weave.guidelines) lines.push("- Guidelines:", ...info.weave.guidelines.split("\n").map((l) => `  > ${l}`));
   lines.push(`- Participants: ${info.participants.map((p: PublicParticipant) => `${p.name} (${p.kind}, ${p.role})`).join(", ")}`, "");
   for (const t of info.threads) {
     lines.push(t.url ? `## ${t.name}\n\n<${t.url}>` : `## ${t.name}`, "");
     for (const e of all.filter((x) => x.threadId === t.id)) {
       if (e.type === "message") {
         lines.push(`**${who(e.actor)}** · ${e.at}`, String(e.payload.text ?? ""), "");
+        continue;
+      }
+      // Kept with its text rather than collapsed into a one-line `sys` entry: after several
+      // edits the transcript still has to show which rules applied when.
+      if (e.type === "weave.guidelines_changed") {
+        const text = String(e.payload.guidelines ?? "");
+        lines.push(`_system: Guidelines ${text ? "changed" : "cleared"} by ${who(e.actor)}_ · ${e.at}`);
+        if (text) lines.push(...text.split("\n").map((l) => `> ${l}`));
+        lines.push("");
         continue;
       }
       const sys =

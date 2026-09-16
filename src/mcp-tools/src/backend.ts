@@ -6,7 +6,7 @@ export type Kind = "human" | "agent";
 export type Role = "member" | "keeper";
 
 export type LoomToolBackend = {
-  createWeave(input: { title: string; opener: string; creator: { name: string; kind: Kind } }, credential?: string): Promise<unknown>; // CreateWeaveResult shape
+  createWeave(input: { title: string; opener: string; creator: { name: string; kind: Kind }; guidelines?: string }, credential?: string): Promise<unknown>; // CreateWeaveResult shape
   joinWeave(secret: string, who: { name?: string; kind: Kind }, credential?: string): Promise<unknown>;                     // JoinResult shape; credential: the connection's agent key, if any
   lookupWeave(secret: string): Promise<{ weaveId: string }>;
   getWeave(credential: string, weaveId: string): Promise<unknown>;
@@ -29,4 +29,9 @@ export type LoomToolBackend = {
   keeperAgentsList(credential: string): Promise<unknown[]>;
   keeperAgentsAdd(credential: string, name: string): Promise<unknown>;                                   // { agent, key }
   keeperAgentsRevoke(credential: string, id: string): Promise<void>;
+  setWeaveGuidelines(credential: string, weaveId: string, guidelines: string): Promise<unknown>;         // { weave, seq }
+  /** Public: the instance text is read before a connection has any credential. */
+  getInstanceGuidelines(): Promise<string>;
+  /** The combined text (instance layer then Weave layer) for one Weave; same authority as getWeave. */
+  getGuidelines(credential: string, weaveId: string): Promise<string>;
 };

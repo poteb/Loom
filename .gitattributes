@@ -1,0 +1,6 @@
+# Migration SQL is executed byte-for-byte by drizzle's migrator, and a string literal inside it is
+# data, not source: a checkout that rewrote its line endings (git core.autocrlf, the Windows
+# default) would change what lands in the database. Keep these files LF in the working tree on
+# every platform, whatever the developer's autocrlf setting.
+*.sql text eol=lf
+src/core/drizzle/** text eol=lf

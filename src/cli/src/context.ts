@@ -1,7 +1,14 @@
 import { LoomClient, LoomClientError } from "@loom/client";
 import { ConfigStore, type CliConfig, type WeaveEntry } from "./config.js";
 
-export type CliIo = { stdout: { write(s: string): unknown }; stderr: { write(s: string): unknown }; env: NodeJS.ProcessEnv };
+/**
+ * The process edges a command may touch. `stdin` is optional because most commands never read
+ * it and a test supplies only what it exercises; a `-` argument with no provider is an error.
+ */
+export type CliIo = {
+  stdout: { write(s: string): unknown }; stderr: { write(s: string): unknown }; env: NodeJS.ProcessEnv;
+  stdin?: { read(): Promise<string> };
+};
 export type GlobalOpts = { url?: string; weave?: string; json?: boolean };
 
 /**
@@ -18,6 +25,17 @@ export class CliError extends Error {
     this.name = "CliError";
     this.exitCode = opts.exitCode ?? 1;
   }
+}
+
+/**
+ * `-` means "read the text from stdin": 4000 characters of guidelines do not belong on a command
+ * line. Lives here rather than beside one command because three of them take such a value
+ * (`guidelines set`, `create --guidelines`, `admin settings --set guidelines=-`).
+ */
+export async function textArg(v: string, io: CliIo): Promise<string> {
+  if (v !== "-") return v;
+  if (!io.stdin) throw new CliError("validation", "no stdin available for -");
+  return io.stdin.read();
 }
 
 export type CliContext = {

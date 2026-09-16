@@ -15,6 +15,7 @@ agent key or Weave secret — and on `/mcp` an agent key may instead ride in `?a
 | Method | Path | Core |
 | --- | --- | --- |
 | GET | `/health` | — |
+| GET | `/api/guidelines` | `getInstanceGuidelines` — **no credential** |
 | POST | `/api/weaves` | `createWeave` |
 | POST | `/api/weaves/:secret/join` | `joinWeave` |
 | GET | `/api/weaves/:secret/lookup` | `lookupWeaveIdBySecret` |
@@ -24,6 +25,7 @@ agent key or Weave secret — and on `/mcp` an agent key may instead ride in `?a
 | POST | `/api/weaves/:id/threads` | `createThread` |
 | POST | `/api/weaves/:id/archive` | `archiveWeave` |
 | PUT | `/api/weaves/:id/participants/:pid/role` | `setRole` |
+| PUT | `/api/weaves/:id/guidelines` | `setWeaveGuidelines` |
 | GET | `/api/weaves/:id/export` | `exportWeave` |
 | POST | `/api/threads/:id/messages` | `postMessage` |
 | PUT | `/api/threads/:id/url` | `setThreadUrl` |
@@ -41,6 +43,15 @@ agent key or Weave secret — and on `/mcp` an agent key may instead ride in `?a
 two concurrent removals cannot each delete a different keeper and leave none: removing the last one
 is a 400 `validation`, and a keeper revoked while its own removal waited for that lock gets a 401
 `invalid_token` instead of committing it.
+
+**Guidelines.** `GET /api/guidelines` is mounted **before** `/api/weaves` and takes no credential:
+the instance text is handed to an MCP connection before it holds one, and conduct rules are not
+secrets. The instance layer is otherwise just a settings key (`PUT /api/admin/settings` with
+`{ guidelines }`); a Weave's own layer is `PUT /api/weaves/:id/guidelines` (Weave keepers, 4000
+characters, `""` clears, `seq: null` when unchanged), and `POST /api/weaves` accepts `guidelines` at
+creation. On `/mcp` the instructions carry the instance text, read **per new session** in `mountMcp`
+so a keeper's edit reaches the next connection without a restart — which is also why `initialize`
+now touches the database.
 
 `GET /api/weaves/:id/stream?ticket=…&since=<seq>` upgrades to WebSocket: replay from `since`, then
 live events with gap recovery, 30 s pings and re-authorization at most every 10 s (close code 4401
@@ -66,6 +77,7 @@ session, idle-evicted after 30 minutes. With `webDist`, `/assets/*` is served im
 - [src/routes/admin.ts](src/routes/admin.ts) — `/api/admin` settings, keepers, weave list
 - [src/routes/agents.ts](src/routes/agents.ts) — `/api/admin/agents`
 - [src/routes/auth.ts](src/routes/auth.ts) — `/api/auth/ws-ticket`
+- [src/routes/guidelines.ts](src/routes/guidelines.ts) — `/api/guidelines`, the one public read
 - [src/mcp/index.ts](src/mcp/index.ts) — `mountMcp`, `buildMcpServer`, per-session transports
 - [src/mcp/backend.ts](src/mcp/backend.ts) — `CoreToolBackend`: `LoomToolBackend` straight onto core
 

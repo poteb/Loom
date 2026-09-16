@@ -6,6 +6,7 @@ import { createThread } from "../src/threads.js";
 import { postMessage } from "../src/messages.js";
 import { exportWeave } from "../src/export.js";
 import { resolveCredential } from "../src/actors.js";
+import { setWeaveGuidelines } from "../src/guidelines.js";
 import type { Db } from "../src/db/index.js";
 
 afterAll(closeTestDb);
@@ -59,6 +60,32 @@ describe("exportWeave", () => {
     expect(out).not.toContain("committed mid-export");
     // The Weave really did move on; the export simply described one consistent point in time.
     expect((await exportWeave(db, me, r.weave.id, "json")).includes("committed mid-export")).toBe(true);
+  });
+
+  it("renders the current guidelines in the metadata and every change with the text that applied", async () => {
+    // The transcript has to show which rules applied when, so each change keeps its full text
+    // rather than collapsing to a one-line system entry; the metadata shows only what is current.
+    const r = await createWeave(db, bus, { ...input, creator: { name: "Paw", kind: "human" as const } });
+    const me = await resolveCredential(db, r.token);
+    await setWeaveGuidelines(db, bus, me, r.weave.id, "A");
+    await setWeaveGuidelines(db, bus, me, r.weave.id, "B");
+
+    const set = await exportWeave(db, me, r.weave.id, "md");
+    expect(set).toContain("- Guidelines:\n  > B");
+    expect(set).toContain("_system: Guidelines changed by Paw_");
+    expect(JSON.parse(await exportWeave(db, me, r.weave.id, "json")).weave.guidelines).toBe("B");
+
+    await setWeaveGuidelines(db, bus, me, r.weave.id, "");
+    const md = await exportWeave(db, me, r.weave.id, "md");
+    expect(md).not.toContain("- Guidelines:");
+    const order = ["Guidelines changed by Paw", "> A", "Guidelines changed by Paw", "> B", "Guidelines cleared by Paw"];
+    let at = -1;
+    for (const needle of order) {
+      const next = md.indexOf(needle, at + 1);
+      expect(next, needle).toBeGreaterThan(at);
+      at = next;
+    }
+    expect(JSON.parse(await exportWeave(db, me, r.weave.id, "json")).weave.guidelines).toBe("");
   });
 
   it("rejects bad format and foreign credential", async () => {

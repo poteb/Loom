@@ -14,6 +14,7 @@ import { inbox } from "./inbox.js";
 import { setRole } from "./participants.js";
 import { exportWeave } from "./export.js";
 import { getSettings, updateSettings } from "./settings.js";
+import { getInstanceGuidelines, setWeaveGuidelines } from "./guidelines.js";
 import * as keepers from "./keepers.js";
 import * as agentsMod from "./agents.js";
 import type { Actor, Kind, Role, Settings } from "./types.js";
@@ -55,6 +56,9 @@ export function createCore(db: Db) {
     // re-checks instance-keeper standing against the database on every call.
     readSettings: async (actor: Actor) => { await assertInstanceKeeperFresh(db, actor); return getSettings(db); },
     updateSettings: (actor: Actor, patch: Partial<Settings>) => updateSettings(db, actor, patch),
+    // Public on purpose: the instance guidelines are handed to a connection before it has a credential.
+    getInstanceGuidelines: () => getInstanceGuidelines(db),
+    setWeaveGuidelines: async (actor: Actor, weaveId: string, text: string) => setWeaveGuidelines(db, bus, await resolveInWeave(db, actor, weaveId), weaveId, text),
     seedKeepers: (tokens: string[]) => keepers.seedKeepers(db, tokens),
     listKeepers: (actor: Actor) => keepers.listKeepers(db, actor),
     addKeeper: (actor: Actor, name: string) => keepers.addKeeper(db, actor, name),
@@ -71,6 +75,8 @@ export { assertCanRead } from "./actors.js";
 export { createDb, runMigrations, closeDb, type Db } from "./db/index.js";
 export { KEEPER_TOKEN_RE } from "./ids.js";
 export { MAX_PAGE_LIMIT, validatePage, type PageOptions } from "./paging.js";
+export { DEFAULT_INSTANCE_GUIDELINES } from "./guidelines-default.js";
+export { MAX_GUIDELINES_LENGTH, INSTANCE_HEADING, WEAVE_HEADING, validateGuidelines, guidelinesFor, type SetGuidelinesOptions } from "./guidelines.js";
 export { EventBus } from "./bus.js";
 export type { CreateWeaveInput, CreateWeaveResult, WeaveInfo, JoinResult } from "./weaves.js";
 export type { PublicKeeper, SeedKeepersResult } from "./keepers.js";

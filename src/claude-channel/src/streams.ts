@@ -1,10 +1,12 @@
 import type { LoomClient, LoomEvent, StreamHandle } from "@loom/client";
 import type { ChannelState, JoinedWeave, Prefs } from "./state.js";
-import { formatEvent, shouldWake, type Names } from "./format.js";
+import { formatEvent, shouldWake, withPreamble, type Names } from "./format.js";
 
 type Active = {
   handle?: StreamHandle; names: Names; title: string; prefs: Prefs; participantId: string; chain: Promise<void>; stopped: boolean;
   threadIds: Set<string>; restartTimer?: ReturnType<typeof setTimeout>; backoffMs: number;
+  /** The Weave's combined guidelines as of the last successful refresh(); "" when there are none. */
+  guidelines: string;
 };
 
 const DEFAULT_RESTART_BACKOFF = { initial: 2000, max: 30_000 };
@@ -15,9 +17,16 @@ export class StreamManager {
   /** Next backoff delay per weaveId, surviving across the ephemeral `Active` entries that
    * scheduleRestart()/start() replace on each restart — otherwise exponential backoff would reset
    * to `initial` on every restart instead of growing across repeated failures. Reset to `initial`
-   * after a successful delivery, and dropped entirely on an explicit stop() (leave/rejoin should
-   * not inherit a dead stream's backoff history). */
+   * after a successful delivery, and dropped in teardown() — which start() also calls, so start()
+   * captures the value *before* tearing down and re-seeds the fresh entry from it. What teardown()
+   * alone leaves behind is therefore nothing: a leave/rejoin (stop()) or a restore starts clean and
+   * does not inherit a dead stream's backoff history. */
   private nextBackoffMs = new Map<string, number>();
+  /** Weaves whose guidelines preamble this session has already handed over. Deliberately outside
+   * `Active`, which start() replaces on every automatic restart and on a same-identity re-arm —
+   * neither of which is a new session for the agent. Only a leave (stop()) clears it, so a rejoin
+   * introduces the rules again. Process memory only: nothing about it belongs in channel state. */
+  private preambleDone = new Set<string>();
   private readonly restartBackoffMs: { initial: number; max: number };
 
   constructor(
@@ -47,10 +56,19 @@ export class StreamManager {
   }
 
   restoreAll(): void { for (const [id, w] of Object.entries(this.state.load().weaves)) this.start(id, w); }
-  closeAll(): void { for (const id of [...this.active.keys()]) this.stop(id); }
+  /** Process exit, not a leave: the streams go away but the session does not, so `preambleDone` stands. */
+  closeAll(): void { for (const id of [...this.active.keys()]) this.teardown(id); }
   setPrefs(weaveId: string, prefs: Prefs): void { const a = this.active.get(weaveId); if (a) a.prefs = prefs; }
 
+  /** Leaving the Weave (what leave_weave does): tear the stream down and forget that this session
+   * was ever told the rules, so a later rejoin opens with them again. */
   stop(weaveId: string): void {
+    this.teardown(weaveId);
+    this.preambleDone.delete(weaveId);
+  }
+
+  /** Closes and forgets the active entry without touching anything that outlives it. */
+  private teardown(weaveId: string): void {
     const a = this.active.get(weaveId);
     if (!a) return;
     a.stopped = true;
@@ -86,21 +104,24 @@ export class StreamManager {
   }
 
   start(weaveId: string, w: JoinedWeave): void {
-    // Captured before stop(weaveId) below, which clears nextBackoffMs for this weaveId — stop()
-    // must run first (to tear down any existing entry the normal way) but must not erase the
+    // Captured before teardown(weaveId) below, which clears nextBackoffMs for this weaveId —
+    // teardown must run first (to close any existing entry the normal way) but must not erase the
     // backoff value this fresh entry is about to seed itself with.
     const backoffMs = this.nextBackoffMs.get(weaveId) ?? this.restartBackoffMs.initial;
-    this.stop(weaveId);
+    // teardown(), not stop(): an automatic restart and a same-identity re-arm both land here, and
+    // neither means the agent has forgotten the guidelines it was already handed this session.
+    this.teardown(weaveId);
     const reader = this.client.withToken(w.token);
     const entry: Active = {
       names: { threads: new Map(), participants: new Map() }, title: w.title, prefs: this.state.prefs(weaveId), participantId: w.participantId,
-      chain: Promise.resolve(), stopped: false, threadIds: new Set(), backoffMs,
+      chain: Promise.resolve(), stopped: false, threadIds: new Set(), backoffMs, guidelines: "",
     };
     this.active.set(weaveId, entry);
     const refresh = async () => {
       const info = await reader.getWeave(weaveId);
       if (entry.stopped) return; // stop() raced ahead of this refresh; don't resurrect thread ownership for a dead entry
       entry.title = info.weave.title;
+      entry.guidelines = info.guidelines;
       entry.names.threads = new Map(info.threads.map((t) => [t.id, { name: t.name, url: t.url }]));
       entry.names.participants = new Map(info.participants.map((p) => [p.id, { name: p.name, kind: p.kind }]));
       for (const t of info.threads) { this.threadToWeave.set(t.id, weaveId); entry.threadIds.add(t.id); }
@@ -126,12 +147,22 @@ export class StreamManager {
     const onEvent = (e: LoomEvent) => {
       entry.chain = entry.chain.then(async () => {
         if (entry.stopped) return;
-        if (e.type === "thread.created" || e.type === "thread.url_changed" || e.type === "participant.joined" || e.type === "participant.role_changed") {
+        if (e.type === "thread.created" || e.type === "thread.url_changed" || e.type === "participant.joined" || e.type === "participant.role_changed" || e.type === "weave.guidelines_changed") {
           applyToNames(e);
-          await refresh().catch((err) => this.log(`name refresh failed for weave ${weaveId}: ${(err as Error).message}`));
+          await refresh().catch((err) => this.log(`metadata refresh failed for weave ${weaveId}: ${(err as Error).message}`));
         }
         if (shouldWake(e, { participantId: entry.participantId, ...entry.prefs })) {
-          await this.notify(formatEvent(e, { id: weaveId, title: entry.title }, entry.names, entry.participantId));
+          let n = formatEvent(e, { id: weaveId, title: entry.title }, entry.names, entry.participantId);
+          // The first turn this session receives for the Weave carries the rules with it; empty
+          // guidelines still count as delivered — there was nothing to say, and a later change
+          // reaches the agent as a weave.guidelines_changed event. When that first woken event *is*
+          // a weave.guidelines_changed, the preamble and the event body both carry the new text:
+          // accepted, because the alternative (suppressing one of them) costs an agent either the
+          // rules or the notice that they changed, for a repeat of at most 4000 characters.
+          const first = !this.preambleDone.has(weaveId);
+          if (first) n = withPreamble(n, entry.guidelines);
+          await this.notify(n);
+          if (first) this.preambleDone.add(weaveId);   // only once the turn carrying it was handed over
         }
         await this.state.setLastSeq(weaveId, e.seq);
         entry.backoffMs = this.restartBackoffMs.initial;
@@ -149,13 +180,30 @@ export class StreamManager {
         this.scheduleRestart(weaveId, entry);
       });
     };
-    void refresh().catch((err) => this.log(`initial name fetch failed for weave ${weaveId}: ${(err as Error).message}`)).then(async () => {
-      if (entry.stopped) return;
-      // This session's own cursor (resume replays exactly what *it* missed), or the machine-wide
-      // watermark for a session that has never listened to this Weave — persisted either way, so a
-      // session that receives nothing still resumes from where it started listening.
-      const since = await this.state.ensureCursor(weaveId);
-      if (entry.stopped) return;
+    // This session's own cursor (resume replays exactly what *it* missed), or the machine-wide
+    // watermark for a session that has never listened to this Weave — persisted either way, so a
+    // session that receives nothing still resumes from where it started listening.
+    //
+    // Pinned *before* the first getWeave, not after it: the watermark is shared by every session on
+    // the machine, so if this attempt fails and a sibling session delivers events while we back off,
+    // a retry that only then consulted the watermark would adopt the sibling's progress and skip
+    // everything waiting behind it. ensureCursor writes the starting point once and returns that
+    // same number to every later call, so the retry resumes from where this session meant to start.
+    // It moves no watermark and delivers nothing, so the precondition below still holds.
+    void this.state.ensureCursor(weaveId).then(async (pinned) => {
+      await refresh();
+      return pinned;
+    }).catch((err) => {
+      // The metadata carries the guidelines this session's first turn must open with, so it is a
+      // precondition rather than a nicety: open no stream and leave the cursor where it is, so the
+      // events waiting behind it are still there when a getWeave finally succeeds.
+      if (entry.stopped) return undefined;
+      entry.stopped = true;
+      this.log(`initial metadata fetch failed for weave ${weaveId}: ${(err as Error).message}`);
+      this.scheduleRestart(weaveId, entry);
+      return undefined;
+    }).then((since) => {
+      if (entry.stopped || since === undefined) return;
       const handle = reader.stream(weaveId, {
         since,
         onEvent,

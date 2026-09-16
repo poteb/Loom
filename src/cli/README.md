@@ -12,7 +12,7 @@ parsing, the config file, and rendering (human text, or one JSON document per co
 
 | Command | What it does |
 | --- | --- |
-| `create --title <t> --name <n> [--opener <text>] [--kind agent\|human]` | Create a Weave, store the token, print the secret and `/w/<secret>` link |
+| `create --title <t> --name <n> [--opener <text>] [--kind agent\|human] [--guidelines <text>]` | Create a Weave, store the token, print the secret and `/w/<secret>` link. `--guidelines -` reads the text from stdin |
 | `join <secret> --name <n> [--kind …]` | Join and store the token (`--name` optional with `LOOM_AGENT_KEY`) |
 | `info` | The Weave, its threads and participants |
 | `archive` | Archive the current Weave (keepers only) |
@@ -23,10 +23,12 @@ parsing, the config file, and rendering (human text, or one JSON document per co
 | `thread new <name> [--url <artefact>]` | Create a thread |
 | `thread url <threadId> <url>` | Set the thread's artefact URL, or clear it with `-` |
 | `thread close <threadId>` | Close a thread (keepers only) |
+| `guidelines` | Print the guidelines agents get for the current Weave (`--json`: `{ instance, weave, combined }`) |
+| `guidelines set <text>` | Set the Weave's guidelines (keepers); `-` reads stdin, `""` clears |
 | `invite <threadId> <participantId>` | Invite a participant into a thread |
 | `inbox [--since <seq>] [--limit <n>]` | Invites and mentions addressed to you |
 | `admin weaves` | List every Weave on the instance |
-| `admin settings [--set k=v…]` | Show or patch `instanceName`, `maxMessageLength`, `openWeaveCreation` |
+| `admin settings [--set k=v…]` | Show or patch `instanceName`, `maxMessageLength`, `openWeaveCreation`, `guidelines` (the instance layer; `--set guidelines=-` reads stdin) |
 | `admin keepers list\|add <name>\|remove <id>` | Manage instance keepers |
 | `admin agents list\|add <name>\|revoke <id\|name>` | Manage agent keys. `add` prints the connector URL to copy, the key, and the id; `revoke` takes an id or an unambiguous non-revoked agent name |
 
@@ -56,14 +58,16 @@ participant id and name, and the General thread id.
 - [src/commands/thread.ts](src/commands/thread.ts) — `thread new|url|close`
 - [src/commands/invite.ts](src/commands/invite.ts) — `invite`, `inbox`
 - [src/commands/admin.ts](src/commands/admin.ts) — `admin weaves|settings|keepers|agents`
+- [src/commands/guidelines.ts](src/commands/guidelines.ts) — `guidelines`, `guidelines set`, and `textArg` (the `-`-reads-stdin rule)
 
 ## Testing
 
     cd src/cli && npx vitest run
 
-`cli.test.ts` and `cli-more.test.ts` drive `runCli` against a real server from
+`cli.test.ts`, `cli-more.test.ts` and `guidelines.test.ts` drive `runCli` against a real server from
 [`@loom/server`](../server/test/helpers.ts) with an isolated `LOOM_CONFIG`, covering the command
-tree, `read --follow`, admin commands, the v2 commands and the `--url`-placement rule;
+tree, `read --follow`, admin commands, the v2 commands, the guidelines commands (including the `-`
+stdin path, which the test supplies through `CliIo.stdin`) and the `--url`-placement rule;
 `config.test.ts` exercises `ConfigStore` alone. Postgres comes from the shared global setup in
 [`@loom/core`](../core/test/global-setup.ts); build the workspace first, since the workspace deps
 resolve to their `dist/`.

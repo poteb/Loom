@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatEvent, shouldWake } from "../src/format.js";
+import { formatEvent, shouldWake, withPreamble } from "../src/format.js";
 
 const weave = { id: "w1", title: "PR 42" };
 const names = { threads: new Map([["t1", { name: "General", url: null }], ["d", { name: "Design", url: null }]]), participants: new Map([["p1", { name: "Claude", kind: "agent" }], ["p2", { name: "Paw", kind: "human" }]]) };
@@ -66,5 +66,37 @@ describe("invites", () => {
     expect(msg.meta.thread_url).toBe("https://e.com/12");
     const plain = formatEvent(ev({ actor: "p9", threadId: "g1", payload: { text: "hi" } }), { id: "w1", title: "W" }, { ...names, threads: new Map([["g1", { name: "General", url: null }]]) }, "p1");
     expect(plain.meta.thread_url).toBeUndefined();
+  });
+});
+
+describe("weave.guidelines_changed", () => {
+  const changed = (guidelines: string, over: Partial<Parameters<typeof formatEvent>[0]> = {}) =>
+    ev({ type: "weave.guidelines_changed", actor: "p2", payload: { guidelines, previous: "" }, ...over });
+  it("renders the new text as the body, and says who cleared them when there is none", () => {
+    const r = formatEvent(changed("be brief"), weave, names, "p1");
+    expect(r.content).toBe("be brief");
+    expect(r.meta).toMatchObject({ type: "weave.guidelines_changed", from: "Paw" });
+    expect(formatEvent(changed(""), weave, names, "p1").content).toBe("Guidelines cleared by Paw");
+  });
+  it("wakes a mentions-only session with invites off — a rules change concerns every participant", () => {
+    expect(shouldWake(changed("x"), { participantId: "p1", wake: "mentions", invites: false })).toBe(true);
+    expect(shouldWake(changed("x"), { participantId: "p1", wake: "all", invites: true })).toBe(true);
+  });
+  it("does not wake the session that made the change", () => {
+    expect(shouldWake(changed("x", { actor: "p1" }), { participantId: "p1", wake: "mentions", invites: true })).toBe(false);
+  });
+});
+
+describe("withPreamble", () => {
+  it("folds the guidelines and the event into one notification marked preamble=guidelines", () => {
+    const n = { content: "hi", meta: { type: "message", seq: "5" } };
+    const r = withPreamble(n, "## Loom guidelines\nbe brief");
+    expect(r.content).toBe("## Loom guidelines\nbe brief\n\n---\n\nhi");
+    expect(r.meta).toEqual({ type: "message", seq: "5", preamble: "guidelines" });
+    expect(n.meta).toEqual({ type: "message", seq: "5" });  // the caller's meta is not mutated
+  });
+  it("returns the notification untouched when there are no guidelines", () => {
+    const n = { content: "hi", meta: { type: "message" } };
+    expect(withPreamble(n, "")).toBe(n);
   });
 });

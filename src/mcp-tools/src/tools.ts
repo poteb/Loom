@@ -1,22 +1,53 @@
 import { z } from "zod";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ResourceTemplate, type McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { LoomToolError, type LoomToolBackend } from "./backend.js";
 import { toToolResult } from "./result.js";
 
 export const LOOM_TOOL_NAMES = [
   "create_weave", "join_weave", "lookup_weave", "get_weave", "read_events", "inbox", "post_message", "create_thread",
   "set_thread_url", "invite_participant", "close_thread", "archive_weave", "set_role", "export_weave",
+  "set_weave_guidelines",
   "keeper_list_weaves", "keeper_get_settings", "keeper_set_settings", "keeper_list", "keeper_add", "keeper_remove",
   "keeper_agents_list", "keeper_agents_add", "keeper_agents_revoke",
 ] as const;
 
+/** The resources both surfaces expose: the instance text, and a per-Weave template for the combined text. */
+export const LOOM_RESOURCE_URIS = ["loom://guidelines", "loom://weaves/{weaveId}/guidelines"] as const;
+
 const kind = z.enum(["human", "agent"]).default("agent");
+
+/** One sentence appended to the three results that carry the combined text, so an agent knows to read it. */
+export const READ_GUIDELINES = "The result's `guidelines` is the instance's and this Weave's rules — read it before posting.";
+
+/**
+ * A resource read has no `{ code, message }` envelope the way a tool result does, so the code is
+ * folded into the message and the JSON-RPC error text still names it (`invalid_token: …`).
+ */
+function resourceError(e: unknown): Error {
+  const err = e as { code?: unknown; message?: unknown };
+  if (typeof err.code === "string") return new Error(typeof err.message === "string" && err.message ? `${err.code}: ${err.message}` : err.code);
+  return e instanceof Error ? e : new Error(String(e));
+}
 
 export type RegisterOptions = {
   credentialHint?: string;
   /** When set (a connection authenticated with an agent key), `credential` becomes optional on every tool and defaults to this. */
   defaultCredential?: () => string | undefined;
   agentName?: string;
+  /**
+   * Credential for reading `loom://weaves/{weaveId}/guidelines`. A resource read carries no arguments,
+   * so the surface supplies the credential: remote `/mcp` hands over the connection's agent key, the
+   * channel resolves the stored participant token for that Weave. When present it decides alone —
+   * returning `undefined` refuses the read (`invalid_token`) rather than falling back; only when the
+   * option is absent does `defaultCredential` apply.
+   *
+   * The resolver may also **throw** a `LoomToolError` (or anything carrying string `code` and
+   * `message`) to refuse with a code of its own instead of the shared `invalid_token` — the channel
+   * throws `forbidden: not joined to this Weave…`, which says more than "invalid token" does. The
+   * return type cannot express that, so it is stated here: `forResource` is called *inside* the
+   * resource callback's `try`, where `resourceError` folds the code into the message.
+   */
+  resourceCredential?: (weaveId: string) => string | undefined;
 };
 
 /**
@@ -41,17 +72,18 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
   };
 
   server.registerTool("create_weave", {
-    description: "Create a new Loom Weave (a room) with a General thread and post the opening message. You become its keeper. Returns the Weave, its secret (share it with others so they can join), your participant token (keep it; pass it as `credential` to every later call) and the General thread id.",
+    description: `Create a new Loom Weave (a room) with a General thread and post the opening message. You become its keeper. Returns the Weave, its secret (share it with others so they can join), your participant token (keep it; pass it as \`credential\` to every later call) and the General thread id. ${READ_GUIDELINES}`,
     inputSchema: {
       title: z.string().describe("1-200 characters"), opener: z.string().default("").describe("Opening message in Markdown; put the subject (e.g. a PR link) here"),
       name: z.string().describe("Your participant name: 1-32 chars of A-Z a-z 0-9 _ . -"), kind,
+      guidelines: z.string().optional().describe("Optional house rules for the Weave, Markdown, at most 4000 characters"),
       credential: z.string().optional().describe("Keeper token; only needed when the instance restricts Weave creation"),
     },
-  }, ({ title, opener, name, kind, credential }) =>
-    toToolResult(backend.createWeave({ title, opener, creator: { name, kind } }, credential ?? defaultCred?.())));
+  }, ({ title, opener, name, kind, guidelines, credential }) =>
+    toToolResult(backend.createWeave({ title, opener, creator: { name, kind }, guidelines }, credential ?? defaultCred?.())));
 
   server.registerTool("join_weave", {
-    description: "Join an existing Weave with its secret. Returns the weaveId, your participant record and your participant token — keep the token and pass it as `credential` to every later call in this session. Backends that remember your identity (the Claude Code channel) return the stored identity with alreadyJoined: true when you join a Weave you already joined under the same name, instead of failing with name_taken.",
+    description: `Join an existing Weave with its secret. Returns the weaveId, your participant record and your participant token — keep the token and pass it as \`credential\` to every later call in this session. ${READ_GUIDELINES} Backends that remember your identity (the Claude Code channel) return the stored identity with alreadyJoined: true when you join a Weave you already joined under the same name, instead of failing with name_taken.`,
     inputSchema: { secret: z.string(), name: z.string().optional().describe("Your participant name; defaults to your agent name on an agent connection"), kind },
   }, ({ secret, name, kind }) => toToolResult(backend.joinWeave(secret, { name, kind }, defaultCred?.())));
 
@@ -61,7 +93,7 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
   }, ({ secret }) => toToolResult(backend.lookupWeave(secret)));
 
   server.registerTool("get_weave", {
-    description: "Get a Weave: title, archived state, threads (with closed state) and participants (names, kinds, roles).",
+    description: `Get a Weave: title, archived state, threads (with closed state) and participants (names, kinds, roles). ${READ_GUIDELINES}`,
     inputSchema: { credential: cred(hint), weaveId: z.string() },
   }, ({ credential, weaveId }) => toToolResult(Promise.resolve().then(() => backend.getWeave(resolve(credential), weaveId))));
 
@@ -115,13 +147,43 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
     inputSchema: { credential: cred(hint), weaveId: z.string(), format: z.enum(["md", "json"]).default("md") },
   }, ({ credential, weaveId, format }) => toToolResult(Promise.resolve().then(() => backend.exportWeave(resolve(credential), weaveId, format))));
 
+  server.registerTool("set_weave_guidelines", {
+    description: "Set or clear this Weave's guidelines (Weave keepers only): the house rules every agent reads on join and get_weave. Markdown, at most 4000 characters; an empty string clears. Appends a weave.guidelines_changed event carrying the new text, so connected agents learn of it. Instance-wide guidelines are set with keeper_set_settings({ patch: { guidelines } }).",
+    inputSchema: { credential: cred(hint), weaveId: z.string(), guidelines: z.string() },
+  }, ({ credential, weaveId, guidelines }) => toToolResult(Promise.resolve().then(() => backend.setWeaveGuidelines(resolve(credential), weaveId, guidelines))));
+
+  // A resource read carries no arguments of its own, so the credential comes from the surface.
+  // May throw, deliberately: see RegisterOptions.resourceCredential.
+  const forResource = (weaveId: string): string => {
+    const v = opts.resourceCredential ? opts.resourceCredential(weaveId) : defaultCred?.();
+    if (!v) throw new Error("invalid_token: a credential for this Weave is required to read its guidelines");
+    return v;
+  };
+  server.registerResource("loom-guidelines", "loom://guidelines",
+    { title: "Loom guidelines", description: "Conduct for every agent on this Loom, set by its instance keepers.", mimeType: "text/markdown" },
+    async (uri) => {
+      try {
+        return { contents: [{ uri: uri.href, mimeType: "text/markdown", text: await backend.getInstanceGuidelines() }] };
+      } catch (e) { throw resourceError(e); }
+    });
+  server.registerResource("weave-guidelines", new ResourceTemplate("loom://weaves/{weaveId}/guidelines", { list: undefined }),
+    { title: "Weave guidelines", description: "Instance guidelines followed by this Weave's own; what to read before posting.", mimeType: "text/markdown" },
+    async (uri, { weaveId }) => {
+      const id = String(weaveId);
+      try {
+        // forResource() stays inside the try on purpose — a resolver that throws its own
+        // { code, message } must reach resourceError() too. Do not hoist it above this line.
+        return { contents: [{ uri: uri.href, mimeType: "text/markdown", text: await backend.getGuidelines(forResource(id), id) }] };
+      } catch (e) { throw resourceError(e); }
+    });
+
   const keeper = "Instance keeper token (LOOM_KEEPER_TOKENS / keeper_add).";
   server.registerTool("keeper_list_weaves", { description: "List every Weave on this Loom instance, including archived ones (instance keepers only).", inputSchema: { credential: cred(keeper) } },
     ({ credential }) => toToolResult(Promise.resolve().then(() => backend.keeperListWeaves(resolve(credential)))));
   server.registerTool("keeper_get_settings", { description: "Read instance settings (instance keepers only).", inputSchema: { credential: cred(keeper) } },
     ({ credential }) => toToolResult(Promise.resolve().then(() => backend.keeperGetSettings(resolve(credential)))));
   server.registerTool("keeper_set_settings", {
-    description: "Update instance settings (instance keepers only). patch: an object with any of instanceName, maxMessageLength, openWeaveCreation; unknown keys are rejected.",
+    description: "Update instance settings (instance keepers only). patch: an object with any of instanceName, maxMessageLength, openWeaveCreation, guidelines (the instance-wide conduct text, Markdown, at most 4000 characters); unknown keys are rejected.",
     // One opaque record rather than a declared shape: the SDK strips properties a shape does not
     // declare, so a misspelled key would never reach core's strict schema and the call would report
     // success without changing anything. Core decides which keys and values are acceptable.

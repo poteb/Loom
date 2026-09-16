@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { DEFAULT_INSTANCE_GUIDELINES } from "@loom/core";
 import { startTestServer, keeperToken, type TestServer } from "../../server/test/helpers.js";
 import { LoomClient, LoomClientError } from "../src/index.js";
 
@@ -120,5 +121,24 @@ describe("v2 client wrappers", () => {
     expect((await anon.withToken(added.key).joinWeave(r.secret, { name: "ChatGPT", kind: "agent" })).alreadyJoined).toBe(true);
     await k.admin.revokeAgent(added.agent.id);
     await expect(anon.withToken(added.key).getWeave(r.weave.id)).rejects.toMatchObject({ code: "invalid_token" });
+  });
+});
+
+describe("guidelines", () => {
+  it("reads the instance text, creates and sets a Weave's, and reports unchanged text as seq null", async () => {
+    expect(await anon.getInstanceGuidelines()).toBe(DEFAULT_INSTANCE_GUIDELINES);
+    const k = anon.withToken(keeperToken("k1"));
+    expect((await k.admin.updateSettings({ guidelines: "be brief" })).guidelines).toBe("be brief");
+    expect(await anon.getInstanceGuidelines()).toBe("be brief");
+
+    const r = await anon.createWeave({ ...input, guidelines: "rules" });
+    expect(r.weave.guidelines).toBe("rules");
+    expect(r.guidelines).toContain("## Loom guidelines");
+    expect(r.guidelines).toContain("## Guidelines for this Weave");
+
+    const me = anon.withToken(r.token);
+    expect(await me.setWeaveGuidelines(r.weave.id, "rules 2")).toMatchObject({ weave: { guidelines: "rules 2" }, seq: 4 });
+    expect((await me.setWeaveGuidelines(r.weave.id, "rules 2")).seq).toBeNull();
+    expect((await me.getWeave(r.weave.id)).weave.guidelines).toBe("rules 2");
   });
 });

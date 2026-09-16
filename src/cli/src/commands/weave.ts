@@ -1,6 +1,6 @@
 import { Argument, Option, type Command } from "commander";
 import type { Kind } from "@loom/client";
-import type { CliContext, CliIo } from "../context.js";
+import { textArg, type CliContext, type CliIo } from "../context.js";
 import { emit } from "../output.js";
 
 const kindOption = () => new Option("--kind <kind>", "agent | human").choices(["agent", "human"]).default("agent");
@@ -12,12 +12,13 @@ export function registerWeaveCommands(program: Command, ctx: () => CliContext, i
     .option("--opener <text>", "Opening message", "")
     .requiredOption("--name <name>", "Your participant name")
     .addOption(kindOption())
-    .action(async (o: { title: string; opener: string; name: string; kind: Kind }) => {
+    .option("--guidelines <text>", "House rules for the Weave (Markdown, max 4000 chars; - reads stdin)")
+    .action(async (o: { title: string; opener: string; name: string; kind: Kind; guidelines?: string }) => {
       const c = ctx();
       // A configured instance-keeper token lets creation succeed when the instance restricts it;
       // failing that, an agent key links the creating participant to that agent identity (as join
       // does). With neither, creation is anonymous exactly as before.
-      const r = await c.client(c.io.env.LOOM_KEEPER_TOKEN ?? c.io.env.LOOM_AGENT_KEY).createWeave({ title: o.title, opener: o.opener, creator: { name: o.name, kind: o.kind } });
+      const r = await c.client(c.io.env.LOOM_KEEPER_TOKEN ?? c.io.env.LOOM_AGENT_KEY).createWeave({ title: o.title, opener: o.opener, creator: { name: o.name, kind: o.kind }, guidelines: o.guidelines === undefined ? undefined : await textArg(o.guidelines, io) });
       await c.remember(r.weave.id, {
         title: r.weave.title, secret: r.secret, token: r.token, participantId: r.participant.id,
         generalThreadId: r.generalThread.id, participantName: r.participant.name,

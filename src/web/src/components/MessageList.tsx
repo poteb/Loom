@@ -18,6 +18,7 @@ function systemLine(e: LoomEvent, state: SessionState): string {
     case "thread.invited": return `${name(e.payload.participantId)} invited by ${who(e.actor, state)}`;
     case "thread.url_changed": return e.payload.url ? `thread now links to ${String(e.payload.url)}` : "thread no longer links to an artefact";
     case "weave.archived": return "weave archived";
+    case "weave.guidelines_changed": return e.payload.guidelines ? `${who(e.actor, state)} changed the Weave guidelines` : `${who(e.actor, state)} cleared the Weave guidelines`;
     default: return e.type;
   }
 }
@@ -34,7 +35,14 @@ export function MessageList({ state }: { state: SessionState }) {
           <div class="msg-body" dangerouslySetInnerHTML={{ __html: renderMarkdown(String(e.payload.text ?? ""), state.participants, (e.payload.mentions as string[] | undefined) ?? []) }} />
         </article>
       ) : (
-        <div key={e.seq} class="system">{systemLine(e, state)} · <time dateTime={e.at}>{new Date(e.at).toLocaleTimeString()}</time></div>
+        <div key={e.seq} class="system">
+          <div>{systemLine(e, state)} · <time dateTime={e.at}>{new Date(e.at).toLocaleTimeString()}</time></div>
+          {/* The guidelines the change installed, shown in the thread so the room can read them
+              without opening the panel. Rendered from the event, never from the panel's state. */}
+          {e.type === "weave.guidelines_changed" && e.payload.guidelines ? (
+            <div class="system-body" dangerouslySetInnerHTML={{ __html: renderMarkdown(String(e.payload.guidelines), state.participants, []) }} />
+          ) : null}
+        </div>
       ))}
       <div ref={bottom} />
     </main>

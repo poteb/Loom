@@ -21,7 +21,7 @@ export class ClientToolBackend implements LoomToolBackend {
   constructor(private readonly client: LoomClient, private readonly state: ChannelState, private readonly hooks: JoinHooks) {}
   private as(credential: string): LoomClient { return this.client.withToken(credential); }
 
-  async createWeave(input: { title: string; opener: string; creator: { name: string; kind: Kind } }, credential?: string) {
+  async createWeave(input: { title: string; opener: string; creator: { name: string; kind: Kind }; guidelines?: string }, credential?: string) {
     const r = await (credential ? this.as(credential) : this.client).createWeave(input);
     const joined: JoinedWeave = {
       title: r.weave.title, token: r.token, participantId: r.participant.id, participantName: r.participant.name,
@@ -86,7 +86,9 @@ export class ClientToolBackend implements LoomToolBackend {
     const participant = info.participants.find((p) => p.id === stored.participantId);
     if (!participant) return undefined;
     await this.hooks.onJoined(weaveId, stored);
-    return { weaveId, weave: info.weave, generalThreadId: stored.generalThreadId, participant, token: stored.token, alreadyJoined: true };
+    // This response is built here rather than by the server's join, so it has to carry `guidelines`
+    // itself: a restored session takes this path and would otherwise never be told the rules.
+    return { weaveId, weave: info.weave, generalThreadId: stored.generalThreadId, participant, token: stored.token, guidelines: info.guidelines, alreadyJoined: true };
   }
   async lookupWeave(secret: string) { return { weaveId: await this.client.lookupWeave(secret) }; }
   getWeave(c: string, weaveId: string) { return this.as(c).getWeave(weaveId); }
@@ -113,4 +115,7 @@ export class ClientToolBackend implements LoomToolBackend {
   keeperAgentsList(c: string) { return this.as(c).admin.listAgents(); }
   keeperAgentsAdd(c: string, name: string) { return this.as(c).admin.addAgent(name); }
   keeperAgentsRevoke(c: string, id: string) { return this.as(c).admin.revokeAgent(id); }
+  setWeaveGuidelines(c: string, w: string, g: string) { return this.as(c).setWeaveGuidelines(w, g); }
+  getInstanceGuidelines() { return this.client.getInstanceGuidelines(); }
+  async getGuidelines(c: string, w: string) { return (await this.as(c).getWeave(w)).guidelines; }
 }

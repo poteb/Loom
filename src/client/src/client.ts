@@ -24,8 +24,8 @@ export class LoomClient {
     return c;
   }
 
-  private call<T>(method: string, path: string, body?: unknown, accept: "json" | "text" = "json"): Promise<T> {
-    return request<T>({ method, url: `${this.baseUrl}${path}`, token: this.token, body, fetchImpl: this.fetchImpl, accept });
+  private call<T>(method: string, path: string, body?: unknown, accept: "json" | "text" = "json", signal?: AbortSignal): Promise<T> {
+    return request<T>({ method, url: `${this.baseUrl}${path}`, token: this.token, body, fetchImpl: this.fetchImpl, accept, signal });
   }
 
   createWeave(input: CreateWeaveInput): Promise<CreateWeaveResult> {
@@ -35,8 +35,10 @@ export class LoomClient {
   joinWeave(secret: string, who: { name?: string; kind: Kind }): Promise<JoinResult> {
     return this.call("POST", `/api/weaves/${encodeURIComponent(secret)}/join`, who);
   }
-  getWeave(weaveId: string): Promise<WeaveInfo> {
-    return this.call("GET", `/api/weaves/${weaveId}`);
+  /** `signal` bounds the call: a caller fanning this out over many Weaves (the channel's
+   *  `list_joined`) needs one stalled server to give up rather than hold the whole answer. */
+  getWeave(weaveId: string, opts: { signal?: AbortSignal } = {}): Promise<WeaveInfo> {
+    return this.call("GET", `/api/weaves/${weaveId}`, undefined, "json", opts.signal);
   }
   async lookupWeave(secret: string): Promise<string> {
     const r = await this.call<{ weaveId: string }>("GET", `/api/weaves/${encodeURIComponent(secret)}/lookup`);
@@ -84,6 +86,15 @@ export class LoomClient {
   }
   exportWeave(weaveId: string, format: "md" | "json"): Promise<string> {
     return this.call("GET", `/api/weaves/${weaveId}/export?format=${format}`, undefined, "text");
+  }
+  /** Public on the server: no credential is needed, so this answers before the caller holds one. */
+  getInstanceGuidelines(opts: { signal?: AbortSignal } = {}): Promise<string> {
+    return request<{ guidelines: string }>({ method: "GET", url: `${this.baseUrl}/api/guidelines`, fetchImpl: this.fetchImpl, signal: opts.signal })
+      .then((r) => r.guidelines);
+  }
+  /** Weave keepers only. `seq` is null when the text already matched: nothing was appended. */
+  setWeaveGuidelines(weaveId: string, guidelines: string): Promise<{ weave: Weave; seq: number | null }> {
+    return this.call("PUT", `/api/weaves/${weaveId}/guidelines`, { guidelines });
   }
   async wsTicket(): Promise<string> {
     const r = await this.call<{ ticket: string }>("POST", "/api/auth/ws-ticket");

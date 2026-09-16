@@ -1,3 +1,3 @@
 export * from "./backend.js";
 export { ok, fail, toToolResult } from "./result.js";
-export { registerLoomTools, LOOM_TOOL_NAMES, type RegisterOptions } from "./tools.js";
+export { registerLoomTools, LOOM_TOOL_NAMES, LOOM_RESOURCE_URIS, READ_GUIDELINES, type RegisterOptions } from "./tools.js";
