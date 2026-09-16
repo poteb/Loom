@@ -117,6 +117,11 @@ describe("weaves", () => {
     const badEvents = await api(s.baseUrl, "GET", "/api/weaves/not-a-uuid/events", undefined, KEEPER);
     expect(badEvents.status).toBe(404); expect(badEvents.json.code).toBe("weave_not_found");
 
+    // The `thread` filter carries a type only: core's guard owns the uuid rule, so REST answers
+    // exactly what MCP answers for a malformed thread id rather than 400 from the route schema.
+    const badFilter = await api(s.baseUrl, "GET", `/api/weaves/${a.json.weave.id}/events?thread=not-a-uuid`, undefined, a.json.token);
+    expect(badFilter.status).toBe(404); expect(badFilter.json.code).toBe("thread_not_found");
+
     const msg = await api(s.baseUrl, "POST", "/api/threads/not-a-uuid/messages", { text: "hi" }, a.json.token);
     expect(msg.status).toBe(404); expect(msg.json.code).toBe("thread_not_found");
 

@@ -41,7 +41,7 @@ export function weaveRoutes(core: Core) {
     // are an acceptable page (so MCP, which has no schema-level bounds, answers identically).
     const q = z.object({
       since: z.coerce.number().optional(),
-      thread: z.string().uuid().optional(),
+      thread: z.string().optional(),
       limit: z.coerce.number().optional(),
     }).safeParse(c.req.query());
     if (!q.success) throw errors.validation("Invalid query parameters");
