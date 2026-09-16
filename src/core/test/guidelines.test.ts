@@ -6,6 +6,7 @@ import { MAX_GUIDELINES_LENGTH, validateGuidelines, guidelinesFor, getInstanceGu
 import { EventBus } from "../src/bus.js";
 import { archiveWeave, createWeave, getWeave, joinWeave } from "../src/weaves.js";
 import { setRole } from "../src/participants.js";
+import { addAgent } from "../src/agents.js";
 import { readEvents } from "../src/events.js";
 import { getSettings, updateSettings } from "../src/settings.js";
 import { seedKeepers } from "../src/keepers.js";
@@ -151,6 +152,50 @@ describe("setWeaveGuidelines", () => {
     const last = (await readEvents(db, c.weave.id, {})).at(-1)!;
     expect(last).toMatchObject({ type: "participant.joined", seq: 5 });
     expect(joined.weave.lastSeq).toBe(last.seq);
+  });
+
+  it("a join that loses the first-join race answers with the rules current at that moment", async () => {
+    const c = await createWeave(db, bus, { title: "Race2", opener: "o", creator: { name: "Paw", kind: "human" } });
+    const owner = await resolveCredential(db, c.token);
+    await seedKeepers(db, [keeperToken("ik2")]);
+    const { key } = await addAgent(db, await resolveCredential(db, keeperToken("ik2")), "Twin");
+    const agentActor = await resolveCredential(db, key);
+    // The window the collision path really opens in: this call finds no participant of its own, so
+    // it heads for the insert, and by the time it gets there a concurrent first join by the same
+    // agent has won the unique index and a keeper has rewritten the rules. The loser adopts the
+    // winner's identity -- and must describe the Weave as it is when it answers, not as the
+    // pre-lock read left it.
+    const lost = await joinWeave(db, bus, c.secret, { kind: "agent" }, agentActor, {
+      beforeLock: async () => {
+        await joinWeave(db, bus, c.secret, { kind: "agent" }, agentActor);
+        await setWeaveGuidelines(db, bus, owner, c.weave.id, "New rules");
+      },
+    });
+    expect(lost.alreadyJoined).toBe(true);
+    expect(lost.weave.guidelines).toBe("New rules");
+    expect(lost.guidelines).toBe(guidelinesFor(DEFAULT_INSTANCE_GUIDELINES, { guidelines: "New rules" }));
+    // createWeave's three events, the winner's join (4) and the guidelines change (5); this call
+    // appends nothing, so the Weave it reports is the Weave as of seq 5.
+    const last = (await readEvents(db, c.weave.id, {})).at(-1)!;
+    expect(last).toMatchObject({ type: "weave.guidelines_changed", seq: 5 });
+    expect(lost.weave.lastSeq).toBe(last.seq);
+  });
+
+  it("a second join by an agent that already has a participant carries the rules as they stand now", async () => {
+    const c = await createWeave(db, bus, { title: "Again", opener: "o", creator: { name: "Paw", kind: "human" } });
+    const owner = await resolveCredential(db, c.token);
+    await seedKeepers(db, [keeperToken("ik3")]);
+    const { key } = await addAgent(db, await resolveCredential(db, keeperToken("ik3")), "Solo");
+    const agentActor = await resolveCredential(db, key);
+    const first = await joinWeave(db, bus, c.secret, { kind: "agent" }, agentActor);
+    expect(first.alreadyJoined).toBeUndefined();
+    await setWeaveGuidelines(db, bus, owner, c.weave.id, "Newer rules");
+    const again = await joinWeave(db, bus, c.secret, { kind: "agent" }, agentActor);
+    expect(again.alreadyJoined).toBe(true);
+    expect(again.participant.id).toBe(first.participant.id);
+    expect(again.weave.guidelines).toBe("Newer rules");
+    expect(again.guidelines).toBe(guidelinesFor(DEFAULT_INSTANCE_GUIDELINES, { guidelines: "Newer rules" }));
+    expect(again.weave.lastSeq).toBe((await readEvents(db, c.weave.id, {})).at(-1)!.seq);
   });
 
   it("create with guidelines stores them without an event; create/join/get carry the combined text", async () => {

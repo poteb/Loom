@@ -118,7 +118,6 @@ export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { na
   if (!found) throw errors.weaveNotFound();
   const [general] = await db.select().from(threads).where(eq(threads.weaveId, found.id)).orderBy(asc(threads.createdAt)).limit(1);
   if (!general) throw errors.weaveNotFound();
-  // Read once: both return paths below hand back the same combined text.
   const instance = await getInstanceGuidelines(db);
   const agentId = actor?.kind === "agent" ? actor.agent.id : null;
   // The participant this agent already owns here, read raw: the caller needs its token, so
@@ -129,14 +128,23 @@ export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { na
       .where(and(eq(participants.agentId, agentId), eq(participants.weaveId, found.id))).limit(1);
     return mine;
   };
-  const asAlreadyJoined = (p: typeof participants.$inferSelect): JoinResult => ({
-    weaveId: found.id, weave: toPublicWeave(found), generalThreadId: general.id,
-    participant: toPublicParticipant(p), token: p.token, alreadyJoined: true,
-    guidelines: guidelinesFor(instance, found),
-  });
+  // Both layers are re-read here rather than reused from above: `found` and `instance` were read
+  // before the lookup -- and, on the collision path below, before a competing join committed -- so
+  // a keeper's setWeaveGuidelines landing in that window would otherwise hand this caller the rules
+  // of a moment earlier. No lock is needed: these paths append no event, so what is owed is an
+  // answer current as of the moment it is given, not atomicity with a write.
+  const asAlreadyJoined = async (p: typeof participants.$inferSelect): Promise<JoinResult> => {
+    const [w] = await db.select().from(weaves).where(eq(weaves.id, found.id));
+    if (!w) throw errors.weaveNotFound();
+    return {
+      weaveId: w.id, weave: toPublicWeave(w), generalThreadId: general.id,
+      participant: toPublicParticipant(p), token: p.token, alreadyJoined: true,
+      guidelines: guidelinesFor(await getInstanceGuidelines(db), w),
+    };
+  };
   // An agent owns at most one participant per Weave: joining again is a lookup, not a new identity.
   const existing = await myParticipant();
-  if (existing) return asAlreadyJoined(existing);
+  if (existing) return await asAlreadyJoined(existing);
   if (opts.beforeLock) await opts.beforeLock();
   const token = newSecret();
   const participantId = newId();
@@ -167,7 +175,7 @@ export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { na
     // name finds no owned participant and falls through to name_taken below.
     if (agentId && (isAgentAlreadyJoinedViolation(e) || isNameTakenViolation(e))) {
       const winner = await myParticipant();
-      if (winner) return asAlreadyJoined(winner);
+      if (winner) return await asAlreadyJoined(winner);
     }
     if (isNameTakenViolation(e)) throw errors.nameTaken(name);
     throw e;
