@@ -57,6 +57,36 @@ export async function withWeaveLock<T>(
   return result;
 }
 
+/**
+ * The two-Weave variant of `withWeaveLock`: locks each row **in the given order**, runs `fn`, then
+ * appends each Weave's events (keyed by weave id) in that same order and publishes after commit.
+ *
+ * The order is the deadlock discipline, not a detail: every flow that needs both rows takes them
+ * Lobby first, then target, and flows that need one row take only that one, so no cycle exists.
+ * Two ids naming the same Weave would take the same row twice and are refused rather than risked.
+ */
+export async function withWeaveLocks<T>(
+  db: Db, bus: EventBus, weaveIds: [string, string],
+  fn: (tx: Tx, weavesById: Record<string, WeaveRow>) => Promise<{ result: T; events: Record<string, NewEvent[]> }>,
+): Promise<T> {
+  for (const id of weaveIds) if (!isUuid(id)) throw errors.weaveNotFound();
+  if (weaveIds[0] === weaveIds[1]) throw errors.validation("withWeaveLocks needs two distinct Weaves");
+  const { result, committed } = await db.transaction(async (tx) => {
+    const byId: Record<string, WeaveRow> = {};
+    for (const id of weaveIds) {
+      const [weave] = await tx.select().from(weaves).where(eq(weaves.id, id)).for("update");
+      if (!weave) throw errors.weaveNotFound();
+      byId[id] = weave;
+    }
+    const out = await fn(tx, byId);
+    const committed: LoomEvent[] = [];
+    for (const id of weaveIds) committed.push(...await appendInTx(tx, byId[id]!, out.events[id] ?? []));
+    return { result: out.result, committed };
+  });
+  for (const e of committed) bus.publish(e);
+  return result;
+}
+
 export async function readEvents(
   db: Queryable, weaveId: string, opts: { since?: number; threadId?: string; limit?: number },
 ): Promise<LoomEvent[]> {

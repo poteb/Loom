@@ -17,6 +17,7 @@ import { getSettings, updateSettings } from "./settings.js";
 import { getInstanceGuidelines, setWeaveGuidelines } from "./guidelines.js";
 import * as lobby from "./lobby/lobby.js";
 import { findAgents, setCapabilities, type AgentFilter } from "./lobby/profile.js";
+import * as requests from "./lobby/requests.js";
 import * as keepers from "./keepers.js";
 import * as agentsMod from "./agents.js";
 import type { Actor, Kind, Role, Settings } from "./types.js";
@@ -73,6 +74,22 @@ export function createCore(db: Db) {
     setCapabilities: async (actor: Actor, profile: unknown | null) =>
       setCapabilities(db, bus, await resolveInLobby(actor), profile),
     findAgents: async (actor: Actor, filter: AgentFilter) => findAgents(db, await resolveInLobby(actor), filter),
+    // Two credentials, resolved before anything is authorized: the Lobby identity in the Lobby, the
+    // target authority in the target Weave. An agent key is one actor everywhere, so it stands for
+    // both when the caller gives no separate target credential.
+    openRequest: async (actor: Actor, targetActor: Actor | undefined, input: requests.OpenRequestInput) =>
+      requests.openRequest(db, bus, await resolveInLobby(actor),
+        await resolveInWeave(db, targetActor ?? actor, input.targetWeaveId), input),
+    offer: async (actor: Actor, requestId: string, input: { model?: string; effort?: string; note?: string }) =>
+      requests.offer(db, bus, await resolveInLobby(actor), requestId, input),
+    acceptRequest: async (actor: Actor, requestId: string, participantIds: string[]) =>
+      requests.accept(db, bus, await resolveInLobby(actor), requestId, participantIds),
+    cancelRequest: async (actor: Actor, requestId: string) =>
+      requests.cancelRequest(db, bus, await resolveInLobby(actor), requestId),
+    getRequest: async (actor: Actor, requestId: string) => requests.getRequest(db, await resolveInLobby(actor), requestId),
+    listRequests: async (actor: Actor, opts: { status?: requests.RequestStatus } = {}) =>
+      requests.listRequests(db, await resolveInLobby(actor), opts),
+    sweepRequests: (now?: Date) => requests.sweepRequests(db, bus, now),
     seedKeepers: (tokens: string[]) => keepers.seedKeepers(db, tokens),
     listKeepers: (actor: Actor) => keepers.listKeepers(db, actor),
     addKeeper: (actor: Actor, name: string) => keepers.addKeeper(db, actor, name),
@@ -97,4 +114,5 @@ export type { PublicKeeper, SeedKeepersResult } from "./keepers.js";
 export type { Lobby } from "./lobby/lobby.js";
 export { validateProfile, MAX_PROFILE_LENGTH, type AgentFilter, type FoundAgent } from "./lobby/profile.js";
 export { validateRequirements, matches, admits, eligible, type Profile, type ModelSpec, type Requirements } from "./lobby/matching.js";
+export { computedStatus, type PublicRequest, type PublicOffer, type OpenRequestInput, type RequestStatus, type CloseReason, type AcceptOptions } from "./lobby/requests.js";
 export type * from "./types.js";
