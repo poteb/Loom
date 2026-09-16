@@ -180,21 +180,30 @@ export class StreamManager {
         this.scheduleRestart(weaveId, entry);
       });
     };
-    void refresh().catch((err) => {
+    // This session's own cursor (resume replays exactly what *it* missed), or the machine-wide
+    // watermark for a session that has never listened to this Weave — persisted either way, so a
+    // session that receives nothing still resumes from where it started listening.
+    //
+    // Pinned *before* the first getWeave, not after it: the watermark is shared by every session on
+    // the machine, so if this attempt fails and a sibling session delivers events while we back off,
+    // a retry that only then consulted the watermark would adopt the sibling's progress and skip
+    // everything waiting behind it. ensureCursor writes the starting point once and returns that
+    // same number to every later call, so the retry resumes from where this session meant to start.
+    // It moves no watermark and delivers nothing, so the precondition below still holds.
+    void this.state.ensureCursor(weaveId).then(async (pinned) => {
+      await refresh();
+      return pinned;
+    }).catch((err) => {
       // The metadata carries the guidelines this session's first turn must open with, so it is a
       // precondition rather than a nicety: open no stream and leave the cursor where it is, so the
       // events waiting behind it are still there when a getWeave finally succeeds.
-      if (entry.stopped) return;
+      if (entry.stopped) return undefined;
       entry.stopped = true;
       this.log(`initial metadata fetch failed for weave ${weaveId}: ${(err as Error).message}`);
       this.scheduleRestart(weaveId, entry);
-    }).then(async () => {
-      if (entry.stopped) return;
-      // This session's own cursor (resume replays exactly what *it* missed), or the machine-wide
-      // watermark for a session that has never listened to this Weave — persisted either way, so a
-      // session that receives nothing still resumes from where it started listening.
-      const since = await this.state.ensureCursor(weaveId);
-      if (entry.stopped) return;
+      return undefined;
+    }).then((since) => {
+      if (entry.stopped || since === undefined) return;
       const handle = reader.stream(weaveId, {
         since,
         onEvent,

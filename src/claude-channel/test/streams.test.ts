@@ -42,8 +42,10 @@ function event(seq: number, over: Partial<LoomEvent> = {}): LoomEvent {
 type Captured = { weaveId: string; opts: StreamOptions; close: ReturnType<typeof vi.fn> };
 
 /** `guidelines` is read on every getWeave, so a test can change what the metadata says mid-run;
- * `failTimes` rejects that many leading getWeave calls, standing in for a Loom that is down. */
-function makeFakeClient(opts: { guidelines?: () => string; failTimes?: number } = {}): { client: LoomClient; streams: Captured[]; getWeaveCalls: () => number } {
+ * `failTimes` rejects that many leading getWeave calls, standing in for a Loom that is down.
+ * `onGetWeave` is awaited at the top of each call (numbered from 1), so a test that needs a
+ * particular ordering around a retry can hold the call open instead of racing the backoff timer. */
+function makeFakeClient(opts: { guidelines?: () => string; failTimes?: number; onGetWeave?: (call: number) => Promise<void> | void } = {}): { client: LoomClient; streams: Captured[]; getWeaveCalls: () => number } {
   const streams: Captured[] = [];
   let calls = 0;
   let failsLeft = opts.failTimes ?? 0;
@@ -51,6 +53,7 @@ function makeFakeClient(opts: { guidelines?: () => string; failTimes?: number } 
     withToken: () => fake,
     getWeave: async () => {
       calls += 1;
+      await opts.onGetWeave?.(calls);
       if (failsLeft > 0) { failsLeft -= 1; throw new Error("metadata down"); }
       return weaveInfo([], opts.guidelines?.() ?? "");
     },
@@ -84,6 +87,46 @@ describe("StreamManager", () => {
     expect(streams[0]!.opts.since).toBe(7);
     expect(new ChannelState(seed.dir, "s1").cursor(WEAVE_ID)).toBe(7); // persisted, not just in memory
     sm.closeAll();
+  });
+
+  it("pins a new session's cursor before the first metadata fetch, so a retry does not adopt a sibling's watermark", async () => {
+    // One machine, one state directory, two sessions. s2 has never listened to this Weave, so its
+    // starting point can only come from the watermark -- and the watermark is machine-wide.
+    const seed = await makeState(makeWeave(), "s0");   // joined by an earlier session; watermark 3
+    const s1 = new ChannelState(seed.dir, "s1");
+    const s2 = new ChannelState(seed.dir, "s2");
+
+    let release = () => {};
+    const retryGate = new Promise<void>((r) => { release = r; });
+    // s2's first getWeave fails; its retry is held open until s1 has moved the watermark, which is
+    // the window the bug lived in -- no timer race, the ordering is forced.
+    const two = makeFakeClient({ failTimes: 1, onGetWeave: (call) => (call === 2 ? retryGate : undefined) });
+    const got2: { content: string; meta: Record<string, string> }[] = [];
+    const sm2 = new StreamManager(two.client, s2, async (p) => { got2.push(p); }, () => {}, { initial: 30, max: 60 });
+    sm2.start(WEAVE_ID, s2.get().weaves[WEAVE_ID]!);
+    await waitFor(() => two.getWeaveCalls() === 2);     // first attempt failed, retry is in flight
+    expect(two.streams).toHaveLength(0);                // no stream and no delivery before metadata succeeds
+    expect(got2).toHaveLength(0);
+    expect(s2.load().weaves[WEAVE_ID]?.lastSeq).toBe(3);
+
+    // Meanwhile a sibling session on the same machine delivers 4 and 5, advancing the watermark.
+    const one = makeFakeClient();
+    const sm1 = new StreamManager(one.client, s1, async () => {}, () => {});
+    sm1.start(WEAVE_ID, s1.get().weaves[WEAVE_ID]!);
+    await waitFor(() => one.streams.length === 1);
+    one.streams[0]!.opts.onEvent(event(4));
+    one.streams[0]!.opts.onEvent(event(5));
+    await waitFor(() => s1.load().weaves[WEAVE_ID]?.lastSeq === 5);
+    sm1.closeAll();
+
+    release();
+    await waitFor(() => two.streams.length === 1);
+    expect(two.streams[0]!.opts.since).toBe(3);         // 4 and 5 are still s2's to receive
+    expect(new ChannelState(seed.dir, "s2").cursor(WEAVE_ID)).toBe(3);   // and stay unread until it delivers them
+    two.streams[0]!.opts.onEvent(event(4));
+    await waitFor(() => got2.length === 1);
+    expect(new ChannelState(seed.dir, "s2").cursor(WEAVE_ID)).toBe(4);
+    sm2.closeAll();
   });
 
   it("opens the stream from this session's own cursor, not the machine-wide watermark", async () => {
