@@ -7,7 +7,11 @@ import { DEFAULT_INSTANCE_GUIDELINES } from "@loom/core";
 
 let s: TestServer;
 let anon: LoomClient;
-beforeAll(async () => { s = await startTestServer(); anon = new LoomClient({ baseUrl: s.baseUrl, allowInsecure: true }); });
+beforeAll(async () => {
+  s = await startTestServer();
+  anon = new LoomClient({ baseUrl: s.baseUrl, allowInsecure: true });
+  await s.core.ensureLobby();
+});
 afterAll(async () => { await s.close(); });
 
 function waitFor(pred: () => boolean, ms = 5000): Promise<void> {
@@ -728,5 +732,126 @@ describe("session guidelines", () => {
     expect([...new Set(panel)]).toEqual([""]);
     expect(session.getState().weave?.guidelines).toBe("");
     session.dispose();
+  });
+});
+
+/** The Lobby's own secret — the browser's read credential for `/w/<secret>` — is not exposed over HTTP. */
+async function lobbySecret(): Promise<string> {
+  const { weaveId } = await s.core.getLobby();
+  const rows = await s.core.db.$client.unsafe("select secret from weaves where id = $1", [weaveId] as never) as unknown as { secret: string }[];
+  return rows[0]!.secret;
+}
+
+/** Names and owners are shared across the one Lobby, so every fixture takes a fresh one. */
+let fixtureN = 0;
+const MODEL = { model: "gpt-5.6-sol", effort: "high" };
+
+/**
+ * A Lobby with a requester, an eligible helper and a target Weave the requester keeps: enough for a
+ * request to be opened, offered on, accepted and cancelled.
+ */
+async function lobbyFixture() {
+  const n = ++fixtureN;
+  const requester = await anon.joinLobby({ name: `Paw-${n}`, kind: "human" });
+  const helper = await anon.joinLobby({ name: `Helper-${n}`, kind: "agent" });
+  // `serves: "anyone"` because the requester declares no owner, and only that policy admits "".
+  await anon.withToken(helper.token).setCapabilities({ models: [MODEL], tools: [], serves: "anyone", owner: `bob-${n}` });
+  const target = await anon.createWeave({ title: `Target ${n}`, opener: "hello", creator: { name: "Paw", kind: "human" } });
+  const open = () => anon.withToken(requester.token).openRequest({
+    title: `Review PR ${n}`, requirements: { models: [MODEL] }, wanted: 2, timeoutMs: 3_600_000,
+    targetWeaveId: target.weave.id, targetThreadId: target.generalThread.id, targetCredential: target.token,
+  });
+  const storage = memoryStorage();
+  const secret = await lobbySecret();
+  storage.set(`loom:${secret}`, JSON.stringify({ token: requester.token, participantId: requester.participant.id }));
+  storage.set(`loom:${target.secret}`, JSON.stringify({ token: target.token, participantId: target.participant.id }));
+  return { secret, storage, requester, helper, target, open };
+}
+
+describe("session requests", () => {
+  it("on the Lobby, load() records the pointer and every request at its own version", async () => {
+    const f = await lobbyFixture();
+    const r = await f.open();
+    const session = await makeSession(f.secret, f.storage);
+    try {
+      expect(session.getState().lobby?.weaveId).toBe((await s.core.getLobby()).weaveId);
+      expect(session.getState().requests[r.id]?.version).toBe(r.lastEventSeq);
+      expect(session.getState().requests[r.id]?.eligible).toContain(f.helper.participant.id);
+    } finally { session.dispose(); }
+  });
+
+  it("a live offer event updates the request it names", async () => {
+    const f = await lobbyFixture();
+    const r = await f.open();
+    const session = await makeSession(f.secret, f.storage);
+    try {
+      await waitFor(() => session.getState().connection === "open");
+      await anon.withToken(f.helper.token).offer(r.id, { model: MODEL.model, effort: MODEL.effort, note: "ready" });
+      await waitFor(() => (session.getState().requests[r.id]?.offers.length ?? 0) === 1);
+      const held = session.getState().requests[r.id]!;
+      expect(held.offers[0]!.participantId).toBe(f.helper.participant.id);
+      expect(held.version).toBeGreaterThan(r.lastEventSeq);
+    } finally { session.dispose(); }
+  });
+
+  it("accept() applies the snapshot it gets back", async () => {
+    const f = await lobbyFixture();
+    const r = await f.open();
+    await anon.withToken(f.helper.token).offer(r.id, { model: MODEL.model, effort: MODEL.effort });
+    const session = await makeSession(f.secret, f.storage);
+    try {
+      await session.accept(r.id, [f.helper.participant.id]);
+      const held = session.getState().requests[r.id]!;
+      expect(held.offers.filter((o) => o.accepted).map((o) => o.participantId)).toEqual([f.helper.participant.id]);
+      expect(held.version).toBeGreaterThan(r.lastEventSeq);
+    } finally { session.dispose(); }
+  });
+
+  it("openRequest() adds the new request, and cancel() closes it", async () => {
+    const f = await lobbyFixture();
+    const session = await makeSession(f.secret, f.storage);
+    try {
+      const r = await session.openRequest({
+        title: "From the browser", requirements: { models: [MODEL] }, wanted: 1, timeoutMs: 3_600_000,
+        targetWeaveId: f.target.weave.id, targetThreadId: f.target.generalThread.id, targetCredential: f.target.token,
+      });
+      expect(session.getState().requests[r.id]?.status).toBe("open");
+      await session.cancel(r.id);
+      expect(session.getState().requests[r.id]?.status).toBe("cancelled");
+    } finally { session.dispose(); }
+  });
+
+  it("offer() records the offer it just made", async () => {
+    const f = await lobbyFixture();
+    const r = await f.open();
+    const storage = memoryStorage();
+    storage.set(`loom:${f.secret}`, JSON.stringify({ token: f.helper.token, participantId: f.helper.participant.id }));
+    const session = await makeSession(f.secret, storage);
+    try {
+      await session.offer(r.id, { model: MODEL.model, effort: MODEL.effort, note: "can start now" });
+      const held = session.getState().requests[r.id]!;
+      expect(held.offers.map((o) => [o.participantId, o.note])).toEqual([[f.helper.participant.id, "can start now"]]);
+    } finally { session.dispose(); }
+  });
+
+  it("a Weave that is not the Lobby carries no requests", async () => {
+    const f = await lobbyFixture();
+    await f.open();
+    const session = await makeSession(f.target.secret, f.storage);
+    try {
+      expect(session.getState().weave?.id).not.toBe(session.getState().lobby?.weaveId);
+      expect(session.getState().requests).toEqual({});
+    } finally { session.dispose(); }
+  });
+
+  it("targets() offers the Weaves this browser holds a token for, never the Lobby", async () => {
+    const f = await lobbyFixture();
+    const session = await makeSession(f.secret, f.storage);
+    try {
+      const targets = await session.targets();
+      expect(targets.map((t) => t.weaveId)).toEqual([f.target.weave.id]);
+      expect(targets[0]!.threads.map((t) => t.id)).toEqual([f.target.generalThread.id]);
+      expect(targets[0]!.token).toBe(f.target.token);
+    } finally { session.dispose(); }
   });
 });

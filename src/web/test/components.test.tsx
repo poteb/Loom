@@ -5,8 +5,12 @@ import { ThreadList } from "../src/components/ThreadList.js";
 import { MessageList } from "../src/components/MessageList.js";
 import { InviteBanner } from "../src/components/InviteBanner.js";
 import { GuidelinesPanel, GUIDELINES_MAX } from "../src/components/GuidelinesPanel.js";
+import { RequestsPanel } from "../src/components/RequestsPanel.js";
+import { ProfileCard } from "../src/components/ProfileCard.js";
 import { MAX_GUIDELINES_LENGTH } from "@loom/core";
+import type { Offer } from "@loom/client";
 import type { Session, SessionState } from "../src/session.js";
+import type { VersionedRequest } from "../src/requests-state.js";
 
 const me = { id: "p1", weaveId: "w1", name: "Paw", kind: "human" as const, role: "member" as const, joinedAt: "", agentId: null, capabilities: null };
 const bot = { id: "p2", weaveId: "w1", name: "Bot", kind: "agent" as const, role: "member" as const, joinedAt: "", agentId: "a1", capabilities: null };
@@ -16,12 +20,37 @@ const pr = { id: "t1", weaveId: "w1", name: "PR 12", isGeneral: false, createdBy
 function state(over: Partial<SessionState> = {}): SessionState {
   return { status: "ready", weave: { id: "w1", title: "W", createdAt: "", archivedAt: null, lastSeq: 3, guidelines: "" }, threads: [general, pr], participants: [me, bot],
     events: [], me: { participant: me, token: "t" }, currentThreadId: "g1", connection: "open", needsName: false, invitesForMe: new Set(), invited: {},
-    instanceGuidelines: "", ...over };
+    instanceGuidelines: "", requests: {}, ...over };
 }
 function session(over: Partial<Session> = {}): Session {
   return { getState: () => state(), subscribe: () => () => {}, load: async () => {}, join: async () => {}, selectThread: vi.fn(), post: async () => {},
     createThread: vi.fn(async () => {}), setThreadUrl: vi.fn(async () => {}), invite: vi.fn(async () => {}), closeThread: async () => {}, archive: async () => {}, setGuidelines: vi.fn(async () => {}),
-    canModerate: () => false, canEditThread: (t) => t.createdBy === "p1", markSeen: () => {}, dismissNamePrompt: () => {}, dispose: () => {}, ...over };
+    canModerate: () => false, canEditThread: (t) => t.createdBy === "p1", markSeen: () => {}, dismissNamePrompt: () => {}, dispose: () => {},
+    openRequest: vi.fn(async () => request()), offer: vi.fn(async () => {}), accept: vi.fn(async () => {}), cancel: vi.fn(async () => {}),
+    targets: vi.fn(async () => []), ...over };
+}
+
+// --- Lobby fixtures ---------------------------------------------------------
+const PROFILE = { models: [{ model: "gpt-5.6-sol", effort: "high" }, { model: "gpt-5.6-sol", effort: "low" }],
+  tools: ["github"], runtime: "codex", spawnsSubagents: true, owner: "bob", serves: "anyone" as const };
+const helper = { ...bot, name: "Helper", capabilities: PROFILE };
+const reqThread = { id: "th1", weaveId: "w1", name: "Review PR 14", isGeneral: false, createdBy: "p1", createdAt: "", closedAt: null, url: null };
+const NOW = Date.parse("2026-09-16T13:30:00.000Z");
+
+function request(over: Partial<VersionedRequest> = {}): VersionedRequest {
+  return { id: "r1", threadId: "th1", requesterId: "p1", owner: "paw",
+    requirements: { models: [{ model: "gpt-5.6-sol", effort: "high" }], tools: ["github"] }, wanted: 2,
+    targetWeaveId: "w2", targetWeaveTitle: "Loom session", targetThreadId: "t2", url: null,
+    status: "open", expiresAt: "2026-09-16T14:00:00.000Z", closedAt: null, lastEventSeq: 5, createdAt: "",
+    eligible: ["p2"], offers: [], version: 5, ...over };
+}
+const anOffer = (participantId: string, over: Partial<Offer> = {}): Offer =>
+  ({ requestId: "r1", participantId, model: "gpt-5.6-sol", effort: "high", note: "ready", accepted: false, createdAt: "", ...over });
+
+/** The Lobby page: `state.lobby` points at the Weave on screen. */
+function lobbyState(over: Partial<SessionState> = {}): SessionState {
+  return state({ lobby: { weaveId: "w1", title: "Lobby" }, threads: [general, reqThread], participants: [me, helper],
+    requests: { r1: request() }, ...over });
 }
 
 describe("ThreadList", () => {
@@ -110,6 +139,149 @@ describe("MessageList", () => {
     rerender(<MessageList state={state({ currentThreadId: "t1", events: [cleared] })} />);
     expect(screen.getByText(/Paw cleared the Weave guidelines/)).toBeTruthy();
     expect(container.querySelector(".system-body")).toBeNull();
+  });
+
+  it("renders every request event as one system line in the request Thread", () => {
+    const base = { weaveId: "w1", threadId: "th1", actor: "p1", at: new Date().toISOString() };
+    const events = [
+      { ...base, seq: 1, type: "request.opened" as const, payload: { requestId: "r1", requesterId: "p1", wanted: 2, expiresAt: "2026-09-16T14:00:00.000Z", owner: "paw", targetWeaveTitle: "Loom session", eligible: ["p2"] } },
+      { ...base, seq: 2, type: "request.offered" as const, actor: "p2", payload: { requestId: "r1", participantId: "p2", model: "gpt-5.6-sol", effort: "high", note: "ready", to: "p1" } },
+      { ...base, seq: 3, type: "request.accepted" as const, payload: { requestId: "r1", requesterId: "p1", participantIds: ["p2"], targetWeaveTitle: "Loom session" } },
+      { ...base, seq: 4, type: "weave.invited" as const, payload: { invitationId: "i1", participantId: "p2", targetWeaveTitle: "Loom session" } },
+      { ...base, seq: 5, type: "request.closed" as const, payload: { requestId: "r1", requesterId: "p1", to: ["p1"], reason: "filled", accepted: ["p2"] } },
+    ];
+    const { container } = render(<MessageList state={lobbyState({ currentThreadId: "th1", events })} />);
+    expect(container.querySelectorAll(".system")).toHaveLength(5);
+    expect(screen.getByText(/request "Review PR 14" opened by Paw: wants 2/)).toBeTruthy();
+    expect(screen.getByText(/Helper offered \(gpt-5\.6-sol\/high\): "ready"/)).toBeTruthy();
+    expect(screen.getByText(/Helper accepted for "Loom session"/)).toBeTruthy();
+    expect(screen.getByText(/Helper invited to "Loom session"/)).toBeTruthy();
+    expect(screen.getByText(/request filled: accepted Helper/)).toBeTruthy();
+  });
+});
+
+describe("RequestsPanel", () => {
+  const asHelper = (over: Partial<SessionState> = {}) => lobbyState({ me: { participant: helper, token: "t" }, ...over });
+
+  it("renders nothing on a Weave that is not the Lobby", () => {
+    const { container } = render(<RequestsPanel state={state()} session={session()} onError={() => {}} now={NOW} />);
+    expect(container.innerHTML).toBe("");
+  });
+
+  it("lists an open request with its title, requirements, accepted count, countdown and offers", () => {
+    const st = lobbyState({ requests: { r1: request({ offers: [anOffer("p2")] }) } });
+    const { container } = render(<RequestsPanel state={st} session={session()} onError={() => {}} now={NOW} />);
+    expect(screen.getByText("Review PR 14")).toBeTruthy();
+    expect(container.querySelector(".req-needs")!.textContent).toBe("gpt-5.6-sol/high · github");
+    expect(screen.getByText("0 of 2 accepted")).toBeTruthy();
+    expect(screen.getByText("30m left")).toBeTruthy();
+    expect(screen.getByText(/Helper \(gpt-5\.6-sol\/high\): "ready"/)).toBeTruthy();
+  });
+
+  it("collapses filled, expired and cancelled requests below the open ones", () => {
+    const st = lobbyState({
+      threads: [general, reqThread, { ...reqThread, id: "th2", name: "Old ask" }],
+      requests: { r1: request(), r2: request({ id: "r2", threadId: "th2", status: "cancelled", closedAt: "2026-09-16T13:00:00.000Z", version: 9 }) },
+    });
+    const { container } = render(<RequestsPanel state={st} session={session()} onError={() => {}} now={NOW} />);
+    expect(container.querySelectorAll(".request-list > li")).toHaveLength(1);
+    const details = container.querySelector("details.closed-requests") as HTMLDetailsElement;
+    expect(details.open).toBe(false);
+    expect(details.querySelector("summary")!.textContent).toBe("Closed (1)");
+    expect(details.textContent).toContain("Old ask");
+    expect(details.textContent).toContain("cancelled");
+  });
+
+  it("shows an open request past its deadline as expired before any closure arrives", () => {
+    const st = lobbyState({ requests: { r1: request() } });
+    render(<RequestsPanel state={st} session={session()} onError={() => {}} now={Date.parse("2026-09-16T14:00:01.000Z")} />);
+    expect(screen.getByText("expired")).toBeTruthy();
+    expect(screen.queryByText(/left$/)).toBeNull();
+  });
+
+  it("greys every Accept once `wanted` acceptances are in", () => {
+    const offers = [anOffer("p2", { accepted: true }), anOffer("p3")];
+    const others = [me, helper, { ...helper, id: "p3", name: "Other" }];
+    const open = lobbyState({ participants: others, requests: { r1: request({ wanted: 2, offers }) } });
+    const { rerender } = render(<RequestsPanel state={open} session={session()} onError={() => {}} now={NOW} />);
+    expect((screen.getByRole("button", { name: "accept Other" }) as HTMLButtonElement).disabled).toBe(false);
+    const full = lobbyState({ participants: others, requests: { r1: request({ wanted: 1, offers }) } });
+    rerender(<RequestsPanel state={full} session={session()} onError={() => {}} now={NOW} />);
+    expect((screen.getByRole("button", { name: "accept Other" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("accepts an offer through the session", async () => {
+    const sn = session();
+    render(<RequestsPanel state={lobbyState({ requests: { r1: request({ offers: [anOffer("p2")] }) } })} session={sn} onError={() => {}} now={NOW} />);
+    fireEvent.click(screen.getByRole("button", { name: "accept Helper" }));
+    await Promise.resolve();
+    expect(sn.accept).toHaveBeenCalledWith("r1", ["p2"]);
+  });
+
+  it("shows Cancel to the requester and to nobody else", () => {
+    const sn = session();
+    const { rerender } = render(<RequestsPanel state={lobbyState()} session={sn} onError={() => {}} now={NOW} />);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(sn.cancel).toHaveBeenCalledWith("r1");
+    rerender(<RequestsPanel state={asHelper()} session={sn} onError={() => {}} now={NOW} />);
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+  });
+
+  it("offers the Offer form only to an eligible participant with a profile in this browser", () => {
+    const { rerender } = render(<RequestsPanel state={asHelper()} session={session()} onError={() => {}} now={NOW} />);
+    expect(screen.getByLabelText("Model")).toBeTruthy();
+    // Eligible, but this browser holds no profile for it: nothing to offer with.
+    rerender(<RequestsPanel state={asHelper({ me: { participant: { ...helper, capabilities: null }, token: "t" } })} session={session()} onError={() => {}} now={NOW} />);
+    expect(screen.queryByLabelText("Model")).toBeNull();
+    // A profile, but not among the listeners the request was addressed to.
+    rerender(<RequestsPanel state={asHelper({ requests: { r1: request({ eligible: ["p9"] }) } })} session={session()} onError={() => {}} now={NOW} />);
+    expect(screen.queryByLabelText("Model")).toBeNull();
+  });
+
+  it("offers only the models the profile in this browser declares, and sends the chosen one with the note", async () => {
+    const sn = session();
+    render(<RequestsPanel state={asHelper()} session={sn} onError={() => {}} now={NOW} />);
+    const select = screen.getByLabelText("Model") as HTMLSelectElement;
+    expect([...select.options].map((o) => o.textContent)).toEqual(["gpt-5.6-sol/high", "gpt-5.6-sol/low"]);
+    fireEvent.change(select, { target: { value: "1" } });
+    fireEvent.input(screen.getByPlaceholderText("Note (optional)"), { target: { value: "can start now" } });
+    fireEvent.submit(select.closest("form")!);
+    await Promise.resolve();
+    expect(sn.offer).toHaveBeenCalledWith("r1", { model: "gpt-5.6-sol", effort: "low", note: "can start now" });
+  });
+
+  it("opens a request with the picked target Weave's own token as the target credential", async () => {
+    const sn = session({ targets: vi.fn(async () => [{ weaveId: "w2", title: "Loom session", token: "target-token", threads: [{ id: "t2", name: "PR 14" }] }]) });
+    render(<RequestsPanel state={lobbyState()} session={sn} onError={() => {}} now={NOW} />);
+    fireEvent.click(screen.getByRole("button", { name: "Open a request" }));
+    await screen.findByLabelText("Target Weave");
+    fireEvent.input(screen.getByPlaceholderText("What do you need?"), { target: { value: "Review PR 15" } });
+    fireEvent.input(screen.getByPlaceholderText("Model"), { target: { value: "claude-fable-5-1" } });
+    fireEvent.input(screen.getByPlaceholderText("Effort"), { target: { value: "high" } });
+    fireEvent.input(screen.getByPlaceholderText("Tools, comma separated"), { target: { value: "github, npm" } });
+    fireEvent.submit(screen.getByPlaceholderText("What do you need?").closest("form")!);
+    await Promise.resolve();
+    expect(sn.openRequest).toHaveBeenCalledWith({
+      title: "Review PR 15", requirements: { models: [{ model: "claude-fable-5-1", effort: "high" }], tools: ["github", "npm"] },
+      wanted: 1, timeoutMs: 3_600_000, targetWeaveId: "w2", targetThreadId: "t2", targetCredential: "target-token",
+    });
+  });
+});
+
+describe("ProfileCard", () => {
+  it("shows the models, tools, runtime, owner and serving policy", () => {
+    const { container } = render(<ProfileCard participant={helper} />);
+    expect(screen.getByText("Helper")).toBeTruthy();
+    expect(container.querySelector(".profile-models")!.textContent).toBe("gpt-5.6-sol/high, gpt-5.6-sol/low");
+    expect(container.querySelector(".profile-tools")!.textContent).toBe("github");
+    expect(container.querySelector(".profile-runtime")!.textContent).toBe("codex");
+    expect(container.querySelector(".profile-owner")!.textContent).toBe("bob");
+    expect(container.querySelector(".profile-serves")!.textContent).toBe("anyone");
+  });
+
+  it("renders nothing for a participant with no profile", () => {
+    const { container } = render(<ProfileCard participant={bot} />);
+    expect(container.innerHTML).toBe("");
   });
 });
 

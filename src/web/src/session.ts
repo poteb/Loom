@@ -1,5 +1,7 @@
-import { LoomClient, LoomClientError, type LoomEvent, type Participant, type StreamHandle, type Thread, type Weave } from "@loom/client";
-import type { KeyValueStorage } from "./storage.js";
+import { LoomClient, LoomClientError, type Lobby, type LoomEvent, type LoomRequest, type OpenRequestInput,
+  type Participant, type StreamHandle, type Thread, type Weave } from "@loom/client";
+import { storedWeaves, type KeyValueStorage } from "./storage.js";
+import { applyEvent, applySnapshot, isRequestEvent, type Requests } from "./requests-state.js";
 
 export type Connection = "connecting" | "open" | "reconnecting" | "closed";
 export type SessionState = {
@@ -17,7 +19,15 @@ export type SessionState = {
   invitesForMe: Set<string>;
   /** Everyone invited to each thread, so the invite list can show who is already in. */
   invited: Record<string, Set<string>>;
+  /** Where the instance's Lobby is; the requests panel belongs to that Weave's page alone. */
+  lobby?: Lobby;
+  /** The Lobby's requests, each at the version this session holds for it. Empty off the Lobby. */
+  requests: Requests;
 };
+
+/** A Weave this browser holds a token for: what an Open-request form's target pickers offer. */
+export type TargetWeave = { weaveId: string; title: string; token: string; threads: { id: string; name: string }[] };
+
 export type Session = {
   getState(): SessionState; subscribe(fn: () => void): () => void;
   load(): Promise<void>; join(name: string): Promise<void>; selectThread(id: string): void;
@@ -26,6 +36,12 @@ export type Session = {
   closeThread(id: string): Promise<void>; archive(): Promise<void>; setGuidelines(text: string): Promise<void>;
   canModerate(): boolean; canEditThread(t: Thread): boolean; markSeen(id: string): void;
   dismissNamePrompt(): void; dispose(): void;
+  // --- Lobby requests. Thin wrappers: each applies the snapshot it gets back through the watermark.
+  openRequest(input: OpenRequestInput): Promise<LoomRequest>;
+  offer(requestId: string, input: { model?: string; effort?: string; note?: string }): Promise<void>;
+  accept(requestId: string, participantIds: string[]): Promise<void>;
+  cancel(requestId: string): Promise<void>;
+  targets(): Promise<TargetWeave[]>;
 };
 
 const PAGE = 1000;
@@ -48,7 +64,7 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
   const retry = opts.retry ?? DEFAULT_RETRY;
   const key = `loom:${secret}`;
   let state: SessionState = { status: "loading", threads: [], participants: [], events: [], connection: "closed", needsName: false,
-    invitesForMe: new Set(), invited: {}, instanceGuidelines: "" };
+    invitesForMe: new Set(), invited: {}, instanceGuidelines: "", requests: {} };
   const listeners = new Set<() => void>();
   let weaveId: string | undefined;
   // How far the guidelines text in `state.weave` has been advanced, as a Weave seq. Guidelines are
@@ -85,13 +101,24 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
     if (!state.me) { set({ needsName: true }); throw new LoomClientError("no_identity", "Choose a name to take part"); }
     return client.withToken(state.me.token);
   };
+  /** True on the Lobby's own page: requests are read with this browser's Lobby credential. */
+  const onLobby = () => !!weaveId && state.lobby?.weaveId === weaveId;
+  /** Every snapshot goes through the watermark, so a stale answer can never move a request back. */
+  const applyRequests = (snaps: LoomRequest[]) => {
+    let next = state.requests;
+    for (const snap of snaps) next = applySnapshot(next, snap);
+    if (next !== state.requests) set({ requests: next });
+  };
+
   const refreshInfo = async () => {
     if (!weaveId) return;
-    // The instance text is not part of the Weave, so a failure to read it must not fail the refresh
-    // the rest of the UI depends on: keep what is on screen and try again on the next refresh.
-    const [info, instance] = await Promise.all([
+    // Neither the instance text nor the requests are part of the Weave, so a failure to read either
+    // must not fail the refresh the rest of the UI depends on: keep what is on screen and try again
+    // on the next refresh.
+    const [info, instance, requests] = await Promise.all([
       reader.getWeave(weaveId),
       client.getInstanceGuidelines().catch(() => state.instanceGuidelines),
+      onLobby() ? reader.listRequests().catch(() => null) : null,
     ]);
     // A snapshot that predates the last applied guidelines change keeps the text that change
     // delivered; one that is at least as new is authoritative and moves the watermark up.
@@ -107,6 +134,7 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
       me: state.me && info.participants.some((p) => p.id === state.me!.participant.id)
         ? { token: state.me.token, participant: info.participants.find((p) => p.id === state.me!.participant.id)! }
         : state.me });
+    if (requests) applyRequests(requests);
   };
 
   // Coalesced, retried refresh for events that arrive off the wire: a failed refresh is retried
@@ -162,6 +190,12 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
         set({ weave: { ...state.weave, guidelines: String(e.payload.guidelines ?? "") } });
       }
       scheduleRefresh();
+    } else if (isRequestEvent(e)) {
+      const requests = applyEvent(state.requests, e);
+      if (requests !== state.requests) set({ requests });
+      // A request this session has never seen (opened while it was away, or a refresh that has not
+      // landed yet): the event alone is not a whole row, so the refresh is what brings it in.
+      else if (!state.requests[String(e.payload.requestId ?? "")]) scheduleRefresh();
     } else if (e.type === "weave.archived") {
       if (state.weave) set({ weave: { ...state.weave, archivedAt: e.at } });
       // Also refresh: a refresh that started before the archive is still going to land with stale
@@ -201,9 +235,17 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
           if (page.length < PAGE) break;
           since = page.at(-1)!.seq;
         }
-        // The instance guidelines are public and independent of this Weave, so they are fetched
-        // alongside the metadata and a failure only costs the panel its instance section.
-        const [info, instance] = await Promise.all([reader.getWeave(id), client.getInstanceGuidelines().catch(() => "")]);
+        // The instance guidelines and the Lobby pointer are public and independent of this Weave, so
+        // they are fetched alongside the metadata and a failure only costs the panel its section.
+        const [info, instance, lobby] = await Promise.all([
+          reader.getWeave(id),
+          client.getInstanceGuidelines().catch(() => ""),
+          client.getLobby().catch(() => undefined),
+        ]);
+        if (stale()) return;
+        // Only the Lobby's own page has requests, and they are read with this browser's Lobby
+        // credential — the same secret the rest of the page is read with.
+        const requests = lobby?.weaveId === id ? await reader.listRequests().catch(() => []) : [];
         if (stale()) return;
         weaveId = id;
         guidelinesSeq = info.weave.lastSeq;
@@ -219,8 +261,11 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
         // The thread this load lands on is on screen, so an invite to it is not an unopened one.
         const first = info.threads.find((t) => t.isGeneral)?.id ?? info.threads[0]?.id;
         if (first) seenUpTo.set(first, maxSeq(events));
+        let held: Requests = {};
+        for (const snap of requests) held = applySnapshot(held, snap);
         set({ status: "ready", weave: info.weave, threads: info.threads, participants: info.participants, events, me,
-          instanceGuidelines: instance, currentThreadId: first, ...deriveInvites(events, me?.participant.id, seenUpTo) });
+          instanceGuidelines: instance, currentThreadId: first, lobby, requests: held,
+          ...deriveInvites(events, me?.participant.id, seenUpTo) });
         let sawOpen = false;
         const opened = reader.stream(id, {
           since: events.at(-1)?.seq ?? 0,
@@ -324,6 +369,45 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
         set({ weave: { ...state.weave, guidelines: r.weave.guidelines } });
       }
       scheduleRefresh();
+    },
+    // --- Lobby requests. Each mutation is already committed server-side when it answers, so the
+    // snapshot it returns is applied straight away — through the same watermark the refresh uses,
+    // which is what keeps a slower refresh from undoing it.
+    async openRequest(input) {
+      const r = await writer().openRequest(input);
+      applyRequests([r]);
+      return r;
+    },
+    async offer(requestId, input) {
+      const w = writer();
+      await w.offer(requestId, input);
+      // `offer` answers with the Offer, not the request: the row is read back so the panel moves on
+      // the same watermark as everything else rather than on a hand-built row.
+      applyRequests([await w.getRequest(requestId)]);
+    },
+    async accept(requestId, participantIds) {
+      applyRequests([(await writer().acceptRequest(requestId, participantIds)).request]);
+    },
+    async cancel(requestId) {
+      applyRequests([await writer().cancelRequest(requestId)]);
+    },
+    async targets() {
+      const out: TargetWeave[] = [];
+      for (const { secret, token } of storedWeaves(storage)) {
+        // One Weave this browser can no longer reach (revoked token, deleted Weave) must not cost
+        // the picker the others, so each is resolved on its own and a failure simply omits it.
+        try {
+          const c = client.withToken(token);
+          const id = await c.lookupWeave(secret);
+          // A request cannot target the Lobby (core refuses it), so it is not offered.
+          if (id === state.lobby?.weaveId) continue;
+          const info = await c.getWeave(id);
+          if (info.weave.archivedAt) continue;
+          out.push({ weaveId: id, title: info.weave.title, token,
+            threads: info.threads.filter((t) => !t.closedAt).map((t) => ({ id: t.id, name: t.name })) });
+        } catch { /* not a target this browser can offer */ }
+      }
+      return out;
     },
     canModerate: () => state.me?.participant.role === "keeper" && !state.weave?.archivedAt,
     canEditThread: (t) => !!state.me && !state.weave?.archivedAt && !t.closedAt
