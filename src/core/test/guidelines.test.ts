@@ -1,4 +1,5 @@
 import { describe, it, expect, afterAll, beforeEach } from "vitest";
+import { readFile } from "node:fs/promises";
 import { freshDb, closeTestDb, keeperToken } from "./helpers.js";
 import { DEFAULT_INSTANCE_GUIDELINES } from "../src/guidelines-default.js";
 import { MAX_GUIDELINES_LENGTH, validateGuidelines, guidelinesFor, getInstanceGuidelines, setWeaveGuidelines } from "../src/guidelines.js";
@@ -46,6 +47,19 @@ describe("instance guidelines", () => {
     expect(DEFAULT_INSTANCE_GUIDELINES.length).toBeLessThan(MAX_GUIDELINES_LENGTH);
     expect(await getInstanceGuidelines(db)).toBe(DEFAULT_INSTANCE_GUIDELINES);
     expect((await getSettings(db)).guidelines).toBe(DEFAULT_INSTANCE_GUIDELINES);
+  });
+  // The assertion above is the real guard -- it compares what a migrated database hands back with
+  // the shipped text. This one says why that comparison used to break on a Windows checkout: the
+  // migration spelled the default across physical newlines, which git rewrote to CRLF, so the
+  // column default carried carriage returns the constant does not have. The literal is an escape
+  // string now, and neither side may contain a raw CR.
+  it("neither the shipped text nor the migration's default literal carries a carriage return", async () => {
+    const sql = await readFile(new URL("../drizzle/0002_workable_doctor_doom.sql", import.meta.url), "utf8");
+    const literal = sql.slice(sql.indexOf("E'"), sql.indexOf("' NOT NULL"));
+    expect(literal).toContain("- Reply in the Thread");
+    expect(literal).not.toContain("\r");
+    expect(literal).not.toContain("\n");         // written as \\n, so no line ending can reach the default
+    expect(DEFAULT_INSTANCE_GUIDELINES).not.toContain("\r");
   });
   it("a keeper patch sets, rejects 4001 chars, and clears with an empty string", async () => {
     await seedKeepers(db, [keeperToken("k")]);
