@@ -18,7 +18,7 @@ function withTimeout<T>(p: Promise<T>, label: string, ms = 5000): Promise<T> {
 
 async function startFreshApp(core: TestServer["core"], opts?: { mcpConnect?: MountMcpOptions["connect"]; mcpSessionTtlMs?: number }) {
   const tickets = new TicketStore();
-  const app = buildApp({ core, tickets, mcpConnect: opts?.mcpConnect, mcpSessionTtlMs: opts?.mcpSessionTtlMs });
+  const { app, stop: stopSweep } = buildApp({ core, tickets, mcpConnect: opts?.mcpConnect, mcpSessionTtlMs: opts?.mcpSessionTtlMs });
   const server: ServerType = await new Promise((resolve) => {
     const h = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolve(h));
   });
@@ -29,6 +29,7 @@ async function startFreshApp(core: TestServer["core"], opts?: { mcpConnect?: Mou
     mcpUrl: new URL(`${baseUrl}/mcp`),
     close: async () => {
       tickets.stop();
+      stopSweep();
       await new Promise<void>((r) => server.close(() => r()));
     },
   };
@@ -104,7 +105,7 @@ describe("remote MCP at /mcp", () => {
       await mcpServer.connect(transport);
     };
     const tickets = new TicketStore();
-    const app = buildApp({ core: s!.core, tickets, mcpConnect });
+    const { app, stop: stopSweep } = buildApp({ core: s!.core, tickets, mcpConnect });
     try {
       let aDone = false;
       let bDone = false;
@@ -123,6 +124,7 @@ describe("remote MCP at /mcp", () => {
       expect(rb.status).toBe(405);
     } finally {
       tickets.stop();
+      stopSweep();
     }
   });
 
@@ -155,7 +157,7 @@ describe("remote MCP at /mcp", () => {
     // things — which is what actually forces both id-0 requests to race for real. Guard each step
     // with a per-client timeout so a regression fails fast instead of hanging the whole run.
     const tickets = new TicketStore();
-    const app = buildApp({ core: s!.core, tickets });
+    const { app, stop: stopSweep } = buildApp({ core: s!.core, tickets });
     const mcpUrl = new URL("http://mcp.test/mcp");
     const transportFor = () => new StreamableHTTPClientTransport(mcpUrl, { fetch: (url, init) => Promise.resolve(app.request(url, init)) });
     const a = new Client({ name: "racer-a", version: "1.0" });
@@ -174,6 +176,7 @@ describe("remote MCP at /mcp", () => {
     } finally {
       await Promise.all([a.close().catch(() => {}), b.close().catch(() => {})]);
       tickets.stop();
+      stopSweep();
     }
   });
 
@@ -242,7 +245,7 @@ describe("remote MCP at /mcp", () => {
     // for that same attempt, instead of checking isConnected() and handling a request on a
     // transport whose start() is still in flight.
     const tickets = new TicketStore();
-    const app = buildApp({ core: s!.core, tickets });
+    const { app, stop: stopSweep } = buildApp({ core: s!.core, tickets });
     const server: ServerType = await new Promise((resolve) => {
       const h = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolve(h));
     });
@@ -261,6 +264,7 @@ describe("remote MCP at /mcp", () => {
     } finally {
       await Promise.all(clients.map((c) => c.close().catch(() => {})));
       tickets.stop();
+      stopSweep();
       await new Promise<void>((r) => server.close(() => r()));
     }
   });

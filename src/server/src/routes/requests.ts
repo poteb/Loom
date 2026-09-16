@@ -1,0 +1,61 @@
+import { Hono } from "hono";
+import { z } from "zod";
+import type { Core, RequestStatus } from "@loom/core";
+import { requireActor, type Env } from "../auth.js";
+import { body } from "../validate.js";
+
+export function requestRoutes(core: Core) {
+  const r = new Hono<Env>();
+
+  r.post("/", async (c) => {
+    const actor = await requireActor(c, core);
+    const b = await body(c, z.object({
+      title: z.string(), requirements: z.unknown(), wanted: z.number().optional(), timeoutMs: z.number().optional(),
+      targetWeaveId: z.string(), targetThreadId: z.string(), url: z.string().nullable().optional(),
+      // Two credentials, because a request spans two Weaves: the bearer is the caller's Lobby
+      // identity, this one its authority in the Weave the helpers will be invited into. An agent
+      // key is one actor everywhere, so it may stand for both and leave this out.
+      targetCredential: z.string().optional(),
+    }));
+    const targetActor = b.targetCredential ? await core.resolveCredential(b.targetCredential) : undefined;
+    const input = {
+      title: b.title, requirements: b.requirements, wanted: b.wanted, timeoutMs: b.timeoutMs,
+      targetWeaveId: b.targetWeaveId, targetThreadId: b.targetThreadId, url: b.url ?? null,
+    };
+    return c.json(await core.openRequest(actor, targetActor, input), 201);
+  });
+
+  r.get("/", async (c) => {
+    const actor = await requireActor(c, core);
+    // Passed through as the string it is: which words name a status is core's rule, and the status
+    // it filters on is the computed one, so a crossed but unswept request is never `open`.
+    const status = c.req.query("status") as RequestStatus | undefined;
+    return c.json({ requests: await core.listRequests(actor, { status }) });
+  });
+
+  r.get("/:id", async (c) => {
+    const actor = await requireActor(c, core);
+    return c.json(await core.getRequest(actor, c.req.param("id")));
+  });
+
+  r.post("/:id/offers", async (c) => {
+    const actor = await requireActor(c, core);
+    const input = await body(c, z.object({
+      model: z.string().optional(), effort: z.string().optional(), note: z.string().optional(),
+    }));
+    return c.json(await core.offer(actor, c.req.param("id"), input), 201);
+  });
+
+  r.post("/:id/accept", async (c) => {
+    const actor = await requireActor(c, core);
+    const { participantIds } = await body(c, z.object({ participantIds: z.array(z.string()) }));
+    return c.json(await core.acceptRequest(actor, c.req.param("id"), participantIds));
+  });
+
+  r.post("/:id/cancel", async (c) => {
+    const actor = await requireActor(c, core);
+    return c.json(await core.cancelRequest(actor, c.req.param("id")));
+  });
+
+  return r;
+}

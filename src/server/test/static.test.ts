@@ -27,11 +27,11 @@ beforeAll(async () => {
   writeFileSync(path.join(dist, "assets", "app.js"), "console.log('hi')");
   const core = createCore(await freshDb());
   tickets = new TicketStore();
-  server = await listen(buildApp({ core, tickets, webDist: dist }).fetch);
+  server = await listen(buildApp({ core, tickets, webDist: dist }).app.fetch);
   baseUrl = urlOf(server);
   // A second app built from the same core but without webDist: the deployment shape where the API
   // runs on its own and the web UI is served elsewhere (or not at all).
-  apiOnlyServer = await listen(buildApp({ core, tickets }).fetch);
+  apiOnlyServer = await listen(buildApp({ core, tickets }).app.fetch);
   apiOnlyUrl = urlOf(apiOnlyServer);
 });
 afterAll(async () => {

@@ -13,6 +13,8 @@ export type TestServerOpts = {
   pingIntervalMs?: number;
   replayPageSize?: number;
   authTtlMs?: number;
+  /** How often the server sweeps crossed requests; the app's default (a minute) when omitted. */
+  requestSweepMs?: number;
 };
 
 /** Spelled out because the inferred type would reach into @loom/core's internal dist paths. */
@@ -21,6 +23,8 @@ export type TestServer = {
   wsUrl: string;
   core: Core;
   tickets: TicketStore;
+  /** Sweeps crossed requests now, rather than waiting for the interval. */
+  sweepNow: (now?: Date) => Promise<number>;
   close: () => Promise<void>;
   dropSockets: () => void;
 };
@@ -28,7 +32,7 @@ export type TestServer = {
 export async function startTestServer(opts: TestServerOpts = {}): Promise<TestServer> {
   const core = createCore(await freshDb());
   const tickets = new TicketStore();
-  const app = buildApp({ core, tickets });
+  const { app, sweepNow, stop: stopSweep } = buildApp({ core, tickets, requestSweepMs: opts.requestSweepMs });
   const server: ServerType = await new Promise((resolve) => {
     const s = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolve(s));
   });
@@ -45,9 +49,10 @@ export async function startTestServer(opts: TestServerOpts = {}): Promise<TestSe
   return {
     baseUrl: `http://127.0.0.1:${port}`,
     wsUrl: `ws://127.0.0.1:${port}`,
-    core, tickets,
+    core, tickets, sweepNow,
     close: async () => {
       tickets.stop();
+      stopSweep();
       await new Promise<void>((r) => server.close(() => r()));
       await closeTestDb();
     },

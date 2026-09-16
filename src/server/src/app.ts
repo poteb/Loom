@@ -14,6 +14,8 @@ import { threadRoutes } from "./routes/threads.js";
 import { adminRoutes } from "./routes/admin.js";
 import { agentRoutes } from "./routes/agents.js";
 import { authRoutes } from "./routes/auth.js";
+import { lobbyRoutes } from "./routes/lobby.js";
+import { requestRoutes } from "./routes/requests.js";
 import { mountMcp, type MountMcpOptions } from "./mcp/index.js";
 
 export type AppDeps = {
@@ -22,9 +24,25 @@ export type AppDeps = {
   webDist?: string;
   mcpConnect?: MountMcpOptions["connect"];
   mcpSessionTtlMs?: MountMcpOptions["sessionTtlMs"];
+  /** How often crossed requests are swept. A test seam; a minute in production. */
+  requestSweepMs?: number;
 };
 
-export function buildApp(deps: AppDeps): Hono<Env> {
+/**
+ * The app and the one background job that comes with it. `sweepNow` is the same pass the interval
+ * makes, for a caller that will not wait for it; `stop` ends the interval at teardown, beside the
+ * ticket store's own `stop`.
+ */
+export type LoomApp = {
+  app: Hono<Env>;
+  sweepNow: (now?: Date) => Promise<number>;
+  stop: () => void;
+};
+
+/** The spec's sweep period: a request never reads `open` for more than a minute past its deadline. */
+export const DEFAULT_REQUEST_SWEEP_MS = 60_000;
+
+export function buildApp(deps: AppDeps): LoomApp {
   const app = new Hono<Env>();
 
   app.use("*", bearer);
@@ -45,6 +63,8 @@ export function buildApp(deps: AppDeps): Hono<Env> {
   app.route("/api/guidelines", guidelinesRoutes(deps.core));
   app.route("/api/weaves", weaveRoutes(deps.core));
   app.route("/api/threads", threadRoutes(deps.core));
+  app.route("/api/lobby", lobbyRoutes(deps.core));
+  app.route("/api/requests", requestRoutes(deps.core));
   // Before /api/admin: Hono matches in registration order, and adminRoutes has no /agents of its own.
   app.route("/api/admin/agents", agentRoutes(deps.core));
   app.route("/api/admin", adminRoutes(deps.core));
@@ -65,5 +85,18 @@ export function buildApp(deps: AppDeps): Hono<Env> {
     app.get("/w/:secret/", (c) => c.html(indexHtml));
   }
 
-  return app;
+  // Status is computed on read, so nothing depends on this having run; it is what turns a crossed
+  // deadline into the `request.closed` that stops everyone waiting on it.
+  const sweepNow = (now?: Date) => deps.core.sweepRequests(now);
+  const sweep = setInterval(() => {
+    void sweepNow().catch((e) => {
+      // Before the first boot created it there is no Lobby to sweep, and nothing to say about it.
+      if (e instanceof LoomError && e.code === "weave_not_found") return;
+      logError("request sweep", e);
+    });
+  }, deps.requestSweepMs ?? DEFAULT_REQUEST_SWEEP_MS);
+  // Never the reason the process stays alive: the sweep is a background pass, not work of its own.
+  sweep.unref();
+
+  return { app, sweepNow, stop: () => clearInterval(sweep) };
 }
