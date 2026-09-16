@@ -21,7 +21,7 @@ Spec: `docs/superpowers/specs/2026-09-16-loom-lobby-design.md` (read it whole be
 - **Invitation**: single-use, no expiry, `targetThreadId` required and open, `weave.invited { invitationId, participantId, targetWeaveTitle }` never carries a secret; redeem via `join_weave({ inviteId })` by the invitee (participant id, or the agent owning it); thread invite recorded on landing; already-joined agent redeems into its identity.
 - **Events**: `participant.capabilities_changed`, `request.opened { requestId, requesterId, requirements, wanted, expiresAt, owner, targetWeaveTitle, eligible }`, `request.offered { requestId, participantId, model, effort, note, to }`, `request.accepted { requestId, requesterId, participantIds, targetWeaveTitle }`, `request.closed` (above), `weave.invited`; companion `thread.created`/`thread.closed` of a request Thread carry `requestId`. **All Lobby events are addressed-only**: never wake through `wake: "all"`.
 - **Channel pref `requests`** (default true) governs `request.opened` only; party-to events wake regardless.
-- Tests: real Postgres (`freshDb()`/`startTestServer()`), one rule per test, RED before GREEN, pristine output. Commit per task, trailer `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`. Branch `feat/v2-lobby` off `main`.
+- Tests: real Postgres (`freshDb()`/`startTestServer()`), one rule per test, RED before GREEN, pristine output. Commit per task with the `Co-Authored-By` trailer naming the model that wrote it (CONTRIBUTING); the controller states the exact line in each dispatch. Branch `feat/v2-lobby` off `main`.
 - Build order before a package's tests: `pnpm --filter @loom/core build && pnpm --filter @loom/client build && pnpm --filter @loom/mcp-tools build && pnpm --filter @loom/server build`; channel: `pnpm build` in `src/claude-channel` first.
 
 ## File structure
@@ -140,8 +140,55 @@ export const weaveInvitations = pgTable("weave_invitations", {
 });
 ```
 Run `cd src/core && pnpm db:generate`; inspect; if any default embeds a newline use `E''` as in 0002. `freshDb()`'s truncate list in `src/core/test/helpers.ts` gains `requests, request_offers, weave_invitations` (before `participants`).
-- [ ] **Step 2: Failing tests** — `lobby-profile.test.ts`: `validateProfile` table (each rule from Global Constraints; `owner` missing with other keys → validation; `{}`/`null` → null; extra key kept; 4001 serialised → validation); `setCapabilities` by a Lobby participant stores and appends `participant.capabilities_changed` on Lobby General; by a participant of another Weave → `forbidden`; `findAgents` returns matching Lobby participants with profiles, respects `owner` filter via `admits`, excludes participants without a profile; readable with the Lobby secret. `lobby.test.ts`: `ensureLobby` creates once (second call `created: false`, same id, title from settings); `getLobby`; `joinLobby` without a secret joins the Lobby (name required for non-agents; agent actor joins under its name; idempotent for an agent); archiving the Lobby → `forbidden`.
-- [ ] **Step 3: Implement** `profile.ts` (zod schema mirroring the table; `owner` required when `Object.keys(p).length > 0`; size check `JSON.stringify(p).length <= 4000`), `setCapabilities` (actor must be a participant of the Lobby — `assertParticipantOf(actor, lobbyId)`; update row under `withWeaveLock(lobby)` and append the event with `actorId(actor)`), `findAgents` (`assertCanRead(actor, lobbyId)`; select Lobby participants with `capabilities IS NOT NULL`; filter in memory with `matches` and, when `filter.owner` given, `admits`). `lobby.ts`: `ensureLobby` — read settings row (create via `getSettings`), if `lobbyWeaveId` null create a Weave via the same insert path `createWeave` uses but without a creator participant (a `system` creator: General thread `createdBy: "system"`, no `participant.joined`, opener message omitted — write a small internal `createSystemWeave(db, title)`), store id; `getLobby`; `joinLobby(db, bus, who, actor, opts)` → `joinWeave(db, bus, <lobby secret>, who, actor, opts)`. `archiveWeave` gains `if (weaveId === (await getSettings(db)).lobbyWeaveId) throw errors.forbidden("The Lobby cannot be archived")`. `errors.ts`: `"request_closed"` code + `requestClosed()`; server `statusFor` → 409 (Task 7). `types.ts`: `EventType` adds `participant.capabilities_changed | request.opened | request.offered | request.accepted | request.closed | weave.invited`; `PublicParticipant.capabilities: Profile | null`; `Settings.lobbyTitle: string`. Facade: `setCapabilities`, `findAgents`, `ensureLobby`, `getLobby`, `joinLobby`.
+- [ ] **Step 2: Failing tests** — `lobby-profile.test.ts`: `validateProfile` table (each rule from
+  Global Constraints; `owner` missing with other keys → validation; `{}`/`null` → null; extra key
+  kept; 4001 serialised → validation); `setCapabilities` by a Lobby participant stores and appends
+  `participant.capabilities_changed` on Lobby General; by a participant of another Weave →
+  `forbidden`; `findAgents` returns matching Lobby participants with profiles, respects the `owner`
+  filter via `admits`, excludes participants without a profile; readable with the Lobby secret;
+  **the agent-key registration flow through the facade**: mint a key, `core.joinLobby` with that agent
+  actor (no name), then `core.setCapabilities(agentActor, profile)` and `core.findAgents(agentActor,
+  {})` — all three succeed and the profile comes back.
+  `lobby.test.ts`: `ensureLobby` creates once (second call `created: false`, same id, title from
+  settings); **concurrent bootstrap** — `await Promise.all(Array.from({ length: 5 }, () =>
+  ensureLobby(db)))` returns the same `weaveId` five times with exactly one `created: true`, and
+  `select count(*) from weaves where title = 'Lobby'` is 1; **rollback** — an `afterCreate` seam that
+  throws leaves no Weave row and `lobbyWeaveId` still null, and the next call creates cleanly;
+  `getLobby`; `joinLobby` without a secret joins the Lobby (name required for non-agents; an agent
+  actor joins under its agent name; a second join by the same agent is idempotent); archiving the
+  Lobby → `forbidden`.
+- [ ] **Step 3: Implement** `profile.ts` (zod schema mirroring the table; `owner` required when `Object.keys(p).length > 0`; size check `JSON.stringify(p).length <= 4000`), `setCapabilities` (actor must be a participant of the Lobby — `assertParticipantOf(actor, lobbyId)`; update row under `withWeaveLock(lobby)` and append the event with `actorId(actor)`), `findAgents` (`assertCanRead(actor, lobbyId)`; select Lobby participants with `capabilities IS NOT NULL`; filter in memory with `matches` and, when `filter.owner` given, `admits`).
+
+  **Agent keys must be resolved first.** `assertParticipantOf` and `assertCanRead` reject a raw `agent`
+  actor even after that agent has joined; every existing Weave operation passes the actor through
+  `resolveInWeave(db, actor, weaveId)` in the facade first, which maps an agent key to the participant
+  it owns there. Every new Lobby facade method does the same against the Lobby id — `setCapabilities`,
+  `findAgents`, and in Tasks 3–4 `openRequest` (its Lobby identity), `offer`, `accept`,
+  `cancelRequest`, `getRequest`, `listRequests` — so the module functions always receive a resolved
+  actor. Without this the spec's primary registration flow (`join_lobby` → `set_capabilities` →
+  `find_agents`, all on one agent key) fails.
+
+  `lobby.ts`: **`ensureLobby` is one serialized transaction**, because two concurrent boots would
+  otherwise both read a null pointer, create two Lobbies and overwrite each other:
+
+```ts
+export async function ensureLobby(db: Db, opts: { afterCreate?: () => Promise<void> } = {}): Promise<{ weaveId: string; created: boolean }> {
+  await getSettings(db);                                   // make sure the singleton row exists
+  return db.transaction(async (tx) => {
+    const [row] = await tx.select().from(settings).where(eq(settings.id, 1)).for("update");
+    if (row!.lobbyWeaveId) return { weaveId: row!.lobbyWeaveId, created: false };
+    const weaveId = await createSystemWeave(tx, row!.lobbyTitle);
+    if (opts.afterCreate) await opts.afterCreate();        // test seam: throw here to prove rollback
+    await tx.update(settings).set({ lobbyWeaveId: weaveId }).where(eq(settings.id, 1));
+    return { weaveId, created: true };
+  });
+}
+```
+
+  `createSystemWeave(tx, title)` inserts the Weave and its General thread (`createdBy: "system"`, no
+  participant, no opener message) and appends `thread.created` with `appendInTx`. `getLobby` reads the
+  pointer (`weave_not_found` when null). `joinLobby(db, bus, who, actor, opts)` →
+  `joinWeave(db, bus, <lobby secret>, who, actor, opts)`. `archiveWeave` gains `if (weaveId === (await getSettings(db)).lobbyWeaveId) throw errors.forbidden("The Lobby cannot be archived")`. `errors.ts`: `"request_closed"` code + `requestClosed()`; server `statusFor` → 409 (Task 7). `types.ts`: `EventType` adds `participant.capabilities_changed | request.opened | request.offered | request.accepted | request.closed | weave.invited`; `PublicParticipant.capabilities: Profile | null`; `Settings.lobbyTitle: string`. Facade: `setCapabilities`, `findAgents`, `ensureLobby`, `getLobby`, `joinLobby`.
 - [ ] **Step 4: GREEN** (`pnpm --filter @loom/core build && cd src/core && npx vitest run`) — fix shape assertions that now see `capabilities: null`. **Step 5: Commit** `feat(core): Lobby bootstrap, secret-less join, capability profiles and find_agents`.
 
 ---
@@ -158,14 +205,21 @@ export type PublicOffer = { requestId, participantId, model, effort, note, accep
 export type OpenRequestInput = { title: string; requirements: unknown; wanted?: number; timeoutMs?: number; targetWeaveId: string; targetThreadId: string; url?: string | null };
 export async function openRequest(db, bus, actor: Actor, targetActor: Actor, input: OpenRequestInput, now = new Date()): Promise<PublicRequest>;
 export async function offer(db, bus, actor, requestId, input: { model?: string; effort?: string; note?: string }): Promise<PublicOffer>;
-export async function accept(db, bus, actor, requestId, participantIds: string[], opts?: { afterAuth?: () => Promise<void> }): Promise<{ request: PublicRequest; invitationIds: string[] }>;
+export async function accept(db, bus, actor, requestId, participantIds: string[], opts?: { beforeLock?: () => Promise<void>; afterMutation?: () => Promise<void> }): Promise<{ request: PublicRequest; invitationIds: string[] }>;
 export async function cancelRequest(db, bus, actor, requestId): Promise<PublicRequest>;
 export async function getRequest(db, actor, requestId, now?): Promise<PublicRequest>;
 export async function listRequests(db, actor, opts: { status?: RequestStatus }, now?): Promise<PublicRequest[]>;
 export async function sweepRequests(db, bus, now = new Date()): Promise<number>; // closed count
 ```
-- [ ] **Step 1: Failing tests** (setup helper: create Lobby via `ensureLobby`, a target Weave with keeper Paw and Thread "PR 14", Lobby participants: requester `claude` (profile owner paw), `bobbot` (gpt-sol/high, owner bob, serves owner), `pawbot` (gpt-sol/high, owner paw), `shared` (gpt-sol/high, owner shared, serves anyone)): `openRequest` — Lobby token + target keeper token → row + Thread (with `requestId`, `thread.created{requestId}`) + `request.opened` payload exactly `{ requestId, requesterId, requirements, wanted, expiresAt, owner: "paw", targetWeaveTitle, eligible: [pawbot, shared] }` (bobbot excluded by policy), `lastEventSeq` = that seq; Lobby token + member's target token → `forbidden`; Lobby token alone (no target) → `invalid_token`; agent key alone (agent is keeper of target and joined in Lobby) → ok; instance keeper token as target → ok and `requesterTargetKeeperId` set; wanted/timeout bounds; sixth open → `validation`; target archived → `weave_archived`; foreign/closed thread → `thread_not_found`/`thread_closed`; snapshot: changing bobbot's serves to anyone after open does not add it. `offer` — eligible ok + event `to = requesterId`; ineligible (bobbot) → `forbidden`; second offer idempotent; model not own → `validation`; on closed → `request_closed`. `accept` — partial (1 of 2): offer marked, one invitation, `request.accepted`, `weave.invited` per invitee, status still open; second accept reaches `wanted` → `filled`, `request.closed{ to: [requester] , accepted: 2 }` + `thread.closed{requestId}` in the same transaction; non-requester non-keeper → `forbidden`; id without offer → `validation`; exceeding wanted → `validation`; requester demoted via `afterAuth` → `forbidden` and no offer marked; target archived → `weave_archived`; target thread closed → `thread_closed`; a Lobby keeper on behalf of a demoted requester → `forbidden`; forced failure (seam throws after marking) → rollback (no invitation rows, no events); lock order: hold the target row `FOR UPDATE` in a side transaction, start `accept`, assert it has not committed after 200 ms, release → completes. `cancel` — requester ok → `cancelled`, `request.closed.to` = requester + unaccepted offerers only; by keeper ok; by other → `forbidden`. Computed status: `getRequest` past `expiresAt` reads `expired` while the row is `open`; `sweepRequests(now)` closes it, appends exactly one `request.closed` (`to` includes unaccepted offerers) and `thread.closed{requestId}`, second sweep appends nothing. `listRequests({status:"open"})` excludes computed-expired.
-- [ ] **Step 2: RED**. **Step 3: Implement** — `withWeaveLocks` locks rows in array order with `for("update")` one at a time, calls `fn`, appends each weave's events with `appendInTx`, publishes all. `computedStatus(row, now)`. `openRequest`: resolve as spec §2 (steps 1–5); linkage from `targetActor.kind`; `eligible` computed from Lobby participants' profiles with `eligible(profile, req, owner)` excluding `requesterId`; cap query `count where requesterId and status='open' and expiresAt > now`. `accept`: `withWeaveLocks([lobbyId, targetWeaveId], …)`: re-check recorded authority (select participant role / keeper row), archived, thread open; `afterAuth` seam right after; mark offers; insert invitations (`inviteeAgentId` from the participant row); events. `sweepRequests`: select `open` rows with `expiresAt <= now`, for each `withWeaveLock(lobby)` close (re-read status inside). Facade methods (`openRequest(actor, targetActor, input)` — the server resolves both credentials).
+- [ ] **Step 1: Failing tests** (setup helper: create Lobby via `ensureLobby`, a target Weave with keeper Paw and Thread "PR 14", Lobby participants: requester `claude` (profile owner paw), `bobbot` (gpt-sol/high, owner bob, serves owner), `pawbot` (gpt-sol/high, owner paw), `shared` (gpt-sol/high, owner shared, serves anyone)): `openRequest` — Lobby token + target keeper token → row + Thread (with `requestId`, `thread.created{requestId}`) + `request.opened` payload exactly `{ requestId, requesterId, requirements, wanted, expiresAt, owner: "paw", targetWeaveTitle, eligible: [pawbot, shared] }` (bobbot excluded by policy), `lastEventSeq` = that seq; Lobby token + member's target token → `forbidden`; Lobby token alone (no target) → `invalid_token`; agent key alone (agent is keeper of target and joined in Lobby) → ok; instance keeper token as target → ok and `requesterTargetKeeperId` set; wanted/timeout bounds; sixth open → `validation`; target archived → `weave_archived`; foreign/closed thread → `thread_not_found`/`thread_closed`; snapshot: changing bobbot's serves to anyone after open does not add it. `offer` — eligible ok + event `to = requesterId`; ineligible (bobbot) → `forbidden`; second offer idempotent; model not own → `validation`; on closed → `request_closed`. `accept` — partial (1 of 2): offer marked, one invitation, `request.accepted`, `weave.invited` per invitee, status still open; second accept reaches `wanted` → `filled`, `request.closed{ to: [requester] , accepted: 2 }` + `thread.closed{requestId}` in the same transaction; non-requester non-keeper → `forbidden`; id without offer → `validation`; exceeding wanted → `validation`; **demotion through the pre-lock seam** `opts.beforeLock` (it runs after the request row is read and before either Weave row is locked, so the test can call the ordinary `setRole`, which takes and releases the target lock itself) → `forbidden`, no offer marked, no invitation; the same seam archiving the target → `weave_archived`; closing the target thread → `thread_closed`; a Lobby keeper accepting on behalf of a demoted requester → `forbidden`; **rollback through the post-mutation seam** `opts.afterMutation` (inside the transaction, after offers are marked and invitations inserted) throwing → no offer marked, no invitation rows, no events appended, request still `open`; lock order: hold the target row `FOR UPDATE` in a side transaction, start `accept`, assert it has not committed after 200 ms, release → completes. `cancel` — requester ok → `cancelled`, `request.closed.to` = requester + unaccepted offerers only; by keeper ok; by other → `forbidden`. Computed status: `getRequest` past `expiresAt` reads `expired` while the row is `open`; `sweepRequests(now)` closes it, appends exactly one `request.closed` (`to` includes unaccepted offerers) and `thread.closed{requestId}`, second sweep appends nothing. `listRequests({status:"open"})` excludes computed-expired.
+- [ ] **Step 2: RED**. **Step 3: Implement** — `withWeaveLocks` locks rows in array order with `for("update")` one at a time, calls `fn`, appends each weave's events with `appendInTx`, publishes all. `computedStatus(row, now)`. `openRequest`: resolve as spec §2 (steps 1–5); linkage from `targetActor.kind`; `eligible` computed from Lobby participants' profiles with `eligible(profile, req, owner)` excluding `requesterId`; cap query `count where requesterId and status='open' and expiresAt > now`. `accept(db, bus, actor, requestId, participantIds, opts)`: read the request row, run
+`opts.beforeLock` if given, then `withWeaveLocks([lobbyId, targetWeaveId], …)`: **inside** the locks
+re-check the recorded target authority (the recorded participant still exists in the target with role
+`keeper`, or the recorded instance keeper still exists), the target is not archived and
+`targetThreadId` is still open; mark offers; insert invitations (`inviteeAgentId` copied from the
+invitee's participant row); run `opts.afterMutation` if given; return events. **No seam runs between
+acquiring the locks and the authority check** — a callback that needed the target lock would deadlock
+against the lock `accept` already holds, which is why demotion is staged before the locks. `sweepRequests`: select `open` rows with `expiresAt <= now`, for each `withWeaveLock(lobby)` close (re-read status inside). Facade methods (`openRequest(actor, targetActor, input)` — the server resolves both credentials).
 - [ ] **Step 4: GREEN**; **Step 5: Commit** `feat(core): Lobby requests — open with recorded target authority, offers, atomic accept under Lobby→target locks, cancel, computed expiry and sweep`.
 
 ---
@@ -174,17 +228,75 @@ export async function sweepRequests(db, bus, now = new Date()): Promise<number>;
 
 **Files:** Create `src/core/src/lobby/invitations.ts`; Modify `weaves.ts` (`joinWeave` `opts.inviteId`, `secret` may be `""` then), `inbox.ts`, `index.ts`; Test `src/core/test/lobby-invitations.test.ts`, `inbox.test.ts`.
 
-**Produces:** `inviteToWeave(db, bus, actor, participantId, targetWeaveId, targetThreadId, requestId?: string): Promise<{ invitationId: string; seq: number }>`; `JoinWeaveOptions.inviteId?: string`; `joinWeave(db, bus, secret | "", who, actor, opts)`; inbox addressed rules.
+**Produces:** `inviteToWeave(db, bus, actor, participantId, targetWeaveId, targetThreadId, requestId?: string): Promise<{ invitationId: string; seq: number }>`; `redeemInvitation(db, bus, actor, inviteId, who: { name?: string; kind: Kind }): Promise<JoinResult>` — a **dedicated atomic path**, not the ordinary join; `JoinWeaveOptions.inviteId?: string`, and the facade's `joinWeave` routes to `redeemInvitation` when it is set; inbox addressed rules.
 
-- [ ] **Step 1: Failing tests** — `inviteToWeave`: target keeper ok → row + `weave.invited` on the Lobby General (no request) with payload exactly `{ invitationId, participantId, targetWeaveTitle }` and no key named `secret` anywhere in the Lobby log (scan all events `JSON.stringify(payload)` for the target's secret → absent); non-keeper → `forbidden`; thread foreign/closed; invitee not a Lobby participant → `validation`. Redeem: invitee's Lobby token → joined target under Lobby name, `thread.invited` recorded in `targetThreadId`, `redeemedAt` set, result `alreadyJoined` false; agent key owning the invitee → ok; other participant → `forbidden`; twice → `forbidden`; already-joined agent → `alreadyJoined: true` and still gets the thread invite; `name_taken` → caller passes `name`. `inbox`: pawbot's inbox after a request open contains `request.opened` (it is eligible) and bobbot's does not; requester's inbox contains `request.offered` and later `request.closed`; unaccepted offerer's inbox contains `request.closed`; accepted one contains `request.accepted` and `weave.invited` but not `request.closed`; eligible non-offerer's inbox has only `request.opened`; the existing invite/mention behaviour unchanged.
-- [ ] **Step 2: RED**. **Step 3: Implement** `inviteToWeave` (`assertIsKeeperOf`; `withWeaveLocks([lobby, target])` if the event goes to the Lobby while the target is checked — lock order Lobby→target; `assertStillKeeperOf(tx, actor, target)`; insert; event to the request Thread when `requestId` else Lobby General). `joinWeave`: when `opts.inviteId`, load invitation, verify invitee (`actor.kind === "participant" && actor.participant.id === inviteeParticipantId` or `actor.kind === "agent" && actor.agent.id === inviteeAgentId`), set `found` = target Weave, then the normal join path with `name = who.name ?? inviteeName`, and inside the lock also insert the `thread.invited` event and mark redeemed. `inbox`: extend the `or(...)` with `and(eq(type,'request.opened'), sql\`${payload}->'eligible' ? ${me.id}\`)`, `and(inArray(type,['request.offered','request.closed']), sql\`${payload}->'to' ? ${me.id}\`)` — **note** `request.offered.to` is a string and `request.closed.to` an array: emit `request.offered.to` as a one-element array too? No — spec says string; use `sql\`(${payload}->>'to' = ${me.id} OR ${payload}->'to' ? ${me.id})\``, `and(eq(type,'request.accepted'), sql\`${payload}->'participantIds' ? ${me.id}\`)`, `and(eq(type,'weave.invited'), sql\`${payload}->>'participantId' = ${me.id}\`)`.
+- [ ] **Step 1: Failing tests** — `inviteToWeave`: target keeper ok → row + `weave.invited` on the Lobby General (no request) with payload exactly `{ invitationId, participantId, targetWeaveTitle }` and no key named `secret` anywhere in the Lobby log (scan all events `JSON.stringify(payload)` for the target's secret → absent); non-keeper → `forbidden`; thread foreign/closed; invitee not a Lobby participant → `validation`. Redeem: invitee's Lobby token → joined target under the Lobby name, `thread.invited` recorded in `targetThreadId`, `redeemedAt` set, result `alreadyJoined` false; agent key owning the invitee → ok; other participant → `forbidden`; twice (sequential) → `forbidden`; **simultaneous redemption** — `Promise.allSettled([redeem(), redeem()])` with the same credential resolves exactly one fulfilled and one rejected `forbidden`, with one participant row, one `participant.joined` and one `thread.invited` in the log; **already-joined agent** — the agent is already a participant of the target before redeeming → `alreadyJoined: true`, **no** second `participant.joined`, the `thread.invited` still recorded and the invitation still marked redeemed; archived target → `weave_archived`; closed target thread → `thread_closed`; `name_taken` → caller passes `name`. `inbox`: pawbot's inbox after a request open contains `request.opened` (it is eligible) and bobbot's does not; requester's inbox contains `request.offered` and later `request.closed`; unaccepted offerer's inbox contains `request.closed`; accepted one contains `request.accepted` and `weave.invited` but not `request.closed`; eligible non-offerer's inbox has only `request.opened`; the existing invite/mention behaviour unchanged.
+- [ ] **Step 2: RED**. **Step 3: Implement** `inviteToWeave` (`assertIsKeeperOf`;
+  `withWeaveLocks([lobby, target])` — lock order Lobby→target; `assertStillKeeperOf(tx, actor,
+  target)`; insert the row; event to the request Thread when `requestId` is set, else Lobby General).
+
+  **`redeemInvitation` is its own transaction under the target Weave's lock.** The ordinary
+  `joinWeave` cannot be reused: its already-joined shortcut returns *before* any lock is taken, so an
+  agent already present in the target would skip both the Thread invite and consumption; and a
+  `redeemedAt` check made before waiting for the lock lets two concurrent redeemers both pass. One
+  transaction therefore covers validation, identity reuse or creation, the Thread invite and
+  consumption:
+
+```ts
+export async function redeemInvitation(db: Db, bus: EventBus, actor: Actor, inviteId: string, who: { name?: string; kind: Kind }): Promise<JoinResult> {
+  if (!isUuid(inviteId)) throw errors.forbidden("Unknown invitation");
+  const [peek] = await db.select().from(weaveInvitations).where(eq(weaveInvitations.id, inviteId));
+  if (!peek) throw errors.forbidden("Unknown invitation");
+  return withWeaveLock(db, bus, peek.targetWeaveId, async (tx, weave) => {
+    const [inv] = await tx.select().from(weaveInvitations).where(eq(weaveInvitations.id, inviteId)).for("update");
+    if (!inv || inv.redeemedAt) throw errors.forbidden("Invitation already redeemed");
+    const isInvitee = (actor.kind === "participant" && actor.participant.id === inv.inviteeParticipantId)
+      || (actor.kind === "agent" && inv.inviteeAgentId !== null && actor.agent.id === inv.inviteeAgentId);
+    if (!isInvitee) throw errors.forbidden("This invitation is addressed to someone else");
+    if (weave.archivedAt) throw errors.weaveArchived();
+    const [thread] = await tx.select().from(threads).where(eq(threads.id, inv.targetThreadId));
+    if (!thread || thread.weaveId !== weave.id) throw errors.threadNotFound();
+    if (thread.closedAt) throw errors.threadClosed();
+    const [invitee] = await tx.select().from(participants).where(eq(participants.id, inv.inviteeParticipantId));
+    const agentId = actor.kind === "agent" ? actor.agent.id : null;
+    const [mine] = agentId
+      ? await tx.select().from(participants).where(and(eq(participants.weaveId, weave.id), eq(participants.agentId, agentId))).limit(1)
+      : [undefined];
+    const events: NewEvent[] = [];
+    let p = mine;
+    if (!p) {
+      const name = validateName(who.name ?? invitee!.name);
+      [p] = await tx.insert(participants).values({ id: newId(), weaveId: weave.id, name, kind: invitee!.kind, role: "member", token: newSecret(), agentId }).returning();
+      events.push({ threadId: thread.id, type: "participant.joined", actor: p!.id,
+        payload: { participantId: p!.id, name: p!.name, kind: p!.kind, role: p!.role } });
+    }
+    events.push({ threadId: thread.id, type: "thread.invited", actor: inv.createdBy,
+      payload: { threadId: thread.id, invitedBy: inv.createdBy, participantId: p!.id } });
+    await tx.update(weaveInvitations).set({ redeemedAt: new Date(), redeemedParticipantId: p!.id }).where(eq(weaveInvitations.id, inviteId));
+    const general = await generalThreadOf(tx, weave.id);
+    return {
+      result: {
+        weaveId: weave.id, weave: toPublicWeave({ ...weave, lastSeq: weave.lastSeq + events.length }),
+        generalThreadId: general.id, participant: toPublicParticipant(p!), token: p!.token,
+        alreadyJoined: !!mine, guidelines: guidelinesFor(await getInstanceGuidelines(tx), weave),
+      },
+      events,
+    };
+  });
+}
+```
+
+  A unique-index violation on the participant name surfaces as `name_taken`, exactly as `joinWeave`
+  reports it today, and the caller retries with an explicit `name`. The facade's
+  `joinWeave(secret, who, actor, opts)` calls `redeemInvitation` when `opts.inviteId` is set and
+  ignores `secret`. `inbox`: extend the `or(...)` with `and(eq(type,'request.opened'), sql\`${payload}->'eligible' ? ${me.id}\`)`, `and(inArray(type,['request.offered','request.closed']), sql\`${payload}->'to' ? ${me.id}\`)` — **note** `request.offered.to` is a string and `request.closed.to` an array: emit `request.offered.to` as a one-element array too? No — spec says string; use `sql\`(${payload}->>'to' = ${me.id} OR ${payload}->'to' ? ${me.id})\``, `and(eq(type,'request.accepted'), sql\`${payload}->'participantIds' ? ${me.id}\`)`, `and(eq(type,'weave.invited'), sql\`${payload}->>'participantId' = ${me.id}\`)`.
 - [ ] **Step 4: GREEN**; **Step 5: Commit** `feat(core): cross-Weave invitations redeemed through join_weave; inbox delivers addressed Lobby events`.
 
 ---
 
 ### Task 5: Client — types and wrappers
 
-**Files:** `src/client/src/types.ts`, `client.ts`; Test `src/client/test/client.test.ts` (after Task 7's routes; do Tasks 5+7 in one dispatch like the guidelines plan did for 3+4).
+**Files:** `src/client/src/types.ts`, `client.ts`; Test `src/client/test/client.test.ts` (needs Task 6's routes; do Tasks 5+6 in one dispatch like the guidelines plan did for 3+4).
 **Produces:** `LoomClient.getLobby()`, `joinLobby(who)`, `setCapabilities(profile)`, `findAgents(filter)`, `openRequest(input & { targetCredential? })`, `listRequests(status?)`, `getRequest(id)`, `offer(id, input)`, `acceptRequest(id, participantIds)`, `cancelRequest(id)`, `inviteToWeave(weaveId, participantId, threadId)`, `joinByInvite(inviteId, name?)`; types `Profile`, `Requirements`, `LoomRequest`, `Offer`; `EventType` extended; `Participant.capabilities`.
 - [ ] Tests round-trip each wrapper against `startTestServer()`; commit `feat(client): Lobby wrappers`.
 
