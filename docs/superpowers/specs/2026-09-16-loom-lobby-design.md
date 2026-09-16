@@ -60,13 +60,17 @@ matched.
   "models": [{ "model": "gpt-5.6-sol", "effort": "high" }, { "model": "gpt-5.6-mini", "effort": "low" }],
   "tools": ["github", "web", "shell"],
   "runtime": "codex",
-  "spawnsSubagents": true
+  "spawnsSubagents": true,
+  "owner": "paw",
+  "serves": "owner"
 }
 ```
 
 - `set_capabilities(profile)` replaces the caller's profile on its Lobby participant; `{}` clears it.
   Well-known keys: `models` (list of `{ model, effort }`), `tools` (strings), `runtime` (string),
-  `spawnsSubagents` (boolean). Other keys are stored and returned as given. Size limit like guidelines
+  `spawnsSubagents` (boolean), `owner` (string: the human or team whose tokens this agent spends) and
+  `serves` (`"owner"` — the default — or `"anyone"`, or a list of owners). Other keys are stored and
+  returned as given. Size limit like guidelines
   (4000 characters serialised); validation in core.
 - `find_agents(filter)` searches Lobby profiles: `filter` has the same shape as a request's
   `requirements` (§4). Returns participants with their profiles.
@@ -94,9 +98,36 @@ satisfied, with these semantics:
   and a listener offering either is woken.
 - `tools` are **all required**: every listed tool must be in the profile's `tools`.
 - `runtime` and `spawnsSubagents` must be equal when present.
+- **Serving policy** (cost attribution, §4a): the request's `owner` must be admitted by the profile's
+  `serves`.
 
 Unknown keys in `requirements` are rejected (`validation`). Matching is a pure function in core and is
 tested there, including the "any model alternative" and "all tools" cases.
+
+### 4a. Owners and the serving policy
+
+An agent spends its owner's tokens. In a shared instance (ten developers, each with their own ChatGPT
+agent carrying the same requirements) a request must not be served by a colleague's agent unless that
+colleague meant it. So:
+
+- Every profile names its `owner` (a label such as `paw` or `team-fragt`) and a `serves` policy:
+  `"owner"` (default: only requests from the same owner), `"anyone"` (a shared agent everyone may use),
+  or a list of owners (a team).
+- A request carries the requester's `owner`, taken from the requester's own Lobby profile at
+  `open_request` time; a requester without a profile has owner `""` and is served only by
+  `"anyone"` agents.
+- Loom enforces the policy in matching (an agent is woken only for requests it may serve) and on
+  `offer` (an offer the policy excludes is `forbidden`). `find_agents` returns `owner` and `serves` so a
+  requester can see who could answer.
+
+**Trust model, deliberately simple.** `owner` is self-declared, on both sides: nothing stops a
+participant from claiming a colleague's owner label on a request. This is accepted for now — the
+instance is a team of colleagues who trust each other, and the policy exists to prevent *accidental*
+spending, not fraud. The hardening path, when it is needed: stamp `owner` on the agent key when the
+instance keeper mints it (`loom admin agents add ChatGPT --owner paw`), derive a request's owner from
+the requester's authenticated key instead of its profile, and require a key to register a profile
+(which also gives the channel plugin an identity of its own via `LOOM_AGENT_KEY`). Nothing in the data
+model has to change for that; only where the value comes from.
 
 **Waking.** A `request.opened` event wakes a Lobby participant only if its profile matches — the same
 targeted wake an invite gets, so a listener is woken when it fits and not otherwise. Everyone can still
@@ -185,7 +216,7 @@ one human step left in the loop.
 | --- | --- |
 | Profile over 4000 chars serialised, or `models`/`tools`/`runtime`/`spawnsSubagents` of the wrong shape | `validation` |
 | `requirements` with unknown keys, `wanted` outside 1–20, `timeoutMs` outside 1 min–24 h | `validation` |
-| Offer from a non-matching participant | `forbidden` |
+| Offer from a non-matching participant, or one whose `serves` policy excludes the request's owner | `forbidden` |
 | Second offer from the same participant | idempotent: returns the first |
 | Offer / accept / cancel on a closed request | `request_closed` (new code) |
 | Accept by someone other than the requester or a Lobby keeper; accepting a participant without an offer | `forbidden` |
@@ -204,6 +235,8 @@ one human step left in the loop.
   agent key) first-class; agent-record would survive leaving/rejoining the Lobby. Leaning: participant.
 - Do offers carry structured detail (which of my models I'd use, an ETA) or just a note?
 - Rate limits on `open_request` per participant.
+- When to harden owners (keeper-stamped on agent keys, see §4a) — trigger: the first instance shared
+  beyond a single trusting team.
 - Whether whole-requirement alternatives are needed beyond `models` (e.g. "model A with tool X, **or** model B
   without it") — an `anyOf: [requirements…]` wrapper. Not needed for the PR-review scenario; add only when a
   real request cannot be expressed with model alternatives plus required tools.
