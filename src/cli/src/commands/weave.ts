@@ -1,7 +1,8 @@
 import { Argument, Option, type Command } from "commander";
 import type { Kind } from "@loom/client";
-import { textArg, type CliContext, type CliIo } from "../context.js";
+import { CliError, textArg, type CliContext, type CliIo } from "../context.js";
 import { emit } from "../output.js";
+import { lobbyContext } from "./lobby.js";
 
 const kindOption = () => new Option("--kind <kind>", "agent | human").choices(["agent", "human"]).default("agent");
 
@@ -33,15 +34,35 @@ export function registerWeaveCommands(program: Command, ctx: () => CliContext, i
       ].join("\n"));
     });
 
-  const join = program.command("join <secret>")
-    .description("Join a Weave with its secret and store your token")
+  const join = program.command("join [secret]")
+    .description("Join a Weave with its secret, or redeem an invitation with --invite, and store your token")
+    .option("--invite <id>", "Redeem an invitation with your stored Lobby token (no secret)")
     .addOption(kindOption());
-  // With an agent key the server knows the name to use (the agent's own), so --name is optional;
-  // without one there is nothing to fall back to and commander demands it as before.
-  if (io.env.LOOM_AGENT_KEY) join.option("--name <name>", "Your participant name (default: your agent name)");
-  else join.requiredOption("--name <name>", "Your participant name");
+  // With an agent key the server knows the name to use (the agent's own), and a redeemed invitation
+  // carries the invitee's Lobby name; a plain secret join has nothing to fall back to. The check is
+  // made in the action rather than with requiredOption because which of these it is depends on
+  // --invite, which commander cannot see when the command is declared.
+  join.option("--name <name>", io.env.LOOM_AGENT_KEY ? "Your participant name (default: your agent name)" : "Your participant name (required with a secret)");
   join
-    .action(async (secret: string, o: { name?: string; kind: Kind }) => {
+    .action(async (secret: string | undefined, o: { name?: string; kind: Kind; invite?: string }) => {
+      // Each path checks what it was given before the context is built: a mistyped command line is
+      // a usage error whether or not the environment names a server.
+      if (o.invite !== undefined) {
+        if (secret !== undefined) throw new CliError("validation", "join takes a secret or --invite, not both", { exitCode: 2 });
+        const c = ctx();
+        // The redeeming credential is the Lobby identity the invitation was addressed to; what
+        // comes back is an ordinary join of the target Weave, stored like any other.
+        const { client } = await lobbyContext(c);
+        const r = await client.joinByInvite(o.invite, o.name);
+        await c.remember(r.weaveId, {
+          title: r.weave.title, token: r.token, participantId: r.participant.id,
+          generalThreadId: r.generalThreadId, participantName: r.participant.name,
+        });
+        emit(c, r, `Joined "${r.weave.title}" as ${r.participant.name} (weave ${r.weaveId}). Token stored in ${c.store.path}`);
+        return;
+      }
+      if (secret === undefined) throw new CliError("validation", "join needs a secret or --invite <id>", { exitCode: 2 });
+      if (o.name === undefined && !io.env.LOOM_AGENT_KEY) throw new CliError("validation", "join needs --name <name>", { exitCode: 2 });
       const c = ctx();
       // An agent key presented on join links the new participant to that agent identity; the
       // per-Weave token the server returns is still what gets stored and used afterwards.
