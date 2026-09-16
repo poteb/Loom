@@ -18,8 +18,11 @@ export function GuidelinesPanel({ state, session, onError }: { state: SessionSta
   // then read-only. `editing` is therefore derived, and submission re-checks it too.
   const canEdit = session.canModerate();
   const editing = wantsEdit && canEdit;
-  const over = draft.length > MAX;
   const text = draft.trim();
+  // The gate measures the value that travels — the trimmed text, which is also what core measures —
+  // while the counter keeps counting what the textarea shows, so trailing whitespace at the very
+  // limit cannot disable a Save the server would accept.
+  const over = text.length > MAX;
   const unchanged = text === current;
   const save = async (e: Event) => {
     e.preventDefault();
