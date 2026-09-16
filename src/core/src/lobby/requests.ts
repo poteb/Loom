@@ -250,7 +250,10 @@ export async function openRequest(
       requirements, wanted, targetWeaveId: input.targetWeaveId, targetThreadId: input.targetThreadId,
       url, expiresAt, lastEventSeq: versionOf(lobby, news),
     }).returning();
-    return { result: await onePublic(tx, lobbyId, row!, now), events: news };
+    // `eligible` is handed over from the array above rather than read back through `hydrate`: the
+    // snapshot lives in the `request.opened` payload, and that event is appended only once this
+    // callback returns, so a re-derivation here would find nothing and answer with an empty list.
+    return { result: { ...await onePublic(tx, lobbyId, row!, now), eligible }, events: news };
   });
 }
 

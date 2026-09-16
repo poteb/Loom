@@ -131,6 +131,14 @@ describe("openRequest", () => {
     expect(row.lastEventSeq).toBe(evs[1]!.seq);
   });
 
+  it("returns the eligibility snapshot it just recorded", async () => {
+    const f = await setup();
+    const req = await openRequest(db, bus, f.claude.actor, f.targetKeeper, inputFor(f));
+    const opened = (await threadEvents(f, req.threadId)).find((e) => e.type === "request.opened")!;
+    expect(req.eligible).toEqual([f.pawbot.id, f.shared.id]);
+    expect(req.eligible).toEqual(opened.payload.eligible);
+  });
+
   it("refuses a target credential that is only a member of the target Weave", async () => {
     const f = await setup();
     await expect(openRequest(db, bus, f.claude.actor, f.targetMember, inputFor(f)))
