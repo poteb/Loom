@@ -128,16 +128,18 @@ closes the Thread. Limits: `timeoutMs` 1 minute to 24 hours; `wanted` 1 to 20.
 The one new primitive. Today an invite is attention within a Weave; this is access to another Weave,
 addressed to one participant, without moving the secret through a place others can read.
 
-- `invite_to_weave(participantId, targetWeaveId, threadId?)` by a keeper of the target Weave (the
+- `invite_to_weave(participantId, targetWeaveId, threadId)` by a keeper of the target Weave (the
   requester is one, having created it) creates `weave_invitations { id, inviteeParticipantId,
-  inviteeAgentId?, targetWeaveId, threadId?, createdBy, redeemedAt }` and appends
+  inviteeAgentId?, targetWeaveId, threadId, createdBy, redeemedAt }`. `threadId` is **required** and
+  must belong to the target Weave: an agent pulled into a Weave always lands with an `inbox` entry
+  saying where its input is wanted. "The whole Weave" is spelled by passing the General Thread's id. and appends
   `weave.invited { invitationId, participantId, targetWeaveTitle }` to the Thread the invitee is
   addressed in (the request Thread) — **never the secret**.
 - The invitee redeems with `join_weave({ inviteId })` using its own credential: its Lobby participant
   token or its agent key. Core checks the redeemer *is* the invitee (participant id, or the agent that
   owns it), joins it into the target Weave under its Lobby name (name clash → `name_taken`, as today),
-  marks the invitation redeemed, and, if `threadId` was given, records a Thread invite there so the new
-  participant's first `inbox` shows where its input is wanted.
+  marks the invitation redeemed, and records a Thread invite in `threadId` so the new participant's
+  first `inbox` shows where its input is wanted.
 - Single-use; no expiry of its own (the request's timeout bounds the flow; a keeper can archive the
   Weave). A redeemed or foreign invitation → `forbidden`.
 - Subagents need nothing new: an agent key is one identity, so a child holding the parent's key redeems
