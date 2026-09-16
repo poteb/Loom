@@ -183,6 +183,10 @@ export async function openRequest(
   const me = assertParticipantOf(actor, lobbyId);
 
   if (!isUuid(input.targetWeaveId)) throw errors.weaveNotFound();
+  // The helpers are pulled *out* of the Lobby into somewhere else. A request pointing back at the
+  // Lobby would also be unacceptable in the literal sense: `accept` locks the Lobby row and then the
+  // target row, and they would be the same row.
+  if (input.targetWeaveId === lobbyId) throw errors.validation("A request cannot target the Lobby");
   assertTargetAuthority(targetActor, input.targetWeaveId);
   const [targetWeave] = await db.select().from(weaves).where(eq(weaves.id, input.targetWeaveId));
   if (!targetWeave) throw errors.weaveNotFound();

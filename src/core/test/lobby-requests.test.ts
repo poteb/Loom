@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll, beforeEach } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { freshDb, closeTestDb, keeperToken } from "./helpers.js";
 import { EventBus } from "../src/bus.js";
 import { participants, requestOffers, requests as requestsTable, threads, weaveInvitations, weaves } from "../src/db/schema.js";
@@ -210,6 +210,13 @@ describe("openRequest", () => {
       .rejects.toMatchObject({ code: "thread_closed" });
   });
 
+  it("refuses a request that targets the Lobby itself", async () => {
+    const f = await setup();
+    const [general] = await db.select().from(threads).where(and(eq(threads.weaveId, f.lobbyId), eq(threads.isGeneral, true)));
+    await expect(openRequest(db, bus, f.claude.actor, f.instanceKeeper, inputFor(f, { targetWeaveId: f.lobbyId, targetThreadId: general!.id })))
+      .rejects.toMatchObject({ code: "validation" });
+  });
+
   it("snapshots eligibility, so a later profile change does not join the request", async () => {
     const f = await setup();
     const req = await openRequest(db, bus, f.claude.actor, f.targetKeeper, inputFor(f));
@@ -262,6 +269,31 @@ describe("offer", () => {
     await expect(offer(db, bus, f.pawbot.actor, req.id, {})).rejects.toMatchObject({ code: "request_closed" });
   });
 });
+
+/** Holds a Weave row `FOR UPDATE` in a transaction of its own until `release()` is awaited. */
+async function holdWeaveRow(weaveId: string) {
+  let locked!: () => void; let letGo!: () => void;
+  const isHeld = new Promise<void>((r) => { locked = r; });
+  const releasable = new Promise<void>((r) => { letGo = r; });
+  const side = db.transaction(async (tx) => {
+    await tx.select().from(weaves).where(eq(weaves.id, weaveId)).for("update");
+    locked();
+    await releasable;
+  });
+  await isHeld;
+  return { release: async () => { letGo(); await side; } };
+}
+
+/** Whether a third transaction can take that Weave row right now: `false` means someone holds it. */
+async function canLockWeaveRow(weaveId: string): Promise<boolean> {
+  try {
+    await db.transaction(async (tx) => { await tx.execute(sql`select 1 from weaves where id = ${weaveId} for update nowait`); });
+    return true;
+  } catch { return false; }
+}
+
+const settledWithin = <T>(p: Promise<T>, ms: number): Promise<T | "waiting"> =>
+  Promise.race([p, new Promise<"waiting">((r) => setTimeout(() => r("waiting"), ms))]);
 
 /** A request wanting two helpers, with an offer from each of the two eligible listeners. */
 async function twoOffers(f: Fixture) {
@@ -389,22 +421,33 @@ describe("accept", () => {
   it("waits for the target Weave row rather than deadlocking on it", async () => {
     const f = await setup();
     const req = await twoOffers(f);
-    let locked!: () => void; let release!: () => void;
-    const held = new Promise<void>((r) => { locked = r; });
-    const releaseable = new Promise<void>((r) => { release = r; });
-    const side = db.transaction(async (tx) => {
-      await tx.select().from(weaves).where(eq(weaves.id, f.target.weave.id)).for("update");
-      locked();
-      await releaseable;
-    });
-    await held;
+    const held = await holdWeaveRow(f.target.weave.id);
 
     const accepting = accept(db, bus, f.claude.actor, req.id, [f.pawbot.id]).then(() => "done" as const);
-    const waited = await Promise.race([accepting, new Promise<"waiting">((r) => setTimeout(() => r("waiting"), 200))]);
-    expect(waited).toBe("waiting");
+    expect(await settledWithin(accepting, 200)).toBe("waiting");
 
-    release();
-    await side;
+    await held.release();
+    expect(await accepting).toBe("done");
+    expect(await invitationsOf(req.id)).toHaveLength(1);
+  });
+
+  it("takes the Lobby row before the target row", async () => {
+    const f = await setup();
+    const req = await twoOffers(f);
+    const held = await holdWeaveRow(f.lobbyId);
+
+    const accepting = accept(db, bus, f.claude.actor, req.id, [f.pawbot.id]).then(() => "done" as const);
+    let targetFree: boolean;
+    try {
+      expect(await settledWithin(accepting, 200)).toBe("waiting");
+      // Blocked on the Lobby row while holding nothing else, so a third transaction can still take
+      // the target row. Were the order the other way round, accept would already hold the target
+      // row and this probe would be refused (55P03) — which is what pins the order down.
+      targetFree = await canLockWeaveRow(f.target.weave.id);
+    } finally {
+      await held.release();                  // never leave accept blocked on a failed assertion
+    }
+    expect(targetFree).toBe(true);
     expect(await accepting).toBe("done");
     expect(await invitationsOf(req.id)).toHaveLength(1);
   });
