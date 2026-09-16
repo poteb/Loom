@@ -105,6 +105,12 @@ export async function getWeave(db: Queryable, actor: Actor, weaveId: string): Pr
 export type JoinWeaveOptions = {
   /** Test seam: runs after the pre-lock reads, so a test can commit a change before the lock is taken. */
   beforeLock?: () => Promise<void>;
+  /**
+   * Redeem a cross-Weave invitation instead of presenting a secret: the facade routes a join
+   * carrying one to `redeemInvitation`, which is a dedicated atomic path and not this function
+   * (see the comment there). `secret` is then ignored and may be `""`.
+   */
+  inviteId?: string;
 };
 
 export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { name?: string; kind: Kind }, actor?: Actor, opts: JoinWeaveOptions = {}): Promise<JoinResult> {

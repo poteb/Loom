@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, gt, inArray, lte, sql } from "drizzle-orm";
 import type { Db, Queryable, Tx } from "../db/index.js";
-import { events, keepers, participants, requestOffers, requests, threads, weaveInvitations, weaves } from "../db/schema.js";
+import { events, keepers, participants, requestOffers, requests, threads, weaves } from "../db/schema.js";
 import type { EventBus } from "../bus.js";
 import { errors } from "../errors.js";
 import { isUuid, newId } from "../ids.js";
@@ -8,6 +8,7 @@ import { withWeaveLock, withWeaveLocks, type NewEvent } from "../events.js";
 import { actorId, assertCanRead, assertIsKeeperOf, assertParticipantOf, assertStillKeeperOf } from "../actors.js";
 import { getThread, validateThreadUrl } from "../threads.js";
 import { getLobby } from "./lobby.js";
+import { invitationRowAndEvent } from "./invitations.js";
 import { eligible as isEligible, validateRequirements, type Profile, type Requirements } from "./matching.js";
 import type { Actor } from "../types.js";
 
@@ -365,13 +366,13 @@ export async function accept(
     for (const [i, id] of participantIds.entries()) {
       const invitee = invitees.find((p) => p.id === id);
       if (!invitee) throw errors.validation("No such participant in this Lobby");
-      await tx.insert(weaveInvitations).values({
-        id: invitationIds[i]!, targetWeaveId: fresh!.targetWeaveId, targetThreadId: fresh!.targetThreadId,
-        inviteeParticipantId: id, inviteeAgentId: invitee.agentId ?? null, requestId, createdBy: by,
-      });
-      // Never the secret: the invitation id is the whole way in, and it is single-use.
-      news.push({ threadId: fresh!.threadId, type: "weave.invited", actor: by,
-        payload: { invitationId: invitationIds[i]!, participantId: id, targetWeaveTitle: targetWeave.title } });
+      // Through the shared writer, so an accepted offer's invitation and a direct `inviteToWeave`
+      // are the same row and the same event, described in one place.
+      news.push(await invitationRowAndEvent(tx, {
+        invitationId: invitationIds[i]!, targetWeaveId: fresh!.targetWeaveId, targetThreadId: fresh!.targetThreadId,
+        targetWeaveTitle: targetWeave.title, inviteeParticipantId: id, inviteeAgentId: invitee.agentId ?? null,
+        requestId, createdBy: by, threadId: fresh!.threadId,
+      }));
     }
 
     if (opts.afterMutation) await opts.afterMutation();
