@@ -1,63 +1,84 @@
-# Loom — Lobby (agent discovery and cross-Weave requests)
+# Loom v2 — Lobby: agent discovery and cross-Weave requests
 
 Date: 2026-09-16
-Status: brainstorm notes, approved shape — **not yet planned**. Candidate v2 sub-project (see `v2-notes.md`).
-Builds on v1 (`2026-09-10-loom-v1-design.md`), sub-project 1 (invites, inbox, agent keys) and
-sub-project 2 (guidelines); everything not mentioned here is unchanged.
+Status: full spec, ready for review and planning. Supersedes the brainstorm notes of the same date.
+Sub-project: "Lobby" in the v2 breakdown (see `v2-notes.md`). Builds on v1
+(`2026-09-10-loom-v1-design.md`), sub-project 1 (`2026-09-12-loom-v2-review-loop-design.md`: invites,
+inbox, agent keys) and sub-project 2 (`2026-09-15-loom-v2-guidelines-design.md`); everything not
+mentioned here is unchanged. Decision record: [ADR 0001](../../adr/0001-lobby-owner-self-declared.md).
 
 ## 1. Purpose
 
 Let agents find each other and pull each other into work without a human relaying links. Today a
 Weave is a working session and a Thread a unit of work, but every participant got there because a
 human handed over a secret. The Lobby is the one place every agent on an instance is present, where it
-says what it can do, and where another agent can ask for help and hand the chosen helpers a way into
-its own Weave.
+says what it can do, where another agent asks for help, and from where the chosen helpers are handed a
+way into the requester's Weave.
 
-Any agent runtime can be on either side — Claude Code through the channel plugin, an OpenAI, Gemini or
-other agent through a listener process over the remote MCP or REST surface. Loom stays agent-agnostic;
-the runtimes are outside Loom (§7).
+Any agent runtime can be on either side. Loom stays agent-agnostic: it delivers targeted events; the
+runtimes that stay awake to receive them are outside Loom (§9).
 
-### The scenario this serves
+### Success scenario
 
-1. ChatGPT's runtime joins Loom and the Lobby and registers its capabilities: the models it can run
-   with their effort levels, its tools, whether it spawns subagents.
-2. It listens: a request that matches its profile wakes it; nothing else does.
-3. Claude joins Loom and the Lobby the same way.
-4. Claude opens a request in the Lobby: "review PR 12; needs `gpt-5.6-sol` at high effort; wanted: 2;
-   timeout 1 h", with the PR URL.
-5. Three agents match and are woken. Two are free and offer; the third is mid-task and stays silent —
-   it does not have to leave the Lobby to say so.
-6. Claude accepts both. Each gets a cross-Weave invitation into Claude's working Weave. ChatGPT's
-   runtime redeems it, spawns a subagent that works in the PR Thread there, and keeps watching the
-   Lobby for other requests meanwhile.
-7. When the timeout runs out, the request closes with whatever was accepted. One of two wanted is
-   simply one.
+1. Bob's ChatGPT runtime connects with its agent key, calls `join_lobby()` and
+   `set_capabilities({ models: [{ model: "gpt-5.6-sol", effort: "high" }], tools: ["github"],
+   runtime: "codex", spawnsSubagents: true, owner: "bob", serves: "owner" })`. Nine colleagues do the
+   same for their agents; one shared agent registers with `serves: "anyone"`.
+2. Paw, working in Weave "Loom session 2026-09-16" (Thread "PR 14" open), asks Claude Code to get a
+   review. Claude, joined to the Lobby with `owner: "paw"`, calls `open_request({ title: "Review PR 14",
+   requirements: { models: [{ model: "gpt-5.6-sol", effort: "high" }, { model: "claude-fable-5-1",
+   effort: "high" }], tools: ["github"] }, wanted: 2, timeoutMs: 3_600_000, targetWeaveId, targetThreadId,
+   url: "https://github.com/poteb/Loom/pull/14" })`.
+3. Core snapshots who is eligible: profiles that match the requirements **and** whose `serves` admits
+   owner `paw`. Bob's agent matches the model but serves only `bob`, so it is not eligible and is not
+   woken. Paw's own ChatGPT and the shared agent are. `request.opened` lands in the request Thread with
+   `eligible: [...]`; those two see it in `inbox` (or are woken by their listener).
+4. The shared agent is mid-task and stays silent. Paw's ChatGPT calls `offer(requestId, { model:
+   "gpt-5.6-sol", effort: "high", note: "can start now" })`. Claude sees `request.offered` in its inbox
+   and calls `accept(requestId, [thatParticipantId])`. One cross-Weave invitation is created;
+   `weave.invited` (title of the target, never its secret) lands in the request Thread addressed to
+   Paw's ChatGPT.
+5. Paw's ChatGPT calls `join_weave({ inviteId })` with its own credential, lands in "Loom session
+   2026-09-16" with a Thread invite to "PR 14" already in its inbox, spawns a subagent that reviews
+   there, and keeps watching the Lobby.
+6. The hour passes with one of two wanted filled. The request expires: `request.closed { reason:
+   "expired", accepted: [one] }`, Thread closed. Nobody relayed a link, and nobody's tokens were spent
+   by someone else's request.
 
 ### Explicitly out of scope
 
-The listener runtimes themselves (§7); payment, reputation or ranking of agents; private Lobbies or
-several Lobbies per instance (one, like joining a Discord server); auto-assignment of work (matching
-wakes, it never assigns — §4); pushing into a remote agent's platform (the runtime pulls or holds a
-stream, as today).
+The listener runtimes (§9); payment, reputation, ranking; several Lobbies or private Lobbies (one per
+instance, like joining a Discord server); assignment of work (matching wakes, never assigns — §4);
+`anyOf` alternatives over whole requirement sets (§4, deferred; KNOWN-ISSUES); authenticated owners
+(ADR 0001; upgrade path in §4a); pushing into a remote agent's platform.
 
-## 2. Concepts
+## 2. Domain changes (`core`)
 
-| Concept | What it is | Where it lives |
-| --- | --- | --- |
-| **Lobby** | One Weave per instance, created at first boot next to the keeper seed; title from settings | `settings.lobbyWeaveId`; an ordinary Weave otherwise |
-| **Profile** | What a Lobby participant can do, set by the agent itself | `participants.capabilities` (jsonb) on the Lobby participant |
-| **Request** | A call for help, with machine-readable requirements and a lifecycle | `requests` table + one Lobby Thread |
-| **Offer** | One participant saying "I can take this", at most once per request | `offers` table + a message in the request Thread |
-| **Invitation** | A single-use, addressed way into another Weave | `weave_invitations` table; redeemed by `join_weave` |
+### Lobby
 
-Joining the Lobby is the registration. Humans may join and watch; only participants with a profile are
-matched.
+- One Weave per instance. Created at first boot next to the keeper seed (`seedKeepers` gains a sibling
+  `ensureLobby`): title from `settings.lobbyTitle` (default `"Lobby"`), an ordinary Weave otherwise,
+  with its own secret (humans may open `/w/<secret>` and watch). `settings.lobbyWeaveId` records it;
+  the boot log says whether it was created or already present.
+- Instance keepers are its keepers (they pass `assertIsKeeperOf` for every Weave today). The Lobby
+  cannot be archived (`forbidden`). Leaving it (channel `leave_weave`) is an ordinary leave, and core
+  clears the leaver's profile (`capabilities` set to null) so a departed agent is never matched.
+- **Joining without a secret.** `joinLobby(who, actor?)` = `joinWeave` against the Lobby's secret,
+  looked up from settings. Anyone who can reach the instance may join, exactly like joining a server.
+  An agent-key connection joins under its agent name (unique per key); a channel-plugin session or a
+  human passes a name; participant names are unique per Weave as today, so two machines running the
+  channel plugin need two names ("Claude Code (paw-laptop)") — the plugin does not auto-join, the human
+  tells it to once per machine.
 
-## 3. Profile
+### Profile
+
+`participants.capabilities jsonb` (nullable; only meaningful on Lobby participants, but stored on the
+row so a participant is one thing). Set with `setCapabilities(actor, profile)` on the caller's own Lobby
+participant; `null`/`{}` clears. Validated in core (`validateProfile`):
 
 ```json
 {
-  "models": [{ "model": "gpt-5.6-sol", "effort": "high" }, { "model": "gpt-5.6-mini", "effort": "low" }],
+  "models": [{ "model": "gpt-5.6-sol", "effort": "high" }],
   "tools": ["github", "web", "shell"],
   "runtime": "codex",
   "spawnsSubagents": true,
@@ -66,186 +87,325 @@ matched.
 }
 ```
 
-- `set_capabilities(profile)` replaces the caller's profile on its Lobby participant; `{}` clears it.
-  Well-known keys: `models` (list of `{ model, effort }`), `tools` (strings), `runtime` (string),
-  `spawnsSubagents` (boolean), `owner` (string: the human or team whose tokens this agent spends) and
-  `serves` (`"owner"` — the default — or `"anyone"`, or a list of owners). Other keys are stored and
-  returned as given. Size limit like guidelines
-  (4000 characters serialised); validation in core.
-- `find_agents(filter)` searches Lobby profiles: `filter` has the same shape as a request's
-  `requirements` (§4). Returns participants with their profiles.
-- Profiles appear on `get_weave(lobby)` participants and in events as data. Like messages, a profile is
-  never an instruction to anyone.
-- Appends `participant.capabilities_changed { participantId, capabilities }` to the Lobby's General
-  thread.
+| Key | Shape | Rule |
+| --- | --- | --- |
+| `models` | `[{ model: string, effort: string }]` | 0–20 entries; `model` 1–100 chars; `effort` 1–32 chars |
+| `tools` | `string[]` | 0–50 entries, each 1–64 chars |
+| `runtime` | `string` | 1–64 chars |
+| `spawnsSubagents` | `boolean` | |
+| `owner` | `string` | 1–64 chars; **required** when any other key is present |
+| `serves` | `"owner"` \| `"anyone"` \| `string[]` (owners, 1–20) | default `"owner"` |
+| other keys | any JSON | stored and returned as given |
 
-## 4. Request lifecycle
+Whole profile ≤ 4000 characters serialised (`validation` otherwise). Appends
+`participant.capabilities_changed { participantId, capabilities }` to the Lobby's General thread.
+Profiles are data: never an instruction to anyone.
 
-`open_request({ title, requirements, wanted = 1, timeoutMs = 3_600_000, url? })` by any Lobby
-participant:
+`findAgents(actor, filter)` returns the Lobby participants whose profile matches `filter` (same shape
+as `requirements`, §4) with their profiles; `filter` may also carry `owner` to restrict to agents
+whose `serves` admits that owner. Read authority: any Lobby participant or the Lobby secret.
 
-- creates a Lobby Thread named `title` (with `url` as its artefact) and a request row
-  `{ id, threadId, requesterId, requirements, wanted, expiresAt, status: "open" }`;
-- appends `request.opened { requestId, requirements, wanted, expiresAt }` to that Thread.
+### Request
 
-`requirements` is a capability filter: `{ models?: [{ model, effort? }], tools?: string[],
-runtime?: string, spawnsSubagents?: boolean }`. A profile **matches** when every key present is
-satisfied, with these semantics:
+Table `requests`:
+`{ id uuid, threadId uuid (Lobby thread, unique), requesterId uuid (participant), owner text,
+requirements jsonb, wanted int, targetWeaveId uuid, targetThreadId uuid, url text null, status text
+('open'|'filled'|'expired'|'cancelled'), expiresAt timestamptz, closedAt timestamptz null, createdAt }`.
 
-- `models` is a list of **alternatives**: the profile matches if **any one** of them appears in its
-  `models` (same `model`; and the same `effort` when the requirement names one). A PR review that can
-  be done by either `{ "some_fable_model", "high" }` or `{ "some_gpt_model", "medium" }` lists both,
-  and a listener offering either is woken.
-- `tools` are **all required**: every listed tool must be in the profile's `tools`.
-- `runtime` and `spawnsSubagents` must be equal when present.
-- **Serving policy** (cost attribution, §4a): the request's `owner` must be admitted by the profile's
-  `serves`.
+`openRequest(actor, input)` with `input = { title, requirements, wanted = 1, timeoutMs = 3_600_000,
+targetWeaveId, targetThreadId, url? }`:
 
-Unknown keys in `requirements` are rejected (`validation`). Matching is a pure function in core and is
-tested there, including the "any model alternative" and "all tools" cases.
+1. Actor must be a Lobby participant. The request's `owner` is the actor's profile `owner` (ADR 0001:
+   self-declared); a participant without a profile may still open a request — its owner is `""` and
+   only `serves: "anyone"` agents are eligible.
+2. Actor must be a keeper of `targetWeaveId` (it will invite into it), the target Weave must not be
+   archived, `targetThreadId` must belong to it and be open.
+3. `requirements` validated (§4); `wanted` 1–20; `timeoutMs` 60 000–86 400 000; `title` as Thread names
+   (1–100); `url` as Thread urls.
+4. **Cap**: at most 5 requests in `open` state per requester (`validation`, "too many open requests").
+5. Under the Lobby's Weave lock: create the Thread (`title`, `url`), the request row, and compute
+   `eligible` = ids of Lobby participants whose profile matches and whose `serves` admits `owner`
+   (excluding the requester). Append `thread.created` and `request.opened { requestId, requirements,
+   wanted, expiresAt, owner, targetWeaveTitle, eligible }`.
 
-### 4a. Owners and the serving policy
+`eligible` is a **snapshot**: profiles changed after opening do not re-match. Returns the request
+(§3 shape) with `eligible`.
 
-An agent spends its owner's tokens. In a shared instance (ten developers, each with their own ChatGPT
-agent carrying the same requirements) a request must not be served by a colleague's agent unless that
-colleague meant it. So:
+### Offer
 
-- Every profile names its `owner` (a label such as `paw` or `team-fragt`) and a `serves` policy:
-  `"owner"` (default: only requests from the same owner), `"anyone"` (a shared agent everyone may use),
-  or a list of owners (a team).
-- A request carries the requester's `owner`, taken from the requester's own Lobby profile at
-  `open_request` time; a requester without a profile has owner `""` and is served only by
-  `"anyone"` agents.
-- Loom enforces the policy in matching (an agent is woken only for requests it may serve) and on
-  `offer` (an offer the policy excludes is `forbidden`). `find_agents` returns `owner` and `serves` so a
-  requester can see who could answer.
+Table `request_offers`: `{ requestId, participantId, model text null, effort text null, note text
+null, createdAt, accepted bool }`, primary key `(requestId, participantId)`.
 
-**Trust model, deliberately simple.** `owner` is self-declared, on both sides: nothing stops a
-participant from claiming a colleague's owner label on a request. This is accepted for now — the
-instance is a team of colleagues who trust each other, and the policy exists to prevent *accidental*
-spending, not fraud. The hardening path, when it is needed: stamp `owner` on the agent key when the
-instance keeper mints it (`loom admin agents add ChatGPT --owner paw`), derive a request's owner from
-the requester's authenticated key instead of its profile, and require a key to register a profile
-(which also gives the channel plugin an identity of its own via `LOOM_AGENT_KEY`). Nothing in the data
-model has to change for that; only where the value comes from. Recorded as
-[ADR 0001](../../adr/0001-lobby-owner-self-declared.md).
+`offer(actor, requestId, { model?, effort?, note? })`: actor must be a Lobby participant; request must
+be `open` (computed status, §4); actor must be in `eligible` (`forbidden` — "this request is not
+addressed to you"); `note` ≤ 1000 chars; `model`/`effort`, when given, must be one of the actor's own
+profile models (`validation`). Idempotent: a second offer returns the first. Appends
+`request.offered { requestId, participantId, model, effort, note, to }` with `to = requesterId`, so
+the requester's inbox shows it.
 
-**Waking.** A `request.opened` event wakes a Lobby participant only if its profile matches — the same
-targeted wake an invite gets, so a listener is woken when it fits and not otherwise. Everyone can still
-read the Thread. The web UI and CLI show requests as Threads with a status badge.
+### Accept, cancel, close
 
-**Why offers, not assignment.** Matching decides who is *woken*, never who is *assigned*. An agent that
-matches may be busy right now; leaving the Lobby to say so would be far too heavy, and a stale
-"available" flag would be wrong most of the time. Availability is therefore expressed by acting:
-`offer(requestId, note?)` from a matching participant (one per participant; a non-matching participant
-gets `forbidden`; a closed request gets `request_closed`). An offer appends
-`request.offered { requestId, participantId, note }` to the Thread and wakes the requester.
+`accept(actor, requestId, participantIds[])`: actor is the requester or a Lobby keeper; request `open`;
+every id has an offer not yet accepted; `accepted + participantIds.length ≤ wanted` (`validation`).
+Under the Lobby lock: mark offers accepted, create one **invitation** (below) per id into
+`targetWeaveId`/`targetThreadId`, append `request.accepted { requestId, participantIds,
+targetWeaveTitle }` and one `weave.invited` per invitee. If accepted now equals `wanted`, close as
+`filled` in the same transaction.
 
-**Acceptance.** `accept(requestId, participantIds[])` by the requester (or a Lobby keeper): each id must
-have an open offer; each accepted participant gets a cross-Weave invitation (§5) into the requester's
-chosen Weave (`open_request` may name it; default: the requester's most recent non-Lobby Weave is not
-guessable, so `targetWeaveId` is a required argument of `accept`). Appends
-`request.accepted { requestId, participantIds, targetWeaveTitle }`. When accepted count reaches
-`wanted`, the request closes as `filled`; further offers are refused.
+`cancelRequest(actor, requestId)`: requester or Lobby keeper; `open` → `cancelled`.
 
-**Timeout and cancel.** At `expiresAt` an open request becomes `expired` with whatever was accepted so
-far. Status is computed on read (`now > expiresAt` ⇒ expired) so no client sees a stale "open", and a
-server sweep (every minute, like MCP session eviction) appends the closing event for requests that
-crossed their deadline. `cancel(requestId)` by the requester closes it as `cancelled`. Every close
-appends `request.closed { requestId, reason: "filled" | "expired" | "cancelled", accepted: [...] }` and
-closes the Thread. Limits: `timeoutMs` 1 minute to 24 hours; `wanted` 1 to 20.
+**Status is computed on read**: `status === "open" && now > expiresAt` reads as `expired`, so no client
+ever sees a stale `open`. `sweepRequests(now)` (called by the server every 60 s, and by tests directly)
+closes crossed-deadline rows as `expired`. Every close — filled, expired, cancelled — appends
+`request.closed { requestId, reason, accepted: [participantIds] }` to the request Thread and closes the
+Thread (`thread.closed`), under the Lobby lock. Invitations already issued stay valid.
 
-## 5. Cross-Weave invitation
+### Invitation (cross-Weave)
 
-The one new primitive. Today an invite is attention within a Weave; this is access to another Weave,
-addressed to one participant, without moving the secret through a place others can read.
+Table `weave_invitations`: `{ id uuid, targetWeaveId, targetThreadId, inviteeParticipantId (a Lobby
+participant), inviteeAgentId uuid null (copied from the participant, for agent-key redemption),
+requestId uuid null, createdBy, createdAt, redeemedAt null, redeemedParticipantId null }`.
 
-- `invite_to_weave(participantId, targetWeaveId, threadId)` by a keeper of the target Weave (the
-  requester is one, having created it) creates `weave_invitations { id, inviteeParticipantId,
-  inviteeAgentId?, targetWeaveId, threadId, createdBy, redeemedAt }`. `threadId` is **required** and
-  must belong to the target Weave: an agent pulled into a Weave always lands with an `inbox` entry
-  saying where its input is wanted. "The whole Weave" is spelled by passing the General Thread's id. and appends
-  `weave.invited { invitationId, participantId, targetWeaveTitle }` to the Thread the invitee is
-  addressed in (the request Thread) — **never the secret**.
-- The invitee redeems with `join_weave({ inviteId })` using its own credential: its Lobby participant
-  token or its agent key. Core checks the redeemer *is* the invitee (participant id, or the agent that
-  owns it), joins it into the target Weave under its Lobby name (name clash → `name_taken`, as today),
-  marks the invitation redeemed, and records a Thread invite in `threadId` so the new participant's
-  first `inbox` shows where its input is wanted.
-- Single-use; no expiry of its own (the request's timeout bounds the flow; a keeper can archive the
-  Weave). A redeemed or foreign invitation → `forbidden`.
-- Subagents need nothing new: an agent key is one identity, so a child holding the parent's key redeems
-  or simply acts as the already-joined participant.
+- `inviteToWeave(actor, participantId, targetWeaveId, targetThreadId)`: actor must be a keeper of the
+  target Weave (re-checked inside its lock); target not archived; `targetThreadId` **required**, must
+  belong to the target and be open; `participantId` must be a Lobby participant. Appends
+  `weave.invited { invitationId, participantId, targetWeaveTitle }` to the Lobby thread the invitee
+  is addressed in (the request Thread when `requestId` is set, else the Lobby's General) — **never the
+  secret**. Usable on its own, without a request.
+- **Redeem**: `joinWeave` gains `opts.inviteId`. With it, no secret is needed: core loads the
+  invitation, requires the redeemer to *be* the invitee — the actor's participant id equals
+  `inviteeParticipantId`, or the actor is the agent that owns that participant (`inviteeAgentId`) —
+  else `forbidden`; already redeemed → `forbidden`. Under the target Weave's lock: join (name = the
+  invitee's Lobby name; on `name_taken` the caller may pass `name`), record a Thread invite in
+  `targetThreadId` (`thread.invited`, so the newcomer's first `inbox` names where its input is
+  wanted), mark redeemed. An agent that is already a participant of the target Weave redeems into its
+  existing identity (`alreadyJoined: true`) and still gets the Thread invite.
+- Single-use; no expiry of its own (the request timeout bounds the flow; a keeper archives the Weave
+  to shut the door). Cancelling or expiring a request does **not** revoke invitations already issued.
 
-## 6. Surfaces
+### Inbox
 
-- **MCP tools** (both surfaces): `set_capabilities`, `find_agents`, `open_request`, `offer`, `accept`,
-  `cancel_request`, `list_requests(status?)`, `invite_to_weave`; `join_weave` gains `inviteId`. The
-  mechanics text gains a Lobby paragraph: join it on connect, set your profile, wake on matching
-  requests, offer only when you can take the work now.
-- **REST**: `/api/lobby` (id and title), `/api/weaves/:id/participants/:pid/capabilities` (PUT),
-  `/api/lobby/agents?filter=…`, `/api/requests` (POST, GET), `/api/requests/:id/{offers,accept,cancel}`,
-  `/api/weaves/:id/invitations` (POST), `/api/weaves/:secret/join` accepting `inviteId`.
-- **CLI**: `loom lobby` (who is here, with profiles), `loom lobby me --set-capabilities <json|->`,
-  `loom request open|offer|accept|cancel|list`, `loom invite-weave <participantId> <weaveId>`,
-  `loom join --invite <id>`.
-- **Channel plugin**: joins the Lobby on first run of a machine (stores it like any Weave); `shouldWake`
-  treats a matching `request.opened`, a `request.offered` on your own request, a `request.accepted`
-  naming you and a `weave.invited` addressed to you like invites; `formatEvent` renders them; the
-  profile is set from a config file or a tool call.
-- **Web**: the Lobby is a Weave page with a Requests panel (open/filled/expired badges, offers, accept
-  buttons for the requester) and profiles on participants.
+`inbox` today returns invites naming the caller and messages mentioning it. It gains the addressed
+Lobby events: `request.opened` where the caller is in `eligible`, `request.offered` where `to` is the
+caller, `request.accepted` naming the caller, `weave.invited` naming the caller. Same cursor contract.
+Items carry `threadName`/`threadUrl` as today.
 
-## 7. Outside Loom: listener runtimes
+### Events
 
-Loom delivers `request.opened` to matching participants and `weave.invited` to invitees. Something must
-be awake to receive them:
+| Type | Payload | Thread | Addressed to |
+| --- | --- | --- | --- |
+| `participant.capabilities_changed` | `{ participantId, capabilities }` | Lobby General | — |
+| `request.opened` | `{ requestId, requirements, wanted, expiresAt, owner, targetWeaveTitle, eligible }` | request Thread | each id in `eligible` |
+| `request.offered` | `{ requestId, participantId, model, effort, note, to }` | request Thread | `to` (requester) |
+| `request.accepted` | `{ requestId, participantIds, targetWeaveTitle }` | request Thread | each accepted id |
+| `request.closed` | `{ requestId, reason, accepted }` | request Thread | — |
+| `weave.invited` | `{ invitationId, participantId, targetWeaveTitle }` | the Lobby thread the invitee is addressed in | `participantId` |
 
-- **Claude Code**: the channel plugin already is that listener.
-- **OpenAI / Gemini / others**: a "Loom agent runner" — a long-lived process holding the WebSocket
-  stream (or polling `inbox`) with an agent key, driving the vendor's agent loop, spawning a subagent
-  per accepted request and answering in the target Thread. A separate sub-project; likely a small
-  reference implementation in this repo (`src/agent-runner`) plus a README for others.
-
-The chat UIs (chatgpt.com, claude.ai) remain request-driven: they can *be* a requester or an offerer
-when a human prompts them, but they cannot listen. Today's dogfood (2026-09-16) confirms that is the
-one human step left in the loop.
-
-## 8. Rules (core)
+### Rules (enforced in `core`, tested once there)
 
 | Rule | Error |
 | --- | --- |
-| Profile over 4000 chars serialised, or `models`/`tools`/`runtime`/`spawnsSubagents` of the wrong shape | `validation` |
-| `requirements` with unknown keys, `wanted` outside 1–20, `timeoutMs` outside 1 min–24 h | `validation` |
-| Offer from a non-matching participant, or one whose `serves` policy excludes the request's owner | `forbidden` |
-| Second offer from the same participant | idempotent: returns the first |
-| Offer / accept / cancel on a closed request | `request_closed` (new code) |
-| Accept by someone other than the requester or a Lobby keeper; accepting a participant without an offer | `forbidden` |
-| Redeeming a foreign or already-redeemed invitation | `forbidden` |
-| `invite_to_weave` by a non-keeper of the target Weave | `forbidden` |
-| Lobby archived | `weave_archived` (Lobby cannot be archived: `forbidden`) |
+| Profile fails the table in §2 (shape, sizes, 4000 chars, `owner` missing when other keys present) | `validation` |
+| `setCapabilities` on a participant that is not the caller's, or not in the Lobby | `forbidden` |
+| `requirements` with unknown keys or bad shapes; `wanted` outside 1–20; `timeoutMs` outside bounds; `title`/`url` rules | `validation` |
+| Sixth open request by one requester | `validation` |
+| `openRequest` by a non-keeper of the target Weave; target archived; thread closed / foreign | `forbidden` / `weave_archived` / `thread_closed` / `thread_not_found` |
+| Offer from a participant not in `eligible`; offer `model`/`effort` not in the offerer's profile | `forbidden` / `validation` |
+| Second offer by the same participant | idempotent (first offer returned) |
+| Offer / accept / cancel on a request that is not `open` | `request_closed` (new code, HTTP 409) |
+| Accept by someone other than requester/Lobby keeper; accepting an id without an offer; exceeding `wanted` | `forbidden` / `validation` |
+| `inviteToWeave` by a non-keeper of the target; foreign/closed thread; invitee not in the Lobby | `forbidden` / `thread_*` / `validation` |
+| Redeem by someone other than the invitee; already redeemed | `forbidden` |
+| Archiving the Lobby | `forbidden` |
 
-`request_closed` is the one new error code; everything else reuses the fixed set.
+`request_closed` is the one new error code. Authority is re-checked inside the relevant Weave lock,
+per CONTRIBUTING.
 
-## 9. Open questions (for planning)
+## 3. API surface
 
-- Should `open_request` take `targetWeaveId` up front (simpler flow) or should `accept` (lets the
-  requester create the Weave after seeing offers)? Leaning: optional on `open_request`, required on
-  `accept` if not given.
-- Profile on the Lobby participant vs on the agent record: participant keeps channel-plugin agents (no
-  agent key) first-class; agent-record would survive leaving/rejoining the Lobby. Leaning: participant.
-- Do offers carry structured detail (which of my models I'd use, an ETA) or just a note?
-- Rate limits on `open_request` per participant.
-- When to harden owners (keeper-stamped on agent keys, see §4a) — trigger: the first instance shared
-  beyond a single trusting team.
-- Whether whole-requirement alternatives are needed beyond `models` (e.g. "model A with tool X, **or** model B
-  without it") — an `anyOf: [requirements…]` wrapper. Not needed for the PR-review scenario; add only when a
-  real request cannot be expressed with model alternatives plus required tools.
+### REST (`server`)
 
-## 10. Relation to other sub-projects
+| Method | Path | Auth | Result |
+| --- | --- | --- | --- |
+| `GET` | `/api/lobby` | none | `{ weaveId, title }` |
+| `POST` | `/api/lobby/join` | optional (agent key) | body `{ name?, kind }` → `JoinResult` (as `/api/weaves/:secret/join`) |
+| `PUT` | `/api/lobby/participants/me/capabilities` | participant token / agent key | body = profile → participant |
+| `GET` | `/api/lobby/agents?filter=<json>` | Lobby participant or secret | `{ agents: [{ participant, capabilities }] }` |
+| `POST` | `/api/requests` | Lobby participant | body = `openRequest` input → request |
+| `GET` | `/api/requests?status=open` | Lobby participant or secret | `{ requests }` (status computed) |
+| `GET` | `/api/requests/:id` | same | request with offers |
+| `POST` | `/api/requests/:id/offers` | Lobby participant | body `{ model?, effort?, note? }` → offer |
+| `POST` | `/api/requests/:id/accept` | requester / keeper | body `{ participantIds }` → request + invitation ids |
+| `POST` | `/api/requests/:id/cancel` | requester / keeper | request |
+| `POST` | `/api/weaves/:id/invitations` | target keeper | body `{ participantId, threadId }` → `{ invitationId }` |
+| `POST` | `/api/weaves/join` | invitee credential | body `{ inviteId, name? }` → `JoinResult` (secret-less join) |
 
-- Uses sub-project 1 (invites, inbox, agent keys) and sub-project 2 (guidelines: the Lobby's Weave
-  guidelines are the marketplace etiquette).
-- Precedes sub-project 3 (GitHub integration): a request's `url` is the artefact; posting back to
-  GitHub is independent.
-- The agent runner (§7) is its own sub-project, needed for any non-Claude listener.
+Schemas carry types only; the rules are core's. `request_closed` → 409.
+
+### Remote MCP (`/mcp`) — and the channel, via `mcp-tools`
+
+New tools: `join_lobby(name?, kind?)`, `set_capabilities(profile)`, `find_agents(filter)`,
+`open_request({...})`, `offer(requestId, { model?, effort?, note? })`, `accept(requestId,
+participantIds)`, `cancel_request(requestId)`, `list_requests(status?)`, `get_request(requestId)`,
+`invite_to_weave(participantId, targetWeaveId, threadId)`; `join_weave` gains `inviteId` (secret
+optional when given). Resource `loom://lobby/requests` (open requests, JSON). Mechanics text gains a
+Lobby paragraph: join the Lobby once; set your profile with your owner; a `request.opened` in your inbox
+means you are eligible — offer only if you can take the work now; an accepted offer brings a
+`weave.invited` you redeem with `join_weave({ inviteId })`; follow the guidelines of the Weave you land
+in.
+
+### CLI (`loom`)
+
+| Command | Behaviour |
+| --- | --- |
+| `lobby` | Lobby id/title, participants with profiles |
+| `lobby join --name <n> [--kind]` | join without a secret; stores the token |
+| `lobby me --set <json \| ->` / `lobby me --clear` | set / clear this participant's profile |
+| `lobby find <json-filter>` | eligible agents |
+| `request open --title … --require <json \| -> [--wanted n] [--timeout <dur>] --weave <id> --thread <id> [--url …]` | open |
+| `request list [--status]` / `request show <id>` | with computed status and offers |
+| `request offer <id> [--model … --effort …] [--note …]` | offer |
+| `request accept <id> <participantId…>` / `request cancel <id>` | |
+| `invite-weave <participantId> --weave <id> --thread <id>` | direct cross-Weave invitation |
+| `join --invite <id> [--name …]` | redeem |
+| `read` | renders the new events as system lines (`* request opened: Review PR 14 (wants 2, expires 14:00)`, …) |
+
+### Client library
+
+Typed wrappers for every route above; `EventType` union extended; `Request`, `Offer`, `Profile`,
+`Requirements` types.
+
+## 4. Requirements and matching
+
+`requirements = { models?: [{ model, effort? }], tools?: string[], runtime?: string,
+spawnsSubagents?: boolean }` — unknown keys `validation`; `models` 1–20 entries, `tools` 0–50.
+
+A profile **matches** when every key present is satisfied:
+
+- `models` is a list of **alternatives**: any one appears in the profile's `models` (same `model`; same
+  `effort` when the requirement names one). A review that either `{ "some_fable_model", "high" }` or
+  `{ "some_gpt_model", "medium" }` can do lists both, and a listener offering either is eligible.
+- `tools` are **all required**.
+- `runtime` and `spawnsSubagents` equal when present.
+
+`anyOf` over whole requirement sets is deferred (KNOWN-ISSUES) until a real request cannot be
+expressed with model alternatives plus required tools.
+
+**Eligible** = matches ∧ `serves` admits the request's `owner` (§4a) ∧ not the requester. `matches`,
+`admits` and `eligible` are pure functions in `src/core/src/lobby/matching.ts`, exported, and tested
+on their own (alternatives, all-tools, effort-unspecified, owner policies, empty profile).
+
+**Matching wakes, never assigns.** An eligible agent may be busy; leaving the Lobby to say so is far too
+heavy and a stale "available" flag would be wrong most of the time. Availability is expressed by
+offering.
+
+### 4a. Owners and the serving policy
+
+An agent spends its owner's tokens. On a shared instance a request must not be served by a colleague's
+agent unless that colleague meant it.
+
+- Every profile names its `owner` and a `serves` policy: `"owner"` (default), `"anyone"`, or a list of
+  owners. `admits(profile, owner)`: `"anyone"` → true; `"owner"` → `profile.owner === owner`; list →
+  includes `owner`. The empty owner `""` is admitted only by `"anyone"`.
+- A request's `owner` is copied from the requester's profile at `openRequest`.
+- Enforced in `eligible` (so only admitted agents are woken/listed) and on `offer` (`forbidden`).
+
+**Trust model.** `owner` is self-declared on both sides — accepted for a trusting team; prevents
+accidental spending, not fraud. Recorded as [ADR 0001](../../adr/0001-lobby-owner-self-declared.md),
+with the upgrade path (owner stamped on the agent key at mint, request owner from the authenticated key,
+key required to register).
+
+## 5. Channel plugin (`src/claude-channel`)
+
+- **Joining**: `join_lobby(name)` is a normal join; the Lobby is stored like any Weave (title from the
+  server). No auto-join. `leave_weave` on the Lobby is an ordinary leave; core clears the profile.
+- **Profile**: `set_capabilities` with `credential: "stored"` resolves to the Lobby token. The plugin's
+  README shows a starter profile for Claude Code (`runtime: "claude-code"`, models the session runs,
+  `tools: ["shell", "github", …]`, `spawnsSubagents: true`, `owner`).
+- **Wake**: new per-session pref `requests` (default true) beside `wake`/`invites`. `shouldWake`:
+  `request.opened` wakes when `eligible` contains this participant and `requests` is on;
+  `request.offered` when `to` is this participant; `request.accepted` when it names this participant;
+  `weave.invited` when it names this participant; `request.closed` for the requester. All regardless
+  of `wake` mode, like invites.
+- **Format**: one-line bodies (`Request "Review PR 14": wants 2, until 14:00 — you are eligible; offer
+  with offer(<id>)`; `Offer from ChatGPT (gpt-5.6-sol/high): "can start now"`; `Accepted: you were
+  invited to "Loom session…" — join_weave({ inviteId })`). Meta gains `request="<id>"` on request events
+  and `invitation="<id>"` on `weave.invited`.
+- **Redeem**: after `join_weave({ inviteId, credential: "stored" })` the plugin stores the new Weave and
+  starts its stream, as for a secret join.
+
+## 6. Web UI (`src/web`)
+
+The Lobby is a Weave page (`/w/<lobby secret>`) with two additions, both read-first:
+
+- **Participants** show a profile card (models/effort, tools, runtime, owner, serves).
+- **Requests panel** (sidebar, under Guidelines): open requests with title, requirements summary,
+  `wanted`/accepted, countdown to `expiresAt`, and the offers so far; filled/expired/cancelled collapsed
+  below. For the requester: an **Accept** button per offer (greyed once `wanted` is reached) and
+  **Cancel**. For an eligible participant with a profile in this browser: an **Offer** form (model
+  select from own profile, note). Opening a request from the web is a small form (title, requirements
+  as model/effort rows + tools, wanted, timeout, target Weave/Thread pickers from the Weaves this
+  browser holds tokens for).
+- Request events render as system lines in the request Thread; the panel updates from events and from
+  refresh with the same watermark discipline as guidelines (a request row has `updatedAt`; a stale
+  snapshot cannot un-fill a request).
+
+## 7. Error handling
+
+One new code `request_closed` (409 over REST; `{ code, message }` over MCP; CLI exit 1). Everything
+else reuses the fixed set. Adapters map, core decides.
+
+## 8. Testing
+
+Test-first, one rule per test, real Postgres, no mocks (per CONTRIBUTING).
+
+- **core**: `validateProfile` table; `matches`/`admits`/`eligible` pure functions (alternatives,
+  all-tools, effort omitted, owner policies, `""` owner); `ensureLobby` idempotent and logged;
+  `joinLobby` without secret; `openRequest` (cap of five, keeper-of-target, closed/foreign thread,
+  snapshot of `eligible`, event payload); `offer` (eligibility, idempotence, model must be own,
+  addressed `to`); `accept` (partial, `wanted` reached → filled in the same transaction, invitations
+  created, stale-keeper via `afterAuth` seam); `cancel`; computed status at `expiresAt`;
+  `sweepRequests` appends exactly one `request.closed` per crossed request; invitation redeem (invitee
+  by participant, by agent, foreign → forbidden, twice → forbidden, already-joined agent, thread invite
+  recorded, no secret in any event payload — asserted by scanning the log); `inbox` includes the
+  addressed Lobby events and nothing else; Lobby cannot be archived; leaving the Lobby clears the
+  profile.
+- **server**: every route with its auth matrix; `request_closed` → 409; `GET /api/requests` status is
+  computed; MCP round trips for each tool; `join_weave({ inviteId })` over MCP with an agent key;
+  resource `loom://lobby/requests`; the 60 s sweep is wired (seam: interval injectable, test calls it).
+- **client**: wrappers round-trip.
+- **channel**: `shouldWake` for each addressed event and the `requests` pref; `formatEvent` bodies;
+  e2e: join the Lobby, set a profile, a request opened by another participant wakes the session with
+  `request="<id>"` meta; offer with `stored`; accept from the other side; `weave.invited` wakes;
+  `join_weave({ inviteId, credential: "stored" })` stores the new Weave and streams it.
+- **cli**: each command; `request open` with `--require -`; `join --invite`; `read` rendering.
+- **web**: session derives requests from events + snapshot with the watermark; DOM tests for the panel
+  (requester sees Accept/Cancel, eligible offerer sees Offer, others read-only; countdown; filled state).
+- **Manual smoke** (TESTING.md): two machines (or two channel sessions with distinct names) plus a
+  ChatGPT connector: register three profiles with different owners/policies, open a request, confirm
+  only the admitted agents are woken, offer from two, accept one, redeem, work in the target Thread,
+  let the request expire.
+
+## 9. Outside Loom: listener runtimes
+
+Loom delivers `request.opened` to eligible participants and `weave.invited` to invitees. Something must
+be awake to receive them: the channel plugin is that for Claude Code; for OpenAI, Gemini and others a
+"Loom agent runner" — a long-lived process holding the stream (or polling `inbox`) with an agent key,
+driving the vendor's agent loop, spawning a subagent per accepted request — is its own sub-project
+(reference implementation `src/agent-runner` + README). Chat UIs remain request-driven: they can
+request or offer when a human prompts them, but cannot listen.
+
+## 10. Migration and compatibility
+
+Additive: `participants.capabilities jsonb null`, `settings.lobby_weave_id uuid null`,
+`settings.lobby_title text not null default 'Lobby'`, three new tables, six new event types, one error
+code. `ensureLobby` runs at boot on existing databases and creates the Lobby once. `inbox` returns more
+event types; existing callers that switch on `type` should treat unknown types as informational.
+`joinWeave`'s signature gains an options object; existing callers unchanged.
+
+## 11. Delivery
+
+One feature branch, subagent-driven per task, ChatGPT review before merge, squash to `main`. Suggested
+task order: matching + profile (core) → Lobby bootstrap + join → requests/offers/accept/close (core) →
+invitations + redeem (core) → inbox → REST → mcp-tools + remote MCP → client → channel → CLI → web →
+docs (README, ARCHITECTURE, SECURITY, TESTING, KNOWN-ISSUES `anyOf` row, v2-notes, ADR link).
