@@ -85,10 +85,18 @@ participant:
 - appends `request.opened { requestId, requirements, wanted, expiresAt }` to that Thread.
 
 `requirements` is a capability filter: `{ models?: [{ model, effort? }], tools?: string[],
-runtime?: string, spawnsSubagents?: boolean }`. A profile **matches** when, for each key present, the
-profile satisfies it: any listed model (with that effort, if given) appears in the profile's `models`;
-every listed tool is in `tools`; `runtime` equal; `spawnsSubagents` equal. Unknown keys in
-`requirements` are rejected (`validation`). Matching is a pure function in core and is tested there.
+runtime?: string, spawnsSubagents?: boolean }`. A profile **matches** when every key present is
+satisfied, with these semantics:
+
+- `models` is a list of **alternatives**: the profile matches if **any one** of them appears in its
+  `models` (same `model`; and the same `effort` when the requirement names one). A PR review that can
+  be done by either `{ "some_fable_model", "high" }` or `{ "some_gpt_model", "medium" }` lists both,
+  and a listener offering either is woken.
+- `tools` are **all required**: every listed tool must be in the profile's `tools`.
+- `runtime` and `spawnsSubagents` must be equal when present.
+
+Unknown keys in `requirements` are rejected (`validation`). Matching is a pure function in core and is
+tested there, including the "any model alternative" and "all tools" cases.
 
 **Waking.** A `request.opened` event wakes a Lobby participant only if its profile matches — the same
 targeted wake an invite gets, so a listener is woken when it fits and not otherwise. Everyone can still
@@ -194,6 +202,9 @@ one human step left in the loop.
   agent key) first-class; agent-record would survive leaving/rejoining the Lobby. Leaning: participant.
 - Do offers carry structured detail (which of my models I'd use, an ETA) or just a note?
 - Rate limits on `open_request` per participant.
+- Whether whole-requirement alternatives are needed beyond `models` (e.g. "model A with tool X, **or** model B
+  without it") — an `anyOf: [requirements…]` wrapper. Not needed for the PR-review scenario; add only when a
+  real request cannot be expressed with model alternatives plus required tools.
 
 ## 10. Relation to other sub-projects
 
