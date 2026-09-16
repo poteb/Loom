@@ -157,8 +157,10 @@ timeoutMs = 3_600_000, targetWeaveId, targetThreadId, url? }`:
 4. **Cap**: at most 5 requests in `open` state per requester (`validation`, "too many open requests").
 5. Under the Lobby's Weave lock: create the Thread (`title`, `url`), the request row, and compute
    `eligible` = ids of Lobby participants whose profile matches and whose `serves` admits `owner`
-   (excluding the requester). Append `thread.created` and `request.opened { requestId, requesterId,
-   requirements, wanted, expiresAt, owner, targetWeaveTitle, eligible }`; `lastEventSeq` = that seq.
+   (excluding the requester). Append `thread.created` — whose payload carries `requestId` (the Thread
+   row too: `threads.requestId uuid null`), marking it a request Thread — and `request.opened {
+   requestId, requesterId, requirements, wanted, expiresAt, owner, targetWeaveTitle, eligible }`;
+   `lastEventSeq` = the latter's seq.
 
 `eligible` is a **snapshot**: profiles changed after opening do not re-match. Returns the request
 (§3 shape) with `eligible`.
@@ -207,7 +209,7 @@ no accepted offer without its invitation, no invitation without its event.
 ever sees a stale `open`. `sweepRequests(now)` (called by the server every 60 s, and by tests directly)
 closes crossed-deadline rows as `expired`. Every close — filled, expired, cancelled — appends
 `request.closed { requestId, requesterId, to: requesterId, reason, accepted: [participantIds] }` to the
-request Thread and closes the Thread (`thread.closed`), under the Lobby lock; `to` names the requester
+request Thread and closes the Thread (`thread.closed`, payload carrying `requestId`), under the Lobby lock; `to` names the requester
 so the close is **addressed** even when the sweeper or a cancelling keeper, not the requester, caused
 it. Invitations already issued stay valid.
 
@@ -253,8 +255,13 @@ opening event can still act on a later one by calling `get_request(requestId)`.
 | `request.accepted` | `{ requestId, requesterId, participantIds, targetWeaveTitle }` | request Thread | each accepted id |
 | `request.closed` | `{ requestId, requesterId, to, reason, accepted }` | request Thread | `to` (requester) |
 | `weave.invited` | `{ invitationId, participantId, targetWeaveTitle }` | the Lobby thread the invitee is addressed in | `participantId` |
+| `thread.created` / `thread.closed` **with `requestId`** (companions of a request Thread) | as today + `{ requestId }` | request Thread | — (never wake: the addressed request event beside them does) |
 
 All Lobby events are **addressed-only**: they wake nobody through a Weave's "all events" mode (§5).
+That includes the companion `thread.created`/`thread.closed` of a request Thread, identified by the
+`requestId` in their payload — opening a request must not wake an ineligible agent through the ordinary
+Thread event, and `requests: false` must silence the whole opening and closing sequence. Messages
+posted into a request Thread by hand follow the normal rules (mentions, or all-events mode).
 
 ### Rules (enforced in `core`, tested once there)
 
@@ -399,6 +406,8 @@ key required to register).
   - `request.offered`, `request.closed` → wakes iff `to` is this participant.
   - `request.accepted` → wakes iff `participantIds` contains this participant.
   - `weave.invited` → wakes iff `participantId` is this participant and `invites` is on.
+  - `thread.created` / `thread.closed` whose payload carries `requestId` → never wake (their addressed
+    companion `request.opened` / `request.closed` is what wakes).
   - any of the above otherwise → `false`, even in `wake: "all"`.
   So Bob's agent, joined to the Lobby in all-events mode, is not woken by Paw's request (it is not in
   `eligible`), and `requests: false` silences requests without silencing invites. Tested in both wake
@@ -467,7 +476,10 @@ Test-first, one rule per test, real Postgres, no mocks (per CONTRIBUTING).
 - **client**: wrappers round-trip.
 - **channel**: `shouldWake` for every Lobby event type in **both** wake modes, positive and negative
   (a non-eligible participant in `wake: "all"` is not woken; `requests: false` silences requests but
-  not invites); `formatEvent` bodies; leaving the Lobby: server down → leave rejected and credential
+  not invites); the **complete opening sequence** (`thread.created{requestId}` + `request.opened`) and
+  **closing sequence** (`request.closed` + `thread.closed{requestId}`) delivered to an ineligible
+  listener in `wake: "all"` and to an eligible listener with `requests: false` produce zero wakes, while
+  an eligible listener with `requests: true` is woken exactly once per sequence; `formatEvent` bodies; leaving the Lobby: server down → leave rejected and credential
   kept, server back → profile null then credential removed, `force` drops the credential with a
   warning; a restored mentions-only session whose cursor is past the opening event receives an
   expiry (`request.closed` with `to`) and is woken with a body it can act on via `get_request`; e2e:
@@ -494,7 +506,7 @@ request or offer when a human prompts them, but cannot listen.
 
 ## 10. Migration and compatibility
 
-Additive: `participants.capabilities jsonb null`, `settings.lobby_weave_id uuid null`,
+Additive: `participants.capabilities jsonb null`, `threads.request_id uuid null`, `settings.lobby_weave_id uuid null`,
 `settings.lobby_title text not null default 'Lobby'`, three new tables, six new event types, one error
 code. `ensureLobby` runs at boot on existing databases and creates the Lobby once. `inbox` returns more
 event types; existing callers that switch on `type` should treat unknown types as informational.
