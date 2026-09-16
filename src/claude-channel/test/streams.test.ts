@@ -30,7 +30,7 @@ function weaveInfo(extraThreads: Thread[] = [], guidelines = ""): WeaveInfo {
       { id: "t1", weaveId: WEAVE_ID, name: "Existing", isGeneral: false, createdBy: "p1", createdAt: "", closedAt: null, url: null },
       ...extraThreads,
     ],
-    participants: [{ id: "p1", weaveId: WEAVE_ID, name: "Claude", kind: "agent" as const, role: "member" as const, joinedAt: "", agentId: null }],
+    participants: [{ id: "p1", weaveId: WEAVE_ID, name: "Claude", kind: "agent" as const, role: "member" as const, joinedAt: "", agentId: null, capabilities: null }],
     guidelines,
   };
 }

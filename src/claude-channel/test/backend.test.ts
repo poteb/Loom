@@ -16,7 +16,7 @@ function makeState(): ChannelState {
 }
 
 function participant(name: string): Participant {
-  return { id: "p2", weaveId: WEAVE_ID, name, kind: "agent", role: "member", joinedAt: "", agentId: null };
+  return { id: "p2", weaveId: WEAVE_ID, name, kind: "agent", role: "member", joinedAt: "", agentId: null, capabilities: null };
 }
 
 function weaveInfo(): WeaveInfo {

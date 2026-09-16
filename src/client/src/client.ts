@@ -2,7 +2,9 @@ import { request } from "./http.js";
 import { resolveBaseUrl } from "./url.js";
 import { openStream, type StreamHandle, type StreamOptions } from "./stream.js";
 import type {
-  Agent, CreateWeaveInput, CreateWeaveResult, InboxItem, InviteResult, JoinResult, Keeper, Kind, LoomEvent, Participant, Role, Settings, Thread, Weave, WeaveInfo,
+  AcceptResult, Agent, AgentFilter, CreateWeaveInput, CreateWeaveResult, FoundAgent, InboxItem, InvitationResult, InviteResult,
+  JoinResult, Keeper, Kind, Lobby, LoomEvent, LoomRequest, Offer, OpenRequestInput, Participant, Profile, RequestStatus,
+  Role, Settings, Thread, Weave, WeaveInfo,
 } from "./types.js";
 
 export type LoomClientOptions = { baseUrl: string; token?: string; allowInsecure?: boolean; fetch?: typeof fetch };
@@ -96,6 +98,66 @@ export class LoomClient {
   setWeaveGuidelines(weaveId: string, guidelines: string): Promise<{ weave: Weave; seq: number | null }> {
     return this.call("PUT", `/api/weaves/${weaveId}/guidelines`, { guidelines });
   }
+  // --- Lobby -------------------------------------------------------------
+  // The Lobby is one Weave per instance, so none of these name one.
+
+  /** Public: where the Lobby is, answered before the caller holds any credential. */
+  getLobby(): Promise<Lobby> {
+    return this.call("GET", "/api/lobby");
+  }
+  /** No secret: anyone who can reach the instance may join. An agent key supplies its own name. */
+  joinLobby(who: { name?: string; kind: Kind }): Promise<JoinResult> {
+    return this.call("POST", "/api/lobby/join", who);
+  }
+  /** Sets this client's own Lobby profile; `null` clears it, which is what a listener does before
+   *  it drops its credential, so no eligible profile is left with nobody behind it. */
+  setCapabilities(profile: Profile | null): Promise<Participant> {
+    return this.call("PUT", "/api/lobby/participants/me/capabilities", profile);
+  }
+  /** The Lobby participants whose profile satisfies `filter`; `filter.owner` restricts to those
+   *  whose serving policy admits that owner. */
+  async findAgents(filter: AgentFilter = {}): Promise<FoundAgent[]> {
+    const r = await this.call<{ agents: FoundAgent[] }>("GET", `/api/lobby/agents?filter=${encodeURIComponent(JSON.stringify(filter))}`);
+    return r.agents;
+  }
+
+  // --- Requests ----------------------------------------------------------
+
+  /** Opens a request. This client's token is the Lobby identity; `targetCredential` in the input is
+   *  the authority in the Weave the helpers will be invited into (see the type). */
+  openRequest(input: OpenRequestInput): Promise<LoomRequest> {
+    return this.call("POST", "/api/requests", input);
+  }
+  /** Open requests read `expired` once their deadline passes, whether or not the sweeper has been. */
+  async listRequests(status?: RequestStatus): Promise<LoomRequest[]> {
+    const r = await this.call<{ requests: LoomRequest[] }>("GET", `/api/requests${status ? `?status=${encodeURIComponent(status)}` : ""}`);
+    return r.requests;
+  }
+  getRequest(requestId: string): Promise<LoomRequest> {
+    return this.call("GET", `/api/requests/${requestId}`);
+  }
+  /** Says "I can take this". A second offer is the same answer, not a second one. */
+  offer(requestId: string, input: { model?: string; effort?: string; note?: string } = {}): Promise<Offer> {
+    return this.call("POST", `/api/requests/${requestId}/offers`, input);
+  }
+  /** The requester (or a Lobby keeper on its behalf) accepts offers; each accepted listener is
+   *  handed one invitation into the target Weave. */
+  acceptRequest(requestId: string, participantIds: string[]): Promise<AcceptResult> {
+    return this.call("POST", `/api/requests/${requestId}/accept`, { participantIds });
+  }
+  cancelRequest(requestId: string): Promise<LoomRequest> {
+    return this.call("POST", `/api/requests/${requestId}/cancel`);
+  }
+  /** A keeper of `weaveId` hands a Lobby participant a single-use way in. Usable without a request. */
+  inviteToWeave(weaveId: string, participantId: string, threadId: string): Promise<InvitationResult> {
+    return this.call("POST", `/api/weaves/${weaveId}/invitations`, { participantId, threadId });
+  }
+  /** Redeems an invitation with this client's own credential: no secret, and the target Weave is
+   *  the invitation's. `name` is only needed when the invitee's Lobby name is taken there. */
+  joinByInvite(inviteId: string, name?: string): Promise<JoinResult> {
+    return this.call("POST", "/api/weaves/join", name === undefined ? { inviteId } : { inviteId, name });
+  }
+
   async wsTicket(): Promise<string> {
     const r = await this.call<{ ticket: string }>("POST", "/api/auth/ws-ticket");
     return r.ticket;
