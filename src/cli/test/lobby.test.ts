@@ -128,6 +128,18 @@ describe("loom lobby", () => {
     expect(asKeeper.out).toContain(`web: ${s.baseUrl}/w/${secret}`);
   });
 
+  // The keeper token is asked for the secret, which is a bonus; a stale one in the environment must
+  // not take every Lobby and request command down with it.
+  it("works with a bogus LOOM_KEEPER_TOKEN, minus the web URL", async () => {
+    const cfg = newCfg();
+    const env = { LOOM_KEEPER_TOKEN: keeperToken("revoked") };
+    await run(["lobby", "join", "--name", uniq("Stale"), "--json"], { cfg, env });
+    const listed = await run(["lobby"], { cfg, env });
+    expect(listed.code).toBe(0);
+    expect(listed.out).not.toContain("web:");
+    expect((await run(["lobby", "find", "{}", "--json"], { cfg, env })).code).toBe(0);
+  });
+
   it("lobby marks a participant with no profile", async () => {
     const cfg = newCfg();
     const name = uniq("Bare");

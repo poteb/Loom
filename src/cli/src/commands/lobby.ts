@@ -9,12 +9,27 @@ import { emit } from "../output.js";
  * other join — and an agent key stands in for that stored token exactly as `resolveWeave` lets it.
  */
 export async function lobbyContext(c: CliContext): Promise<{ lobby: Lobby; client: LoomClient }> {
-  // Asked with the keeper token when the caller has one: the route answers everyone, but only an
-  // instance keeper is told the Lobby's own secret, and `loom lobby` prints the page it opens.
-  const lobby = await c.client(c.io.env.LOOM_KEEPER_TOKEN).getLobby();
+  const lobby = await whereTheLobbyIs(c);
   const token = c.io.env.LOOM_AGENT_KEY ?? c.config.weaves[lobby.weaveId]?.token;
   if (!token) throw new CliError("no_lobby_token", `No Lobby identity: run "loom lobby join --name <name>" first`);
   return { lobby, client: c.client(token) };
+}
+
+/**
+ * Where the Lobby is. Asked with the keeper token when the environment has one, because only an
+ * instance keeper is told the Lobby's own secret and `loom lobby` prints the page it opens — but
+ * that secret is a bonus, never a precondition: a keeper token that has been revoked (or was never
+ * one) must not take `lobby find`, `request offer` and the rest down with it, so a refused
+ * keeper-authenticated lookup is retried anonymously, which is what every caller actually needs.
+ */
+async function whereTheLobbyIs(c: CliContext): Promise<Lobby> {
+  const keeper = c.io.env.LOOM_KEEPER_TOKEN;
+  if (!keeper) return c.client().getLobby();
+  try {
+    return await c.client(keeper).getLobby();
+  } catch {
+    return c.client().getLobby();
+  }
 }
 
 /** JSON typed on the command line (or piped in with `-`). What a legal value contains is core's rule. */
