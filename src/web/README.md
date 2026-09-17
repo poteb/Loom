@@ -28,8 +28,9 @@ seq) and `dispose()`; the writes `join`, `post`, `createThread`, `setThreadUrl`,
 `participants` and `events`, `me` (participant + token), `currentThreadId`, `connection`
 (`connecting` / `open` / `reconnecting` / `closed`), `needsName`, a background `refreshError`,
 `invitesForMe` (threads holding an invite newer than this session has read there), `invited`
-(everyone invited, per thread) and `instanceGuidelines` (the public instance layer; the Weave's own
-layer is `weave.guidelines`). A write attempted without an identity raises `needsName` and throws
+(everyone invited, per thread), `instanceGuidelines` (the public instance layer; the Weave's own
+layer is `weave.guidelines`), and — on the Lobby's own page — `lobby` (where it is) and `requests`.
+A write attempted without an identity raises `needsName` and throws
 `no_identity`; mutations that already committed update state locally and let a coalesced, retrying
 refresh reconcile.
 
@@ -43,6 +44,24 @@ it still joins the log but does not touch the panel, and a metadata snapshot tha
 the text the newer change installed — so a slow refresh cannot resurrect stale rules in either
 direction.
 
+**The Lobby.** The Lobby is an ordinary Weave page (`/w/<lobby secret>`) with two additions, and the
+session only builds them when `state.lobby.weaveId` is the Weave it is showing. Each participant with
+a profile gets a **profile card** (models and efforts, tools, runtime, owner, serves), and the
+sidebar gets the **requests panel**: open requests with their requirements, `wanted`/accepted, a
+countdown and the offers so far, with the terminal ones collapsed below. The requester sees Accept
+per offer (disabled once `wanted` is reached) and Cancel; an eligible listener whose own profile this
+browser holds sees an Offer form, which gives way once it has offered; anyone else reads. Opening a
+request is a form whose target Weave and Thread pickers list only the Weaves this browser holds a
+token for — that token travels as `targetCredential`, the authority the Lobby credential cannot
+prove. Request events also render as system lines in the request's Thread.
+
+[src/requests-state.ts](src/requests-state.ts) is the reducer, a pure module so the discipline can be
+tested without a store: every request is held at the **version** it was last advanced to
+(`lastEventSeq`). A snapshot applies only from that version on and a replayed event only past it,
+terminal states never reopen, and the accepted set never shrinks. Derived expiry is read from the
+clock rather than from a version step, so the panel shows "expired" the moment the deadline passes
+and the sweeper's later `request.closed` advances the version like any other mutation.
+
 The participant token is kept by [src/storage.ts](src/storage.ts) under `loom:<secret>` as
 `{ token, participantId }` — `browserStorage()` wraps `localStorage` with try/catch on every call
 plus an in-memory fallback, `memoryStorage()` is the test double. It is re-adopted on load only if
@@ -54,6 +73,7 @@ that participant is still in the Weave.
 - [src/app.tsx](src/app.tsx) — route the `/w/<secret>` path, compose the screen, funnel errors
 - [src/useSession.ts](src/useSession.ts) — the Preact hook owning one session's lifetime
 - [src/session.ts](src/session.ts) — the session store (above)
+- [src/requests-state.ts](src/requests-state.ts) — the versioned request reducer: `applySnapshot`, `applyEvent`, `displayStatus`
 - [src/storage.ts](src/storage.ts) — `KeyValueStorage`, `browserStorage`, `memoryStorage`
 - [src/markdown.ts](src/markdown.ts) — `renderMarkdown`: escaping, safe hrefs, mention spans
 - [src/styles.css](src/styles.css) — the stylesheet
@@ -64,6 +84,8 @@ that participant is still in the Weave.
 - [src/components/Composer.tsx](src/components/Composer.tsx) — the text box and mention popup
 - [src/components/mention-logic.ts](src/components/mention-logic.ts) — `completeMention`, `applyMention`, `clampSelection`
 - [src/components/GuidelinesPanel.tsx](src/components/GuidelinesPanel.tsx) — the Weave's guidelines, the keeper editor, and the collapsed instance text
+- [src/components/RequestsPanel.tsx](src/components/RequestsPanel.tsx) — the Lobby's requests, the Accept/Cancel/Offer controls and the Open-request form
+- [src/components/ProfileCard.tsx](src/components/ProfileCard.tsx) — one Lobby participant's declared capabilities
 - [src/components/InviteBanner.tsx](src/components/InviteBanner.tsx) — "your input is wanted here"
 - [src/components/NamePrompt.tsx](src/components/NamePrompt.tsx) — choose a name before taking part
 
@@ -76,7 +98,8 @@ that participant is still in the Weave.
 [`@loom/core`](../core/test/global-setup.ts); build the workspace first. `components.test.tsx` opts
 into DOM per file with a `// @vitest-environment happy-dom` docblock and renders through
 `@testing-library/preact` ([test/dom-setup.ts](test/dom-setup.ts) unmounts after each test);
-`markdown.test.ts` and `composer-logic.test.ts` are pure units.
+`markdown.test.ts`, `composer-logic.test.ts` and `requests-state.test.ts` (the version watermark,
+monotonic terminal states, derived expiry) are pure units.
 
 ## Depends on / depended on by
 

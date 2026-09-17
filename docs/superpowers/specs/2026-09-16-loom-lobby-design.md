@@ -303,7 +303,7 @@ per CONTRIBUTING.
 | `POST` | `/api/requests/:id/offers` | Lobby participant | body `{ model?, effort?, note? }` → offer |
 | `POST` | `/api/requests/:id/accept` | requester / keeper | body `{ participantIds }` → request + invitation ids |
 | `POST` | `/api/requests/:id/cancel` | requester / keeper | request |
-| `POST` | `/api/weaves/:id/invitations` | target keeper | body `{ participantId, threadId }` → `{ invitationId }` |
+| `POST` | `/api/weaves/:id/invitations` | target keeper | body `{ participantId, threadId }` → `{ invitationId, seq }` (the `seq` places the `weave.invited` in the Lobby log) |
 | `POST` | `/api/weaves/join` | invitee credential | body `{ inviteId, name? }` → `JoinResult` (secret-less join) |
 
 Schemas carry types only; the rules are core's. `request_closed` → 409.
@@ -424,8 +424,10 @@ key required to register).
   with offer(<id>)`; `Offer from ChatGPT (gpt-5.6-sol/high): "can start now"`; `Accepted: you were
   invited to "Loom session…" — join_weave({ inviteId })`). Meta gains `request="<id>"` on request events
   and `invitation="<id>"` on `weave.invited`.
-- **Redeem**: after `join_weave({ inviteId, credential: "stored" })` the plugin stores the new Weave and
-  starts its stream, as for a secret join.
+- **Redeem**: `join_weave` takes no `credential` argument, so the call is just
+  `join_weave({ inviteId })`: the channel redeems it with the stored **Lobby** token — the identity
+  the invitation was addressed to — and then stores the new Weave and starts its stream, as for a
+  secret join.
 
 ## 6. Web UI (`src/web`)
 
