@@ -8,6 +8,8 @@ import { Composer } from "./components/Composer.js";
 import { NamePrompt } from "./components/NamePrompt.js";
 import { InviteBanner } from "./components/InviteBanner.js";
 import { GuidelinesPanel } from "./components/GuidelinesPanel.js";
+import { RequestsPanel } from "./components/RequestsPanel.js";
+import { ProfileCards } from "./components/ProfileCard.js";
 
 function secretFromPath(): string | null {
   const m = /^\/w\/([A-Za-z0-9_-]{43})\/?$/.exec(location.pathname);
@@ -77,6 +79,9 @@ function Weave({ secret }: { secret: string }) {
         <aside class="sidebar">
           <ThreadList state={state} session={session} onError={reportError} />
           <GuidelinesPanel state={state} session={session} onError={reportError} />
+          {/* Both render nothing away from the Lobby, so every other Weave's sidebar is unchanged. */}
+          <RequestsPanel state={state} session={session} onError={reportError} />
+          <ProfileCards state={state} />
         </aside>
         <div class="main">
           {archived && <div class="banner">This Weave is archived and read-only.</div>}

@@ -19,7 +19,7 @@ describe("ChannelState", () => {
     expect(existsSync(st.file)).toBe(true);
     const again = new ChannelState(dir, "s1");
     expect(again.get().weaves.w1).toEqual({ ...w, lastSeq: 7 }); // the machine-wide field is no longer written
-    expect(again.prefs("w1")).toEqual({ wake: "mentions", invites: true });
+    expect(again.prefs("w1")).toEqual({ wake: "mentions", invites: true, requests: true });
     expect(again.cursor("w1")).toBe(7);
     await again.removeWeave("w1");
     expect(new ChannelState(dir, "s1").get().weaves).toEqual({});
@@ -346,12 +346,34 @@ describe("ChannelState", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
     const a = new ChannelState(dir, "sA");
     await a.upsertWeave("w1", { ...w, wake: "mentions" });           // legacy machine-wide value
-    expect(a.prefs("w1")).toEqual({ wake: "mentions", invites: true });
-    expect(await a.setPrefs("w1", { invites: false })).toEqual({ wake: "mentions", invites: false });
+    expect(a.prefs("w1")).toEqual({ wake: "mentions", invites: true, requests: true });
+    expect(await a.setPrefs("w1", { invites: false })).toEqual({ wake: "mentions", invites: false, requests: true });
     await a.setPrefs("w1", { wake: "all" });
-    expect(new ChannelState(dir, "sA").prefs("w1")).toEqual({ wake: "all", invites: false });
-    expect(new ChannelState(dir, "sB").prefs("w1")).toEqual({ wake: "mentions", invites: true }); // untouched by sA
-    expect(new ChannelState(dir, "sB").prefs("unknown")).toEqual({ wake: "all", invites: true });
+    expect(new ChannelState(dir, "sA").prefs("w1")).toEqual({ wake: "all", invites: false, requests: true });
+    expect(new ChannelState(dir, "sB").prefs("w1")).toEqual({ wake: "mentions", invites: true, requests: true }); // untouched by sA
+    expect(new ChannelState(dir, "sB").prefs("unknown")).toEqual({ wake: "all", invites: true, requests: true });
+  });
+
+  it("the requests preference defaults to on and persists per session", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+    const a = new ChannelState(dir, "sA");
+    await a.upsertWeave("w1", w);
+    expect(a.prefs("w1")).toEqual({ wake: "all", invites: true, requests: true });
+    expect(await a.setPrefs("w1", { requests: false })).toEqual({ wake: "all", invites: true, requests: false });
+    expect(new ChannelState(dir, "sA").prefs("w1")).toEqual({ wake: "all", invites: true, requests: false });
+    expect(new ChannelState(dir, "sB").prefs("w1")).toEqual({ wake: "all", invites: true, requests: true }); // untouched by sA
+  });
+
+  it("remembers which stored Weave is the Lobby across a reload", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "loom-ch-"));
+    const st = new ChannelState(dir, "s1");
+    await st.upsertWeave("w1", w);
+    await st.upsertWeave("L", { ...w, title: "Lobby", isLobby: true });
+    expect(st.lobbyEntry()).toEqual({ weaveId: "L", weave: { ...w, title: "Lobby", isLobby: true } });
+    const again = new ChannelState(dir, "s1");
+    expect(again.lobbyEntry()?.weaveId).toBe("L");
+    await again.removeWeave("L");
+    expect(new ChannelState(dir, "s1").lobbyEntry()).toBeUndefined();
   });
 
   it("sessionIdFrom uses CLAUDE_CODE_SESSION_ID, else a per-process id", () => {

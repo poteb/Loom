@@ -1,5 +1,5 @@
-import { LoomClient, LoomClientError, type Kind, type Role, type Settings } from "@loom/client";
-import type { LoomToolBackend } from "@loom/mcp-tools";
+import { LoomClient, LoomClientError, type AgentFilter, type Kind, type Profile, type Requirements, type RequestStatus, type Role, type Settings } from "@loom/client";
+import { LoomToolError, type JoinWeaveOptions, type LoomToolBackend, type OfferInput, type OpenRequestInput } from "@loom/mcp-tools";
 import type { ChannelState, JoinedWeave } from "./state.js";
 
 export type JoinHooks = {
@@ -35,8 +35,12 @@ export class ClientToolBackend implements LoomToolBackend {
    * irreversible and consumes the chosen name, so a metadata failure after a successful join would
    * lose the issued token and make a retry fail with `name_taken`. Order: lookup -> getWeave -> join
    * -> persist the token -> hooks. The connection-wide agent key other backends pass through is
-   * ignored here: the channel stores the participant identity it creates and reuses that instead. */
-  async joinWeave(secret: string, who: { name?: string; kind: Kind }, _credential?: string) {
+   * ignored on this path: the channel stores the participant identity it creates and reuses that
+   * instead. (An `inviteId` redemption does use a credential — see redeemInvite.) */
+  async joinWeave(secret: string, who: { name?: string; kind: Kind }, credential?: string, opts?: JoinWeaveOptions) {
+    // Redeeming an invitation is a different join: no secret, and the credential that proves this is
+    // the invitee is the Lobby identity the channel stored (or an explicit one, if given).
+    if (opts?.inviteId !== undefined) return this.redeemInvite(opts.inviteId, who.name, credential);
     const weaveId = await this.client.lookupWeave(secret);
     // Already joined under this name: hand back the stored identity rather than consuming the name
     // a second time (which the server refuses with name_taken). Falls through to a fresh join if the
@@ -44,7 +48,7 @@ export class ClientToolBackend implements LoomToolBackend {
     const stored = this.state.load().weaves[weaveId];
     if (stored && who.name !== undefined && sameName(stored.participantName, who.name)) {
       const reused = await this.reuseStored(weaveId, stored);
-      if (reused) return reused;
+      if (reused) { await this.flagIfLobby(weaveId); return reused; }
     }
     const info = await this.as(secret).getWeave(weaveId);
     const general = info.threads.find((t) => t.isGeneral) ?? info.threads[0]!;
@@ -58,7 +62,7 @@ export class ClientToolBackend implements LoomToolBackend {
         const raced = this.state.load().weaves[weaveId];
         if (raced && who.name !== undefined && sameName(raced.participantName, who.name)) {
           const reused = await this.reuseStored(weaveId, raced);
-          if (reused) return reused;
+          if (reused) { await this.flagIfLobby(weaveId); return reused; }
         }
       }
       throw e;
@@ -68,8 +72,21 @@ export class ClientToolBackend implements LoomToolBackend {
       generalThreadId: general.id, wake: "all", lastSeq: 0,
     };
     await this.state.upsertWeave(j.weaveId, joined);
+    await this.flagIfLobby(j.weaveId);
     await this.hooks.onJoined(j.weaveId, joined);
     return j;
+  }
+  /**
+   * Flags a stored Weave as the Lobby when it is the Lobby, whatever way it was joined — by secret,
+   * or by redeeming an invitation into it. `join_lobby` is not the only door, and an identity that
+   * reached the Lobby through another one must still clear its profile before leaving (spec 5).
+   * One cheap public call; if it cannot be made the join stands unflagged, and `leave_weave` asks
+   * again rather than dropping the credential on a guess.
+   */
+  private async flagIfLobby(weaveId: string): Promise<void> {
+    try {
+      if ((await this.client.getLobby()).weaveId === weaveId) await this.state.markLobby(weaveId);
+    } catch { /* not knowable now; leave_weave checks again for an entry without the flag */ }
   }
   /** Validates a stored identity with its own token and re-arms its stream. Returns undefined only
    * when the identity is definitively dead (token rejected, Weave gone, participant removed); a
@@ -118,4 +135,70 @@ export class ClientToolBackend implements LoomToolBackend {
   setWeaveGuidelines(c: string, w: string, g: string) { return this.as(c).setWeaveGuidelines(w, g); }
   getInstanceGuidelines() { return this.client.getInstanceGuidelines(); }
   async getGuidelines(c: string, w: string) { return (await this.as(c).getWeave(w)).guidelines; }
+
+  // --- Lobby ---------------------------------------------------------------
+  // The Lobby is stored like any other Weave, plus an `isLobby` flag: that is what makes
+  // `credential: "stored"` mean something for the Lobby tools (resolved in stored.ts) and what
+  // makes leave_weave clear the profile first.
+  getLobby() { return this.client.getLobby(); }
+
+  /** A secret-less join, otherwise exactly joinWeave: the identity is persisted and its stream
+   * opened, and a repeat join under the stored name hands back the stored identity rather than
+   * burning the name a second time. */
+  async joinLobby(who: { name?: string; kind: Kind }, _credential?: string) {
+    const { weaveId } = await this.client.getLobby();
+    const stored = this.state.load().weaves[weaveId];
+    if (stored && who.name !== undefined && sameName(stored.participantName, who.name)) {
+      const reused = await this.reuseStored(weaveId, stored);
+      // The id is already in hand here, so the flag needs no lookup: an entry joined by secret, or
+      // stored before the flag existed, is upgraded on this path rather than staying unrecognised.
+      if (reused) { if (!stored.isLobby) await this.state.markLobby(weaveId); return reused; }
+    }
+    const j = await this.client.joinLobby(who);
+    const joined: JoinedWeave = {
+      title: j.weave.title, token: j.token, participantId: j.participant.id, participantName: j.participant.name,
+      generalThreadId: j.generalThreadId, wake: "all", lastSeq: 0, isLobby: true,
+    };
+    await this.state.upsertWeave(j.weaveId, joined);
+    await this.hooks.onJoined(j.weaveId, joined);
+    return j;
+  }
+
+  /** Redeems a cross-Weave invitation: no secret, and the invitee identity is this machine's Lobby
+   * one (the invitation is addressed to that participant). The Weave it lands in is stored and
+   * streamed exactly as a secret join's, so the agent wakes for what happens there. */
+  private async redeemInvite(inviteId: string, name: string | undefined, credential?: string) {
+    const lobby = this.state.lobbyEntry();
+    if (!credential && !lobby) {
+      throw new LoomToolError("no_weave", "Not joined to the Lobby, and an invitation is redeemed with the Lobby identity it was addressed to: call join_lobby first, or pass the credential it was issued to");
+    }
+    const j = await this.as(credential ?? lobby!.weave.token).joinByInvite(inviteId, name);
+    const joined: JoinedWeave = {
+      title: j.weave.title, token: j.token, participantId: j.participant.id, participantName: j.participant.name,
+      generalThreadId: j.generalThreadId, wake: "all", lastSeq: 0,
+    };
+    await this.state.upsertWeave(j.weaveId, joined);
+    await this.flagIfLobby(j.weaveId);
+    await this.hooks.onJoined(j.weaveId, joined);
+    return j;
+  }
+
+  setCapabilities(c: string, profile: unknown) { return this.as(c).setCapabilities(profile as Profile | null); }
+  findAgents(c: string, filter: Record<string, unknown>) { return this.as(c).findAgents(filter as AgentFilter); }
+  /** Two credentials, because a request spans two Weaves: `c` is the Lobby identity, and the input's
+   * `targetCredential` (already resolved by the stored-credential wrapper) the authority in the
+   * target. Left out, the server falls back to the caller's own — enough for an agent key alone. */
+  openRequest(c: string, input: OpenRequestInput) {
+    // `requirements` stays opaque on the tool surface; which keys and values are acceptable is core's
+    // rule, checked there, so it is handed on as it came.
+    return this.as(c).openRequest({ ...input, requirements: input.requirements as Requirements, url: input.url ?? null });
+  }
+  listRequests(c: string, opts: { status?: string; limit?: number }) { return this.as(c).listRequests(opts.status as RequestStatus | undefined, { limit: opts.limit }); }
+  getRequest(c: string, requestId: string) { return this.as(c).getRequest(requestId); }
+  offer(c: string, requestId: string, input: OfferInput) { return this.as(c).offer(requestId, input); }
+  acceptRequest(c: string, requestId: string, participantIds: string[]) { return this.as(c).acceptRequest(requestId, participantIds); }
+  cancelRequest(c: string, requestId: string) { return this.as(c).cancelRequest(requestId); }
+  inviteToWeave(c: string, participantId: string, targetWeaveId: string, targetThreadId: string) {
+    return this.as(c).inviteToWeave(targetWeaveId, participantId, targetThreadId);
+  }
 }

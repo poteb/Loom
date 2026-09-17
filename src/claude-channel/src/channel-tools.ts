@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { LoomClient } from "@loom/client";
+import { LoomClientError, type LoomClient } from "@loom/client";
 import { fail, ok } from "@loom/mcp-tools";
 import type { ChannelState, Prefs } from "./state.js";
 import { redact } from "./log.js";
@@ -47,23 +47,56 @@ export function registerChannelTools(server: McpServer, state: ChannelState, cli
   })));
 
   server.registerTool("set_wake", {
-    description: "Preferences for this session only. wake: 'all' (every message and system event) or 'mentions' (only messages that @mention you). invites: whether an invite addressed to you wakes this session (default true; it wakes even in 'mentions' mode). Other Claude Code sessions keep their own settings.",
-    inputSchema: { weaveId: z.string(), wake: z.enum(["all", "mentions"]).optional(), invites: z.boolean().optional() },
-  }, async ({ weaveId, wake, invites }) => {
+    description: "Preferences for this session only. wake: 'all' (every message and system event) or 'mentions' (only messages that @mention you). invites: whether an invite addressed to you wakes this session (default true; it wakes even in 'mentions' mode). requests: whether a new Lobby request you are eligible for wakes this session (default true); turning it off never silences a request you are already part of — an offer on your own request, its closure, or an acceptance naming you still wakes you. Other Claude Code sessions keep their own settings.",
+    inputSchema: { weaveId: z.string(), wake: z.enum(["all", "mentions"]).optional(), invites: z.boolean().optional(), requests: z.boolean().optional() },
+  }, async ({ weaveId, wake, invites, requests }) => {
     if (!state.load().weaves[weaveId]) return fail("no_weave", "Not joined to that Weave");
-    if (wake === undefined && invites === undefined) return fail("validation", "Pass wake and/or invites");
-    const prefs = await state.setPrefs(weaveId, { ...(wake !== undefined ? { wake } : {}), ...(invites !== undefined ? { invites } : {}) });
+    if (wake === undefined && invites === undefined && requests === undefined) return fail("validation", "Pass wake, invites and/or requests");
+    const prefs = await state.setPrefs(weaveId, {
+      ...(wake !== undefined ? { wake } : {}), ...(invites !== undefined ? { invites } : {}), ...(requests !== undefined ? { requests } : {}),
+    });
     hooks.onPrefsChanged(weaveId, prefs);
     return ok({ weaveId, ...prefs });
   });
 
   server.registerTool("leave_weave", {
-    description: "Stop receiving events from a Weave and forget the stored participant token. (The participant stays in the Weave; joining again creates a new participant.)",
-    inputSchema: { weaveId: z.string() },
-  }, async ({ weaveId }) => {
-    if (!state.load().weaves[weaveId]) return fail("no_weave", "Not joined to that Weave");
+    description: "Stop receiving events from a Weave and forget the stored participant token. (The participant stays in the Weave; joining again creates a new participant.) Leaving the Lobby is a two-step: your Lobby profile is cleared on the server first, because a profile with nobody behind it stays eligible for work nobody will answer. If that call fails the leave fails and nothing is removed — retry when the server is reachable, or pass force: true to drop the credential anyway and be told the profile may still be live.",
+    inputSchema: { weaveId: z.string(), force: z.boolean().optional().describe("Leave the Lobby even if the profile could not be cleared") },
+  }, async ({ weaveId, force }) => {
+    const w = state.load().weaves[weaveId];
+    if (!w) return fail("no_weave", "Not joined to that Weave");
+    let profileMayRemain = false;
+    // An entry without the flag is not proof this is not the Lobby: it may have been joined by
+    // secret, or stored before the flag existed. Ask, and treat a match as the Lobby. Not being able
+    // to ask is the same situation as not being able to clear the profile — the credential a retry
+    // needs is what is about to be dropped — so it is refused the same way.
+    let isLobby = w.isLobby === true;
+    if (!isLobby) {
+      try {
+        isLobby = (await client.getLobby()).weaveId === weaveId;
+      } catch (e) {
+        // `weave_not_found` is an answer rather than a failure: this instance has no Lobby at all,
+        // so this Weave is certainly not it and an ordinary leave proceeds.
+        if (!(e instanceof LoomClientError && e.code === "weave_not_found")) {
+          const why = redact(e instanceof Error ? e.message : String(e));
+          if (!force) return fail("network", `Could not check whether this Weave is the Lobby, so nothing was removed — you are still joined. Retry when the server is reachable, or pass force: true to drop the credential anyway (a Lobby profile, if this is the Lobby, stays live until someone clears it): ${why}`);
+          profileMayRemain = true;
+        }
+      }
+    }
+    if (isLobby) {
+      try {
+        await client.withToken(w.token).setCapabilities(null);
+      } catch (e) {
+        // Nothing local is touched: the credential is what a retry needs, and the profile is
+        // authoritative on the server until it is cleared with it.
+        const why = redact(e instanceof Error ? e.message : String(e));
+        if (!force) return fail("network", `Could not clear your Lobby profile, so nothing was removed — you are still joined. Retry when the server is reachable, or pass force: true to drop the credential anyway (the profile stays live until someone clears it): ${why}`);
+        profileMayRemain = true;
+      }
+    }
     hooks.onLeave(weaveId);
     await state.removeWeave(weaveId);
-    return ok({ weaveId, left: true });
+    return ok({ weaveId, left: true, ...(profileMayRemain ? { profileMayRemain: true } : {}) });
   });
 }

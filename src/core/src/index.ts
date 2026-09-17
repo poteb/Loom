@@ -15,6 +15,10 @@ import { setRole } from "./participants.js";
 import { exportWeave } from "./export.js";
 import { getSettings, updateSettings } from "./settings.js";
 import { getInstanceGuidelines, setWeaveGuidelines } from "./guidelines.js";
+import * as lobby from "./lobby/lobby.js";
+import { findAgents, setCapabilities, type AgentFilter } from "./lobby/profile.js";
+import * as requests from "./lobby/requests.js";
+import * as invitations from "./lobby/invitations.js";
 import * as keepers from "./keepers.js";
 import * as agentsMod from "./agents.js";
 import type { Actor, Kind, Role, Settings } from "./types.js";
@@ -23,6 +27,9 @@ export type Core = ReturnType<typeof createCore>;
 
 export function createCore(db: Db) {
   const bus = new EventBus();
+  /** Lobby operations: map an agent actor through the Lobby. */
+  const resolveInLobby = async (actor: Actor) =>
+    actor.kind === "agent" ? resolveInWeave(db, actor, (await lobby.getLobby(db)).weaveId) : actor;
   /** Thread-addressed operations: map an agent actor through the Thread's Weave. */
   const forThread = async (actor: Actor, threadId: string) =>
     actor.kind === "agent" ? resolveInWeave(db, actor, (await threads.getThread(db, threadId)).weaveId) : actor;
@@ -31,7 +38,14 @@ export function createCore(db: Db) {
     resolveCredential: (credential: string) => resolveCredential(db, credential),
     createWeave: (input: weaves.CreateWeaveInput, actor?: Actor) => weaves.createWeave(db, bus, input, actor),
     getWeave: async (actor: Actor, weaveId: string) => weaves.getWeave(db, await resolveInWeave(db, actor, weaveId), weaveId),
-    joinWeave: (secret: string, who: { name?: string; kind: Kind }, actor?: Actor) => weaves.joinWeave(db, bus, secret, who, actor),
+    // With an `inviteId` this is the secret-less redemption path, not the ordinary join: the actor
+    // is passed through as it stands (a Lobby participant token or the agent key that owns it),
+    // because the check is against the invitation's recorded invitee, not membership of any Weave.
+    joinWeave: async (secret: string, who: { name?: string; kind: Kind }, actor?: Actor, opts: weaves.JoinWeaveOptions = {}) => {
+      if (opts.inviteId === undefined) return weaves.joinWeave(db, bus, secret, who, actor, opts);
+      if (!actor) throw errors.invalidToken();
+      return invitations.redeemInvitation(db, bus, actor, opts.inviteId, who);
+    },
     lookupWeaveIdBySecret: (secret: string) => weaves.lookupWeaveIdBySecret(db, secret),
     archiveWeave: async (actor: Actor, weaveId: string) => weaves.archiveWeave(db, bus, await resolveInWeave(db, actor, weaveId), weaveId),
     listWeaves: (actor: Actor) => weaves.listWeaves(db, actor),
@@ -59,6 +73,37 @@ export function createCore(db: Db) {
     // Public on purpose: the instance guidelines are handed to a connection before it has a credential.
     getInstanceGuidelines: () => getInstanceGuidelines(db),
     setWeaveGuidelines: async (actor: Actor, weaveId: string, text: string) => setWeaveGuidelines(db, bus, await resolveInWeave(db, actor, weaveId), weaveId, text),
+    ensureLobby: (opts?: lobby.EnsureLobbyOptions) => lobby.ensureLobby(db, opts),
+    // Anonymous-safe on purpose (an agent must find the Lobby before it holds a credential); an
+    // instance keeper's actor also brings back the Lobby's own secret, which no other surface gives.
+    getLobby: (actor?: Actor) => lobby.getLobby(db, actor),
+    joinLobby: (who: { name?: string; kind: Kind }, actor?: Actor, opts?: weaves.JoinWeaveOptions) => lobby.joinLobby(db, bus, who, actor, opts),
+    // Every Lobby operation resolves an agent key against the Lobby first, exactly as the Weave
+    // operations above do: without it the registration flow join → set profile → find would need a
+    // participant token the agent never asked for.
+    setCapabilities: async (actor: Actor, profile: unknown | null) =>
+      setCapabilities(db, bus, await resolveInLobby(actor), profile),
+    findAgents: async (actor: Actor, filter: AgentFilter) => findAgents(db, await resolveInLobby(actor), filter),
+    // Two credentials, resolved before anything is authorized: the Lobby identity in the Lobby, the
+    // target authority in the target Weave. An agent key is one actor everywhere, so it stands for
+    // both when the caller gives no separate target credential.
+    openRequest: async (actor: Actor, targetActor: Actor | undefined, input: requests.OpenRequestInput) =>
+      requests.openRequest(db, bus, await resolveInLobby(actor),
+        await resolveInWeave(db, targetActor ?? actor, input.targetWeaveId), input),
+    offer: async (actor: Actor, requestId: string, input: { model?: string; effort?: string; note?: string }) =>
+      requests.offer(db, bus, await resolveInLobby(actor), requestId, input),
+    acceptRequest: async (actor: Actor, requestId: string, participantIds: string[]) =>
+      requests.accept(db, bus, await resolveInLobby(actor), requestId, participantIds),
+    cancelRequest: async (actor: Actor, requestId: string) =>
+      requests.cancelRequest(db, bus, await resolveInLobby(actor), requestId),
+    // Resolved against the **target** Weave, not the Lobby: the authority an invitation needs is
+    // keepership there, so an agent key stands for the participant it owns in the target.
+    inviteToWeave: async (actor: Actor, participantId: string, targetWeaveId: string, targetThreadId: string) =>
+      invitations.inviteToWeave(db, bus, await resolveInWeave(db, actor, targetWeaveId), participantId, targetWeaveId, targetThreadId),
+    getRequest: async (actor: Actor, requestId: string) => requests.getRequest(db, await resolveInLobby(actor), requestId),
+    listRequests: async (actor: Actor, opts: { status?: requests.RequestStatus; limit?: number } = {}) =>
+      requests.listRequests(db, await resolveInLobby(actor), opts),
+    sweepRequests: (now?: Date) => requests.sweepRequests(db, bus, now),
     seedKeepers: (tokens: string[]) => keepers.seedKeepers(db, tokens),
     listKeepers: (actor: Actor) => keepers.listKeepers(db, actor),
     addKeeper: (actor: Actor, name: string) => keepers.addKeeper(db, actor, name),
@@ -80,4 +125,9 @@ export { MAX_GUIDELINES_LENGTH, INSTANCE_HEADING, WEAVE_HEADING, validateGuideli
 export { EventBus } from "./bus.js";
 export type { CreateWeaveInput, CreateWeaveResult, WeaveInfo, JoinResult } from "./weaves.js";
 export type { PublicKeeper, SeedKeepersResult } from "./keepers.js";
+export type { Lobby } from "./lobby/lobby.js";
+export { validateProfile, MAX_PROFILE_LENGTH, type AgentFilter, type FoundAgent } from "./lobby/profile.js";
+export { validateRequirements, matches, admits, eligible, type Profile, type ModelSpec, type Requirements } from "./lobby/matching.js";
+export { type InvitationDraft } from "./lobby/invitations.js";
+export { computedStatus, type PublicRequest, type PublicOffer, type OpenRequestInput, type RequestStatus, type CloseReason, type AcceptOptions } from "./lobby/requests.js";
 export type * from "./types.js";

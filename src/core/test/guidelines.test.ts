@@ -1,4 +1,5 @@
 import { describe, it, expect, afterAll, beforeEach } from "vitest";
+import { eq } from "drizzle-orm";
 import { readFile } from "node:fs/promises";
 import { freshDb, closeTestDb, keeperToken } from "./helpers.js";
 import { DEFAULT_INSTANCE_GUIDELINES } from "../src/guidelines-default.js";
@@ -6,6 +7,8 @@ import { MAX_GUIDELINES_LENGTH, validateGuidelines, guidelinesFor, getInstanceGu
 import { EventBus } from "../src/bus.js";
 import { archiveWeave, createWeave, getWeave, joinWeave } from "../src/weaves.js";
 import { setRole } from "../src/participants.js";
+import { createThread } from "../src/threads.js";
+import { threads } from "../src/db/schema.js";
 import { addAgent } from "../src/agents.js";
 import { readEvents } from "../src/events.js";
 import { getSettings, updateSettings } from "../src/settings.js";
@@ -87,6 +90,19 @@ describe("setWeaveGuidelines", () => {
     keeper = await resolveCredential(db, w.token);
     j = await joinWeave(db, bus, w.secret, { name: "Bot", kind: "agent" });
     member = await resolveCredential(db, j.token);
+  });
+
+  // General is the Thread *flagged* General, not the oldest row: a Weave whose other Thread sorts
+  // first (the Lobby has one per request, and a host clock that steps backwards is enough) must
+  // still log its rules change where every participant reads it.
+  it("lands the change on the Thread flagged General, whatever the timestamps say", async () => {
+    const other = await createThread(db, bus, keeper, w.weave.id, "PR 14");
+    await db.update(threads).set({ createdAt: new Date(new Date(other.createdAt).getTime() + 60_000) })
+      .where(eq(threads.id, w.generalThread.id));
+    await setWeaveGuidelines(db, bus, keeper, w.weave.id, "one PR per Thread");
+    const last = (await readEvents(db, w.weave.id, {})).at(-1)!;
+    expect(last.type).toBe("weave.guidelines_changed");
+    expect(last.threadId).toBe(w.generalThread.id);
   });
 
   it("keeper sets; the event lands on General with new and previous text; the Weave carries it", async () => {

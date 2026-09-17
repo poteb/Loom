@@ -1,10 +1,22 @@
 import type { LoomEvent } from "@loom/client";
-import type { Wake } from "./state.js";
+import type { Prefs } from "./state.js";
 
 export type Names = { threads: Map<string, { name: string; url: string | null }>; participants: Map<string, { name: string; kind: string }> };
 
 /** Meta values land inside a <channel …> tag; strip characters that could break out of it. */
 function safe(v: unknown): string { return String(v ?? "").replace(/[<>"\r\n]/g, " ").trim(); }
+
+/** A deadline as the local clock shows it: `until 14:00` is for a human reading over the agent's
+ *  shoulder, and the exact instant is a `get_request` away. */
+function hhmm(v: unknown): string {
+  const d = new Date(String(v ?? ""));
+  if (Number.isNaN(d.getTime())) return "?";
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+/** A non-empty string from a payload field, else "". */
+function str(v: unknown): string { return typeof v === "string" ? v : ""; }
+function list(v: unknown): string[] { return Array.isArray(v) ? (v as string[]) : []; }
 
 /** `me` is the session's own participant id, so an invite addressed to it reads as "You were invited". */
 export function formatEvent(e: LoomEvent, weave: { id: string; title: string }, names: Names, me: string): { content: string; meta: Record<string, string> } {
@@ -32,6 +44,47 @@ export function formatEvent(e: LoomEvent, weave: { id: string; title: string }, 
       content = text ? text : `Guidelines cleared by ${actor.name}`;
       break;
     }
+    // --- Lobby. One line each, naming the tool that acts on it: these arrive addressed to this
+    // session, so the body says what it is being asked to do, not merely what happened.
+    // A request's title is its Thread's name (core names the Thread after the request).
+    case "request.opened": {
+      const head = `Request "${threadName}": wants ${Number(e.payload.wanted ?? 1)}, until ${hhmm(e.payload.expiresAt)}`;
+      content = list(e.payload.eligible).includes(me)
+        ? `${head} — you are eligible; offer with offer(${str(e.payload.requestId)})`
+        : `${head} — from ${actor.name}`;
+      break;
+    }
+    case "request.offered": {
+      const spec = [str(e.payload.model), str(e.payload.effort)].filter((v) => v.length > 0).join("/");
+      const note = str(e.payload.note);
+      content = `Offer from ${who(e.payload.participantId).name}${spec ? ` (${spec})` : ""}${note ? `: "${note}"` : ""}`;
+      break;
+    }
+    case "request.accepted": {
+      const ids = list(e.payload.participantIds);
+      // The id is not in *this* event's payload: it rides on the `weave.invited` addressed to the
+      // same session. Saying `join_weave({ inviteId })` on its own left an agent whose `invites` are
+      // off with a call it had no argument for, so the body says where the id comes from.
+      content = ids.includes(me)
+        ? `Accepted: you were invited to "${str(e.payload.targetWeaveTitle)}" — the invitation id arrives on the weave.invited event beside this (or from inbox); redeem with join_weave({ inviteId })`
+        : `Accepted: ${ids.map((id) => who(id).name).join(", ") || "nobody"} for "${str(e.payload.targetWeaveTitle)}"`;
+      break;
+    }
+    case "request.closed": {
+      const accepted = list(e.payload.accepted).map((id) => who(id).name).join(", ");
+      content = `Request "${threadName}" ${str(e.payload.reason) || "closed"}: ${accepted ? `accepted ${accepted}` : "nobody accepted"}`;
+      break;
+    }
+    case "weave.invited": {
+      const title = str(e.payload.targetWeaveTitle);
+      content = e.payload.participantId === me
+        ? `Invited to "${title}" — join_weave({ inviteId: "${str(e.payload.invitationId)}" })`
+        : `${who(e.payload.participantId).name} was invited to "${title}"`;
+      break;
+    }
+    case "participant.capabilities_changed":
+      content = `${who(e.payload.participantId).name} ${e.payload.capabilities ? "updated" : "cleared"} their Lobby profile`;
+      break;
     default: content = e.type;
   }
   const meta: Record<string, string> = {
@@ -39,13 +92,35 @@ export function formatEvent(e: LoomEvent, weave: { id: string; title: string }, 
     seq: String(e.seq), type: e.type, from: safe(actor.name), from_kind: safe(actor.kind), ts: e.at,
   };
   if (thread.url) meta.thread_url = safe(thread.url);
+  // Every event of a request carries its id — including the request Thread's own created/closed —
+  // so a session that never saw the opening event can still read it with get_request(<id>).
+  if (typeof e.payload.requestId === "string") meta.request = safe(e.payload.requestId);
+  if (typeof e.payload.invitationId === "string") meta.invitation = safe(e.payload.invitationId);
   const mentions = Array.isArray(e.payload.mentions) ? (e.payload.mentions as string[]) : [];
   if (mentions.length > 0) meta.mentions = mentions.map(safe).join(",");
   return { content, meta };
 }
 
-export function shouldWake(e: LoomEvent, w: { participantId: string; wake: Wake; invites: boolean }): boolean {
+export function shouldWake(e: LoomEvent, w: Prefs & { participantId: string }): boolean {
   if (e.actor === w.participantId) return false;
+  // Lobby events are addressed-only: each type is decided here, above the `wake === "all"` fallback,
+  // so a session standing in the Lobby in all-events mode is never woken by work meant for someone
+  // else. `requests` governs solicitation alone — an offer on my own request, its closure, or an
+  // acceptance naming me wakes whatever that flag says, because this session caused it.
+  {
+    const me = w.participantId;
+    const has = (v: unknown) => Array.isArray(v) ? (v as string[]).includes(me) : v === me;
+    switch (e.type) {
+      case "participant.capabilities_changed": return false;
+      case "request.opened": return w.requests && has(e.payload.eligible);
+      case "request.offered": return has(e.payload.to);
+      case "request.closed": return has(e.payload.to);
+      case "request.accepted": return has(e.payload.participantIds);
+      case "weave.invited": return w.invites && e.payload.participantId === me;
+      // A request Thread's companions: its addressed request.opened / request.closed is what wakes.
+      case "thread.created": case "thread.closed": if (typeof e.payload.requestId === "string") return false; break;
+    }
+  }
   // A rules change concerns every participant, so it wakes regardless of the wake mode — like an
   // invite addressed to this session, except that there is nothing to opt out of.
   if (e.type === "weave.guidelines_changed") return true;

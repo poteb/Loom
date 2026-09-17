@@ -10,6 +10,8 @@ import { TicketStore } from "../src/tickets.js";
 
 let server: ServerType; let baseUrl: string; let tickets: TicketStore;
 let apiOnlyServer: ServerType; let apiOnlyUrl: string;
+/** Both apps' sweep intervals, stopped with everything else at teardown. */
+let stopSweeps: Array<() => void> = [];
 let dist: string;
 
 function listen(fetchHandler: (req: Request) => Response | Promise<Response>): Promise<ServerType> {
@@ -27,15 +29,21 @@ beforeAll(async () => {
   writeFileSync(path.join(dist, "assets", "app.js"), "console.log('hi')");
   const core = createCore(await freshDb());
   tickets = new TicketStore();
-  server = await listen(buildApp({ core, tickets, webDist: dist }).fetch);
+  const withWeb = buildApp({ core, tickets, webDist: dist });
+  stopSweeps.push(withWeb.stop);
+  server = await listen(withWeb.app.fetch);
   baseUrl = urlOf(server);
   // A second app built from the same core but without webDist: the deployment shape where the API
   // runs on its own and the web UI is served elsewhere (or not at all).
-  apiOnlyServer = await listen(buildApp({ core, tickets }).fetch);
+  const apiOnly = buildApp({ core, tickets });
+  stopSweeps.push(apiOnly.stop);
+  apiOnlyServer = await listen(apiOnly.app.fetch);
   apiOnlyUrl = urlOf(apiOnlyServer);
 });
 afterAll(async () => {
   tickets.stop();
+  for (const stop of stopSweeps) stop();
+  stopSweeps = [];
   await new Promise<void>((r) => server.close(() => r()));
   await new Promise<void>((r) => apiOnlyServer.close(() => r()));
   await closeTestDb();

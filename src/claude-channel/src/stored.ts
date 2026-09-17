@@ -18,6 +18,14 @@ export function withStoredCredential(inner: LoomToolBackend, state: ChannelState
     if (!weaveId) throw new LoomToolError("no_weave", "Unknown thread for the stored credential; pass weaveId-based tools first or an explicit credential");
     return byWeave(STORED, weaveId);
   };
+  /** What `"stored"` means for a Lobby tool: the token this machine holds in the Lobby. The Lobby
+   * is one Weave per instance, so none of those tools names one to resolve against. */
+  const byLobby = (credential: string) => {
+    if (credential !== STORED) return credential;
+    const lobby = state.lobbyEntry();
+    if (!lobby) throw new LoomToolError("no_weave", "Not joined to the Lobby; call join_lobby first, or pass an explicit credential");
+    return lobby.weave.token;
+  };
   const keeperOnly = (credential: string) => {
     if (credential === STORED) throw new LoomToolError("validation", "Keeper tools need an explicit keeper token");
     return credential;
@@ -27,7 +35,7 @@ export function withStoredCredential(inner: LoomToolBackend, state: ChannelState
   // exception thrown out of the tool handler before that catch is even installed.
   return {
     createWeave: (input, credential) => inner.createWeave(input, credential === STORED ? undefined : credential),
-    joinWeave: (s, who, cred) => inner.joinWeave(s, who, cred),
+    joinWeave: (s, who, cred, opts) => inner.joinWeave(s, who, cred, opts),
     lookupWeave: (s) => inner.lookupWeave(s),
     getWeave: async (c, w) => inner.getWeave(byWeave(c, w), w),
     readEvents: async (c, w, o) => inner.readEvents(byWeave(c, w), w, o),
@@ -52,5 +60,26 @@ export function withStoredCredential(inner: LoomToolBackend, state: ChannelState
     setWeaveGuidelines: async (c, w, g) => inner.setWeaveGuidelines(byWeave(c, w), w, g),
     getInstanceGuidelines: () => inner.getInstanceGuidelines(),
     getGuidelines: async (c, w) => inner.getGuidelines(byWeave(c, w), w),
+    // Lobby tools. `"stored"` is the Lobby's own token for everything that acts *in* the Lobby;
+    // the two exceptions are the ones whose authority lies in another Weave and say so by naming it.
+    getLobby: () => inner.getLobby(),
+    // Nothing to resolve: there is no stored Lobby identity until this call creates one, and the
+    // Lobby needs no secret. The backend persists what comes back.
+    joinLobby: (who, cred) => inner.joinLobby(who, cred === STORED ? undefined : cred),
+    setCapabilities: async (c, profile) => inner.setCapabilities(byLobby(c), profile),
+    findAgents: async (c, filter) => inner.findAgents(byLobby(c), filter),
+    // Two credentials: the caller's Lobby identity, and its authority in the target Weave —
+    // `"stored"` there is the token stored for `targetWeaveId`, not the Lobby's.
+    openRequest: async (c, input) => inner.openRequest(byLobby(c), {
+      ...input,
+      targetCredential: input.targetCredential === undefined ? undefined : byWeave(input.targetCredential, input.targetWeaveId),
+    }),
+    listRequests: async (c, o) => inner.listRequests(byLobby(c), o),
+    getRequest: async (c, id) => inner.getRequest(byLobby(c), id),
+    offer: async (c, id, input) => inner.offer(byLobby(c), id, input),
+    acceptRequest: async (c, id, ids) => inner.acceptRequest(byLobby(c), id, ids),
+    cancelRequest: async (c, id) => inner.cancelRequest(byLobby(c), id),
+    // Keeper authority in the *target* Weave, which this one does name.
+    inviteToWeave: async (c, p, w, t) => inner.inviteToWeave(byWeave(c, w), p, w, t),
   };
 }

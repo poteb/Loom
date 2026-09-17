@@ -19,6 +19,8 @@ async function keeperActor(): Promise<Actor> {
 
 describe("settings", () => {
   it("returns defaults on first read", async () => {
+    // No `lobbyTitle`: the column exists and `ensureLobby` reads it, but it is not a setting a
+    // keeper can read or patch, so it is not on the shape either.
     expect(await getSettings(db)).toEqual({ instanceName: "Loom", maxMessageLength: 20000, openWeaveCreation: true, guidelines: DEFAULT_INSTANCE_GUIDELINES });
   });
   it("keeper can update, others cannot", async () => {

@@ -8,8 +8,14 @@ function who(actor: string, state: SessionState): string {
   return actor.startsWith("keeper:") ? "Keeper" : (state.participants.find((p) => p.id === actor)?.name ?? "unknown");
 }
 
+const str = (v: unknown): string => (typeof v === "string" ? v : "");
+const list = (v: unknown): string[] => (Array.isArray(v) ? v.map((x) => String(x)) : []);
+
 function systemLine(e: LoomEvent, state: SessionState): string {
   const name = (id: unknown) => state.participants.find((p) => p.id === id)?.name ?? "someone";
+  // A request's title is its Thread's name: core names the Thread after the request.
+  const threadName = () => state.threads.find((t) => t.id === e.threadId)?.name ?? "";
+  const spec = () => [str(e.payload.model), str(e.payload.effort)].filter((v) => v.length > 0).join("/");
   switch (e.type) {
     case "participant.joined": return `${name(e.payload.participantId)} joined`;
     case "participant.role_changed": return `${name(e.payload.participantId)} is now ${String(e.payload.role)}`;
@@ -19,6 +25,24 @@ function systemLine(e: LoomEvent, state: SessionState): string {
     case "thread.url_changed": return e.payload.url ? `thread now links to ${String(e.payload.url)}` : "thread no longer links to an artefact";
     case "weave.archived": return "weave archived";
     case "weave.guidelines_changed": return e.payload.guidelines ? `${who(e.actor, state)} changed the Weave guidelines` : `${who(e.actor, state)} cleared the Weave guidelines`;
+    // --- Lobby. One line each, in the request's own Thread; the panel carries the state, these
+    // carry the history. Deadlines are left to the panel's countdown — the line has its own time.
+    case "request.opened": return `request "${threadName()}" opened by ${who(e.actor, state)}: wants ${Number(e.payload.wanted ?? 1)}`;
+    case "request.offered": {
+      const note = str(e.payload.note);
+      return `${name(e.payload.participantId)} offered${spec() ? ` (${spec()})` : ""}${note ? `: "${note}"` : ""}`;
+    }
+    case "request.accepted": {
+      const ids = list(e.payload.participantIds);
+      return `${ids.map(name).join(", ") || "nobody"} accepted for "${str(e.payload.targetWeaveTitle)}"`;
+    }
+    case "request.closed": {
+      const accepted = list(e.payload.accepted).map(name).join(", ");
+      return `request ${str(e.payload.reason) || "closed"}: ${accepted ? `accepted ${accepted}` : "nobody accepted"}`;
+    }
+    case "weave.invited": return `${name(e.payload.participantId)} invited to "${str(e.payload.targetWeaveTitle)}"`;
+    case "participant.capabilities_changed":
+      return `${name(e.payload.participantId)} ${e.payload.capabilities ? "updated" : "cleared"} their Lobby profile`;
     default: return e.type;
   }
 }

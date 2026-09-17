@@ -1,11 +1,12 @@
-import { asc, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import type { Db, Queryable } from "./db/index.js";
-import { settings, threads, weaves } from "./db/schema.js";
+import { settings, weaves } from "./db/schema.js";
 import type { EventBus } from "./bus.js";
 import { errors } from "./errors.js";
 import { isUuid } from "./ids.js";
 import { withWeaveLock } from "./events.js";
 import { actorId, assertIsKeeperOf, assertStillKeeperOf } from "./actors.js";
+import { generalThreadOf } from "./threads.js";
 import { toPublicWeave } from "./weaves.js";
 import { getSettings } from "./settings.js";
 import type { Actor, PublicWeave } from "./types.js";
@@ -53,8 +54,7 @@ export async function setWeaveGuidelines(
   if (!isUuid(weaveId)) throw errors.weaveNotFound();
   const next = validateGuidelines(text);
   if (opts.afterAuth) await opts.afterAuth();
-  const [general] = await db.select({ id: threads.id }).from(threads).where(eq(threads.weaveId, weaveId)).orderBy(asc(threads.createdAt)).limit(1);
-  if (!general) throw errors.weaveNotFound();
+  const general = await generalThreadOf(db, weaveId);
   // Explicit type argument: inference would otherwise narrow T to the first branch's `seq: null`.
   return withWeaveLock<{ weave: PublicWeave; seq: number | null }>(db, bus, weaveId, async (tx, weave) => {
     await assertStillKeeperOf(tx, actor, weaveId);

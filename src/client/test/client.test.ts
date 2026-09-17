@@ -142,3 +142,84 @@ describe("guidelines", () => {
     expect((await me.getWeave(r.weave.id)).weave.guidelines).toBe("rules 2");
   });
 });
+
+describe("Lobby wrappers", () => {
+  const MODEL = { model: "gpt-5.6-sol", effort: "high" };
+  let tag = 0;
+
+  /**
+   * The spec's success scenario as client calls: a requester and one listener its owner admits,
+   * both standing in the Lobby, plus the Weave the listener would be pulled into. Names and owner
+   * are unique per scenario, because the Lobby is one Weave shared by every test in this file.
+   */
+  async function lobby() {
+    await srv().core.ensureLobby();
+    const t = ++tag;
+    const owner = `paw-${t}`;
+    const target = await anon.createWeave({ title: "Loom session", opener: "hi", creator: { name: `Paw-${t}`, kind: "human" } });
+    const keeper = anon.withToken(target.token);
+    const thread = await keeper.createThread(target.weave.id, "PR 14");
+    const claudeJoin = await anon.joinLobby({ name: `Claude-${t}`, kind: "agent" });
+    const claude = anon.withToken(claudeJoin.token);
+    await claude.setCapabilities({ owner });
+    const botJoin = await anon.joinLobby({ name: `Pawbot-${t}`, kind: "agent" });
+    const bot = anon.withToken(botJoin.token);
+    await bot.setCapabilities({ models: [MODEL], owner, serves: "owner" });
+    return {
+      t, owner, target, keeper, thread, claude, bot,
+      claudeId: claudeJoin.participant.id, botId: botJoin.participant.id,
+      input: {
+        title: "Review PR 14", requirements: { models: [MODEL] }, wanted: 1,
+        targetWeaveId: target.weave.id, targetThreadId: thread.id, url: "https://e.com/pr/14",
+        targetCredential: target.token,
+      },
+    };
+  }
+
+  it("reads the Lobby, joins it without a secret, sets a profile and finds the agents it matches", async () => {
+    const f = await lobby();
+    expect(await anon.getLobby()).toEqual({ weaveId: (await srv().core.getLobby()).weaveId, title: "Lobby" });
+    const found = await f.claude.findAgents({ models: [MODEL], owner: f.owner });
+    expect(found.map((a) => a.participant.id)).toEqual([f.botId]);
+    expect(found[0]!.capabilities).toEqual({ models: [MODEL], owner: f.owner, serves: "owner" });
+    expect((await f.bot.setCapabilities(null)).capabilities).toBeNull();
+  });
+
+  it("opens a request, lists and reads it, offers on it and accepts the offer", async () => {
+    const f = await lobby();
+    const req = await f.claude.openRequest(f.input);
+    expect(req).toMatchObject({ requesterId: f.claudeId, owner: f.owner, status: "open", wanted: 1 });
+    // The eligibility snapshot comes back with the open itself, not only on a later read.
+    expect(req.eligible).toEqual([f.botId]);
+    expect((await f.claude.listRequests("open")).map((r) => r.id)).toContain(req.id);
+    expect((await f.claude.getRequest(req.id)).eligible).toEqual([f.botId]);
+
+    const off = await f.bot.offer(req.id, { ...MODEL, note: "can start now" });
+    expect(off).toMatchObject({ requestId: req.id, participantId: f.botId, note: "can start now", accepted: false });
+
+    const accepted = await f.claude.acceptRequest(req.id, [f.botId]);
+    expect(accepted.invitationIds).toHaveLength(1);
+    expect(accepted.request.status).toBe("filled");
+    expect(accepted.request.offers[0]!.accepted).toBe(true);
+  });
+
+  it("cancels its own request, after which an offer is refused as request_closed", async () => {
+    const f = await lobby();
+    const req = await f.claude.openRequest(f.input);
+    expect((await f.claude.cancelRequest(req.id)).status).toBe("cancelled");
+    await expect(f.bot.offer(req.id, { note: "late" })).rejects.toMatchObject({ code: "request_closed", status: 409 });
+  });
+
+  it("invites a Lobby participant into another Weave and redeems it without a secret", async () => {
+    const f = await lobby();
+    const inv = await f.keeper.inviteToWeave(f.target.weave.id, f.botId, f.thread.id);
+    const joined = await f.bot.joinByInvite(inv.invitationId);
+    expect(joined.weaveId).toBe(f.target.weave.id);
+    expect(joined.participant.name).toBe(`Pawbot-${f.t}`);
+    expect(joined.token).toHaveLength(43);
+    await expect(f.claude.joinByInvite(inv.invitationId)).rejects.toMatchObject({ code: "forbidden", status: 403 });
+
+    const other = await f.keeper.inviteToWeave(f.target.weave.id, f.claudeId, f.thread.id);
+    expect((await f.claude.joinByInvite(other.invitationId, `Helper-${f.t}`)).participant.name).toBe(`Helper-${f.t}`);
+  });
+});

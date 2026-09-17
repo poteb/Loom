@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
-import { startTestServer, type TestServer } from "../../server/test/helpers.js";
+import { startTestServer, keeperToken, type TestServer } from "../../server/test/helpers.js";
 import { LoomClient } from "@loom/client";
 import { createSession, type Session } from "../src/session.js";
 import { memoryStorage } from "../src/storage.js";
@@ -7,7 +7,14 @@ import { DEFAULT_INSTANCE_GUIDELINES } from "@loom/core";
 
 let s: TestServer;
 let anon: LoomClient;
-beforeAll(async () => { s = await startTestServer(); anon = new LoomClient({ baseUrl: s.baseUrl, allowInsecure: true }); });
+/** An instance keeper: the one credential the Lobby's own secret is told to. */
+const KEEPER = keeperToken("web-session-keeper");
+beforeAll(async () => {
+  s = await startTestServer();
+  anon = new LoomClient({ baseUrl: s.baseUrl, allowInsecure: true });
+  await s.core.seedKeepers([KEEPER]);
+  await s.core.ensureLobby();
+});
 afterAll(async () => { await s.close(); });
 
 function waitFor(pred: () => boolean, ms = 5000): Promise<void> {
@@ -18,8 +25,8 @@ function waitFor(pred: () => boolean, ms = 5000): Promise<void> {
   });
 }
 
-async function makeSession(secret: string, storage = memoryStorage()): Promise<Session> {
-  const session = createSession({ client: anon, secret, storage });
+async function makeSession(secret: string, storage = memoryStorage(), over: { closedRequestsPage?: number } = {}): Promise<Session> {
+  const session = createSession({ client: anon, secret, storage, ...over });
   await session.load();
   return session;
 }
@@ -728,5 +735,323 @@ describe("session guidelines", () => {
     expect([...new Set(panel)]).toEqual([""]);
     expect(session.getState().weave?.guidelines).toBe("");
     session.dispose();
+  });
+});
+
+/** The Lobby's own secret — the browser's read credential for `/w/<secret>` — which the instance
+ *  keeper's credential is the only one to bring back. */
+async function lobbySecret(): Promise<string> {
+  const { secret } = await anon.withToken(KEEPER).getLobby();
+  if (!secret) throw new Error("the keeper credential did not bring back the Lobby secret");
+  return secret;
+}
+
+/** Names and owners are shared across the one Lobby, so every fixture takes a fresh one. */
+let fixtureN = 0;
+const MODEL = { model: "gpt-5.6-sol", effort: "high" };
+
+/**
+ * A Lobby with a requester, an eligible helper and a target Weave the requester keeps: enough for a
+ * request to be opened, offered on, accepted and cancelled.
+ */
+async function lobbyFixture() {
+  const n = ++fixtureN;
+  const requester = await anon.joinLobby({ name: `Paw-${n}`, kind: "human" });
+  const helper = await anon.joinLobby({ name: `Helper-${n}`, kind: "agent" });
+  // `serves: "anyone"` because the requester declares no owner, and only that policy admits "".
+  await anon.withToken(helper.token).setCapabilities({ models: [MODEL], tools: [], serves: "anyone", owner: `bob-${n}` });
+  const target = await anon.createWeave({ title: `Target ${n}`, opener: "hello", creator: { name: "Paw", kind: "human" } });
+  const open = () => anon.withToken(requester.token).openRequest({
+    title: `Review PR ${n}`, requirements: { models: [MODEL] }, wanted: 2, timeoutMs: 3_600_000,
+    targetWeaveId: target.weave.id, targetThreadId: target.generalThread.id, targetCredential: target.token,
+  });
+  const storage = memoryStorage();
+  const secret = await lobbySecret();
+  storage.set(`loom:${secret}`, JSON.stringify({ token: requester.token, participantId: requester.participant.id }));
+  storage.set(`loom:${target.secret}`, JSON.stringify({ token: target.token, participantId: target.participant.id }));
+  return { secret, storage, requester, helper, target, open };
+}
+
+describe("session requests", () => {
+  it("on the Lobby, load() records the pointer and every request at its own version", async () => {
+    const f = await lobbyFixture();
+    const r = await f.open();
+    const session = await makeSession(f.secret, f.storage);
+    try {
+      expect(session.getState().lobby?.weaveId).toBe((await s.core.getLobby()).weaveId);
+      expect(session.getState().requests[r.id]?.version).toBe(r.lastEventSeq);
+      expect(session.getState().requests[r.id]?.eligible).toContain(f.helper.participant.id);
+    } finally { session.dispose(); }
+  });
+
+  // The board is paged, newest first. Reading it as one page would drop an open request older than
+  // that page — which is exactly what a Lobby that has closed a few hundred requests looks like.
+  it("loads every open request even when the closed page is full", async () => {
+    const f = await lobbyFixture();
+    const older = await f.open();                       // opened first, so the newest page is all closed
+    const requester = anon.withToken(f.requester.token);
+    for (let i = 0; i < 3; i++) await requester.cancelRequest((await f.open()).id);
+    const session = await makeSession(f.secret, f.storage, { closedRequestsPage: 2 });
+    try {
+      const held = Object.values(session.getState().requests);
+      expect(held.map((r) => r.id)).toContain(older.id);
+      // And the closed history really is capped: three were cancelled, a page of two came back.
+      expect(held.filter((r) => r.status === "cancelled")).toHaveLength(2);
+    } finally { session.dispose(); }
+  });
+
+  it("a live offer event updates the request it names", async () => {
+    const f = await lobbyFixture();
+    const r = await f.open();
+    const session = await makeSession(f.secret, f.storage);
+    try {
+      await waitFor(() => session.getState().connection === "open");
+      await anon.withToken(f.helper.token).offer(r.id, { model: MODEL.model, effort: MODEL.effort, note: "ready" });
+      await waitFor(() => (session.getState().requests[r.id]?.offers.length ?? 0) === 1);
+      const held = session.getState().requests[r.id]!;
+      expect(held.offers[0]!.participantId).toBe(f.helper.participant.id);
+      expect(held.version).toBeGreaterThan(r.lastEventSeq);
+    } finally { session.dispose(); }
+  });
+
+  it("accept() applies the snapshot it gets back", async () => {
+    const f = await lobbyFixture();
+    const r = await f.open();
+    await anon.withToken(f.helper.token).offer(r.id, { model: MODEL.model, effort: MODEL.effort });
+    const session = await makeSession(f.secret, f.storage);
+    try {
+      await session.accept(r.id, [f.helper.participant.id]);
+      const held = session.getState().requests[r.id]!;
+      expect(held.offers.filter((o) => o.accepted).map((o) => o.participantId)).toEqual([f.helper.participant.id]);
+      expect(held.version).toBeGreaterThan(r.lastEventSeq);
+    } finally { session.dispose(); }
+  });
+
+  it("openRequest() adds the new request, and cancel() closes it", async () => {
+    const f = await lobbyFixture();
+    const session = await makeSession(f.secret, f.storage);
+    try {
+      const r = await session.openRequest({
+        title: "From the browser", requirements: { models: [MODEL] }, wanted: 1, timeoutMs: 3_600_000,
+        targetWeaveId: f.target.weave.id, targetThreadId: f.target.generalThread.id, targetCredential: f.target.token,
+      });
+      expect(session.getState().requests[r.id]?.status).toBe("open");
+      await session.cancel(r.id);
+      expect(session.getState().requests[r.id]?.status).toBe("cancelled");
+    } finally { session.dispose(); }
+  });
+
+  it("offer() records the offer it just made", async () => {
+    const f = await lobbyFixture();
+    const r = await f.open();
+    const storage = memoryStorage();
+    storage.set(`loom:${f.secret}`, JSON.stringify({ token: f.helper.token, participantId: f.helper.participant.id }));
+    const session = await makeSession(f.secret, storage);
+    try {
+      await session.offer(r.id, { model: MODEL.model, effort: MODEL.effort, note: "can start now" });
+      const held = session.getState().requests[r.id]!;
+      expect(held.offers.map((o) => [o.participantId, o.note])).toEqual([[f.helper.participant.id, "can start now"]]);
+    } finally { session.dispose(); }
+  });
+
+  it("a profile declared after load lands on the participant it belongs to", async () => {
+    const f = await lobbyFixture();
+    const session = await makeSession(f.secret, f.storage);
+    try {
+      await waitFor(() => session.getState().connection === "open");
+      const late = await anon.joinLobby({ name: `Late-${++fixtureN}`, kind: "agent" });
+      // The join's own refresh has landed before the profile exists: only the capabilities event
+      // itself can bring it in, which is what the panel and the Offer form read.
+      await waitFor(() => session.getState().participants.some((p) => p.id === late.participant.id));
+      await anon.withToken(late.token).setCapabilities({ models: [MODEL], serves: "anyone", owner: `late-${fixtureN}` });
+      await waitFor(() => session.getState().participants.find((p) => p.id === late.participant.id)?.capabilities != null);
+    } finally { session.dispose(); }
+  });
+
+  /** A client whose `status=open` listing fails on exactly the calls named, and works otherwise. */
+  const flakyListing = (failOn: number[]) => {
+    let calls = 0;
+    return new LoomClient({
+      baseUrl: s.baseUrl,
+      allowInsecure: true,
+      fetch: (input, init) => {
+        const url = typeof input === "string" ? input : input.toString();
+        const parsed = new URL(url);
+        if (parsed.pathname === "/api/requests" && parsed.searchParams.get("status") === "open") {
+          if (failOn.includes(++calls)) return Promise.reject(new Error("simulated network failure"));
+        }
+        return fetch(url, init);
+      },
+    });
+  };
+  const FAST_RETRY = { delaysMs: [5, 5, 5, 5, 5], slowMs: 20 };
+
+  // The opening event is already in history when the session loads, so nothing will ever be replayed
+  // to bring the request in: only a retried read can, and until it lands the panel must say so.
+  it("shows a failed initial request read as an error, then retries it until it lands", async () => {
+    const f = await lobbyFixture();
+    const r = await f.open();
+    const session = createSession({ client: flakyListing([1]), secret: f.secret, storage: f.storage, retry: FAST_RETRY });
+    await session.load();
+    try {
+      expect(session.getState().status).toBe("ready");
+      expect(session.getState().requestsError).toBeDefined();
+      expect(session.getState().requestsLoaded).toBe(false);
+      expect(session.getState().requests[r.id]).toBeUndefined();
+
+      const events = session.getState().events.length;
+      await waitFor(() => session.getState().requests[r.id] !== undefined);
+      expect(session.getState().requestsError).toBeUndefined();
+      expect(session.getState().requestsLoaded).toBe(true);
+      expect(session.getState().events.length).toBe(events);      // no new event brought it in
+    } finally { session.dispose(); }
+  });
+
+  it("keeps the requests it holds when a refresh read fails, and retries that read", async () => {
+    const f = await lobbyFixture();
+    const r = await f.open();
+    // Call 1 is the read inside load(); call 2 is the refresh the join below triggers.
+    const session = createSession({ client: flakyListing([2]), secret: f.secret, storage: f.storage, retry: FAST_RETRY });
+    await session.load();
+    try {
+      expect(session.getState().requests[r.id]).toBeDefined();
+      await waitFor(() => session.getState().connection === "open");
+
+      await anon.joinLobby({ name: `Late-${++fixtureN}`, kind: "agent" });
+      await waitFor(() => session.getState().requestsError !== undefined);
+      expect(session.getState().requests[r.id]).toBeDefined();     // the held row survives the failure
+
+      await waitFor(() => session.getState().requestsError === undefined);
+      expect(session.getState().requestsLoaded).toBe(true);
+      expect(session.getState().requests[r.id]).toBeDefined();
+    } finally { session.dispose(); }
+  });
+
+  // The retry belongs to the load that started it. A second load() retires the first one's loop, so
+  // a guard that only asks "is some loop running?" would let the old loop's exit stand for the new
+  // load's retry and leave the board unread for good.
+  it("retries again for a second load() started while the first load's retry is pending", async () => {
+    const f = await lobbyFixture();
+    const r = await f.open();
+    // Call 1 is the first load's read, call 2 the second load's; the first backoff is long enough
+    // that the second load starts while the first retry is still sleeping.
+    const session = createSession({
+      client: flakyListing([1, 2]), secret: f.secret, storage: f.storage,
+      retry: { delaysMs: [800, 5, 5, 5, 5], slowMs: 20 },
+    });
+    await session.load();
+    try {
+      expect(session.getState().requestsError).toBeDefined();
+
+      await session.load();
+      expect(session.getState().requestsError).toBeDefined();
+
+      await waitFor(() => session.getState().requests[r.id] !== undefined);
+      expect(session.getState().requestsError).toBeUndefined();
+      expect(session.getState().requestsLoaded).toBe(true);
+    } finally { session.dispose(); }
+  });
+
+  /** A client whose fetch is intercepted: `hook` answers a request, or null to let it through. */
+  const clientWith = (hook: (url: URL) => Promise<Response> | null) => new LoomClient({
+    baseUrl: s.baseUrl,
+    allowInsecure: true,
+    fetch: (input, init) => {
+      const url = typeof input === "string" ? input : input.toString();
+      return hook(new URL(url)) ?? fetch(url, init);
+    },
+  });
+
+  // Where the Lobby is is a public read like any other, and it can fail. Taken for "this instance
+  // has no Lobby" it hides the requests panel and the profile cards for the life of the page: every
+  // one of them gates on `state.lobby`, and nothing else ever reads the pointer again.
+  it("retries a failed Lobby discovery instead of hiding the panels for good", async () => {
+    const f = await lobbyFixture();
+    const r = await f.open();
+    let lobbyCalls = 0;
+    const flaky = clientWith((url) => url.pathname === "/api/lobby" && ++lobbyCalls === 1
+      ? Promise.reject(new Error("simulated network failure")) : null);
+    const session = createSession({ client: flaky, secret: f.secret, storage: f.storage, retry: FAST_RETRY });
+    await session.load();
+    try {
+      expect(session.getState().status).toBe("ready");
+      expect(session.getState().lobby).toBeUndefined();
+      // Not "there is nothing to load": it is not yet known whether this page has a board at all.
+      expect(session.getState().requestsLoaded).toBe(false);
+      expect(session.getState().requests[r.id]).toBeUndefined();
+
+      const events = session.getState().events.length;
+      await waitFor(() => session.getState().lobby !== undefined);
+      await waitFor(() => session.getState().requests[r.id] !== undefined);
+      expect(session.getState().lobby?.weaveId).toBe((await s.core.getLobby()).weaveId);
+      expect(session.getState().requestsLoaded).toBe(true);
+      expect(session.getState().requestsError).toBeUndefined();
+      expect(session.getState().events.length).toBe(events);     // no event was needed
+    } finally { session.dispose(); }
+  });
+
+  it("settles the pointer on an ordinary Weave page without reading any requests", async () => {
+    const f = await lobbyFixture();
+    await f.open();
+    let lobbyCalls = 0; let requestReads = 0;
+    const flaky = clientWith((url) => {
+      if (url.pathname === "/api/requests") requestReads++;
+      return url.pathname === "/api/lobby" && ++lobbyCalls === 1
+        ? Promise.reject(new Error("simulated network failure")) : null;
+    });
+    const session = createSession({ client: flaky, secret: f.target.secret, storage: f.storage, retry: FAST_RETRY });
+    await session.load();
+    try {
+      expect(session.getState().lobby).toBeUndefined();
+      await waitFor(() => session.getState().lobby !== undefined);
+      expect(session.getState().weave?.id).not.toBe(session.getState().lobby?.weaveId);
+      expect(session.getState().requests).toEqual({});
+      expect(requestReads).toBe(0);                              // the pointer was the whole job
+      expect(session.getState().requestsLoaded).toBe(true);
+      expect(session.getState().requestsError).toBeUndefined();
+    } finally { session.dispose(); }
+  });
+
+  it("takes weave_not_found for a settled answer: no Lobby, and nothing to retry", async () => {
+    const f = await lobbyFixture();
+    let lobbyCalls = 0;
+    const absent = clientWith((url) => {
+      if (url.pathname !== "/api/lobby") return null;
+      lobbyCalls++;
+      return Promise.resolve(new Response(JSON.stringify({ code: "weave_not_found", message: "No Lobby on this instance" }),
+        { status: 404, headers: { "content-type": "application/json" } }));
+    });
+    const session = createSession({ client: absent, secret: f.secret, storage: f.storage, retry: FAST_RETRY });
+    await session.load();
+    try {
+      expect(session.getState().status).toBe("ready");
+      expect(session.getState().lobby).toBeUndefined();
+      expect(session.getState().requestsLoaded).toBe(true);      // settled: there is nothing to load
+      expect(session.getState().requestsError).toBeUndefined();
+      expect(lobbyCalls).toBe(1);
+      await new Promise((done) => setTimeout(done, 150));        // many backoffs of FAST_RETRY
+      expect(lobbyCalls).toBe(1);                                // no loop is running
+    } finally { session.dispose(); }
+  });
+
+  it("a Weave that is not the Lobby carries no requests", async () => {
+    const f = await lobbyFixture();
+    await f.open();
+    const session = await makeSession(f.target.secret, f.storage);
+    try {
+      expect(session.getState().weave?.id).not.toBe(session.getState().lobby?.weaveId);
+      expect(session.getState().requests).toEqual({});
+    } finally { session.dispose(); }
+  });
+
+  it("targets() offers the Weaves this browser holds a token for, never the Lobby", async () => {
+    const f = await lobbyFixture();
+    const session = await makeSession(f.secret, f.storage);
+    try {
+      const targets = await session.targets();
+      expect(targets.map((t) => t.weaveId)).toEqual([f.target.weave.id]);
+      expect(targets[0]!.threads.map((t) => t.id)).toEqual([f.target.generalThread.id]);
+      expect(targets[0]!.token).toBe(f.target.token);
+    } finally { session.dispose(); }
   });
 });

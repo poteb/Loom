@@ -4,6 +4,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { serve, type ServerType } from "@hono/node-server";
 import { DEFAULT_INSTANCE_GUIDELINES, INSTANCE_HEADING } from "@loom/core";
 import { buildApp } from "../src/app.js";
+import { LOBBY_MECHANICS } from "@loom/mcp-tools";
 import { MCP_INSTRUCTIONS, type MountMcpOptions } from "../src/mcp/index.js";
 import { TicketStore } from "../src/tickets.js";
 import { startTestServer, keeperToken, type TestServer } from "./helpers.js";
@@ -18,7 +19,7 @@ function withTimeout<T>(p: Promise<T>, label: string, ms = 5000): Promise<T> {
 
 async function startFreshApp(core: TestServer["core"], opts?: { mcpConnect?: MountMcpOptions["connect"]; mcpSessionTtlMs?: number }) {
   const tickets = new TicketStore();
-  const app = buildApp({ core, tickets, mcpConnect: opts?.mcpConnect, mcpSessionTtlMs: opts?.mcpSessionTtlMs });
+  const { app, stop: stopSweep } = buildApp({ core, tickets, mcpConnect: opts?.mcpConnect, mcpSessionTtlMs: opts?.mcpSessionTtlMs });
   const server: ServerType = await new Promise((resolve) => {
     const h = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolve(h));
   });
@@ -29,13 +30,14 @@ async function startFreshApp(core: TestServer["core"], opts?: { mcpConnect?: Mou
     mcpUrl: new URL(`${baseUrl}/mcp`),
     close: async () => {
       tickets.stop();
+      stopSweep();
       await new Promise<void>((r) => server.close(() => r()));
     },
   };
 }
 
 let s: TestServer | undefined;
-beforeAll(async () => { s = await startTestServer(); await s.core.seedKeepers([keeperToken("k1")]); });
+beforeAll(async () => { s = await startTestServer(); await s.core.seedKeepers([keeperToken("k1")]); await s.core.ensureLobby(); });
 afterAll(async () => { await s?.close(); });
 
 /** Connects `n` clients, runs `fn`, and always closes them — a failed assertion, or one client's
@@ -104,7 +106,7 @@ describe("remote MCP at /mcp", () => {
       await mcpServer.connect(transport);
     };
     const tickets = new TicketStore();
-    const app = buildApp({ core: s!.core, tickets, mcpConnect });
+    const { app, stop: stopSweep } = buildApp({ core: s!.core, tickets, mcpConnect });
     try {
       let aDone = false;
       let bDone = false;
@@ -123,6 +125,7 @@ describe("remote MCP at /mcp", () => {
       expect(rb.status).toBe(405);
     } finally {
       tickets.stop();
+      stopSweep();
     }
   });
 
@@ -155,7 +158,7 @@ describe("remote MCP at /mcp", () => {
     // things — which is what actually forces both id-0 requests to race for real. Guard each step
     // with a per-client timeout so a regression fails fast instead of hanging the whole run.
     const tickets = new TicketStore();
-    const app = buildApp({ core: s!.core, tickets });
+    const { app, stop: stopSweep } = buildApp({ core: s!.core, tickets });
     const mcpUrl = new URL("http://mcp.test/mcp");
     const transportFor = () => new StreamableHTTPClientTransport(mcpUrl, { fetch: (url, init) => Promise.resolve(app.request(url, init)) });
     const a = new Client({ name: "racer-a", version: "1.0" });
@@ -174,6 +177,7 @@ describe("remote MCP at /mcp", () => {
     } finally {
       await Promise.all([a.close().catch(() => {}), b.close().catch(() => {})]);
       tickets.stop();
+      stopSweep();
     }
   });
 
@@ -232,7 +236,7 @@ describe("remote MCP at /mcp", () => {
     await withClient(async (c) => {
         const { tools } = await c.listTools();
         expect(tools.map((t) => t.name)).toContain("join_weave");
-        expect(tools).toHaveLength(24);
+        expect(tools).toHaveLength(34);
     });
   });
 
@@ -242,7 +246,7 @@ describe("remote MCP at /mcp", () => {
     // for that same attempt, instead of checking isConnected() and handling a request on a
     // transport whose start() is still in flight.
     const tickets = new TicketStore();
-    const app = buildApp({ core: s!.core, tickets });
+    const { app, stop: stopSweep } = buildApp({ core: s!.core, tickets });
     const server: ServerType = await new Promise((resolve) => {
       const h = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolve(h));
     });
@@ -261,6 +265,7 @@ describe("remote MCP at /mcp", () => {
     } finally {
       await Promise.all(clients.map((c) => c.close().catch(() => {})));
       tickets.stop();
+      stopSweep();
       await new Promise<void>((r) => server.close(() => r()));
     }
   });
@@ -553,5 +558,131 @@ describe("guidelines over remote MCP", () => {
       // An agent key grants nothing in a Weave it has not joined (core's resolveInWeave).
       await expect(c.readResource({ uri: `loom://weaves/${host.other.weave.id}/guidelines` })).rejects.toThrow(/forbidden/);
     });
+  });
+});
+
+describe("the Lobby over remote MCP", () => {
+  /** Lobby names and owners are shared by every test in the file, so each fixture takes a fresh one. */
+  let n = 0;
+  const uniq = (prefix: string) => `${prefix}-${++n}`;
+  const MODEL = { model: "gpt-5.6-sol", effort: "high" };
+
+  type InboxItem = { seq: number; type: string; payload: Record<string, unknown> };
+  /** The one inbox item of that type: an addressed Lobby event reaches its listener exactly once. */
+  const addressed = (items: InboxItem[], type: string): Record<string, unknown> => {
+    const found = items.filter((e) => e.type === type);
+    expect(found.map((e) => e.type)).toEqual([type]);
+    return found[0]!.payload;
+  };
+
+  async function agentSession(name: string): Promise<Client> {
+    const { key } = await s!.core.addAgent(await s!.core.resolveCredential(keeperToken("k1")), name);
+    const c = new Client({ name: "listener", version: "1.0" });
+    const url = new URL(`${s!.baseUrl}/mcp`);
+    url.searchParams.set("agent", key);
+    await c.connect(new StreamableHTTPClientTransport(url));
+    return c;
+  }
+
+  /** Joins the Lobby as the connection's own agent and registers `profile`. */
+  async function standInLobby(c: Client, profile: unknown): Promise<{ lobbyId: string; participantId: string }> {
+    const joined = json(await c.callTool({ name: "join_lobby", arguments: {} }));
+    const set = await c.callTool({ name: "set_capabilities", arguments: { profile } });
+    expect(set.isError).toBeFalsy();
+    return { lobbyId: joined.weaveId, participantId: joined.participant.id };
+  }
+
+  it("two agent sessions run the whole flow: open with no target credential, offer, accept, redeem", async () => {
+    const owner = uniq("paw");
+    const requester = await agentSession(uniq("PawClaude"));
+    const helper = await agentSession(uniq("PawGpt"));
+    try {
+      // The requester's key is one actor everywhere: it creates the target Weave (so it is a keeper
+      // there) and stands in the Lobby, which is exactly what lets open_request leave out a
+      // targetCredential.
+      const target = json(await requester.callTool({ name: "create_weave", arguments: { title: "Loom session", opener: "PR 14", name: uniq("Paw") } }));
+      const me = await standInLobby(requester, { owner });
+      const them = await standInLobby(helper, { models: [MODEL], owner, serves: "owner" });
+
+      const request = json(await requester.callTool({
+        name: "open_request",
+        arguments: {
+          title: "Review PR 14", requirements: { models: [MODEL] }, wanted: 1,
+          targetWeaveId: target.weave.id, targetThreadId: target.generalThread.id,
+          url: "https://example.com/pr/14",
+        },
+      }));
+      expect(request.eligible).toEqual([them.participantId]);
+
+      const opened = addressed(json(await helper.callTool({ name: "inbox", arguments: { weaveId: them.lobbyId } })), "request.opened");
+      expect(opened.requestId).toBe(request.id);
+      expect(opened.targetWeaveTitle).toBe("Loom session");
+
+      const offered = json(await helper.callTool({ name: "offer", arguments: { requestId: request.id, model: MODEL.model, effort: MODEL.effort, note: "can start now" } }));
+      expect(offered).toMatchObject({ participantId: them.participantId, note: "can start now" });
+
+      const toRequester = addressed(json(await requester.callTool({ name: "inbox", arguments: { weaveId: me.lobbyId } })), "request.offered");
+      expect(toRequester.participantId).toBe(them.participantId);
+
+      const accepted = json(await requester.callTool({ name: "accept", arguments: { requestId: request.id, participantIds: [them.participantId] } }));
+      expect(accepted.invitationIds).toHaveLength(1);
+      expect(accepted.request.status).toBe("filled");
+
+      const invited = addressed(json(await helper.callTool({ name: "inbox", arguments: { weaveId: them.lobbyId } })), "weave.invited");
+      expect(invited.invitationId).toBe(accepted.invitationIds[0]);
+      expect(JSON.stringify(invited)).not.toContain(target.secret);
+
+      const redeemed = json(await helper.callTool({ name: "join_weave", arguments: { inviteId: invited.invitationId } }));
+      expect(redeemed.weaveId).toBe(target.weave.id);
+      // The redemption lands with a Thread invite already waiting, so the newcomer knows where to work.
+      const inTarget = json(await helper.callTool({ name: "inbox", arguments: { weaveId: target.weave.id } }));
+      expect(addressed(inTarget, "thread.invited").threadId).toBe(target.generalThread.id);
+    } finally {
+      await Promise.all([requester.close().catch(() => {}), helper.close().catch(() => {})]);
+    }
+  });
+
+  it("open_request from a session that holds only a Lobby token is invalid_token", async () => {
+    const target = await s!.core.createWeave({ title: "Someone else's", opener: "", creator: { name: uniq("Host"), kind: "human" } });
+    await withClient(async (c) => {
+      // An anonymous session may join the Lobby (no secret needed), but its Lobby token proves
+      // nothing in the target Weave, and it gave no targetCredential.
+      const joined = json(await c.callTool({ name: "join_lobby", arguments: { name: uniq("Anon"), kind: "agent" } }));
+      const r = await c.callTool({
+        name: "open_request",
+        arguments: {
+          credential: joined.token, title: "No authority", requirements: { models: [MODEL] },
+          targetWeaveId: target.weave.id, targetThreadId: target.generalThread.id,
+        },
+      });
+      expect(r.isError).toBe(true);
+      expect(json(r).code).toBe("invalid_token");
+    });
+  });
+
+  it("loom://lobby/requests lists the open requests for an agent session and is refused without a credential", async () => {
+    const c = await agentSession(uniq("Reader"));
+    try {
+      const target = json(await c.callTool({ name: "create_weave", arguments: { title: "Reader target", opener: "x", name: uniq("Reader") } }));
+      await standInLobby(c, { owner: uniq("owner") });
+      const request = json(await c.callTool({
+        name: "open_request",
+        arguments: { title: "Readable", requirements: { models: [MODEL] }, targetWeaveId: target.weave.id, targetThreadId: target.generalThread.id },
+      }));
+      const res = await c.readResource({ uri: "loom://lobby/requests" });
+      const entry = res.contents[0] as { mimeType?: string; text: string };
+      expect(entry.mimeType).toBe("application/json");
+      const rows = JSON.parse(entry.text) as { id: string; status: string }[];
+      expect(rows.find((r) => r.id === request.id)).toMatchObject({ status: "open" });
+    } finally { await c.close(); }
+    // Remote /mcp resolves no credential for an anonymous session, so the read is refused.
+    await withClient(async (anon) => {
+      await expect(anon.readResource({ uri: "loom://lobby/requests" })).rejects.toThrow(/invalid_token/);
+    });
+  });
+
+  it("a session's instructions carry the Lobby mechanics paragraph", async () => {
+    expect(MCP_INSTRUCTIONS).toContain(LOBBY_MECHANICS);
+    await withClient(async (c) => expect(c.getInstructions() ?? "").toContain(LOBBY_MECHANICS));
   });
 });

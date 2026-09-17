@@ -1,5 +1,7 @@
-import { LoomClient, LoomClientError, type LoomEvent, type Participant, type StreamHandle, type Thread, type Weave } from "@loom/client";
-import type { KeyValueStorage } from "./storage.js";
+import { LoomClient, LoomClientError, type Lobby, type LoomEvent, type LoomRequest, type OpenRequestInput,
+  type Participant, type StreamHandle, type Thread, type Weave } from "@loom/client";
+import { storedWeaves, type KeyValueStorage } from "./storage.js";
+import { applyEvent, applySnapshot, isRequestEvent, type Requests } from "./requests-state.js";
 
 export type Connection = "connecting" | "open" | "reconnecting" | "closed";
 export type SessionState = {
@@ -17,7 +19,22 @@ export type SessionState = {
   invitesForMe: Set<string>;
   /** Everyone invited to each thread, so the invite list can show who is already in. */
   invited: Record<string, Set<string>>;
+  /** Where the instance's Lobby is; the requests panel belongs to that Weave's page alone. */
+  lobby?: Lobby;
+  /** The Lobby's requests, each at the version this session holds for it. Empty off the Lobby. */
+  requests: Requests;
+  /** Whether a request read has actually come back. False means "not known yet", never "empty". */
+  requestsLoaded: boolean;
+  /** Why the last request read failed, while a retry is pending. Cleared by the first success. */
+  requestsError?: string;
+  /** How many closed requests per terminal status this session loads; the panel says so when the
+   *  closed section may be a page rather than the whole history. */
+  closedRequestsPage: number;
 };
+
+/** A Weave this browser holds a token for: what an Open-request form's target pickers offer. */
+export type TargetWeave = { weaveId: string; title: string; token: string; threads: { id: string; name: string }[] };
+
 export type Session = {
   getState(): SessionState; subscribe(fn: () => void): () => void;
   load(): Promise<void>; join(name: string): Promise<void>; selectThread(id: string): void;
@@ -26,9 +43,24 @@ export type Session = {
   closeThread(id: string): Promise<void>; archive(): Promise<void>; setGuidelines(text: string): Promise<void>;
   canModerate(): boolean; canEditThread(t: Thread): boolean; markSeen(id: string): void;
   dismissNamePrompt(): void; dispose(): void;
+  // --- Lobby requests. Thin wrappers: each applies the snapshot it gets back through the watermark.
+  openRequest(input: OpenRequestInput): Promise<LoomRequest>;
+  offer(requestId: string, input: { model?: string; effort?: string; note?: string }): Promise<void>;
+  accept(requestId: string, participantIds: string[]): Promise<void>;
+  cancel(requestId: string): Promise<void>;
+  targets(): Promise<TargetWeave[]>;
 };
 
+/** The server's own page maximum (`MAX_PAGE_LIMIT`): what "everything" is asked for as. */
 const PAGE = 1000;
+
+/**
+ * How many closed requests the panel loads **per terminal status**. Open requests are never capped
+ * in intent, so they are read on their own at `PAGE`; the closed ones are history, and a browser
+ * wants the recent end of it, not all of it.
+ */
+export const CLOSED_REQUESTS_PAGE = 25;
+const CLOSED_STATUSES = ["filled", "expired", "cancelled"] as const;
 
 /** setTimeout that settles early — and clears its timer — when `signal` aborts, so no timer outlives a session. */
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -43,12 +75,15 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 export type RetryOptions = { delaysMs: number[]; slowMs: number };
 const DEFAULT_RETRY: RetryOptions = { delaysMs: [250, 500, 1000, 2000, 4000], slowMs: 10_000 };
 
-export function createSession(opts: { client: LoomClient; secret: string; storage: KeyValueStorage; retry?: RetryOptions }): Session {
+export function createSession(opts: { client: LoomClient; secret: string; storage: KeyValueStorage; retry?: RetryOptions;
+  /** Override for `CLOSED_REQUESTS_PAGE`; a knob, and the seam a test uses to fill the page cheaply. */
+  closedRequestsPage?: number }): Session {
   const { client, secret, storage } = opts;
   const retry = opts.retry ?? DEFAULT_RETRY;
+  const closedPage = opts.closedRequestsPage ?? CLOSED_REQUESTS_PAGE;
   const key = `loom:${secret}`;
   let state: SessionState = { status: "loading", threads: [], participants: [], events: [], connection: "closed", needsName: false,
-    invitesForMe: new Set(), invited: {}, instanceGuidelines: "" };
+    invitesForMe: new Set(), invited: {}, instanceGuidelines: "", requests: {}, requestsLoaded: false, closedRequestsPage: closedPage };
   const listeners = new Set<() => void>();
   let weaveId: string | undefined;
   // How far the guidelines text in `state.weave` has been advanced, as a Weave seq. Guidelines are
@@ -85,13 +120,63 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
     if (!state.me) { set({ needsName: true }); throw new LoomClientError("no_identity", "Choose a name to take part"); }
     return client.withToken(state.me.token);
   };
+  /** True on the Lobby's own page: requests are read with this browser's Lobby credential. */
+  const onLobby = () => !!weaveId && state.lobby?.weaveId === weaveId;
+  /**
+   * Every open request, plus the newest `closedPage` of each terminal status.
+   *
+   * Not one `listRequests()`: that is a page of the whole board, newest first, and an open request
+   * older than the newest hundred rows would simply be missing from the panel's live section. Open
+   * and closed are therefore asked for separately, and the closed history is capped on purpose. The
+   * pages are merged through `applySnapshot` like any other snapshot, so two sources are no
+   * different from one.
+   */
+  const readRequests = async (): Promise<LoomRequest[]> => {
+    const pages = await Promise.all([
+      reader.listRequests("open", { limit: PAGE }),
+      ...CLOSED_STATUSES.map((s) => reader.listRequests(s, { limit: closedPage })),
+    ]);
+    return pages.flat();
+  };
+
+  /** Every snapshot goes through the watermark, so a stale answer can never move a request back. */
+  const applyRequests = (snaps: LoomRequest[]) => {
+    let next = state.requests;
+    for (const snap of snaps) next = applySnapshot(next, snap);
+    if (next !== state.requests) set({ requests: next });
+  };
+
+  const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+  /**
+   * Where the Lobby is, and whether that is now known.
+   *
+   * `weave_not_found` is the instance's own answer — it has no Lobby — and settles the question.
+   * Every other failure is a failed read: taken for "no Lobby" it would hide the requests panel and
+   * the profile cards for the life of the page, because both gate on `state.lobby` and nothing else
+   * ever asks again.
+   */
+  const discoverLobby = async (): Promise<{ lobby?: Lobby; settled: boolean; error?: string }> => {
+    try { return { lobby: await client.getLobby(), settled: true }; }
+    catch (e) {
+      if (e instanceof LoomClientError && e.code === "weave_not_found") return { settled: true };
+      return { settled: false, error: messageOf(e) };
+    }
+  };
+  /** False until a `getLobby()` has answered for this load; `state.lobby` means nothing before that. */
+  let lobbyKnown = false;
+
   const refreshInfo = async () => {
     if (!weaveId) return;
-    // The instance text is not part of the Weave, so a failure to read it must not fail the refresh
-    // the rest of the UI depends on: keep what is on screen and try again on the next refresh.
-    const [info, instance] = await Promise.all([
+    // Neither the instance text nor the requests are part of the Weave, so a failure to read either
+    // must not fail the refresh the rest of the UI depends on. The instance text falls back to what
+    // is on screen; the requests keep what is held, record the failure and get their own retry —
+    // there is no later event that would bring a missed request in.
+    const myGeneration = generation;
+    const [info, instance, requests] = await Promise.all([
       reader.getWeave(weaveId),
       client.getInstanceGuidelines().catch(() => state.instanceGuidelines),
+      onLobby() ? readRequests().then((rs) => ({ rs }), (e: unknown) => ({ error: messageOf(e) })) : null,
     ]);
     // A snapshot that predates the last applied guidelines change keeps the text that change
     // delivered; one that is at least as new is authoritative and moves the watermark up.
@@ -107,6 +192,18 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
       me: state.me && info.participants.some((p) => p.id === state.me!.participant.id)
         ? { token: state.me.token, participant: info.participants.find((p) => p.id === state.me!.participant.id)! }
         : state.me });
+    if (requests && "rs" in requests) {
+      applyRequests(requests.rs);
+      if (state.requestsError !== undefined || !state.requestsLoaded) set({ requestsLoaded: true, requestsError: undefined });
+    } else if (requests) {
+      set({ requestsError: requests.error });
+      retryLobbyData(myGeneration);
+    }
+    // `onLobby()` is false while the pointer is unknown, so a refresh in that state reads no
+    // requests and — deliberately — cannot report the board as loaded. Nudging the loop here costs
+    // nothing (it returns at once when one is already running for this generation) and means a
+    // page whose discovery failed converges even if its loop were somehow never started.
+    if (!lobbyKnown) retryLobbyData(myGeneration);
   };
 
   // Coalesced, retried refresh for events that arrive off the wire: a failed refresh is retried
@@ -135,6 +232,57 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
       }
     }
   };
+  /**
+   * What the panel needs and the Weave does not: where the Lobby is, and — on the Lobby's own page
+   * — the request snapshot. Neither may break the rest of the page, and neither may be given up on:
+   * a missed request has no later event that would bring it in, and a missed pointer would hide the
+   * panel and the profile cards for good. So the failure is held in state and the read is retried,
+   * in one loop, on the same backoff a refresh uses, until it succeeds or the session goes away.
+   *
+   * Discovery comes first because the second half depends on it; off the Lobby the pointer was the
+   * whole job. One loop per generation, and it retires with the generation that started it, so a
+   * pending sleep never outlives its load (dispose aborts the sleep as well).
+   *
+   * The guard is keyed on that generation rather than being a bare "a loop is running" flag: a
+   * second `load()` retires the first one's loop, and a bare flag would make the new load skip its
+   * own retry on the strength of a loop that is about to exit — leaving the board unread for good.
+   */
+  let retryingFor: number | undefined;
+  const retryLobbyData = (myGeneration: number) => {
+    if (retryingFor === myGeneration || disposed || myGeneration !== generation) return;
+    retryingFor = myGeneration;
+    void (async () => {
+      try {
+        for (let attempt = 0; ; attempt++) {
+          await sleep(attempt < retry.delaysMs.length ? retry.delaysMs[attempt]! : retry.slowMs, lifetime.signal);
+          if (disposed || myGeneration !== generation) return;
+          if (!lobbyKnown) {
+            const found = await discoverLobby();
+            if (disposed || myGeneration !== generation) return;
+            if (!found.settled) { set({ requestsError: found.error }); continue; }
+            lobbyKnown = true;
+            // Published before the read below, so the panels appear as soon as the pointer is known.
+            set({ lobby: found.lobby });
+          }
+          // Not the Lobby's page (or no Lobby at all): there is no board here, and saying so is
+          // honest — unlike the same claim made while the pointer was still unknown.
+          if (!onLobby()) { set({ requestsLoaded: true, requestsError: undefined }); return; }
+          try {
+            const snaps = await readRequests();
+            if (disposed || myGeneration !== generation) return;
+            applyRequests(snaps);
+            set({ requestsLoaded: true, requestsError: undefined });
+            return;
+          } catch (e) {
+            if (disposed || myGeneration !== generation) return;
+            set({ requestsError: messageOf(e) });
+          }
+        }
+      // Only if it is still this generation's: a newer load may already own the slot by now.
+      } finally { if (retryingFor === myGeneration) retryingFor = undefined; }
+    })();
+  };
+
   const scheduleRefresh = () => {
     if (disposed) return;
     if (refreshInFlight) { refreshDirty = true; return; }
@@ -150,8 +298,11 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
     set({ events, ...deriveInvites(events, state.me?.participant.id, seenUpTo) });
     // thread.url_changed carries the new url in the event, but the url the UI renders lives on the
     // Thread record, so it needs the same refresh as any other thread change.
+    // participant.capabilities_changed is here for the same reason: a Lobby profile lives on the
+    // Participant record, so the panel and the Offer form only see it once the metadata is re-read.
     if (e.type === "thread.created" || e.type === "thread.closed" || e.type === "thread.url_changed"
-      || e.type === "participant.joined" || e.type === "participant.role_changed") {
+      || e.type === "participant.joined" || e.type === "participant.role_changed"
+      || e.type === "participant.capabilities_changed") {
       scheduleRefresh();
     } else if (e.type === "weave.guidelines_changed") {
       // An older change can still be replayed after a newer snapshot was accepted (history, then
@@ -162,6 +313,12 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
         set({ weave: { ...state.weave, guidelines: String(e.payload.guidelines ?? "") } });
       }
       scheduleRefresh();
+    } else if (isRequestEvent(e)) {
+      const requests = applyEvent(state.requests, e);
+      if (requests !== state.requests) set({ requests });
+      // A request this session has never seen (opened while it was away, or a refresh that has not
+      // landed yet): the event alone is not a whole row, so the refresh is what brings it in.
+      else if (!state.requests[String(e.payload.requestId ?? "")]) scheduleRefresh();
     } else if (e.type === "weave.archived") {
       if (state.weave) set({ weave: { ...state.weave, archivedAt: e.at } });
       // Also refresh: a refresh that started before the archive is still going to land with stale
@@ -201,11 +358,26 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
           if (page.length < PAGE) break;
           since = page.at(-1)!.seq;
         }
-        // The instance guidelines are public and independent of this Weave, so they are fetched
-        // alongside the metadata and a failure only costs the panel its instance section.
-        const [info, instance] = await Promise.all([reader.getWeave(id), client.getInstanceGuidelines().catch(() => "")]);
+        // The instance guidelines and the Lobby pointer are public and independent of this Weave, so
+        // they are fetched alongside the metadata and a failure only costs the panel its section.
+        const [info, instance, discovery] = await Promise.all([
+          reader.getWeave(id),
+          client.getInstanceGuidelines().catch(() => ""),
+          discoverLobby(),
+        ]);
+        if (stale()) return;
+        // Only the Lobby's own page has requests, and they are read with this browser's Lobby
+        // credential — the same secret the rest of the page is read with. A failure here (or of the
+        // discovery above) costs the panel its section and nothing else, but it is remembered
+        // rather than shown as an empty board, and retried below once this load has published.
+        let requests: LoomRequest[] = [];
+        let requestsError = discovery.error;
+        if (discovery.settled && discovery.lobby?.weaveId === id) {
+          try { requests = await readRequests(); } catch (e) { requestsError = messageOf(e); }
+        }
         if (stale()) return;
         weaveId = id;
+        lobbyKnown = discovery.settled;
         guidelinesSeq = info.weave.lastSeq;
         let me: SessionState["me"];
         const stored = storage.get(key);
@@ -219,8 +391,18 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
         // The thread this load lands on is on screen, so an invite to it is not an unopened one.
         const first = info.threads.find((t) => t.isGeneral)?.id ?? info.threads[0]?.id;
         if (first) seenUpTo.set(first, maxSeq(events));
+        let held: Requests = {};
+        for (const snap of requests) held = applySnapshot(held, snap);
         set({ status: "ready", weave: info.weave, threads: info.threads, participants: info.participants, events, me,
-          instanceGuidelines: instance, currentThreadId: first, ...deriveInvites(events, me?.participant.id, seenUpTo) });
+          instanceGuidelines: instance, currentThreadId: first, lobby: discovery.lobby, requests: held,
+          // An unsettled pointer is not an empty board: until it is known whether this page even has
+          // one, the panel has nothing to render and nothing may claim the requests are loaded.
+          requestsLoaded: lobbyKnown && requestsError === undefined, requestsError,
+          ...deriveInvites(events, me?.participant.id, seenUpTo) });
+        // After readiness, never before it: the page is usable while the pointer and the board catch
+        // up. The opening event of a request read here is already in history, so nothing would ever
+        // replay it — only this retry can bring the row in, and only it can settle the pointer.
+        if (!lobbyKnown || requestsError !== undefined) retryLobbyData(myGeneration);
         let sawOpen = false;
         const opened = reader.stream(id, {
           since: events.at(-1)?.seq ?? 0,
@@ -324,6 +506,45 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
         set({ weave: { ...state.weave, guidelines: r.weave.guidelines } });
       }
       scheduleRefresh();
+    },
+    // --- Lobby requests. Each mutation is already committed server-side when it answers, so the
+    // snapshot it returns is applied straight away — through the same watermark the refresh uses,
+    // which is what keeps a slower refresh from undoing it.
+    async openRequest(input) {
+      const r = await writer().openRequest(input);
+      applyRequests([r]);
+      return r;
+    },
+    async offer(requestId, input) {
+      const w = writer();
+      await w.offer(requestId, input);
+      // `offer` answers with the Offer, not the request: the row is read back so the panel moves on
+      // the same watermark as everything else rather than on a hand-built row.
+      applyRequests([await w.getRequest(requestId)]);
+    },
+    async accept(requestId, participantIds) {
+      applyRequests([(await writer().acceptRequest(requestId, participantIds)).request]);
+    },
+    async cancel(requestId) {
+      applyRequests([await writer().cancelRequest(requestId)]);
+    },
+    async targets() {
+      const out: TargetWeave[] = [];
+      for (const { secret, token } of storedWeaves(storage)) {
+        // One Weave this browser can no longer reach (revoked token, deleted Weave) must not cost
+        // the picker the others, so each is resolved on its own and a failure simply omits it.
+        try {
+          const c = client.withToken(token);
+          const id = await c.lookupWeave(secret);
+          // A request cannot target the Lobby (core refuses it), so it is not offered.
+          if (id === state.lobby?.weaveId) continue;
+          const info = await c.getWeave(id);
+          if (info.weave.archivedAt) continue;
+          out.push({ weaveId: id, title: info.weave.title, token,
+            threads: info.threads.filter((t) => !t.closedAt).map((t) => ({ id: t.id, name: t.name })) });
+        } catch { /* not a target this browser can offer */ }
+      }
+      return out;
     },
     canModerate: () => state.me?.participant.role === "keeper" && !state.weave?.archivedAt,
     canEditThread: (t) => !!state.me && !state.weave?.archivedAt && !t.closedAt

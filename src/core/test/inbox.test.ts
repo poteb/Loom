@@ -3,6 +3,10 @@ import { freshDb, closeTestDb } from "./helpers.js";
 import { EventBus } from "../src/bus.js";
 import { createWeave, joinWeave } from "../src/weaves.js";
 import { createThread } from "../src/threads.js";
+import { setRole } from "../src/participants.js";
+import { ensureLobby, joinLobby } from "../src/lobby/lobby.js";
+import { setCapabilities } from "../src/lobby/profile.js";
+import { accept, offer, openRequest, sweepRequests } from "../src/lobby/requests.js";
 import { inviteParticipant } from "../src/invites.js";
 import { postMessage } from "../src/messages.js";
 import { inbox } from "../src/inbox.js";
@@ -12,6 +16,7 @@ import { createCore } from "../src/index.js";
 import { keeperToken } from "./helpers.js";
 import { MAX_PAGE_LIMIT } from "../src/paging.js";
 import type { Db } from "../src/db/index.js";
+import type { Actor } from "../src/types.js";
 
 afterAll(closeTestDb);
 let db: Db; let bus: EventBus;
@@ -84,5 +89,89 @@ describe("inbox", () => {
     expect((await core.inbox(agent, r.weave.id, {})).map((e) => e.seq)).toEqual([m.seq]);
     const other = await core.createWeave({ title: "O", opener: "", creator: { name: "Q", kind: "human" } });
     await expect(core.inbox(agent, other.weave.id, {})).rejects.toMatchObject({ code: "forbidden" });
+  });
+});
+
+const MODEL = { model: "gpt-5.6-sol", effort: "high" };
+
+/**
+ * The spec's Lobby scenario as rows: a requester owned by "paw", two listeners its requirements and
+ * owner admit who will offer, one that is admitted but stays silent, and one that serves someone
+ * else. The request is open and wants one helper.
+ */
+async function lobbySetup() {
+  const { weaveId: lobbyId } = await ensureLobby(db);
+  const target = await createWeave(db, bus, { title: "Session", opener: "hi", creator: { name: "Paw", kind: "human" } });
+  const paw = await resolveCredential(db, target.token);
+  const prThread = await createThread(db, bus, paw, target.weave.id, "PR 14", "https://e.com/pr/14");
+  // The requester's authority in the target Weave is its own keeper participant there.
+  const there = await joinWeave(db, bus, target.secret, { name: "Claude-target", kind: "agent" });
+  await setRole(db, bus, paw, target.weave.id, there.participant.id, "keeper");
+  const targetKeeper = await resolveCredential(db, there.token);
+
+  const join = async (name: string, profile: unknown) => {
+    const j = await joinLobby(db, bus, { name, kind: "agent" });
+    const actor = await resolveCredential(db, j.token);
+    await setCapabilities(db, bus, actor, profile);
+    return { id: j.participant.id, actor };
+  };
+  const claude = await join("Claude", { owner: "paw" });
+  const pawbot = await join("Pawbot", { models: [MODEL], owner: "paw", serves: "owner" });
+  const shared = await join("Shared", { models: [MODEL], owner: "shared", serves: "anyone" });
+  const quiet = await join("Quiet", { models: [MODEL], owner: "paw", serves: "owner" });
+  const bobbot = await join("Bobbot", { models: [MODEL], owner: "bob", serves: "owner" });
+
+  const request = await openRequest(db, bus, claude.actor, targetKeeper, {
+    title: "Review PR 14", requirements: { models: [MODEL] }, wanted: 1,
+    targetWeaveId: target.weave.id, targetThreadId: prThread.id, url: "https://e.com/pr/14",
+  });
+  return { lobbyId, claude, pawbot, shared, quiet, bobbot, request };
+}
+type Lobby = Awaited<ReturnType<typeof lobbySetup>>;
+
+const types = async (f: Lobby, who: { actor: Actor }) =>
+  (await inbox(db, who.actor, f.lobbyId, {})).map((e) => e.type);
+
+/** Both listeners offer; the requester accepts one, which fills the request and closes it. */
+async function fillIt(f: Lobby) {
+  await offer(db, bus, f.pawbot.actor, f.request.id, {});
+  await offer(db, bus, f.shared.actor, f.request.id, {});
+  await accept(db, bus, f.claude.actor, f.request.id, [f.pawbot.id]);
+}
+
+describe("inbox: addressed Lobby events", () => {
+  it("delivers request.opened to an eligible listener and to nobody else", async () => {
+    const f = await lobbySetup();
+    expect(await types(f, f.pawbot)).toEqual(["request.opened"]);
+    expect(await types(f, f.bobbot)).toEqual([]);
+  });
+
+  it("delivers every offer, and then the close, to the requester", async () => {
+    const f = await lobbySetup();
+    await offer(db, bus, f.pawbot.actor, f.request.id, {});
+    await offer(db, bus, f.shared.actor, f.request.id, {});
+    expect(await types(f, f.claude)).toEqual(["request.offered", "request.offered"]);
+    // Swept rather than accepted: the close is addressed to the requester so that a close it did
+    // not cause reaches it, and the inbox never hands anyone back their own events.
+    await sweepRequests(db, bus, new Date(Date.parse(f.request.expiresAt) + 1000));
+    expect(await types(f, f.claude)).toEqual(["request.offered", "request.offered", "request.closed"]);
+  });
+
+  it("tells an offerer who was not accepted that the request closed", async () => {
+    const f = await lobbySetup();
+    await fillIt(f);
+    expect(await types(f, f.shared)).toEqual(["request.opened", "request.closed"]);
+  });
+
+  it("gives the accepted offerer its acceptance and its invitation, and not the close", async () => {
+    const f = await lobbySetup();
+    await fillIt(f);
+    expect(await types(f, f.pawbot)).toEqual(["request.opened", "request.accepted", "weave.invited"]);
+  });
+
+  it("leaves an eligible listener that never offered with the opening alone", async () => {
+    const f = await lobbySetup();
+    await fillIt(f);
+    expect(await types(f, f.quiet)).toEqual(["request.opened"]);
   });
 });

@@ -16,7 +16,7 @@ function makeState(): ChannelState {
 }
 
 function participant(name: string): Participant {
-  return { id: "p2", weaveId: WEAVE_ID, name, kind: "agent", role: "member", joinedAt: "", agentId: null };
+  return { id: "p2", weaveId: WEAVE_ID, name, kind: "agent", role: "member", joinedAt: "", agentId: null, capabilities: null };
 }
 
 function weaveInfo(): WeaveInfo {
@@ -33,19 +33,28 @@ function weaveInfo(): WeaveInfo {
 
 /** Fake LoomClient recording the order of the calls join_weave makes, so a test can assert that the
  * read-only metadata lookups happen *before* the irreversible join. */
-function makeFakeClient(over: { getWeave?: () => Promise<WeaveInfo>; lookupWeave?: () => Promise<string> } = {}) {
+function makeFakeClient(over: {
+  getWeave?: () => Promise<WeaveInfo>; lookupWeave?: () => Promise<string>; getLobby?: () => Promise<{ weaveId: string; title: string }>;
+} = {}) {
   const calls: string[] = [];
   const joinWeave = vi.fn(async (): Promise<JoinResult> => {
     calls.push("joinWeave");
+    return { weaveId: WEAVE_ID, weave: weaveInfo().weave, generalThreadId: "g1", participant: participant("Claude"), token: TOKEN, guidelines: "" };
+  });
+  // Some other Weave is the Lobby by default, so an ordinary join is not mistaken for one.
+  const joinLobby = vi.fn(async (): Promise<JoinResult> => {
+    calls.push("joinLobby");
     return { weaveId: WEAVE_ID, weave: weaveInfo().weave, generalThreadId: "g1", participant: participant("Claude"), token: TOKEN, guidelines: "" };
   });
   const fake = {
     withToken: () => fake,
     lookupWeave: vi.fn(async () => { calls.push("lookupWeave"); return over.lookupWeave ? await over.lookupWeave() : WEAVE_ID; }),
     getWeave: vi.fn(async () => { calls.push("getWeave"); return over.getWeave ? await over.getWeave() : weaveInfo(); }),
-    joinWeave,
+    // Deliberately not recorded in `calls`: those assertions are about the join sequence itself.
+    getLobby: vi.fn(async () => (over.getLobby ? await over.getLobby() : { weaveId: "lobby-elsewhere", title: "Lobby" })),
+    joinWeave, joinLobby,
   };
-  return { client: fake as unknown as LoomClient, calls, joinWeave };
+  return { client: fake as unknown as LoomClient, calls, joinWeave, joinLobby };
 }
 
 describe("ClientToolBackend.joinWeave", () => {
@@ -196,5 +205,49 @@ describe("ClientToolBackend.joinWeave", () => {
     const backend = new ClientToolBackend(client, state, { onJoined: vi.fn() });
     await backend.joinWeave(SECRET, { name: "Claude", kind: "agent" });
     expect(JSON.stringify(state.get())).not.toContain(SECRET);
+  });
+});
+
+/**
+ * The Lobby is recognised on every join path, not only through `join_lobby`. The flag is what makes
+ * `leave_weave` clear the profile before it drops the credential (spec 5), so an identity that
+ * reached the Lobby by secret must carry it too.
+ */
+describe("ClientToolBackend and the Lobby", () => {
+  const asClaude = async () => ({ ...weaveInfo(), participants: [{ ...participant("Claude"), id: "p2" }] });
+  const storedClaude = { title: "Design review", token: "stored-token", participantId: "p2", participantName: "Claude", generalThreadId: "g1", wake: "all" as const, lastSeq: 7 };
+
+  it("marks a Weave joined by its secret as the Lobby when it is the Lobby", async () => {
+    const state = makeState();
+    const { client } = makeFakeClient({ getLobby: async () => ({ weaveId: WEAVE_ID, title: "Lobby" }) });
+    const backend = new ClientToolBackend(client, state, { onJoined: vi.fn() });
+
+    await backend.joinWeave(SECRET, { name: "Claude", kind: "agent" });
+
+    expect(state.get().weaves[WEAVE_ID]).toMatchObject({ token: TOKEN, isLobby: true });
+  });
+
+  it("still joins by secret when the Lobby pointer cannot be read", async () => {
+    const state = makeState();
+    const { client } = makeFakeClient({ getLobby: async () => { throw new LoomClientError("network", "fetch failed"); } });
+    const backend = new ClientToolBackend(client, state, { onJoined: vi.fn() });
+
+    const r = await backend.joinWeave(SECRET, { name: "Claude", kind: "agent" }) as { token: string };
+
+    expect(r.token).toBe(TOKEN);                     // the join stands…
+    expect(state.get().weaves[WEAVE_ID]!.isLobby).toBeUndefined();   // …simply unflagged
+  });
+
+  it("upgrades a stored entry that lacks the flag when join_lobby reuses it", async () => {
+    const state = makeState();
+    await state.upsertWeave(WEAVE_ID, storedClaude);   // joined by secret, before anything knew it was the Lobby
+    const { client, joinLobby } = makeFakeClient({ getWeave: asClaude, getLobby: async () => ({ weaveId: WEAVE_ID, title: "Lobby" }) });
+    const backend = new ClientToolBackend(client, state, { onJoined: vi.fn() });
+
+    const r = await backend.joinLobby({ name: "Claude", kind: "agent" }) as { alreadyJoined?: boolean; token: string };
+
+    expect(joinLobby).not.toHaveBeenCalled();        // the reuse branch, which used to return unflagged
+    expect(r).toMatchObject({ alreadyJoined: true, token: "stored-token" });
+    expect(state.get().weaves[WEAVE_ID]).toMatchObject({ token: "stored-token", lastSeq: 7, isLobby: true });
   });
 });

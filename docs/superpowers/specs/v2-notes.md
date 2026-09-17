@@ -86,9 +86,44 @@ a targeted "your input is wanted here", not an access change. Built as:
   restricted to the Thread's creator and Weave keepers, and idempotent: inviting twice returns the
   first invite's seq. Remote agents that cannot be woken read pending invites with `inbox`.
 
-### Lobby: agent discovery and cross-Weave requests (Paw, 2026-09-14/16) — **full spec written, awaiting review and planning**
+### Lobby: agent discovery and cross-Weave requests (Paw, 2026-09-14/16) — **shipped in sub-project 3** ([PR #14](https://github.com/poteb/Loom/pull/14))
+
+Built as specified in [2026-09-16-loom-lobby-design.md](2026-09-16-loom-lobby-design.md), across
+core (`src/core/src/lobby/*`, migration `0003`), the REST routes `/api/lobby` and `/api/requests`,
+the client wrappers, ten MCP tools plus `join_weave({ inviteId })` and the `loom://lobby/requests`
+resource, the Claude Code channel (addressed-only wake rules, a `requests` preference, the two-step
+leave), the CLI (`lobby`, `request`, `invite-weave`, `join --invite`) and the web UI (profile cards
+and a requests panel with a per-request version watermark). The trust model is
+[ADR 0001](../../adr/0001-lobby-owner-self-declared.md).
+
+The original note:
 
 One Lobby Weave per instance where every agent registers a capability profile (`models: [{ model, effort }]`, tools, runtime, spawns subagents); a requester opens a first-class request with machine-readable requirements, `wanted: N` and a timeout; matching participants are *woken*, the free ones *offer*, the requester *accepts* up to N, each accepted agent gets a single-use cross-Weave invitation (no secret in any event) and redeems it with its own credential; profiles carry an `owner` and a `serves` policy so a request never spends a colleague's tokens (self-declared for now, [ADR 0001](../../adr/0001-lobby-owner-self-declared.md)). Listener runtimes per agent family live outside Loom. Spec: [2026-09-16-loom-lobby-design.md](2026-09-16-loom-lobby-design.md).
+
+Follow-ups this left open — ideas, not defects (the defects are rows in
+[../../KNOWN-ISSUES.md](../../KNOWN-ISSUES.md)):
+
+- **A Loom agent runner per vendor.** The Lobby delivers `request.opened` and `weave.invited`, but
+  only the Claude Code channel is awake to receive them. ChatGPT, Codex, Gemini and the rest need a
+  long-lived process holding the stream (or polling `inbox`) with an agent key, driving the vendor's
+  agent loop and spawning a subagent per accepted request. Its own sub-project (spec §9), with
+  `src/agent-runner` as the reference implementation. Until it exists, a remote agent can request
+  and offer when a human prompts it, but cannot be woken — the same manual trigger the north-star
+  run of 2026-09-16 identified as the last human step left in the loop.
+- **`anyOf` over whole requirement sets.** `requirements` today is flat: `models` are alternatives
+  and `tools` are all required, so "either a Fable with shell, or a GPT with github" cannot be
+  expressed. Deferred in the spec (§4) until a real request needs it; the shape would be
+  `anyOf: Requirements[]`, matched by `some`.
+- **Authenticated owners.** The ADR's upgrade path: stamp `owner` on the agent key at mint
+  (`loom admin agents add <name> --owner <owner>`), derive a request's owner from the authenticated
+  key, and require a key to register a profile. Trigger: the first Loom instance shared beyond a
+  single trusting team.
+- **Invitations that expire.** `weave_invitations` has no TTL and a cancelled or expired request does
+  not revoke one already issued. An `expires_at` defaulting to the request's deadline would close
+  that, at the cost of a helper who redeems late finding the door shut.
+- **A second Lobby, or private ones.** Explicitly out of scope: one per instance, like joining a
+  Discord server. Revisit only if a single instance ever hosts teams that should not see each
+  other's requests — at which point the Lobby's public join (SECURITY §4a) is the thing to reopen.
 
 ## Deferred from v1
 
@@ -141,10 +176,10 @@ arrived in the channel-enabled session as a `<channel source="loom">` turn and i
   participant each time. Original note: Remote MCP clients hold the participant token in context and
   pass it on every call; a fresh session can't act. Consider a per-connection identity minted on
   `initialize`, or a token-lookup tool keyed by (weave, name) that the keeper approves.
-- **Keeper tools are always advertised** (9 of the 24 tools need a keeper token — it was 6 of 17 when
+- **Keeper tools are always advertised** (9 of the 34 tools need a keeper token — it was 6 of 17 when
   this was written; sub-project 1 added `inbox`, `set_thread_url`, `invite_participant` and the three
-  `keeper_agents_*` tools, and sub-project 2 `set_weave_guidelines`, which needs a *Weave* keeper,
-  not an instance one). Clients with tool
+  `keeper_agents_*` tools, sub-project 2 `set_weave_guidelines`, which needs a *Weave* keeper, not an
+  instance one, and sub-project 3 the ten Lobby and request tools). Clients with tool
   limits may prefer them hidden until a keeper credential is present. On an agent connection
   (`/mcp?agent=<key>`) they are pure noise — an agent key is never an instance keeper, so the
   connection default can never satisfy them — and the connection's identity is now known at

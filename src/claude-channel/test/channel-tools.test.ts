@@ -32,7 +32,7 @@ function fakeState(weaveIds: string[]): ChannelState {
   const weaves = Object.fromEntries(weaveIds.map((id, i) => [id, joined(i)]));
   return {
     load: () => ({ weaves, sessions: {}, writers: {} } satisfies ChannelConfig),
-    prefs: () => ({ wake: "all", invites: true }),
+    prefs: () => ({ wake: "all", invites: true, requests: true }),
     cursor: () => 7,
   } as unknown as ChannelState;
 }
@@ -64,6 +64,110 @@ function fakeClient(answer: (weaveId: string) => Promise<{ guidelines: string }>
   };
   return { client: client as unknown as LoomClient, peak: () => peak };
 }
+
+/** A state whose weaves can be removed, so leave_weave's two steps can be told apart. */
+function leaveState(weaves: Record<string, JoinedWeave>): { state: ChannelState; removed: string[] } {
+  const removed: string[] = [];
+  const config = () => ({ weaves, sessions: {}, writers: {} } satisfies ChannelConfig);
+  const state = {
+    load: config, get: config,
+    prefs: () => ({ wake: "all", invites: true, requests: true }),
+    cursor: () => 0,
+    removeWeave: async (id: string) => { removed.push(id); delete weaves[id]; },
+  } as unknown as ChannelState;
+  return { state, removed };
+}
+
+/**
+ * A client whose Lobby profile write answers as `answer` says, and whose Lobby pointer answers as
+ * `lobby` says — the lookup `leave_weave` makes for a stored entry that carries no `isLobby` flag.
+ */
+function capabilitiesClient(answer: () => Promise<unknown>, lobby: () => Promise<{ weaveId: string }> = async () => ({ weaveId: "somewhere-else" })):
+  { client: LoomClient; calls: (unknown)[] } {
+  const calls: unknown[] = [];
+  const client = {
+    withToken: () => ({ setCapabilities: (profile: unknown) => { calls.push(profile); return answer(); } }),
+    getLobby: () => lobby(),
+  };
+  return { client: client as unknown as LoomClient, calls };
+}
+
+describe("leave_weave", () => {
+  const lobby = (): Record<string, JoinedWeave> => ({ L: { ...joined(1), title: "Lobby", isLobby: true } });
+  const call = async (state: ChannelState, client: LoomClient, args: unknown, onLeave = () => {}) => {
+    const handlers = new Map<string, (a: unknown) => Promise<CallToolResult>>();
+    const server = { registerTool: (name: string, _cfg: unknown, handler: (a: unknown) => Promise<CallToolResult>) => { handlers.set(name, handler); } };
+    registerChannelTools(server as unknown as McpServer, state, client, { onLeave, onPrefsChanged: () => {} });
+    const r = await handlers.get("leave_weave")!(args);
+    return { r, body: JSON.parse((r.content as { text: string }[])[0]!.text) };
+  };
+
+  it("clears the Lobby profile before dropping the credential", async () => {
+    const { state, removed } = leaveState(lobby());
+    const { client, calls } = capabilitiesClient(async () => ({ id: "p1" }));
+    const { r, body } = await call(state, client, { weaveId: "L" });
+    expect(r.isError).toBeFalsy();
+    expect(calls).toEqual([null]);
+    expect(removed).toEqual(["L"]);
+    expect(body).toMatchObject({ weaveId: "L", left: true });
+    expect(body.profileMayRemain).toBeUndefined();
+  });
+
+  it("rejects the leave and keeps everything when the profile cannot be cleared", async () => {
+    const { state, removed } = leaveState(lobby());
+    const { client, calls } = capabilitiesClient(async () => { throw new Error("fetch failed"); });
+    let stopped = 0;
+    const { r, body } = await call(state, client, { weaveId: "L" }, () => { stopped++; });
+    expect(r.isError).toBe(true);
+    expect(body.code).toBe("network");
+    expect(calls).toEqual([null]);
+    expect(removed).toEqual([]);           // still joined: a retry can still clear the profile
+    expect(stopped).toBe(0);               // and the stream was never torn down
+  });
+
+  it("force drops the credential anyway and says the profile may still be live", async () => {
+    const { state, removed } = leaveState(lobby());
+    const { client } = capabilitiesClient(async () => { throw new Error("fetch failed"); });
+    const { r, body } = await call(state, client, { weaveId: "L", force: true });
+    expect(r.isError).toBeFalsy();
+    expect(body).toMatchObject({ weaveId: "L", left: true, profileMayRemain: true });
+    expect(removed).toEqual(["L"]);
+  });
+
+  // A credential can reach the Lobby without join_lobby (a secret join), and entries predate the
+  // flag; the leave must not decide from the flag alone that there is no profile to clear.
+  it("recognises the Lobby at leave time for a stored entry that carries no flag", async () => {
+    const { state, removed } = leaveState({ L: joined(1) });
+    const { client, calls } = capabilitiesClient(async () => ({ id: "p1" }), async () => ({ weaveId: "L" }));
+    const { r, body } = await call(state, client, { weaveId: "L" });
+    expect(r.isError).toBeFalsy();
+    expect(calls).toEqual([null]);                 // the profile was cleared first…
+    expect(removed).toEqual(["L"]);                // …and only then was the credential dropped
+    expect(body).toMatchObject({ weaveId: "L", left: true });
+  });
+
+  it("rejects the leave when it cannot tell whether the Weave is the Lobby", async () => {
+    const { state, removed } = leaveState({ L: joined(1) });
+    const { client, calls } = capabilitiesClient(async () => ({ id: "p1" }), async () => { throw new Error("fetch failed"); });
+    let stopped = 0;
+    const { r, body } = await call(state, client, { weaveId: "L" }, () => { stopped++; });
+    expect(r.isError).toBe(true);
+    expect(body.code).toBe("network");
+    expect(calls).toEqual([]);
+    expect(removed).toEqual([]);
+    expect(stopped).toBe(0);
+  });
+
+  it("leaves an ordinary Weave without touching any profile", async () => {
+    const { state, removed } = leaveState({ w1: joined(1) });
+    const { client, calls } = capabilitiesClient(async () => { throw new Error("should not be called"); });
+    const { r, body } = await call(state, client, { weaveId: "w1" });
+    expect(r.isError).toBeFalsy();
+    expect(calls).toEqual([]);
+    expect(body).toEqual({ weaveId: "w1", left: true });
+    expect(removed).toEqual(["w1"]);
+  });
+});
 
 describe("list_joined guidelines fan-out", () => {
   it("reports one Weave's failure per Weave, redacted, and still answers for the others", async () => {

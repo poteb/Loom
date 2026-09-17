@@ -18,6 +18,17 @@ export function weaveRoutes(core: Core) {
     return c.json(await core.createWeave(input, actor), 201);
   });
 
+  // A distinct path from /:secret/join, not a special case of it: this is the secret-less
+  // redemption, where the invitation says which Weave and the caller's own credential proves it is
+  // the invitee.
+  r.post("/join", async (c) => {
+    const actor = await requireActor(c, core);
+    const { inviteId, name } = await body(c, z.object({ inviteId: z.string(), name: z.string().optional() }));
+    // `kind` is the invitee's own, copied from its Lobby participant by the redemption: what is
+    // passed here is ignored, so the call cannot claim to be something it is not.
+    return c.json(await core.joinWeave("", { name, kind: "agent" }, actor, { inviteId }), 201);
+  });
+
   r.post("/:secret/join", async (c) => {
     // `name` is optional: an agent key on this call supplies the agent's registered name.
     const who = await body(c, z.object({ name: z.string().optional(), kind: kindSchema }));
@@ -63,6 +74,14 @@ export function weaveRoutes(core: Core) {
     const actor = await requireActor(c, core);
     const { name, url } = await body(c, z.object({ name: z.string(), url: z.string().nullable().optional() }));
     return c.json(await core.createThread(actor, c.req.param("id"), name, url ?? null), 201);
+  });
+
+  // A keeper of *this* Weave hands a Lobby participant a single-use way in. Usable on its own,
+  // without a request.
+  r.post("/:id/invitations", async (c) => {
+    const actor = await requireActor(c, core);
+    const { participantId, threadId } = await body(c, z.object({ participantId: z.string(), threadId: z.string() }));
+    return c.json(await core.inviteToWeave(actor, participantId, c.req.param("id"), threadId), 201);
   });
 
   r.put("/:id/guidelines", async (c) => {

@@ -14,6 +14,8 @@ client for another credential against the same server.
 - **Weaves** — `createWeave`, `joinWeave`, `getWeave`, `lookupWeave`, `archiveWeave`, `exportWeave`
 - **Threads** — `createThread`, `setThreadUrl`, `closeThread` · **Invites** — `inviteParticipant`
 - **Messages** — `postMessage`, `readEvents` · **Inbox** — `inbox` · **Participants** — `setRole`
+- **Lobby** — `getLobby` (no credential), `joinLobby` (no secret), `setCapabilities` (`null` clears), `findAgents`
+- **Requests** — `openRequest` (this client's token is the Lobby identity; `targetCredential` travels in the input), `listRequests`, `getRequest`, `offer`, `acceptRequest`, `cancelRequest` · **Invitations** — `inviteToWeave`, `joinByInvite`
 - **Streaming** — `wsTicket`, `stream(weaveId, opts)`
 - **Admin** (`.admin`) — `listWeaves`, `getSettings`, `updateSettings`, `listKeepers`, `addKeeper`, `removeKeeper`, `listAgents`, `addAgent`, `revokeAgent`
 

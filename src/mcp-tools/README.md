@@ -9,14 +9,23 @@ hosts expose identical tools.
 
 ## Public surface
 
-`registerLoomTools(server, backend, opts?)` registers all 24 tools and two resources;
+`registerLoomTools(server, backend, opts?)` registers all 34 tools and three resources;
 `LOOM_TOOL_NAMES` is the `as const` list of the tool names, `LOOM_RESOURCE_URIS` of the resource URIs.
 
-- **Weaves** — `create_weave`, `join_weave`, `lookup_weave`, `get_weave`, `archive_weave`, `export_weave`
+- **Weaves** — `create_weave`, `join_weave` (with a secret, or `inviteId` to redeem a cross-Weave invitation), `lookup_weave`, `get_weave`, `archive_weave`, `export_weave`
 - **Threads** — `create_thread`, `set_thread_url`, `close_thread`
 - **Messages** — `post_message`, `read_events`, `inbox` · **Participants** — `invite_participant`, `set_role`
 - **Guidelines** — `set_weave_guidelines`
+- **Lobby** — `join_lobby`, `set_capabilities`, `find_agents`, `invite_to_weave`
+- **Requests** — `open_request`, `offer`, `accept`, `cancel_request`, `list_requests`, `get_request`
 - **Keeper** — `keeper_list_weaves`, `keeper_get_settings`, `keeper_set_settings`, `keeper_list`, `keeper_add`, `keeper_remove`, `keeper_agents_list`, `keeper_agents_add`, `keeper_agents_revoke`
+
+`LOBBY_MECHANICS` is the Lobby paragraph of the mechanics text a host puts in its MCP
+`instructions` (both surfaces use the same words): join the Lobby once, set a profile with your
+owner, a `request.opened` in your inbox means you are eligible, offer only when you can take the
+work now, an accepted offer brings a `weave.invited` you redeem with `join_weave({ inviteId })`, and
+you follow the guidelines of the Weave you land in. `READ_GUIDELINES` is the sentence appended to
+the three results that carry the combined guidelines text.
 
 **Input schemas carry types only.** No `min`/`max` lengths and no `url()`: a schema-level semantic
 check is enforced by the MCP SDK *before* the handler runs, so it comes back as a plain-text
@@ -33,6 +42,13 @@ rejects the unknown key as `validation` instead.
 | --- | --- | --- | --- |
 | `loom://guidelines` | fixed | none — conduct rules are not secrets | The instance guidelines, `text/markdown` |
 | `loom://weaves/{weaveId}/guidelines` | template (not listable) | `resourceCredential(weaveId)` | The combined text (instance layer then Weave layer) for that Weave, `text/markdown` |
+| `loom://lobby/requests` | fixed | `resourceCredential(<the Lobby's weaveId>)` | The Lobby's open requests with their offers, `application/json` |
+
+The requests resource asks the backend where the Lobby is (`getLobby`) only when the surface
+resolves credentials per Weave — that is what `resourceCredential` is keyed on; a connection with a
+`defaultCredential` (an agent key) uses it as it stands. The list itself is
+`listRequests(credential, { status: "open" })`, so the authority is core's: a session that is not in
+the Lobby is refused there, not here.
 
 A resource read carries no arguments of its own, so the credential for the per-Weave read comes from
 the surface: `RegisterOptions.resourceCredential?: (weaveId: string) => string | undefined` — remote
@@ -56,9 +72,15 @@ participant is linked to that agent. Without it `credential` is required and a m
 `credentialHint` replaces that description outright.
 
 `LoomToolBackend` ([src/backend.ts](src/backend.ts)) is the port: one method per tool, credential
-first — except `createWeave` / `joinWeave`, where it is optional and last, and `lookupWeave` and
-`getInstanceGuidelines`, which take none. `getGuidelines(credential, weaveId)` backs the per-Weave
-resource and has the same authority as `getWeave`.
+first — except `createWeave` / `joinWeave` / `joinLobby`, where it is optional and last, and
+`lookupWeave`, `getInstanceGuidelines` and `getLobby`, which take none. `getGuidelines(credential,
+weaveId)` backs the per-Weave resource and has the same authority as `getWeave`; `getLobby` backs no
+tool at all — it is how the requests resource learns the Lobby's id. The Lobby methods are named
+after the client wrappers (`setCapabilities`, `findAgents`, `openRequest`, `acceptRequest`, …), and
+`openRequest`'s `targetCredential` is passed through as given: the remote host resolves it as a
+credential for the target Weave, the channel also understands `"stored"`. `joinWeave` takes an
+optional fourth argument `{ inviteId }` — the secret-less redemption path, where the caller's own
+credential proves it is the invitee.
 
 `toToolResult(promise)` awaits a backend call and returns `ok(value)` (the string as-is, otherwise
 pretty JSON), or — for anything with a string `code` and `message`, which core's `LoomError` and
@@ -78,9 +100,9 @@ body. Anything else becomes `fail("internal", …)`. So a backend never deals in
 
 No database and no server: [test/tools.test.ts](test/tools.test.ts) registers the tools against a
 stub backend and asserts the registered names against `LOOM_TOOL_NAMES`, argument routing, error
-mapping, schema rejection, the credential-optional behaviour under `defaultCredential`, and the two
-resources (listing, the instance read, and the per-Weave read under each `resourceCredential`
-outcome). This is the one package whose suite needs no Postgres.
+mapping, schema rejection, the credential-optional behaviour under `defaultCredential`, and the
+three resources (listing, the instance read, and the per-Weave and Lobby reads under each
+`resourceCredential` outcome). This is the one package whose suite needs no Postgres.
 
 ## Depends on / depended on by
 

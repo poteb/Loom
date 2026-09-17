@@ -1,6 +1,9 @@
 import { describe, it, expect, afterAll, beforeEach } from "vitest";
+import { eq } from "drizzle-orm";
 import { freshDb, closeTestDb, keeperToken } from "./helpers.js";
 import { EventBus } from "../src/bus.js";
+import { threads } from "../src/db/schema.js";
+import { createThread } from "../src/threads.js";
 import { createWeave, getWeave, joinWeave, archiveWeave, listWeaves, lookupWeaveIdBySecret } from "../src/weaves.js";
 import { readEvents } from "../src/events.js";
 import { resolveCredential } from "../src/actors.js";
@@ -54,6 +57,23 @@ describe("joinWeave", () => {
     expect(evs[0]!.type).toBe("participant.joined");
     expect(evs[0]!.payload).toMatchObject({ participantId: j.participant.id, name: "ChatGPT", kind: "agent", role: "member" });
   });
+  // The Lobby is full of Threads nobody would call General — one per request — and a Weave's
+  // General Thread is the one flagged as such, not the oldest row in it. Timestamps are not an
+  // ordering anyone controls: a host clock that steps backwards is enough to put a later Thread
+  // first, and the caller is then handed a request Thread as its "General" one.
+  it("returns the Thread flagged General even when another Thread's timestamp is older", async () => {
+    const r = await createWeave(db, bus, input);
+    const other = await createThread(db, bus, await resolveCredential(db, r.token), r.weave.id, "PR 14");
+    await db.update(threads).set({ createdAt: new Date(new Date(other.createdAt).getTime() - 60_000) })
+      .where(eq(threads.id, r.generalThread.id));
+    const j = await joinWeave(db, bus, r.secret, { name: "ChatGPT", kind: "agent" });
+    expect(j.generalThreadId).toBe(r.generalThread.id);
+    await db.update(threads).set({ createdAt: new Date(new Date(other.createdAt).getTime() + 60_000) })
+      .where(eq(threads.id, r.generalThread.id));
+    const later = await joinWeave(db, bus, r.secret, { name: "Gemini", kind: "agent" });
+    expect(later.generalThreadId).toBe(r.generalThread.id);
+  });
+
   it("rejects duplicate names case-insensitively", async () => {
     const r = await createWeave(db, bus, input);
     await expect(joinWeave(db, bus, r.secret, { name: "claude", kind: "human" })).rejects.toMatchObject({ code: "name_taken" });
@@ -99,6 +119,19 @@ describe("lookupWeaveIdBySecret", () => {
 });
 
 describe("archiveWeave / listWeaves", () => {
+  // The same rule as `joinWeave` above, for the event this one appends.
+  it("logs the archive on the Thread flagged General, whatever the timestamps say", async () => {
+    const r = await createWeave(db, bus, input);
+    const me = await resolveCredential(db, r.token);
+    const other = await createThread(db, bus, me, r.weave.id, "PR 14");
+    await db.update(threads).set({ createdAt: new Date(new Date(other.createdAt).getTime() + 60_000) })
+      .where(eq(threads.id, r.generalThread.id));
+    await archiveWeave(db, bus, me, r.weave.id);
+    const last = (await readEvents(db, r.weave.id, {})).at(-1)!;
+    expect(last.type).toBe("weave.archived");
+    expect(last.threadId).toBe(r.generalThread.id);
+  });
+
   it("keeper role archives; member cannot; archive is idempotent-rejecting", async () => {
     const r = await createWeave(db, bus, input);
     const j = await joinWeave(db, bus, r.secret, { name: "Member", kind: "human" });

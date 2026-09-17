@@ -2,14 +2,14 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { registerLoomTools, LOOM_TOOL_NAMES, LOOM_RESOURCE_URIS, READ_GUIDELINES, LoomToolError, type LoomToolBackend, type RegisterOptions } from "../src/index.js";
+import { registerLoomTools, LOOM_TOOL_NAMES, LOOM_RESOURCE_URIS, READ_GUIDELINES, LOBBY_MECHANICS, LoomToolError, type LoomToolBackend, type RegisterOptions } from "../src/index.js";
 
 const calls: unknown[][] = [];
 /** Set by the one case that needs the credential-free instance read to fail; cleared straight after. */
 let instanceGuidelinesError: LoomToolError | undefined;
 const fake: LoomToolBackend = {
   createWeave: async (input, credential) => { calls.push(["createWeave", input, credential]); return { weave: { id: "w1" }, secret: "s".repeat(43), token: "t".repeat(43) }; },
-  joinWeave: async (secret, who) => { calls.push(["joinWeave", secret, who]); if (secret === "bad") throw new LoomToolError("weave_not_found", "Weave not found"); return { weaveId: "w1", token: "j".repeat(43) }; },
+  joinWeave: async (secret, who, _credential, opts) => { calls.push(["joinWeave", secret, who, opts]); if (secret === "bad") throw new LoomToolError("weave_not_found", "Weave not found"); return { weaveId: opts?.inviteId ? "target" : "w1", token: "j".repeat(43) }; },
   lookupWeave: async () => ({ weaveId: "w1" }),
   getWeave: async (credential, weaveId) => ({ weave: { id: weaveId }, credential }),
   readEvents: async (_c, _w, opts) => [{ seq: (opts.since ?? 0) + 1 }],
@@ -33,6 +33,24 @@ const fake: LoomToolBackend = {
   keeperAgentsRevoke: async () => {},
   setWeaveGuidelines: async (c, w, g) => { calls.push(["setWeaveGuidelines", c, w, g]); return { weave: { id: w, guidelines: g }, seq: 7 }; },
   getInstanceGuidelines: async () => { if (instanceGuidelinesError) throw instanceGuidelinesError; return "## Loom guidelines\nBe kind."; },
+  getLobby: async () => { calls.push(["getLobby"]); return { weaveId: "lobby-1", title: "Lobby" }; },
+  joinLobby: async (who, credential) => { calls.push(["joinLobby", who, credential]); return { weaveId: "lobby-1", participant: { id: "p-me" }, token: "l".repeat(43) }; },
+  setCapabilities: async (c, profile) => { calls.push(["setCapabilities", c, profile]); return { id: "p-me", capabilities: profile }; },
+  findAgents: async (c, filter) => { calls.push(["findAgents", c, filter]); return [{ participant: { id: "p-1" }, capabilities: { owner: "paw" } }]; },
+  openRequest: async (c, input) => { calls.push(["openRequest", c, input]); return { id: "r1", eligible: ["p-1"] }; },
+  listRequests: async (c, opts) => { calls.push(["listRequests", c, opts]); return [{ id: "r1", status: opts.status ?? "any", credential: c }]; },
+  getRequest: async (c, requestId) => { calls.push(["getRequest", c, requestId]); return { id: requestId, offers: [] }; },
+  offer: async (c, requestId, input) => {
+    calls.push(["offer", c, requestId, input]);
+    if (requestId === "closed") throw new LoomToolError("request_closed", "This request is closed");
+    return { requestId, ...input };
+  },
+  acceptRequest: async (c, requestId, participantIds) => { calls.push(["acceptRequest", c, requestId, participantIds]); return { request: { id: requestId }, invitationIds: ["i1"] }; },
+  cancelRequest: async (c, requestId) => { calls.push(["cancelRequest", c, requestId]); return { id: requestId, status: "cancelled" }; },
+  inviteToWeave: async (c, participantId, targetWeaveId, targetThreadId) => {
+    calls.push(["inviteToWeave", c, participantId, targetWeaveId, targetThreadId]);
+    return { invitationId: "i1", seq: 3 };
+  },
   getGuidelines: async (c, w) => {
     calls.push(["getGuidelines", c, w]);
     if (w === "nope") throw new LoomToolError("forbidden", "not joined; call join_weave");
@@ -135,9 +153,10 @@ describe("v2 tools", () => {
     } finally { await c2.close(); }
   });
   it("join_weave's name is optional: an agent connection falls back to its registered name", async () => {
-    const schema = (await client.listTools()).tools.find((t) => t.name === "join_weave")!.inputSchema as { required?: string[] };
+    // `secret` is optional too now — the inviteId path needs none — so only `name` is pinned here.
+    const schema = (await client.listTools()).tools.find((t) => t.name === "join_weave")!.inputSchema as { required?: string[]; properties: Record<string, unknown> };
     expect(schema.required ?? []).not.toContain("name");
-    expect(schema.required ?? []).toContain("secret");
+    expect(Object.keys(schema.properties)).toContain("secret");
   });
 
   it("without a connection default, credential stays required", async () => {
@@ -167,7 +186,7 @@ describe("guidelines", () => {
   it("lists the instance resource and the Weave template", async () => {
     expect((await client.listResources()).resources.map((r) => r.uri)).toContain("loom://guidelines");
     expect((await client.listResourceTemplates()).resourceTemplates.map((t) => t.uriTemplate)).toContain("loom://weaves/{weaveId}/guidelines");
-    expect([...LOOM_RESOURCE_URIS]).toEqual(["loom://guidelines", "loom://weaves/{weaveId}/guidelines"]);
+    expect([...LOOM_RESOURCE_URIS]).toEqual(["loom://guidelines", "loom://weaves/{weaveId}/guidelines", "loom://lobby/requests"]);
   });
 
   it("reads the instance guidelines without any credential", async () => {
@@ -222,5 +241,121 @@ describe("guidelines", () => {
     try {
       await expect(c.readResource({ uri: "loom://weaves/w1/guidelines" })).rejects.toThrow(/forbidden: not joined/);
     } finally { await c.close(); }
+  });
+});
+
+describe("lobby tools", () => {
+  const LOBBY_TOOLS = [
+    "join_lobby", "set_capabilities", "find_agents", "open_request", "offer", "accept",
+    "cancel_request", "list_requests", "get_request", "invite_to_weave",
+  ];
+
+  it("advertises the ten Lobby tools and nothing else new", async () => {
+    const names = (await client.listTools()).tools.map((t) => t.name);
+    for (const n of LOBBY_TOOLS) expect(names).toContain(n);
+    expect(LOOM_TOOL_NAMES).toHaveLength(34);
+    expect(names.sort()).toEqual([...LOOM_TOOL_NAMES].sort());
+  });
+
+  it("join_lobby forwards the name and kind, and the connection's own credential", async () => {
+    const c = await connect({ defaultCredential: () => "agent-key" });
+    try {
+      expect(JSON.parse(text(await c.callTool({ name: "join_lobby", arguments: { name: "Pawbot" } })))).toMatchObject({ weaveId: "lobby-1" });
+      expect(calls.filter((x) => x[0] === "joinLobby").at(-1)).toEqual(["joinLobby", { name: "Pawbot", kind: "agent" }, "agent-key"]);
+    } finally { await c.close(); }
+  });
+
+  it("set_capabilities hands the whole profile over, unknown keys included, and null clears it", async () => {
+    const profile = { models: [{ model: "gpt-5.6-sol", effort: "high" }], owner: "paw", serves: "owner", houseStyle: "terse" };
+    const r = await client.callTool({ name: "set_capabilities", arguments: { credential: "c", profile } });
+    expect(r.isError).toBeFalsy();
+    expect(JSON.parse(text(r)).capabilities).toEqual(profile);
+    await client.callTool({ name: "set_capabilities", arguments: { credential: "c", profile: null } });
+    expect(calls.filter((x) => x[0] === "setCapabilities").at(-1)).toEqual(["setCapabilities", "c", null]);
+  });
+
+  it("find_agents forwards the filter as given, and defaults it to an empty one", async () => {
+    expect(JSON.parse(text(await client.callTool({ name: "find_agents", arguments: { credential: "c", filter: { models: [{ model: "m" }], owner: "paw" } } })))).toEqual([{ participant: { id: "p-1" }, capabilities: { owner: "paw" } }]);
+    expect(calls.filter((x) => x[0] === "findAgents").at(-1)).toEqual(["findAgents", "c", { models: [{ model: "m" }], owner: "paw" }]);
+    await client.callTool({ name: "find_agents", arguments: { credential: "c" } });
+    expect(calls.filter((x) => x[0] === "findAgents").at(-1)).toEqual(["findAgents", "c", {}]);
+  });
+
+  it("open_request forwards every argument, targetCredential included", async () => {
+    const args = {
+      credential: "c", title: "Review PR 14", requirements: { models: [{ model: "gpt-5.6-sol", effort: "high" }], tools: ["github"] },
+      wanted: 2, timeoutMs: 3_600_000, targetWeaveId: "w1", targetThreadId: "t1",
+      url: "https://example.com/pr/14", targetCredential: "target-tok",
+    };
+    expect(JSON.parse(text(await client.callTool({ name: "open_request", arguments: args })))).toEqual({ id: "r1", eligible: ["p-1"] });
+    expect(calls.filter((x) => x[0] === "openRequest").at(-1)).toEqual(["openRequest", "c", {
+      title: args.title, requirements: args.requirements, wanted: 2, timeoutMs: 3_600_000,
+      targetWeaveId: "w1", targetThreadId: "t1", url: args.url, targetCredential: "target-tok",
+    }]);
+  });
+
+  it("offer, accept, cancel_request, get_request and list_requests route their arguments", async () => {
+    expect(JSON.parse(text(await client.callTool({ name: "offer", arguments: { credential: "c", requestId: "r1", model: "gpt-5.6-sol", effort: "high", note: "can start now" } }))))
+      .toEqual({ requestId: "r1", model: "gpt-5.6-sol", effort: "high", note: "can start now" });
+    expect(JSON.parse(text(await client.callTool({ name: "accept", arguments: { credential: "c", requestId: "r1", participantIds: ["p-1", "p-2"] } }))))
+      .toEqual({ request: { id: "r1" }, invitationIds: ["i1"] });
+    expect(calls.filter((x) => x[0] === "acceptRequest").at(-1)).toEqual(["acceptRequest", "c", "r1", ["p-1", "p-2"]]);
+    expect(JSON.parse(text(await client.callTool({ name: "cancel_request", arguments: { credential: "c", requestId: "r1" } })))).toEqual({ id: "r1", status: "cancelled" });
+    expect(JSON.parse(text(await client.callTool({ name: "get_request", arguments: { credential: "c", requestId: "r9" } })))).toEqual({ id: "r9", offers: [] });
+    expect(JSON.parse(text(await client.callTool({ name: "list_requests", arguments: { credential: "c", status: "open" } })))).toEqual([{ id: "r1", status: "open", credential: "c" }]);
+    // Which words name a status is core's rule, so an unknown one is passed through, not rejected here.
+    await client.callTool({ name: "list_requests", arguments: { credential: "c", status: "nonsense" } });
+    expect(calls.filter((x) => x[0] === "listRequests").at(-1)).toEqual(["listRequests", "c", { status: "nonsense" }]);
+  });
+
+  it("invite_to_weave forwards participant, target Weave and thread", async () => {
+    expect(JSON.parse(text(await client.callTool({ name: "invite_to_weave", arguments: { credential: "c", participantId: "p-1", targetWeaveId: "w1", threadId: "t1" } }))))
+      .toEqual({ invitationId: "i1", seq: 3 });
+    expect(calls.filter((x) => x[0] === "inviteToWeave").at(-1)).toEqual(["inviteToWeave", "c", "p-1", "w1", "t1"]);
+  });
+
+  it("maps a request_closed rejection into the { code, message } envelope", async () => {
+    const r = await client.callTool({ name: "offer", arguments: { credential: "c", requestId: "closed" } });
+    expect(r.isError).toBe(true);
+    expect(JSON.parse(text(r))).toEqual({ code: "request_closed", message: "This request is closed" });
+  });
+
+  it("join_weave takes an inviteId, with the secret optional when it is given", async () => {
+    const schema = (await client.listTools()).tools.find((t) => t.name === "join_weave")!.inputSchema as { required?: string[]; properties: Record<string, unknown> };
+    expect(schema.required ?? []).not.toContain("secret");
+    expect(Object.keys(schema.properties)).toContain("inviteId");
+    expect(JSON.parse(text(await client.callTool({ name: "join_weave", arguments: { inviteId: "i1" } })))).toMatchObject({ weaveId: "target" });
+    expect(calls.filter((x) => x[0] === "joinWeave").at(-1)![3]).toEqual({ inviteId: "i1" });
+  });
+
+  it("reads loom://lobby/requests as the open requests, with the credential the surface resolves", async () => {
+    const c = await connect({ resourceCredential: (w) => (w === "lobby-1" ? "lobby-tok" : undefined) });
+    try {
+      const r = first(await c.readResource({ uri: "loom://lobby/requests" }));
+      expect(r.mimeType).toBe("application/json");
+      expect(JSON.parse(r.text)).toEqual([{ id: "r1", status: "open", credential: "lobby-tok" }]);
+      expect(calls.filter((x) => x[0] === "listRequests").at(-1)).toEqual(["listRequests", "lobby-tok", { status: "open" }]);
+    } finally { await c.close(); }
+  });
+
+  it("falls back to the connection default for the requests resource, and refuses without one", async () => {
+    const withDefault = await connect({ defaultCredential: () => "agent-key" });
+    try {
+      expect(JSON.parse(first(await withDefault.readResource({ uri: "loom://lobby/requests" })).text)[0].credential).toBe("agent-key");
+    } finally { await withDefault.close(); }
+    await expect(client.readResource({ uri: "loom://lobby/requests" })).rejects.toThrow(/invalid_token/);
+  });
+
+  it("carries the backend's own code when the requests read is refused", async () => {
+    const c = await connect({ resourceCredential: () => { throw new LoomToolError("forbidden", "join the Lobby first"); } });
+    try {
+      await expect(c.readResource({ uri: "loom://lobby/requests" })).rejects.toThrow(/forbidden: join the Lobby first/);
+    } finally { await c.close(); }
+  });
+
+  it("the Lobby mechanics paragraph tells an agent how the flow runs", () => {
+    for (const phrase of ["join_lobby", "set_capabilities", "request.opened", "offer", "join_weave({ inviteId })", "guidelines"]) {
+      expect(LOBBY_MECHANICS).toContain(phrase);
+    }
   });
 });

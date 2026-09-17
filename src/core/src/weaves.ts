@@ -6,9 +6,10 @@ import { errors } from "./errors.js";
 import { isUuid, newId, newSecret } from "./ids.js";
 import { validateName } from "./names.js";
 import { parseMentions } from "./mentions.js";
-import { getSettings } from "./settings.js";
+import { getLobbyWeaveId, getSettings } from "./settings.js";
 import { getInstanceGuidelines, guidelinesFor, validateGuidelines } from "./guidelines.js";
 import { appendInTx, withWeaveLock } from "./events.js";
+import { generalThreadOf } from "./threads.js";
 import { actorId, assertCanRead, assertInstanceKeeperFresh, assertIsKeeperOf, assertStillKeeperOf, toPublicParticipant } from "./actors.js";
 import type { Actor, Kind, PublicParticipant, PublicThread, PublicWeave } from "./types.js";
 
@@ -105,6 +106,12 @@ export async function getWeave(db: Queryable, actor: Actor, weaveId: string): Pr
 export type JoinWeaveOptions = {
   /** Test seam: runs after the pre-lock reads, so a test can commit a change before the lock is taken. */
   beforeLock?: () => Promise<void>;
+  /**
+   * Redeem a cross-Weave invitation instead of presenting a secret: the facade routes a join
+   * carrying one to `redeemInvitation`, which is a dedicated atomic path and not this function
+   * (see the comment there). `secret` is then ignored and may be `""`.
+   */
+  inviteId?: string;
 };
 
 export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { name?: string; kind: Kind }, actor?: Actor, opts: JoinWeaveOptions = {}): Promise<JoinResult> {
@@ -116,8 +123,7 @@ export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { na
   if (who.kind !== "human" && who.kind !== "agent") throw errors.validation("kind must be human or agent");
   const [found] = await db.select().from(weaves).where(eq(weaves.secret, secret));
   if (!found) throw errors.weaveNotFound();
-  const [general] = await db.select().from(threads).where(eq(threads.weaveId, found.id)).orderBy(asc(threads.createdAt)).limit(1);
-  if (!general) throw errors.weaveNotFound();
+  const general = await generalThreadOf(db, found.id);
   const agentId = actor?.kind === "agent" ? actor.agent.id : null;
   // The participant this agent already owns here, read raw: the caller needs its token, so
   // `participantForAgent` (which returns the public shape) is not enough.
@@ -184,8 +190,10 @@ export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { na
 export async function archiveWeave(db: Db, bus: EventBus, actor: Actor, weaveId: string): Promise<void> {
   assertIsKeeperOf(actor, weaveId);
   if (!isUuid(weaveId)) throw errors.weaveNotFound();
-  const [general] = await db.select().from(threads).where(eq(threads.weaveId, weaveId)).orderBy(asc(threads.createdAt)).limit(1);
-  if (!general) throw errors.weaveNotFound();
+  // The instance has one Lobby and no way to make another: archiving it would shut every agent
+  // out of the only room they all share.
+  if (weaveId === await getLobbyWeaveId(db)) throw errors.forbidden("The Lobby cannot be archived");
+  const general = await generalThreadOf(db, weaveId);
   await withWeaveLock(db, bus, weaveId, async (tx, weave) => {
     await assertStillKeeperOf(tx, actor, weaveId);
     if (weave.archivedAt) throw errors.weaveArchived();

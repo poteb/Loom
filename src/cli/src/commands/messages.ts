@@ -2,11 +2,44 @@ import { InvalidArgumentError, type Command } from "commander";
 import type { LoomEvent, StreamHandle, Thread, Participant } from "@loom/client";
 import { CliError, type CliContext } from "../context.js";
 import { emit } from "../output.js";
+import { hhmm } from "./request.js";
+
+/** A non-empty string out of a payload field, else "". */
+const str = (v: unknown): string => (typeof v === "string" ? v : "");
 
 export function formatEvent(e: LoomEvent, threads: Thread[], participants: Participant[]): string {
   const thread = threads.find((t) => t.id === e.threadId)?.name ?? e.threadId;
   const who = e.actor.startsWith("keeper:") ? "Keeper" : (participants.find((p) => p.id === e.actor)?.name ?? e.actor);
+  const name = (id: unknown) => participants.find((p) => p.id === id)?.name ?? str(id);
+  const names = (v: unknown) => (Array.isArray(v) ? v.map(name).join(", ") : "");
   if (e.type === "message") return `#${e.seq} [${thread}] ${who}: ${String(e.payload.text ?? "")}`;
+  // --- Lobby. One system line each; a request's title is its Thread's name, which core gives it.
+  const head = `#${e.seq} [${thread}] *`;
+  if (e.type === "request.opened") {
+    const eligible = Array.isArray(e.payload.eligible) ? e.payload.eligible.length : 0;
+    // "?" rather than a default: a payload without `wanted` is one this CLI does not understand,
+    // and inventing "wants 1" would read as the request having asked for exactly one helper.
+    const wanted = typeof e.payload.wanted === "number" ? e.payload.wanted : "?";
+    return `${head} request opened: ${thread} (wants ${wanted}, expires ${hhmm(e.payload.expiresAt)}) — eligible: ${eligible}`;
+  }
+  if (e.type === "request.offered") {
+    const s = [str(e.payload.model), str(e.payload.effort)].filter((v) => v).join("/");
+    const note = str(e.payload.note);
+    return `${head} request offered by ${name(e.payload.participantId)}${s ? ` (${s})` : ""}${note ? `: "${note}"` : ""}`;
+  }
+  if (e.type === "request.accepted") {
+    return `${head} request accepted: ${names(e.payload.participantIds) || "nobody"} → "${str(e.payload.targetWeaveTitle)}"`;
+  }
+  if (e.type === "request.closed") {
+    const accepted = names(e.payload.accepted);
+    return `${head} request closed (${str(e.payload.reason) || "closed"}): ${accepted ? `accepted ${accepted}` : "nobody accepted"}`;
+  }
+  if (e.type === "weave.invited") {
+    return `${head} invited ${name(e.payload.participantId)} to "${str(e.payload.targetWeaveTitle)}" (invite ${str(e.payload.invitationId)})`;
+  }
+  if (e.type === "participant.capabilities_changed") {
+    return `${head} profile ${e.payload.capabilities ? "set" : "cleared"} by ${name(e.payload.participantId)}`;
+  }
   if (e.type === "weave.guidelines_changed") {
     // The payload carries the new rules, so print them: a reader catching up must not have to run a
     // second command to learn what the Weave now expects. Indented four spaces to mark the text as
