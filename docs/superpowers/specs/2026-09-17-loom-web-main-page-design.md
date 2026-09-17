@@ -17,6 +17,22 @@ Found by the Lobby manual smoke test of 2026-09-17 (`v2-notes.md`, "Lobby smoke 
 > 2. **An invalid participant identity no longer deletes the Weave's secret.** The identity is
 >    cleared, the `secret` and the display cache are kept, and a token load that finds a stored
 >    secret falls back to reading with it and offers a rejoin (§2.4, §2.6, §3.3, §4.2).
+>
+> **Second review round (2026-09-17).** Secret preservation was accepted; two gaps in the
+> persistence work were not, and both are closed in the text below:
+>
+> 3. **One app-owned storage instance.** Staying in the same JS context is not enough on its own:
+>    `useSession` builds a fresh `browserStorage()` for every session it creates
+>    ([`useSession.ts:9`](../../../src/web/src/useSession.ts)) and each one owns a **separate**
+>    memory fallback ([`storage.ts:15-16`](../../../src/web/src/storage.ts)), so the in-place
+>    transition would hand the new session a store that does not hold what the form just wrote.
+>    §2.4a makes a single instance, created at the app root and passed down, an invariant
+>    (§3.1, §7, §9).
+> 4. **A failed write now wins over a stale persisted value.** `get` prefers `localStorage`
+>    ([`storage.ts:19`](../../../src/web/src/storage.ts)), so a *failed update to an existing key*
+>    read back the old value — which would resurrect an identity just marked `identity: "invalid"`,
+>    or hide a fresh rejoin token behind the dead one. §2.4b adds a pending-override layer with a
+>    precise precedence rule (§2.6, §6, §7).
 
 ## 1. Purpose
 
@@ -209,8 +225,110 @@ export type KeyValueStorage = {
 - Every write goes through one helper, `saveWeaveEntry(storage, weaveId, entry): WriteResult`, so
   there is a single place that knows the key shape and a single place that returns the verdict.
 
-`remove` keeps returning `void`: nothing downstream branches on a failed removal, and a key that
-could not be removed is still readable, which is the safe direction.
+`remove` keeps returning `void`. Nothing downstream branches on a failed removal, because §2.4b
+makes a failed removal *read* as absent anyway; and the one caller that might have cared —
+migration — only removes the legacy key after the replacement is already durable, so a removal that
+does not stick costs one repeated migration attempt on the next page load and nothing else.
+
+#### 2.4a One storage instance, owned by the app
+
+Today [`useSession.ts:9`](../../../src/web/src/useSession.ts) constructs the store inside the memo
+that builds the session:
+
+```ts
+const client = new LoomClient({ baseUrl: location.origin, … });
+return createSession({ client, secret, storage: browserStorage() });
+```
+
+and every `browserStorage()` closes over a **`memoryStorage()` fallback of its own**
+([`storage.ts:15-16`](../../../src/web/src/storage.ts)). Two consequences, both fatal to §3.1's
+in-place transition if left alone: a target change rebuilds the memo and therefore the store, and
+the main page's forms would have a third store again. A credential written non-durably by the Join
+form would sit in the form's memory map while the new session reads an empty one — same JS context,
+different fallback, credential gone. The in-place render would then be worse than the navigation it
+replaced, because it would *look* like it worked.
+
+> **Invariant: `browserStorage()` is called exactly once in the whole web package, at the app root,
+> and the instance it returns is passed to everything that touches storage.**
+
+- It is created in [`main.tsx`](../../../src/web/src/main.tsx) — the entry that already does the one
+  root-level construction — and handed to the app: `render(<App storage={browserStorage()} />, …)`.
+  A module-scope singleton inside `storage.ts` would be fewer lines and worse: invisible at the call
+  sites and impossible for a DOM test to substitute.
+- `App` passes it to the main page's forms (Join the Lobby, Create a Weave), to My Weaves and its
+  `storedWeaves()` read, and to `useSession(target, storage)` → `createSession({ client, target,
+  storage })`. `useSession`'s memo keeps depending on the **target**; the storage comes from outside
+  the memo and therefore survives every target change.
+- The open-request target picker needs nothing new: `RequestsPanel` does not import storage at all
+  — it calls `session.targets()`, and [`session.ts:533`](../../../src/web/src/session.ts) is the
+  only caller of `storedWeaves()` in the package. It inherits the shared instance with the session.
+- Tests keep injecting `memoryStorage()` exactly as they do today (28 call sites in
+  `src/web/test/session.test.ts`), and DOM tests mount `<App storage={memoryStorage()} />`.
+
+§7 adds a guard test so the invariant cannot rot: `browserStorage(` occurs exactly once in
+`src/web/src` outside `storage.ts`.
+
+#### 2.4b Read precedence: a failed write beats a stale persisted value
+
+`get` prefers `localStorage` and falls back to memory only when the key is absent there:
+
+```ts
+get: (k) => { try { return ls()?.getItem(k) ?? fallback.get(k); } catch { return fallback.get(k); } },
+```
+
+([`storage.ts:19`](../../../src/web/src/storage.ts)). That is right for a key that was never
+persisted and wrong for a key that **was**. If an entry is already durable and an update to it fails
+— the store filled up, or site data was turned off mid-session — `set` now honestly reports
+`"memory"`, but the next `get` still answers with the *old* durable value. Two concrete harms, both
+in paths this spec introduced: §2.6 marks an identity `identity: "invalid"`, the write fails, and
+the next read **resurrects the dead token**, so the page tries it again and again; or a rejoin
+issues a fresh token, the write fails, and the new token is hidden behind the dead one.
+
+So `browserStorage` keeps a **pending-override layer**: a per-instance `Map` of the keys whose last
+write or removal did not reach `localStorage`, holding either the value that should have been stored
+or a **tombstone** for a removal that did not stick.
+
+> **Precedence.** A key with a pending override is answered from that override — value, or `null`
+> for a tombstone — ahead of `localStorage`. Every other key keeps today's order: `localStorage`
+> first, then the memory fallback. The invariant this buys, and the one to hold the implementation
+> to: **whatever verdict a write returns, the value it just wrote is what `get` returns for the rest
+> of this page.**
+
+Mechanically:
+
+| Call | Behaviour |
+| --- | --- |
+| `set(k, v)` | write the memory fallback; attempt `localStorage.setItem` and verify by read-back. Verified → **delete** any override for `k`, return `"durable"`. Not verified → **set** the override to `v`, return `"memory"` |
+| `remove(k)` | remove from the memory fallback; attempt `localStorage.removeItem` and verify it is gone. Gone → delete any override. Still there → set the override to the **tombstone** |
+| `get(k)` | override first (tombstone → `null`), else `localStorage`, else the memory fallback |
+| `keys()` | today's union of `localStorage` and fallback keys ([`storage.ts:22-28`](../../../src/web/src/storage.ts)), **plus** every override key, **minus** every tombstoned key |
+
+- **`WriteResult` and the override are the same fact.** `"memory"` means "an override now exists for
+  this key"; `"durable"` means "no override exists for this key" — any earlier one has just been
+  cleared. A caller never has to ask the store which keys are overridden; the verdict of its own
+  write is the whole answer it needs.
+- **Retry is opportunistic and narrow**: the only thing that ever clears an override is a later
+  successful `set` or `remove` **of that same key**, which already attempts `localStorage`. There is
+  no background retry loop, no timer, and `get` stays side-effect-free — a read must not write. A
+  browser whose store frees up mid-session recovers the first time the key is written again, which
+  for an identity is the next join, rejoin or invalidation.
+- **Overrides live exactly as long as the page.** They are per `browserStorage` instance, which by
+  §2.4a means one per page load. A reload starts from `localStorage` alone, which is the honest
+  state: whatever did not persist is gone.
+- **Cross-tab: no sync, and none needed.** Another tab has its own instance and still reads the
+  stale durable value; there is no `storage`-event listener and none is in scope. For the case that
+  matters — an identity invalidated in this tab whose write did not persist — the other tab simply
+  presents the same dead token, receives the same `401`, and performs the same invalidation itself
+  (§2.6). It converges on its own, one failed request later. The same is true in reverse for a
+  rejoin: the other tab keeps the old token until its next load, then converges.
+- **`memoryStorage` needs no override layer** — it is the whole store, so the invariant above holds
+  trivially, in both `durable: true` and `durable: false` modes.
+
+**How this meets migration.** §2.4's rule is that the legacy key stays until the id-keyed
+replacement is confirmed durable. With overrides the two halves are now both well defined: on a
+`"memory"` verdict the new entry is **readable for this page** (through its override) *and* the
+legacy key is still there for the next one. Nothing is lost either way, and the page does not have
+to choose between a readable copy and a durable one.
 
 #### The entry
 
@@ -303,6 +421,12 @@ secret path already supports `join()` ([`session.ts`](../../../src/web/src/sessi
 successful join writes fresh `token`/`participantId` into the **same** entry and clears
 `identity: "invalid"`. So the degraded state is a step on the way back, not a dead end.
 
+**Both of those writes are updates to a key that already exists**, which is exactly the case §2.4b
+exists for: whether the invalidation and the rejoin reach `localStorage` or only the override layer,
+the value this page reads back is the new one. Without that rule the invalidation would be undone by
+the next `get` and the fresh token would be hidden behind the dead one — the session would loop on a
+credential it has already proven unusable.
+
 Three deliberate asymmetries:
 
 - A **401/403 invalidates the identity** — that credential is provably unusable — while a network
@@ -376,9 +500,17 @@ whose durable write failed (§2.4). So the rule has a precise exception:
 > `"memory"`, render the destination in place, in the same JS context, and leave the URL alone.**
 
 `App` keeps the current target in `useState`, seeded from `location.pathname`; the in-place switch
-sets that state to `{ kind: "id", weaveId }` and `useSession` rebuilds the store on the new target,
+sets that state to `{ kind: "id", weaveId }` and `useSession` rebuilds the session on the new target,
 exactly as it does on a mount. That is the whole mechanism — a few lines, not a router, and it is
 reached only in the degraded mode.
+
+**It only works because of §2.4a.** The session is rebuilt, but the **storage instance is not**: it
+is created once at the app root and passed in, so the credential the form wrote a moment ago —
+possibly only into that instance's memory fallback and override layer — is the same one the new
+session reads. With today's `browserStorage()` inside `useSession`'s memo
+([`useSession.ts:9`](../../../src/web/src/useSession.ts)) the rebuilt session would get a fresh,
+empty fallback and the transition would silently produce a credential-less page. §7 tests the
+outcome (a *writable* destination), not the absence of a navigation, for exactly this reason.
 
 **The URL is deliberately not updated** — no `history.pushState`. Pushing `/lobby` would put an
 address in the bar that this browser cannot honour: a reload, a restored tab or a copied link would
@@ -464,6 +596,8 @@ whose identity is missing or `"invalid"` (§2.4).
 - **Write the entry, then branch on the result** (§2.4, §3.1): `"durable"` → navigate to `/lobby`;
   `"memory"` → render the Lobby in place, leave the URL on `/`, and raise the notice of §6. The
   order matters — the credential is persisted before anything that could destroy this JS context.
+  The form writes through the **app's** storage instance (§2.4a), which is the same one the Lobby
+  session then reads; on the `"memory"` path that is the only reason the destination is usable.
 
 Errors:
 
@@ -628,7 +762,8 @@ it hardens rather than softens:
   **this link is the only copy of it anywhere**, and closing the tab without saving it loses the
   Weave for good — Loom has no recovery, no rotation and no deletion (SECURITY §9.3);
 - **Open the Weave** renders the Weave **in place** (§3.1) instead of navigating, so the keeper
-  token in memory survives and the creator can actually use the Weave in this tab;
+  token in memory survives and the creator can actually use the Weave in this tab — which holds
+  only because the form and the session share one storage instance (§2.4a);
 - the one-time notice of §6 is raised as well.
 
 This is the case that makes §3.1's exception worth its few lines: a lost Lobby name is an
@@ -713,8 +848,14 @@ displays (§4.5) is displayed to the person who just created it, which is the sa
   by falling back to memory ([`storage.ts:17,19-21,27`](../../../src/web/src/storage.ts)), and
   nothing in this design adds a `try`/`catch` of its own: the degraded mode arrives as a returned
   `"memory"` (§2.4), never as an exception, so **no component can crash on it**. Its consequences,
-  all specified above: a join or creation renders in place instead of navigating (§3.1), migration
-  keeps the legacy key (§2.4), and the creation panel hardens (§4.5).
+  all specified above: the value written stays readable for the page through the override layer
+  (§2.4b), a join or creation renders in place instead of navigating (§3.1), migration keeps the
+  legacy key for the next page load (§2.4), and the creation panel hardens (§4.5).
+- **Within a page, storage never contradicts itself.** One instance (§2.4a) and the precedence rule
+  (§2.4b) together mean a component can write and then read without wondering which layer answered:
+  the last write wins, durable or not. That is what keeps the invalid-identity and rejoin paths of
+  §2.6 from oscillating, and it is the property the tests assert rather than the layering that
+  produces it.
 - **The "storage is not persisting" notice.** Raised the first time any write in a page load returns
   `"memory"` — a join, a creation, or a migration — and shown once, at the top of the page, until
   dismissed. It does not reappear on later writes in the same page load (the page-scoped
@@ -757,6 +898,11 @@ happy-dom DOM tests selected by the `// @vitest-environment happy-dom` docblock)
 - **Invalid token, no secret**: `status: "no-credential"`, and the entry is **still there**, marked
   `identity: "invalid"`, with its cached title intact.
 - **403 for a token belonging to another Weave**: same as the invalid token.
+- **Invalidation that cannot be persisted** (`setItem` starts throwing after the entry was written
+  durably): the entry still **reads** `identity: "invalid"` with no token — the dead credential is
+  not resurrected — and the session falls back to the secret, exactly as in the durable case.
+- **A rejoin whose write cannot be persisted**: the entry reads back the **new** token and the
+  session is writable (`post` succeeds), rather than reading the dead one.
 
 **`web` — storage (unit)**
 - `storedWeaves()` reads both shapes and discriminates correctly (a 43-char legacy remainder vs a
@@ -764,6 +910,14 @@ happy-dom DOM tests selected by the `// @vitest-environment happy-dom` docblock)
 - A corrupt JSON value is skipped, not fatal (today's behaviour, kept).
 - `targets()` over a mixed store: id entries make one call, legacy entries two, one failing entry
   does not cost the others, and an entry with no usable identity is skipped.
+
+**`web` — one storage instance (§2.4a)**
+- **Guard test**: reading the sources under `src/web/src`, `browserStorage(` appears exactly once
+  outside `storage.ts` — in `main.tsx`. A plain `node:fs` walk in the node-environment suite; it
+  fails loudly the day someone reaches for a second store.
+- `useSession(target, storage)` does **not** construct a store: changing the target rebuilds the
+  session and keeps the same storage object (asserted by writing through the injected store before
+  the target change and reading it after).
 
 **`web` — storage, durable-write result (unit, §2.4)**
 - `memoryStorage()` reports `"durable"`; `memoryStorage({ durable: false })` reports `"memory"`.
@@ -775,6 +929,20 @@ happy-dom DOM tests selected by the `// @vitest-environment happy-dom` docblock)
   ([`storage.ts:19`](../../../src/web/src/storage.ts)) — so the test asserts the verdict, not the
   readability.
 - A quota failure on one key does not change the verdict of a later successful key.
+
+**`web` — storage, read precedence (unit, §2.4b)**
+- **A failed update to an existing durable key reads back the NEW value** — the regression test for
+  gap 2. `localStorage` still holds the old string; `get` answers the new one.
+- A failed `remove` of an existing durable key reads as **absent** (`get` → `null`) and the key is
+  **not** in `keys()`.
+- `keys()` includes a key that exists only as an override.
+- A later **successful** write of the same key clears the override: with `setItem` working again,
+  `localStorage` holds the new value **and** `get` still returns it (the assertion has to check both,
+  or it cannot tell a cleared override from a lingering one that happens to agree).
+- A later successful `remove` clears a tombstone the same way.
+- `get` never writes: a read while an override exists leaves `localStorage` untouched, and nothing
+  retries on a timer.
+- A key that was never persisted keeps today's order (`localStorage`, then the memory fallback).
 
 **`web` — storage, migration (unit, §2.4)**
 - A durable replacement: the id entry is written, **then** the legacy key is removed.
@@ -791,11 +959,15 @@ happy-dom DOM tests selected by the `// @vitest-environment happy-dom` docblock)
 - Name validation matches core's rule at the boundaries (`a`, 32 chars, 33 chars, a space, `@`).
 - `name_taken` renders the two-case message, keeps the typed name, and offers a suffix suggestion
   that fills the field **without** submitting.
-- **Blocked storage on join**: `setItem` throws, the join succeeds, and the page renders the Lobby
-  **in place** — the URL is unchanged, no navigation is attempted, and the notice is shown.
+- **Blocked storage on join**: `setItem` throws, the join succeeds, and the destination is
+  **loaded and writable** — the Lobby session reaches `status: "ready"`, `state.me` is the joined
+  participant, and a `post` succeeds. The URL is unchanged and the notice is shown, but those are
+  the weaker assertions: "no navigation was attempted" would pass against a credential-less page,
+  which is the bug §2.4a fixes, so the test asserts the outcome.
 - **Blocked storage on create**: `setItem` throws, the save-this-link panel appears with the
-  hardened warning, cannot be dismissed unacknowledged, and **Open the Weave** renders in place
-  rather than navigating.
+  hardened warning and cannot be dismissed unacknowledged, and **Open the Weave** renders a Weave in
+  which this browser **is the keeper** (`state.me.participant.role === "keeper"`, a keeper-only
+  action available), not merely a page that did not navigate.
 - The notice appears once per page load and does not repeat on a second non-durable write; it never
   blocks a form.
 - My Weaves renders from storage **with no fetch**; ordering; the archived and Lobby badges; each
@@ -826,7 +998,7 @@ screen.
 
 | Doc | Change |
 | --- | --- |
-| `docs/ARCHITECTURE.md` §9 | the route table (`/`, `/lobby`, `/weave/<id>`, `/w/<secret>`), the `target` union and where the read credential comes from (token, else secret), the new storage key shape and the `WriteResult` the interface now returns; "no router" becomes "no router library — path matching in `app.tsx`, with one in-place switch when a credential did not persist" |
+| `docs/ARCHITECTURE.md` §9 | the route table (`/`, `/lobby`, `/weave/<id>`, `/w/<secret>`), the `target` union and where the read credential comes from (token, else secret), the new storage key shape, the `WriteResult` the interface now returns **and its read-precedence rule**, and the **one storage instance created in `main.tsx`** and passed to `App`/`useSession`; "no router" becomes "no router library — path matching in `app.tsx`, with one in-place switch when a credential did not persist". The existing sentence "Identity (participant token) is kept in `localStorage` via `storage.ts`, which degrades to memory when storage throws" needs the degradation described as observable rather than silent |
 | `docs/SECURITY.md` §8 | the `localStorage` bullet: new key shape, that an entry may carry a Weave secret, that a secret outlives an invalidated identity, and that a token proven dead by a 401/403 is deleted |
 | `docs/SECURITY.md` §9.9 | narrow to `/w/<secret>` links; note that token-loaded pages carry a uuid, which is not a credential |
 | `docs/SECURITY.md` §4a or §9 | a public landing page makes the public Lobby join *discoverable*; §9.1 (no rate limiting) is the thing that gets more pressing |
@@ -839,42 +1011,49 @@ screen.
 
 Task-sized steps; each ends green, and each is a plausible subagent task.
 
-1. **Durable-write result.** `KeyValueStorage.set` returns `WriteResult`; `browserStorage` verifies
-   by reading back from `localStorage` itself; `memoryStorage({ durable })`. Unit tests, including
-   the throwing and the silently-storing-nothing cases. Nothing else changes — every existing caller
-   ignores the return value — so this lands on its own and everything after it can rely on it.
-2. **Storage entry shape.** The entry type (identity optional, `identity: "invalid"`, `secret`,
+1. **Durable-write result and read precedence.** `KeyValueStorage.set` returns `WriteResult`;
+   `browserStorage` verifies by reading back from `localStorage` itself; the pending-override layer
+   with tombstones, the `get`/`keys()` precedence and the clear-on-next-success rule (§2.4b);
+   `memoryStorage({ durable })`. Unit tests, including the throwing case, the
+   silently-storing-nothing case and the failed update to an existing key. Nothing else changes —
+   every existing caller ignores the return value — so this lands on its own and everything after it
+   can rely on it.
+2. **One storage instance** (§2.4a). `browserStorage()` moves to `main.tsx`; `App` takes a `storage`
+   prop; `useSession(target, storage)` stops constructing one. Small, mechanical, and it must come
+   before anything depends on the in-place transition. Includes the guard test.
+3. **Storage entry shape.** The entry type (identity optional, `identity: "invalid"`, `secret`,
    display cache), `storedWeaves()` over both shapes, `saveWeaveEntry`, the `migrateLegacy` helper
    with the keep-the-legacy-key-until-durable rule and the once-per-page guard. Unit tests. No other
    package touched.
-3. **Session `target`.** Replace `secret: string` with the union; `reader`/`weaveId` resolution
+4. **Session `target`.** Replace `secret: string` with the union; `reader`/`weaveId` resolution
    including the secret fallback; `no-credential`, `readOnlyReason` and the
    401/403-invalidates-the-identity rule; `targets()` over the new shape; write the display cache on
    load and join; rejoin rewrites the identity. Store tests against a real server.
    `/w/<secret>` behaviour must be bit-for-bit unchanged — the existing tests are the guard.
-4. **Server routes.** The five `c.html(indexHtml)` lines and the `main.ts` boot wording.
+5. **Server routes.** The five `c.html(indexHtml)` lines and the `main.ts` boot wording.
    `static.test.ts` additions.
-5. **Router + `<WeaveView/>`.** Split today's `Weave` out of `app.tsx`, add the `/weave/<id>` and
+6. **Router + `<WeaveView/>`.** Split today's `Weave` out of `app.tsx`, add the `/weave/<id>` and
    `/lobby` paths, the target-in-`useState` switch of §3.1, the `no-credential` branch, the
    read-only/rejoin banner and the not-joined-Lobby fork. DOM tests.
-6. **Main page shell + the storage notice.** Layout, the four independent cells, instance
+7. **Main page shell + the storage notice.** Layout, the four independent cells, instance
    guidelines, Lobby summary (title only / counts with an identity), and the one-time
    "storage is not persisting" bar. DOM tests.
-7. **Join the Lobby.** Shared `NAME_RE` constant (and `NamePrompt` switched to it), the form, the
+8. **Join the Lobby.** Shared `NAME_RE` constant (and `NamePrompt` switched to it), the form, the
    error map, the `name_taken` two-case message with its suffix suggestion, the durable/in-place
    branch, the already-joined and invalid-identity branches. DOM tests.
-8. **My Weaves.** Render-from-cache, duplicate folding, lazy bounded refresh, ordering, filter, the
+9. **My Weaves.** Render-from-cache, duplicate folding, lazy bounded refresh, ordering, filter, the
    row states, Copy link, Forget. DOM tests.
-9. **Create a Weave.** Form, 403 branch, the save-this-link panel, entry written before the panel,
-   and the hardened non-durable variant. DOM tests.
-10. **Docs** (§8) in one commit.
+10. **Create a Weave.** Form, 403 branch, the save-this-link panel, entry written before the panel,
+    and the hardened non-durable variant. DOM tests.
+11. **Docs** (§8) in one commit.
 
-Steps 1–4 are the load path and are independent of 6–9; 5 is the join between them. Step 1 is
-deliberately first and deliberately small: steps 2, 7 and 9 all branch on its result.
+Steps 1–5 are the load path and are independent of 7–10; 6 is the join between them. Steps 1 and 2
+are deliberately first and deliberately small: 3, 8 and 10 branch on the write verdict, and 6, 8 and
+10 are only correct because of the shared instance.
 
 ## 10. Open questions and assumptions
 
-Stated as assumptions so implementation is not blocked. Paw should confirm 1, 3, 9 and 10.
+Stated as assumptions so implementation is not blocked. Paw should confirm 1, 3, 9, 10 and 13.
 
 1. **No new public read for Lobby counts** (§4.4, option 1). Assumed: anonymous visitors see the
    Lobby's title only; counts appear once this browser holds a Lobby token. If Paw wants a livelier
@@ -913,3 +1092,14 @@ Stated as assumptions so implementation is not blocked. Paw should confirm 1, 3,
 11. **No server change for a lost Lobby identity** (§4.1): `name_taken` is answered with an
     explanation and a client-side suffix suggestion. A "reclaim my name" path would need proof the
     claimant is the earlier participant, and the only proof that exists is the token that was lost.
+12. **One storage instance, created in `main.tsx` and passed down** (§2.4a), rather than a
+    module-scope singleton in `storage.ts`. The prop is one more thing to thread through `App`, and
+    it is what makes the store substitutable in a DOM test and visible at every call site. A guard
+    test keeps `browserStorage()` from reappearing elsewhere.
+13. **A failed write overrides a stale persisted value for the life of the page, and a reload starts
+    from `localStorage` alone** (§2.4b). So a page can read back something the browser will not have
+    after a refresh — deliberately, because the alternative is a page that contradicts its own
+    writes. The retry is opportunistic (the next write of that key) with **no background loop and no
+    cross-tab sync**; another tab keeps the stale value until its own next read fails and converges.
+    Worth a yes or no from Paw, because it is the one place where what the page shows and what the
+    browser has stored are knowingly allowed to differ.
