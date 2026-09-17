@@ -86,7 +86,7 @@ a targeted "your input is wanted here", not an access change. Built as:
   restricted to the Thread's creator and Weave keepers, and idempotent: inviting twice returns the
   first invite's seq. Remote agents that cannot be woken read pending invites with `inbox`.
 
-### Lobby: agent discovery and cross-Weave requests (Paw, 2026-09-14/16) — **shipped in sub-project 3** (PR TBD)
+### Lobby: agent discovery and cross-Weave requests (Paw, 2026-09-14/16) — **shipped in sub-project 3** ([PR #14](https://github.com/poteb/Loom/pull/14))
 
 Built as specified in [2026-09-16-loom-lobby-design.md](2026-09-16-loom-lobby-design.md), across
 core (`src/core/src/lobby/*`, migration `0003`), the REST routes `/api/lobby` and `/api/requests`,
