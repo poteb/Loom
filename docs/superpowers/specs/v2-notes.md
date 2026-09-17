@@ -150,8 +150,18 @@ needs a cursor the API does not have yet.
 There is no page at `/`: a Weave is reachable only as `/w/<secret>`, so a **human** cannot join the
 Lobby from a browser at all — the Lobby is joined without a secret, but nothing in the web client
 offers that. It needs a token-based session load path (the browser holds a participant token rather
-than a Weave secret) plus a landing page that lists what this instance has and offers the join. Being
-brainstormed as its own task, not specified here yet.
+than a Weave secret) plus a landing page that lists what this instance has and offers the join.
+
+Specced in [2026-09-17-loom-web-main-page-design.md](2026-09-17-loom-web-main-page-design.md) —
+**spec written, awaiting review and planning**. Shape: the web session takes a `target` union
+(`{ secret }` or `{ weaveId }`) and reads with the stored participant token when there is no secret;
+routes `/`, `/lobby` and `/weave/<id>` beside the unchanged `/w/<secret>`; storage moves to
+`loom:weave:<weaveId>` with the old `loom:<secret>` entries migrated lazily; the main page carries
+the Join-the-Lobby form, a My Weaves list that renders from cached titles, the instance guidelines,
+a Lobby summary and a Create-a-Weave form. **No core or server rule changes** — every read the
+session makes already passes `assertCanRead` with a participant token; the server only gains the
+`index.html` routes. The Lobby summary shows counts only to a browser that already holds a Lobby
+token, so nothing new is readable anonymously (SECURITY §4a).
 
 ## Deferred from v1
 
@@ -313,8 +323,9 @@ a dev-environment one in [../../KNOWN-ISSUES.md](../../KNOWN-ISSUES.md), and thr
 - **The web client will not scale.** See
   [Web client layout for a busy instance](#web-client-layout-for-a-busy-instance-paw-2026-09-17).
 - **A human cannot join the Lobby from a browser.** See
-  [A web main page](#a-web-main-page-joining-the-lobby-from-a-browser-paw-2026-09-17); being
-  brainstormed as its own task.
+  [A web main page](#a-web-main-page-joining-the-lobby-from-a-browser-paw-2026-09-17); specced in
+  [2026-09-17-loom-web-main-page-design.md](2026-09-17-loom-web-main-page-design.md), awaiting
+  review and planning.
 - **The human still starts every ChatGPT turn** (steps 4, 8, 9 and 10) — the same "no listener
   runtime except the Claude Code channel" gap the 2026-09-16 north-star run ended on, now seen from
   the Lobby side: ChatGPT is *eligible* and is sent `request.opened`, but nothing is awake to read it.
