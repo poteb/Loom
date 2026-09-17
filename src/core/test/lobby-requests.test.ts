@@ -8,7 +8,7 @@ import { resolveCredential } from "../src/actors.js";
 import { seedKeepers } from "../src/keepers.js";
 import { addAgent } from "../src/agents.js";
 import { archiveWeave, createWeave, joinWeave } from "../src/weaves.js";
-import { closeThread, createThread } from "../src/threads.js";
+import { closeThread, createThread, setThreadUrl } from "../src/threads.js";
 import { setRole } from "../src/participants.js";
 import { ensureLobby, joinLobby } from "../src/lobby/lobby.js";
 import { setCapabilities } from "../src/lobby/profile.js";
@@ -502,6 +502,26 @@ describe("a request Thread", () => {
     const [thread] = await db.select().from(threads).where(eq(threads.id, req.threadId));
     expect(thread!.closedAt).toBeNull();
     expect((await rowOf(req.id)).status).toBe("open");
+    expect((await threadEvents(f, req.threadId)).slice(before)).toEqual([]);
+  });
+
+  // The URL belongs to the request — it is copied onto the row at open and no flow changes it — so
+  // `setThreadUrl` would put the Thread and its request out of step and emit a bare
+  // `thread.url_changed`, which carries no requestId and so wakes every all-mode Lobby listener.
+  it("keeps the URL its request was opened with, against its own requester and a Lobby keeper", async () => {
+    const f = await setup();
+    const req = await openRequest(db, bus, f.claude.actor, f.targetKeeper, inputFor(f));
+    const before = (await threadEvents(f, req.threadId)).length;
+
+    // The requester created this Thread, so the creator-or-keeper rule would otherwise let it through.
+    await expect(setThreadUrl(db, bus, f.claude.actor, req.threadId, "https://example.com/pr/99"))
+      .rejects.toMatchObject({ code: "validation" });
+    await expect(setThreadUrl(db, bus, f.instanceKeeper, req.threadId, null))
+      .rejects.toMatchObject({ code: "validation" });
+
+    const [thread] = await db.select().from(threads).where(eq(threads.id, req.threadId));
+    expect(thread!.url).toBe("https://example.com/pr/14");
+    expect((await rowOf(req.id)).url).toBe("https://example.com/pr/14");
     expect((await threadEvents(f, req.threadId)).slice(before)).toEqual([]);
   });
 });

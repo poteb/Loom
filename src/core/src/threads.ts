@@ -73,10 +73,16 @@ export async function createThread(db: Db, bus: EventBus, actor: Actor, weaveId:
 export async function setThreadUrl(db: Db, bus: EventBus, actor: Actor, threadId: string, url: string | null): Promise<PublicThread> {
   const t = await getThread(db, threadId);
   assertCreatorOrKeeper(actor, t);
+  // A request's URL is decided when the request opens and copied onto both rows; no flow changes it
+  // afterwards. Changing the Thread's alone would put it out of step with `requests.url`, and the
+  // `thread.url_changed` it appends carries no `requestId`, so it would wake every all-mode Lobby
+  // listener — the same hole `closeThread` refuses. Checked before the lock and again inside it.
+  if (t.requestId) throw errors.validation("This Thread belongs to a request; its URL is set when the request is opened");
   const cleanUrl = validateThreadUrl(url);
   return withWeaveLock(db, bus, t.weaveId, async (tx, weave) => {
     if (weave.archivedAt) throw errors.weaveArchived();
     const [fresh] = await tx.select().from(threads).where(eq(threads.id, threadId));
+    if (fresh!.requestId) throw errors.validation("This Thread belongs to a request; its URL is set when the request is opened");
     if (fresh!.closedAt) throw errors.threadClosed();
     if (actor.kind !== "participant" || actor.participant.id !== fresh!.createdBy) await assertStillKeeperOf(tx, actor, t.weaveId);
     if ((fresh!.url ?? null) === cleanUrl) return { result: toPublicThread(fresh!), events: [] };
