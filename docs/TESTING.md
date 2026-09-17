@@ -118,10 +118,10 @@ guarded by `typeof document !== "undefined"` because the package runs Vitest wit
 
 ## Current totals
 
-As of the Lobby sub-project's fix wave (last code commit on `feat/v2-lobby`): **799 tests in 55
-files** — core 296 in 22, server 139 in 9, claude-channel 133 in 9, web 92 in 5, cli 68 in 5, client
-37 in 4, mcp-tools 34 in 1 — from the root `pnpm test` (`pnpm -r build && pnpm -r test`) on the
-testcontainer path, with `pnpm -r typecheck` clean.
+As of the first review round on PR #14 (last code commit on `feat/v2-lobby`): **813 tests in 55
+files** — core 300 in 22, server 139 in 9, claude-channel 139 in 9, web 96 in 5, cli 68 in 5, client
+37 in 4, mcp-tools 34 in 1 — from `pnpm -r build` then
+`pnpm --workspace-concurrency=1 -r test`, with `pnpm -r typecheck` clean.
 Counts change with every feature; run the suites to see current numbers.
 
 ## Manual smoke tests
