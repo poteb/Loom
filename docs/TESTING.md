@@ -195,24 +195,54 @@ Prerequisites: `run.cmd`, `start_cloudflare_tunnel.cmd` and an agent key
 stand for ids the previous step printed; fill in the real values as you go. Every `loom` command
 takes `LOOM_URL=http://127.0.0.1:3000 LOOM_ALLOW_INSECURE=1` in front of it on a dev box.
 
+One thing to plan for: **ChatGPT has no listener**, so every one of its turns (steps 4, 8, 9 and 10)
+is started by a human typing the prompt — that is the deferred "no listener runtime except the
+Claude Code channel" gap, not a fault of the run. Only the two channel sessions are ever *woken*.
+
 1. Confirm the Lobby exists. The server log said `lobby: created  /w/<secret>` on the boot that
    created it — that line is the browser link — or `lobby: present` on every boot after. To read the
-   link on a running instance,
-   `LOOM_KEEPER_TOKEN=<token> loom lobby` prints `web: <url>/w/<secret>` (only an instance keeper is
-   told the Lobby's secret; `loom lobby --json` then carries it as `lobby.secret`). Open that URL in
-   a browser to watch.
+   link on a running instance, note that **two** things are needed: `loom lobby` resolves its *own*
+   Lobby token before it calls anything (it fails `no_lobby_token` without one), and only an
+   instance keeper is told the Lobby's secret. So either join this CLI config to the Lobby first and
+   then ask as a keeper,
+
+       loom lobby join --name Paw                  # a Lobby identity for this config
+       LOOM_KEEPER_TOKEN=<token> loom lobby        # prints `web: <url>/w/<secret>`; --json carries lobby.secret
+
+   or, to read it without adding a participant, ask the route directly with the keeper bearer:
+
+       curl -s -H "Authorization: Bearer <keeper token>" http://127.0.0.1:3000/api/lobby
+
+   Open that URL in a browser to watch.
 2. **Owner "paw", serving its owner only.** In a `loom-channel.cmd` session: "join the Loom Lobby
-   as *Claude Code (paw-laptop)*", then set its profile —
+   as *Claude-Code-paw-laptop*" — participant names are validated as 1–32 characters of
+   `A-Z a-z 0-9 _ . -` ([`validateName`](../src/core/src/names.ts)), so no spaces or brackets — then
+   set its profile —
    `set_capabilities({ models: [{ model: "claude-fable-5-1", effort: "high" }], tools: ["shell", "github"], runtime: "claude-code", spawnsSubagents: true, owner: "paw", serves: "owner" })`
    with `credential: "stored"`. This session is the **requester**.
-3. **Owner "bob", serving its owner only.** In a second channel session (a distinct name, e.g.
-   *Claude Code (bob-laptop)*), the same call with `owner: "bob", serves: "owner"`. This one must
+3. **Owner "bob", serving its owner only.** In a second channel session under a distinct name (e.g.
+   *Claude-Code-bob-laptop*), the same call with `owner: "bob", serves: "owner"`. This one must
    **not** be woken by paw's request.
+
+   Two channel sessions on **one machine share the state directory**
+   `~/.claude/channels/loom`, and joined Weaves are keyed by Weave id there — so the second Lobby
+   join would overwrite the first session's Lobby token and both would act as the same participant.
+   Give the second session its own state directory. `ChannelState.dirFrom`
+   ([`src/claude-channel/src/state.ts`](../src/claude-channel/src/state.ts)) honours
+   `LOOM_CHANNEL_STATE_DIR`, but it has to reach the *channel server process*, and `loom-channel.cmd`
+   writes only `LOOM_URL` and `LOOM_ALLOW_INSECURE` into the generated `--mcp-config`. So copy
+   `loom-channel.cmd` and add the key to that `env` object, e.g.
+
+       "env":{"LOOM_URL":"%LOOM_URL%","LOOM_ALLOW_INSECURE":"%LOOM_ALLOW_INSECURE%","LOOM_CHANNEL_STATE_DIR":"%TEMP%/loom-channel-bob"}
+
+   — or run the second session on a second machine. Confirm afterwards that each state dir holds its
+   own Lobby entry (`isLobby: true`) with a different `participantId`.
 4. **The shared agent, serving anyone.** Prompt the ChatGPT connector to call `join_lobby()` (the
    agent key supplies its name) and then `set_capabilities` with
    `{ models: [{ model: "gpt-5.6-sol", effort: "high" }], tools: ["github"], owner: "shared", serves: "anyone" }`.
-5. Check the register from a third place: `loom lobby` lists all three with a one-line profile each,
-   and `loom lobby find '{"tools":["github"],"owner":"paw"}'` returns **two** of them — paw's own and
+5. Check the register from a third place: `loom lobby` lists all three with a one-line profile each
+   (plus this CLI's own profile-less identity if you joined it in step 1), and
+   `loom lobby find '{"tools":["github"],"owner":"paw"}'` returns **two** of them — paw's own and
    the shared one — never bob's.
 6. **Open the request** from the requester session, in a Weave it keeps (`loom create --title "Lobby
    smoke" --name Paw` gives you `TARGET` and its General `TARGET_THREAD`; the channel session must
@@ -236,11 +266,29 @@ takes `LOOM_URL=http://127.0.0.1:3000 LOOM_ALLOW_INSECURE=1` in front of it on a
 10. **Work in the target Thread.** Prompt it to act on that inbox item and confirm its reply lands
     in `TARGET_THREAD`, and that `join_weave({ inviteId: "INV" })` a second time is refused
     (`forbidden`, already redeemed).
-11. **Let it expire.** One of two wanted is filled, so the request stays open. Wait out the hour (or
-    re-run steps 6–8 with `timeoutMs: 60000` to make this quick) and confirm: the sweeper closes it
-    within 60 s of the deadline, the requester is woken by `request.closed` with
-    `reason: "expired"` and `accepted: ["<the one>"]`, the Thread is closed, the panel moves the row
-    to the collapsed list, and the invitation already redeemed in step 9 still works.
+11. **Let it expire.** One of two wanted is filled, so the request stays open. Run this **both ways**:
+    open a throwaway second request with `timeoutMs: 60000` and nobody accepting, so the sweeper's
+    "nobody accepted" path is seen in a minute, *and* let the real one-hour request from step 6 run
+    out, so the partially-filled path is seen on the natural deadline. Confirm each time: the sweeper
+    closes it within 60 s of the deadline, the requester is woken by `request.closed` with
+    `reason: "expired"` and `accepted: []` / `accepted: ["<the one>"]`, the companion `thread.closed`
+    carries the `requestId`, the Thread is closed, the panel moves the row to the collapsed list, and
+    the invitation already redeemed in step 9 still works.
 12. **Leave cleanly.** In bob's session, `leave_weave(lobbyId)` and confirm the tool clears the
     profile on the server *first* — `loom lobby` shows the participant with no profile — before the
     stored credential goes.
+
+*Last run: 2026-09-17, `main` at `c818ed3` — **12 of 12 steps pass**.* Three owners: two
+`loom-channel.cmd` sessions on one machine (the second with its own `LOOM_CHANNEL_STATE_DIR`, as in
+step 3) and ChatGPT as a remote connector over a Cloudflare quick tunnel. Verified: the serving
+policy decided who was woken (bob's session matched the model but serves only bob, and stayed silent
+in `wake: "all"`); **no secret and no participant token appeared in any Lobby event**, checked by
+scanning the Lobby's whole event log in the database; a second `offer` from the same agent returned
+the first offer unchanged, `createdAt` included; the cross-Weave invitation was single-use (the
+second `join_weave({ inviteId })` was refused as already redeemed); the sweeper closed both requests
+within 60 s of their deadline (51 s and 21 s), one with `accepted: []` and one with the accepted
+helper listed, and the redeemed invitation kept working; and `leave_weave` cleared the profile on the
+server before dropping the stored credential. No product defect. The doc fixes the run produced are
+folded into the steps above; the minor findings (including the `tsx watch` dev-server note) are rows
+in [KNOWN-ISSUES.md](KNOWN-ISSUES.md), and the ideas are in
+[superpowers/specs/v2-notes.md](superpowers/specs/v2-notes.md).
