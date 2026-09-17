@@ -227,7 +227,7 @@ function OpenRequestForm({ session, onError, onDone }: { session: Session; onErr
       ))}
       <button type="button" class="link" onClick={() => setRows((rs) => [...rs, { model: "", effort: "" }])}>Add model</button>
       <input value={tools} placeholder="Tools, comma separated" onInput={(e) => setTools((e.target as HTMLInputElement).value)} />
-      <label>wanted <input type="number" min={1} max={10} value={String(wanted)} onInput={(e) => setWanted(Number((e.target as HTMLInputElement).value))} /></label>
+      <label>wanted <input type="number" min={1} max={20} value={String(wanted)} onInput={(e) => setWanted(Number((e.target as HTMLInputElement).value))} /></label>
       <label>minutes <input type="number" min={1} value={String(minutes)} onInput={(e) => setMinutes(Number((e.target as HTMLInputElement).value))} /></label>
       {targets === undefined ? <p class="muted">Looking for Weaves you can invite into…</p>
         : targets.length === 0 ? <p class="muted">No Weave in this browser to invite into.</p> : (

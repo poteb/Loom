@@ -41,6 +41,10 @@ export type Actor =
   | { kind: "secret"; weaveId: string }
   | { kind: "agent"; agent: PublicAgent };
 
-export type Settings = { instanceName: string; maxMessageLength: number; openWeaveCreation: boolean; guidelines: string;
-  /** The title the Lobby Weave is created with at first boot. */
-  lobbyTitle: string };
+/**
+ * The settings an instance keeper can read and patch. `settings.lobby_title` is deliberately not
+ * here: it is read once, by `ensureLobby` at first boot, and the `.strict()` patch schema never
+ * accepted it — carrying it on this shape only made `updateSettings({ lobbyTitle })` type-check and
+ * then throw. Renaming the Lobby means renaming its Weave row.
+ */
+export type Settings = { instanceName: string; maxMessageLength: number; openWeaveCreation: boolean; guidelines: string };
