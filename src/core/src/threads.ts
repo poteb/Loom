@@ -1,5 +1,5 @@
-import { eq } from "drizzle-orm";
-import type { Db } from "./db/index.js";
+import { and, eq } from "drizzle-orm";
+import type { Db, Queryable } from "./db/index.js";
 import { threads } from "./db/schema.js";
 import type { EventBus } from "./bus.js";
 import { errors } from "./errors.js";
@@ -14,6 +14,23 @@ export async function getThread(db: Db, threadId: string) {
   const [t] = await db.select().from(threads).where(eq(threads.id, threadId));
   if (!t) throw errors.threadNotFound();
   return t;
+}
+
+/**
+ * The Weave's General Thread: the one **flagged** at creation, never "the oldest row".
+ *
+ * Every Weave has exactly one and every creator sets the flag (`createWeave`, and the Lobby's own
+ * `createSystemWeave`), so the flag is total; `is_general` has existed since the first migration.
+ * Age is not an ordering anyone controls — the Lobby carries a Thread per request, and a host clock
+ * that steps backwards is enough to sort one of them first — and every caller here is about to
+ * append a **Weave-level** event (a role change, a guidelines change, an archive, a join), which
+ * would otherwise land in a stranger's request Thread.
+ */
+export async function generalThreadOf(q: Queryable, weaveId: string): Promise<{ id: string }> {
+  const [general] = await q.select({ id: threads.id }).from(threads)
+    .where(and(eq(threads.weaveId, weaveId), eq(threads.isGeneral, true))).limit(1);
+  if (!general) throw errors.weaveNotFound();
+  return general;
 }
 
 const MAX_URL = 2000;

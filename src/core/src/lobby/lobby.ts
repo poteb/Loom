@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import type { Db, Queryable, Tx } from "../db/index.js";
 import { settings, threads, weaves } from "../db/schema.js";
 import type { EventBus } from "../bus.js";
@@ -7,6 +7,7 @@ import { newId, newSecret } from "../ids.js";
 import { appendInTx } from "../events.js";
 import { assertInstanceKeeperFresh } from "../actors.js";
 import { getLobbyWeaveId, getSettings } from "../settings.js";
+import { generalThreadOf } from "../threads.js";
 import { joinWeave, type JoinResult, type JoinWeaveOptions } from "../weaves.js";
 import type { Actor, Kind } from "../types.js";
 
@@ -88,10 +89,7 @@ export async function getLobby(db: Queryable, actor?: Actor): Promise<Lobby> {
  * Selected by its flag rather than by age, because every request opens a Thread of its own here.
  */
 export async function lobbyGeneralThreadId(db: Queryable, lobbyId: string): Promise<string> {
-  const [general] = await db.select({ id: threads.id }).from(threads)
-    .where(and(eq(threads.weaveId, lobbyId), eq(threads.isGeneral, true))).limit(1);
-  if (!general) throw errors.weaveNotFound();
-  return general.id;
+  return (await generalThreadOf(db, lobbyId)).id;
 }
 
 /**

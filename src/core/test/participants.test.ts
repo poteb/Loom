@@ -1,7 +1,10 @@
 import { describe, it, expect, afterAll, beforeEach } from "vitest";
+import { eq } from "drizzle-orm";
 import { freshDb, closeTestDb, keeperToken } from "./helpers.js";
 import { EventBus } from "../src/bus.js";
+import { threads } from "../src/db/schema.js";
 import { createWeave, joinWeave, archiveWeave } from "../src/weaves.js";
+import { createThread } from "../src/threads.js";
 import { setRole } from "../src/participants.js";
 import { readEvents } from "../src/events.js";
 import { resolveCredential } from "../src/actors.js";
@@ -27,6 +30,22 @@ describe("setRole", () => {
     await setRole(db, bus, member, r.weave.id, r.participant.id, "member");
     await archiveWeave(db, bus, member, r.weave.id);
   });
+  // A Weave-level event belongs in General, which is the Thread *flagged* General — not the oldest
+  // row. The Lobby carries a Thread per request, and a host clock that steps backwards is enough to
+  // sort one of them first; the role change would then land in a stranger's request Thread.
+  it("appends the role change to the Thread flagged General, whatever the timestamps say", async () => {
+    const r = await createWeave(db, bus, input);
+    const me = await resolveCredential(db, r.token);
+    const other = await createThread(db, bus, me, r.weave.id, "PR 14");
+    await db.update(threads).set({ createdAt: new Date(new Date(other.createdAt).getTime() + 60_000) })
+      .where(eq(threads.id, r.generalThread.id));
+    const j = await joinWeave(db, bus, r.secret, { name: "M", kind: "human" });
+    await setRole(db, bus, me, r.weave.id, j.participant.id, "keeper");
+    const last = (await readEvents(db, r.weave.id, {})).at(-1)!;
+    expect(last.type).toBe("participant.role_changed");
+    expect(last.threadId).toBe(r.generalThread.id);
+  });
+
   it("members cannot; instance keeper can; validation on role/participant; archived rejected", async () => {
     const r = await createWeave(db, bus, input);
     const me = await resolveCredential(db, r.token);

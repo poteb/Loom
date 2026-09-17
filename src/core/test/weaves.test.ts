@@ -119,6 +119,19 @@ describe("lookupWeaveIdBySecret", () => {
 });
 
 describe("archiveWeave / listWeaves", () => {
+  // The same rule as `joinWeave` above, for the event this one appends.
+  it("logs the archive on the Thread flagged General, whatever the timestamps say", async () => {
+    const r = await createWeave(db, bus, input);
+    const me = await resolveCredential(db, r.token);
+    const other = await createThread(db, bus, me, r.weave.id, "PR 14");
+    await db.update(threads).set({ createdAt: new Date(new Date(other.createdAt).getTime() + 60_000) })
+      .where(eq(threads.id, r.generalThread.id));
+    await archiveWeave(db, bus, me, r.weave.id);
+    const last = (await readEvents(db, r.weave.id, {})).at(-1)!;
+    expect(last.type).toBe("weave.archived");
+    expect(last.threadId).toBe(r.generalThread.id);
+  });
+
   it("keeper role archives; member cannot; archive is idempotent-rejecting", async () => {
     const r = await createWeave(db, bus, input);
     const j = await joinWeave(db, bus, r.secret, { name: "Member", kind: "human" });

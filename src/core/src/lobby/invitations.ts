@@ -9,6 +9,7 @@ import { withWeaveLock, withWeaveLocks, type NewEvent } from "../events.js";
 import { actorId, assertIsKeeperOf, assertStillKeeperOf, toPublicParticipant } from "../actors.js";
 import { getInstanceGuidelines, guidelinesFor } from "../guidelines.js";
 import { isNameTakenViolation, toPublicWeave, type JoinResult } from "../weaves.js";
+import { generalThreadOf } from "../threads.js";
 import { getLobby, lobbyGeneralThreadId } from "./lobby.js";
 import type { Actor, Kind } from "../types.js";
 
@@ -38,17 +39,6 @@ export async function invitationRowAndEvent(tx: Tx, draft: InvitationDraft): Pro
     payload: { invitationId: draft.invitationId, participantId: draft.inviteeParticipantId,
       targetWeaveTitle: draft.targetWeaveTitle },
   };
-}
-
-/**
- * The Weave's General thread. Every Weave has exactly one, flagged at creation; selected by the flag
- * rather than by age because a Weave may have Threads older than nothing but itself.
- */
-async function generalThreadOf(tx: Tx, weaveId: string): Promise<{ id: string }> {
-  const [general] = await tx.select({ id: threads.id }).from(threads)
-    .where(and(eq(threads.weaveId, weaveId), eq(threads.isGeneral, true))).limit(1);
-  if (!general) throw errors.weaveNotFound();
-  return general;
 }
 
 /**

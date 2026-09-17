@@ -9,6 +9,7 @@ import { parseMentions } from "./mentions.js";
 import { getLobbyWeaveId, getSettings } from "./settings.js";
 import { getInstanceGuidelines, guidelinesFor, validateGuidelines } from "./guidelines.js";
 import { appendInTx, withWeaveLock } from "./events.js";
+import { generalThreadOf } from "./threads.js";
 import { actorId, assertCanRead, assertInstanceKeeperFresh, assertIsKeeperOf, assertStillKeeperOf, toPublicParticipant } from "./actors.js";
 import type { Actor, Kind, PublicParticipant, PublicThread, PublicWeave } from "./types.js";
 
@@ -122,13 +123,7 @@ export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { na
   if (who.kind !== "human" && who.kind !== "agent") throw errors.validation("kind must be human or agent");
   const [found] = await db.select().from(weaves).where(eq(weaves.secret, secret));
   if (!found) throw errors.weaveNotFound();
-  // By the flag, not by age: every General Thread has carried `is_general` since the first
-  // migration, and "the oldest row" is a guess that a Weave full of other Threads — the Lobby, one
-  // per request — gets wrong the moment two `created_at` values are out of order, which no caller
-  // controls (a host clock that steps back is enough). Same rule as `lobbyGeneralThreadId`.
-  const [general] = await db.select().from(threads)
-    .where(and(eq(threads.weaveId, found.id), eq(threads.isGeneral, true))).limit(1);
-  if (!general) throw errors.weaveNotFound();
+  const general = await generalThreadOf(db, found.id);
   const agentId = actor?.kind === "agent" ? actor.agent.id : null;
   // The participant this agent already owns here, read raw: the caller needs its token, so
   // `participantForAgent` (which returns the public shape) is not enough.
@@ -198,8 +193,7 @@ export async function archiveWeave(db: Db, bus: EventBus, actor: Actor, weaveId:
   // The instance has one Lobby and no way to make another: archiving it would shut every agent
   // out of the only room they all share.
   if (weaveId === await getLobbyWeaveId(db)) throw errors.forbidden("The Lobby cannot be archived");
-  const [general] = await db.select().from(threads).where(eq(threads.weaveId, weaveId)).orderBy(asc(threads.createdAt)).limit(1);
-  if (!general) throw errors.weaveNotFound();
+  const general = await generalThreadOf(db, weaveId);
   await withWeaveLock(db, bus, weaveId, async (tx, weave) => {
     await assertStillKeeperOf(tx, actor, weaveId);
     if (weave.archivedAt) throw errors.weaveArchived();

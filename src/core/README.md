@@ -58,7 +58,7 @@ the `Profile` / `Requirements` / `PublicRequest` / `PublicOffer` types), and the
 - [src/names.ts](src/names.ts) — participant name validation (`NAME_RE`)
 - [src/participants.ts](src/participants.ts) — `setRole`
 - [src/settings.ts](src/settings.ts) — instance settings read/patch
-- [src/threads.ts](src/threads.ts) — create/close threads, artefact URL validation
+- [src/threads.ts](src/threads.ts) — create/close threads, artefact URL validation, `generalThreadOf` (the Thread *flagged* General: the one place every Weave-level event is addressed from)
 - [src/types.ts](src/types.ts) — `Actor`, `LoomEvent`, `InboxItem`, public row shapes
 - [src/weaves.ts](src/weaves.ts) — create/join/get/archive/list, unique-violation classification
 
