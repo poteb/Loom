@@ -75,6 +75,9 @@ export function RequestsPanel({ state, session, onError, now }: {
       {closed.length > 0 && (
         <details class="closed-requests">
           <summary>Closed ({closed.length})</summary>
+          {closed.length >= state.closedRequestsPage && (
+            <p class="muted">Showing the newest {state.closedRequestsPage} of each closed status.</p>
+          )}
           <ul>
             {closed.map(({ r, status }) => (
               <li key={r.id}>

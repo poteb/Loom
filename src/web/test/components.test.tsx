@@ -9,7 +9,7 @@ import { RequestsPanel } from "../src/components/RequestsPanel.js";
 import { ProfileCard } from "../src/components/ProfileCard.js";
 import { MAX_GUIDELINES_LENGTH } from "@loom/core";
 import type { Offer } from "@loom/client";
-import type { Session, SessionState } from "../src/session.js";
+import { CLOSED_REQUESTS_PAGE, type Session, type SessionState } from "../src/session.js";
 import type { VersionedRequest } from "../src/requests-state.js";
 
 const me = { id: "p1", weaveId: "w1", name: "Paw", kind: "human" as const, role: "member" as const, joinedAt: "", agentId: null, capabilities: null };
@@ -20,7 +20,7 @@ const pr = { id: "t1", weaveId: "w1", name: "PR 12", isGeneral: false, createdBy
 function state(over: Partial<SessionState> = {}): SessionState {
   return { status: "ready", weave: { id: "w1", title: "W", createdAt: "", archivedAt: null, lastSeq: 3, guidelines: "" }, threads: [general, pr], participants: [me, bot],
     events: [], me: { participant: me, token: "t" }, currentThreadId: "g1", connection: "open", needsName: false, invitesForMe: new Set(), invited: {},
-    instanceGuidelines: "", requests: {}, ...over };
+    instanceGuidelines: "", requests: {}, closedRequestsPage: CLOSED_REQUESTS_PAGE, ...over };
 }
 function session(over: Partial<Session> = {}): Session {
   return { getState: () => state(), subscribe: () => () => {}, load: async () => {}, join: async () => {}, selectThread: vi.fn(), post: async () => {},
@@ -203,6 +203,16 @@ describe("RequestsPanel", () => {
     render(<RequestsPanel state={lobbyState()} session={session()} onError={() => {}} now={Date.parse("2026-09-16T14:00:00.000Z")} />);
     expect(screen.getByText("Closed (1)")).toBeTruthy();
     expect(screen.queryByText(/left$/)).toBeNull();
+  });
+
+  it("says so only when the closed section is a page rather than the whole history", () => {
+    const past = Date.parse("2026-09-16T14:00:01.000Z");
+    const full = lobbyState({ closedRequestsPage: 1, requests: { r1: request() } });
+    const { rerender } = render(<RequestsPanel state={full} session={session()} onError={() => {}} now={past} />);
+    expect(screen.getByText("Showing the newest 1 of each closed status.")).toBeTruthy();
+    const room = lobbyState({ closedRequestsPage: 25, requests: { r1: request() } });
+    rerender(<RequestsPanel state={room} session={session()} onError={() => {}} now={past} />);
+    expect(screen.queryByText(/Showing the newest/)).toBeNull();
   });
 
   it("greys every Accept once `wanted` acceptances are in", () => {

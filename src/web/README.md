@@ -48,7 +48,11 @@ direction.
 session only builds them when `state.lobby.weaveId` is the Weave it is showing. Each participant with
 a profile gets a **profile card** (models and efforts, tools, runtime, owner, serves), and the
 sidebar gets the **requests panel**: open requests with their requirements, `wanted`/accepted, a
-countdown and the offers so far, with the terminal ones collapsed below. The requester sees Accept
+countdown and the offers so far, with the terminal ones collapsed below. `listRequests` is paged
+(newest first), so the session asks for the two halves separately: every **open** request at the
+server's page maximum, and the newest `CLOSED_REQUESTS_PAGE` (25) of each terminal status, merged
+through the same watermark. An open request older than the newest page of the whole board would
+otherwise be missing from the live section; the collapsed section says when it is only a page. The requester sees Accept
 per offer (disabled once `wanted` is reached) and Cancel; an eligible listener whose own profile this
 browser holds sees an Offer form, which gives way once it has offered; anyone else reads. Opening a
 request is a form whose target Weave and Thread pickers list only the Weaves this browser holds a

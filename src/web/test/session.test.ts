@@ -25,8 +25,8 @@ function waitFor(pred: () => boolean, ms = 5000): Promise<void> {
   });
 }
 
-async function makeSession(secret: string, storage = memoryStorage()): Promise<Session> {
-  const session = createSession({ client: anon, secret, storage });
+async function makeSession(secret: string, storage = memoryStorage(), over: { closedRequestsPage?: number } = {}): Promise<Session> {
+  const session = createSession({ client: anon, secret, storage, ...over });
   await session.load();
   return session;
 }
@@ -781,6 +781,22 @@ describe("session requests", () => {
       expect(session.getState().lobby?.weaveId).toBe((await s.core.getLobby()).weaveId);
       expect(session.getState().requests[r.id]?.version).toBe(r.lastEventSeq);
       expect(session.getState().requests[r.id]?.eligible).toContain(f.helper.participant.id);
+    } finally { session.dispose(); }
+  });
+
+  // The board is paged, newest first. Reading it as one page would drop an open request older than
+  // that page — which is exactly what a Lobby that has closed a few hundred requests looks like.
+  it("loads every open request even when the closed page is full", async () => {
+    const f = await lobbyFixture();
+    const older = await f.open();                       // opened first, so the newest page is all closed
+    const requester = anon.withToken(f.requester.token);
+    for (let i = 0; i < 3; i++) await requester.cancelRequest((await f.open()).id);
+    const session = await makeSession(f.secret, f.storage, { closedRequestsPage: 2 });
+    try {
+      const held = Object.values(session.getState().requests);
+      expect(held.map((r) => r.id)).toContain(older.id);
+      // And the closed history really is capped: three were cancelled, a page of two came back.
+      expect(held.filter((r) => r.status === "cancelled")).toHaveLength(2);
     } finally { session.dispose(); }
   });
 

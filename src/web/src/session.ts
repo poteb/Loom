@@ -23,6 +23,9 @@ export type SessionState = {
   lobby?: Lobby;
   /** The Lobby's requests, each at the version this session holds for it. Empty off the Lobby. */
   requests: Requests;
+  /** How many closed requests per terminal status this session loads; the panel says so when the
+   *  closed section may be a page rather than the whole history. */
+  closedRequestsPage: number;
 };
 
 /** A Weave this browser holds a token for: what an Open-request form's target pickers offer. */
@@ -44,7 +47,16 @@ export type Session = {
   targets(): Promise<TargetWeave[]>;
 };
 
+/** The server's own page maximum (`MAX_PAGE_LIMIT`): what "everything" is asked for as. */
 const PAGE = 1000;
+
+/**
+ * How many closed requests the panel loads **per terminal status**. Open requests are never capped
+ * in intent, so they are read on their own at `PAGE`; the closed ones are history, and a browser
+ * wants the recent end of it, not all of it.
+ */
+export const CLOSED_REQUESTS_PAGE = 25;
+const CLOSED_STATUSES = ["filled", "expired", "cancelled"] as const;
 
 /** setTimeout that settles early — and clears its timer — when `signal` aborts, so no timer outlives a session. */
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -59,12 +71,15 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 export type RetryOptions = { delaysMs: number[]; slowMs: number };
 const DEFAULT_RETRY: RetryOptions = { delaysMs: [250, 500, 1000, 2000, 4000], slowMs: 10_000 };
 
-export function createSession(opts: { client: LoomClient; secret: string; storage: KeyValueStorage; retry?: RetryOptions }): Session {
+export function createSession(opts: { client: LoomClient; secret: string; storage: KeyValueStorage; retry?: RetryOptions;
+  /** Override for `CLOSED_REQUESTS_PAGE`; a knob, and the seam a test uses to fill the page cheaply. */
+  closedRequestsPage?: number }): Session {
   const { client, secret, storage } = opts;
   const retry = opts.retry ?? DEFAULT_RETRY;
+  const closedPage = opts.closedRequestsPage ?? CLOSED_REQUESTS_PAGE;
   const key = `loom:${secret}`;
   let state: SessionState = { status: "loading", threads: [], participants: [], events: [], connection: "closed", needsName: false,
-    invitesForMe: new Set(), invited: {}, instanceGuidelines: "", requests: {} };
+    invitesForMe: new Set(), invited: {}, instanceGuidelines: "", requests: {}, closedRequestsPage: closedPage };
   const listeners = new Set<() => void>();
   let weaveId: string | undefined;
   // How far the guidelines text in `state.weave` has been advanced, as a Weave seq. Guidelines are
@@ -103,6 +118,23 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
   };
   /** True on the Lobby's own page: requests are read with this browser's Lobby credential. */
   const onLobby = () => !!weaveId && state.lobby?.weaveId === weaveId;
+  /**
+   * Every open request, plus the newest `closedPage` of each terminal status.
+   *
+   * Not one `listRequests()`: that is a page of the whole board, newest first, and an open request
+   * older than the newest hundred rows would simply be missing from the panel's live section. Open
+   * and closed are therefore asked for separately, and the closed history is capped on purpose. The
+   * pages are merged through `applySnapshot` like any other snapshot, so two sources are no
+   * different from one.
+   */
+  const readRequests = async (): Promise<LoomRequest[]> => {
+    const pages = await Promise.all([
+      reader.listRequests("open", { limit: PAGE }),
+      ...CLOSED_STATUSES.map((s) => reader.listRequests(s, { limit: closedPage })),
+    ]);
+    return pages.flat();
+  };
+
   /** Every snapshot goes through the watermark, so a stale answer can never move a request back. */
   const applyRequests = (snaps: LoomRequest[]) => {
     let next = state.requests;
@@ -118,7 +150,7 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
     const [info, instance, requests] = await Promise.all([
       reader.getWeave(weaveId),
       client.getInstanceGuidelines().catch(() => state.instanceGuidelines),
-      onLobby() ? reader.listRequests().catch(() => null) : null,
+      onLobby() ? readRequests().catch(() => null) : null,
     ]);
     // A snapshot that predates the last applied guidelines change keeps the text that change
     // delivered; one that is at least as new is authoritative and moves the watermark up.
@@ -248,7 +280,7 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
         if (stale()) return;
         // Only the Lobby's own page has requests, and they are read with this browser's Lobby
         // credential — the same secret the rest of the page is read with.
-        const requests = lobby?.weaveId === id ? await reader.listRequests().catch(() => []) : [];
+        const requests = lobby?.weaveId === id ? await readRequests().catch(() => []) : [];
         if (stale()) return;
         weaveId = id;
         guidelinesSeq = info.weave.lastSeq;
