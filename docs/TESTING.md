@@ -118,9 +118,9 @@ guarded by `typeof document !== "undefined"` because the package runs Vitest wit
 
 ## Current totals
 
-As of the first review round on PR #14 and its follow-ups (last code commit on `feat/v2-lobby`):
-**815 tests in 55 files** — core 301 in 22, server 139 in 9, claude-channel 139 in 9, web 97 in 5,
-cli 68 in 5, client 37 in 4, mcp-tools 34 in 1 — from `pnpm -r build` then
+As of the second review round on PR #14 (last code commit on `feat/v2-lobby`): **818 tests in 55
+files** — core 301 in 22, server 139 in 9, claude-channel 139 in 9, web 100 in 5, cli 68 in 5,
+client 37 in 4, mcp-tools 34 in 1 — from `pnpm -r build` then
 `pnpm --workspace-concurrency=1 -r test`, with `pnpm -r typecheck` clean.
 Counts change with every feature; run the suites to see current numbers.
 
