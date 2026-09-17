@@ -487,6 +487,25 @@ describe("cancelRequest", () => {
   });
 });
 
+describe("a request Thread", () => {
+  // Spec 2 and 5: a request Thread closes only through its request's lifecycle, and the
+  // `thread.closed` that says so carries `requestId` so it wakes nobody. An ordinary `closeThread`
+  // would leave the request open — further offers would still succeed — and emit a bare
+  // `thread.closed` that wakes every all-mode Lobby listener.
+  it("cannot be closed by an ordinary closeThread, even by a Lobby keeper", async () => {
+    const f = await setup();
+    const req = await openRequest(db, bus, f.claude.actor, f.targetKeeper, inputFor(f));
+    const before = (await threadEvents(f, req.threadId)).length;
+
+    await expect(closeThread(db, bus, f.instanceKeeper, req.threadId)).rejects.toMatchObject({ code: "validation" });
+
+    const [thread] = await db.select().from(threads).where(eq(threads.id, req.threadId));
+    expect(thread!.closedAt).toBeNull();
+    expect((await rowOf(req.id)).status).toBe("open");
+    expect((await threadEvents(f, req.threadId)).slice(before)).toEqual([]);
+  });
+});
+
 /**
  * A lock wait is unbounded: whoever holds the Weave row decides how long the next writer waits, and
  * the deadline may pass in the meantime. Every mutation must therefore decide expiry from a clock

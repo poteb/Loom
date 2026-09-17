@@ -92,10 +92,17 @@ export async function closeThread(db: Db, bus: EventBus, actor: Actor, threadId:
   const t = await getThread(db, threadId);
   assertIsKeeperOf(actor, t.weaveId);
   if (t.isGeneral) throw errors.validation("The General thread cannot be closed; archive the Weave instead");
+  // A request's Thread belongs to the request: it closes only through `closeInTx`, in the same
+  // transaction as the request row, with a `thread.closed` carrying `requestId` so the Lobby's
+  // addressed-only rule holds. Closing it here would leave the request open — offers would still
+  // succeed on a Thread nobody can post in — and wake every all-mode Lobby listener with a bare
+  // `thread.closed`. Checked before the lock so the common case fails fast, and again inside it.
+  if (t.requestId) throw errors.validation("This Thread belongs to a request; cancel the request instead");
   await withWeaveLock(db, bus, t.weaveId, async (tx, weave) => {
     await assertStillKeeperOf(tx, actor, t.weaveId);
     if (weave.archivedAt) throw errors.weaveArchived();
     const [fresh] = await tx.select().from(threads).where(eq(threads.id, threadId));
+    if (fresh!.requestId) throw errors.validation("This Thread belongs to a request; cancel the request instead");
     if (fresh!.closedAt) throw errors.threadClosed();
     await tx.update(threads).set({ closedAt: new Date() }).where(eq(threads.id, threadId));
     return { result: undefined, events: [{ threadId, type: "thread.closed" as const, actor: actorId(actor), payload: { threadId } }] };
