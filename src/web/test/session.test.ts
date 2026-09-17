@@ -927,6 +927,31 @@ describe("session requests", () => {
     } finally { session.dispose(); }
   });
 
+  // The retry belongs to the load that started it. A second load() retires the first one's loop, so
+  // a guard that only asks "is some loop running?" would let the old loop's exit stand for the new
+  // load's retry and leave the board unread for good.
+  it("retries again for a second load() started while the first load's retry is pending", async () => {
+    const f = await lobbyFixture();
+    const r = await f.open();
+    // Call 1 is the first load's read, call 2 the second load's; the first backoff is long enough
+    // that the second load starts while the first retry is still sleeping.
+    const session = createSession({
+      client: flakyListing([1, 2]), secret: f.secret, storage: f.storage,
+      retry: { delaysMs: [800, 5, 5, 5, 5], slowMs: 20 },
+    });
+    await session.load();
+    try {
+      expect(session.getState().requestsError).toBeDefined();
+
+      await session.load();
+      expect(session.getState().requestsError).toBeDefined();
+
+      await waitFor(() => session.getState().requests[r.id] !== undefined);
+      expect(session.getState().requestsError).toBeUndefined();
+      expect(session.getState().requestsLoaded).toBe(true);
+    } finally { session.dispose(); }
+  });
+
   it("a Weave that is not the Lobby carries no requests", async () => {
     const f = await lobbyFixture();
     await f.open();

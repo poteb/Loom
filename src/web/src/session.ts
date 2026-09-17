@@ -213,13 +213,17 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
    * The requests read, retried on its own. A failed read must not break the rest of the page — the
    * Weave does not depend on it — but it must not be shown as an empty board either: the failure is
    * held in state, and the read is retried on the same backoff a refresh uses until it succeeds or
-   * the session goes away. One loop at a time, and it retires with the generation that started it,
-   * so a pending sleep never outlives its load (dispose aborts the sleep as well).
+   * the session goes away. One loop per generation, and it retires with the generation that started
+   * it, so a pending sleep never outlives its load (dispose aborts the sleep as well).
+   *
+   * The guard is keyed on that generation rather than being a bare "a loop is running" flag: a
+   * second `load()` retires the first one's loop, and a bare flag would make the new load skip its
+   * own retry on the strength of a loop that is about to exit — leaving the board unread for good.
    */
-  let requestsRetrying = false;
+  let retryingFor: number | undefined;
   const retryRequests = (myGeneration: number) => {
-    if (requestsRetrying || disposed || myGeneration !== generation) return;
-    requestsRetrying = true;
+    if (retryingFor === myGeneration || disposed || myGeneration !== generation) return;
+    retryingFor = myGeneration;
     void (async () => {
       try {
         for (let attempt = 0; ; attempt++) {
@@ -236,7 +240,8 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
             set({ requestsError: messageOf(e) });
           }
         }
-      } finally { requestsRetrying = false; }
+      // Only if it is still this generation's: a newer load may already own the slot by now.
+      } finally { if (retryingFor === myGeneration) retryingFor = undefined; }
     })();
   };
 
