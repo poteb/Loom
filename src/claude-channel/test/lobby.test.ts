@@ -126,7 +126,7 @@ describe("the Lobby over the channel", () => {
 
         expect((await a.callTool({ name: "accept", arguments: { credential: "stored", requestId: req.id, participantIds: [helper.participant.id] } })).isError).toBeFalsy();
         await waitFor(() => gotB.some((g) => g.meta.type === "weave.invited"), "weave.invited on the helper");
-        expect(body(typed(gotB, "request.accepted")!)).toBe('Accepted: you were invited to "Loom session" — join_weave({ inviteId })');
+        expect(body(typed(gotB, "request.accepted")!)).toBe('Accepted: you were invited to "Loom session" — the invitation id arrives on the weave.invited event beside this (or from inbox); redeem with join_weave({ inviteId })');
         const invited = typed(gotB, "weave.invited")!;
         expect(invited.meta.invitation).toBeTruthy();
         // The closure that acceptance caused is the requester's own act, so it does not wake it

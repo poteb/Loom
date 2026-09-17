@@ -184,7 +184,7 @@ describe("Lobby events", () => {
       expect(formatEvent(offered({ model: null, effort: null, note: null }), lobby, lobbyNames, ME).content).toBe("Offer from ChatGPT");
     });
     it("renders an acceptance naming me as the way into the target Weave", () => {
-      expect(formatEvent(accepted(), lobby, lobbyNames, ME).content).toBe('Accepted: you were invited to "Loom session" — join_weave({ inviteId })');
+      expect(formatEvent(accepted(), lobby, lobbyNames, ME).content).toBe('Accepted: you were invited to "Loom session" — the invitation id arrives on the weave.invited event beside this (or from inbox); redeem with join_weave({ inviteId })');
     });
     it("renders a closure with its reason and who was accepted", () => {
       expect(formatEvent(closed(), lobby, lobbyNames, ME).content).toBe('Request "Review PR 14" filled: accepted ChatGPT');

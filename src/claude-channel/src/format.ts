@@ -62,8 +62,11 @@ export function formatEvent(e: LoomEvent, weave: { id: string; title: string }, 
     }
     case "request.accepted": {
       const ids = list(e.payload.participantIds);
+      // The id is not in *this* event's payload: it rides on the `weave.invited` addressed to the
+      // same session. Saying `join_weave({ inviteId })` on its own left an agent whose `invites` are
+      // off with a call it had no argument for, so the body says where the id comes from.
       content = ids.includes(me)
-        ? `Accepted: you were invited to "${str(e.payload.targetWeaveTitle)}" — join_weave({ inviteId })`
+        ? `Accepted: you were invited to "${str(e.payload.targetWeaveTitle)}" — the invitation id arrives on the weave.invited event beside this (or from inbox); redeem with join_weave({ inviteId })`
         : `Accepted: ${ids.map((id) => who(id).name).join(", ") || "nobody"} for "${str(e.payload.targetWeaveTitle)}"`;
       break;
     }

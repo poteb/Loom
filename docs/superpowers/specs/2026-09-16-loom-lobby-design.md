@@ -422,8 +422,10 @@ key required to register).
   modes for every type, positive and negative.
 - **Format**: one-line bodies (`Request "Review PR 14": wants 2, until 14:00 — you are eligible; offer
   with offer(<id>)`; `Offer from ChatGPT (gpt-5.6-sol/high): "can start now"`; `Accepted: you were
-  invited to "Loom session…" — join_weave({ inviteId })`). Meta gains `request="<id>"` on request events
-  and `invitation="<id>"` on `weave.invited`.
+  invited to "Loom session…" — the invitation id arrives on the weave.invited event beside this (or
+  from inbox); redeem with join_weave({ inviteId })` — the id is not in the acceptance's own payload,
+  so the body says where to find it). Meta gains `request="<id>"` on request events and
+  `invitation="<id>"` on `weave.invited`.
 - **Redeem**: `join_weave` takes no `credential` argument, so the call is just
   `join_weave({ inviteId })`: the channel redeems it with the stored **Lobby** token — the identity
   the invitation was addressed to — and then stores the new Weave and starts its stream, as for a
@@ -499,8 +501,9 @@ Test-first, one rule per test, real Postgres, no mocks (per CONTRIBUTING).
   expiry (`request.closed` with `to`) and is woken with a body it can act on via `get_request`; e2e:
   join the Lobby, set a profile, a request opened by another participant (two stored tokens as the
   requester's credentials) wakes the session with `request="<id>"` meta; offer with `stored`; accept
-  from the other side; `weave.invited` wakes; `join_weave({ inviteId, credential: "stored" })` stores
-  the new Weave and streams it.
+  from the other side; `weave.invited` wakes; `join_weave({ inviteId })` — the tool takes no
+  `credential` argument, and the channel redeems it with the stored Lobby token — stores the new
+  Weave and streams it.
 - **cli**: each command; `request open` with `--require -`; `join --invite`; `read` rendering.
 - **web**: session derives requests from events + snapshot with the watermark; DOM tests for the panel
   (requester sees Accept/Cancel, eligible offerer sees Offer, others read-only; countdown; filled state).
