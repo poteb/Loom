@@ -33,6 +33,17 @@ Found by the Lobby manual smoke test of 2026-09-17 (`v2-notes.md`, "Lobby smoke 
 >    read back the old value — which would resurrect an identity just marked `identity: "invalid"`,
 >    or hide a fresh rejoin token behind the dead one. §2.4b adds a pending-override layer with a
 >    precise precedence rule (§2.6, §6, §7).
+>
+> **Planning review (2026-09-18).** Four points the plan needed and this text did not settle:
+>
+> 5. **Which entry wins when a legacy and an id entry describe the same Weave** — the id entry, and
+>    an invalidated one never takes a legacy identity (§2.4).
+> 6. **A bookmarked `/w/<secret>` migrates its own legacy key** before resolving an identity, so a
+>    browser that joined before this work is not treated as a stranger (§2.4).
+> 7. **`/weave/<lobbyId>` offers the join form too**, not only `/lobby` (§3.3).
+> 8. **Creation persists one complete entry**, and the save-this-link panel branches on that one
+>    verdict (§4.5). My Weaves refreshes a row with the same credential the session would pick
+>    (§4.2).
 
 ## 1. Purpose
 
@@ -299,7 +310,7 @@ Mechanically:
 | Call | Behaviour |
 | --- | --- |
 | `set(k, v)` | write the memory fallback; attempt `localStorage.setItem` and verify by read-back. Verified → **delete** any override for `k`, return `"durable"`. Not verified → **set** the override to `v`, return `"memory"` |
-| `remove(k)` | remove from the memory fallback; attempt `localStorage.removeItem` and verify it is gone. Gone → delete any override. Still there → set the override to the **tombstone** |
+| `remove(k)` | remove from the memory fallback; attempt `localStorage.removeItem` and verify it is gone. **Confirmed** gone → delete any override. Still there, **or not consultable** → set the override to the **tombstone** |
 | `get(k)` | override first (tombstone → `null`), else `localStorage`, else the memory fallback |
 | `keys()` | today's union of `localStorage` and fallback keys ([`storage.ts:22-28`](../../../src/web/src/storage.ts)), **plus** every override key, **minus** every tombstoned key |
 
@@ -321,6 +332,10 @@ Mechanically:
   presents the same dead token, receives the same `401`, and performs the same invalidation itself
   (§2.6). It converges on its own, one failed request later. The same is true in reverse for a
   rejoin: the other tab keeps the old token until its next load, then converges.
+- **A store that cannot be consulted confirms nothing.** The read-back is three-valued: a value or
+  "absent" only from a *successful* `localStorage.getItem`, and "unknown" whenever the store is
+  missing or throws. "Unknown" must never be read as "absent" — that is what would let a failed
+  removal drop its tombstone and the value reappear the moment storage came back.
 - **`memoryStorage` needs no override layer** — it is the whole store, so the invariant above holds
   trivially, in both `durable: true` and `durable: false` modes.
 
@@ -365,9 +380,20 @@ Legacy `loom:<secret>` entries exist in real browsers (Paw's included) and must 
   secret?, … }` or `{ kind: "legacy", secret, token }`. Every consumer handles both, and a consumer
   that needs a usable identity (`targets()`, the writer path) skips entries that have none.
 - Migration is **lazy and non-destructive**. Two triggers:
-  1. a `/w/<secret>` session load, which learns the id anyway;
+  1. a `/w/<secret>` session load, which learns the id anyway. It runs **before** the session
+     resolves an identity, because for a browser that joined before this work the legacy key *is*
+     the identity: without it, a bookmarked link comes back as a stranger and the name prompt asks
+     for a name that browser already has.
   2. the main page, which resolves legacy entries with the **public**
      `GET /api/weaves/:secret/lookup` to build My Weaves.
+- **The id entry is authoritative when both exist.** Duplicates are a supported state (the
+  non-durable path below leaves one on purpose), so the merge is a rule rather than an overwrite: an
+  id entry with a usable identity **keeps** it; an id entry marked `identity: "invalid"` **never**
+  takes the legacy identity; an id entry with neither **adopts** it; and a missing `secret` is
+  carried over in every case. The middle rule needs its reason stated: invalidation deletes the dead
+  token without recording it, so nothing can tell whether the legacy token *is* that token, and
+  adopting it would send the session back into the `401` it just survived. A blind merge would also
+  let a leftover legacy key undo a rejoin.
 - **The legacy key is removed only when the id-keyed write returns `"durable"`.** On `"memory"` the
   legacy key stays exactly as it is — it is still the durable copy — and the in-memory entry is used
   as-is for the life of the page. Removing a durable key in favour of a copy that exists only in
@@ -568,6 +594,11 @@ identity that has been invalidated (§2.6). The fork is on what the entry still 
 - **No credential at all, and it is the Lobby id** → the same Join-the-Lobby form as `/` (§4.1),
   because joining needs no secret. On success, load **in place** — this is already the same JS
   context, so the credential written by the join is the one the view uses, durable or not.
+
+  This holds for `/weave/<lobbyId>` as much as for `/lobby`. A direct link carries no discovery of
+  its own, so the page cannot know the id is the Lobby's until it asks: it resolves the public
+  `GET /api/lobby` **on this branch only** — a page that loaded fine never makes the call — and
+  compares. One code path, two ways in.
 - **No credential at all, any other Weave** → a short explanation: this browser holds no key for
   that Weave, and the two ways in are the `/w/<secret>` link its keeper can send, or a Lobby request
   that ends in an invitation. Plus a link to `/`. Deliberately no "paste a secret" field — see
@@ -643,6 +674,12 @@ Per Paw's scale note, this has to survive hundreds of rows:
   flight, and a failed row keeps its cached title with a quiet "could not refresh" marker. Nothing
   fans out 300 `getWeave` calls on page load. (This is the same pressure as the cursor-less
   `listRequests` row in KNOWN-ISSUES; it is handled here by not needing the server.)
+- A row is refreshed with **the credential the session would have picked for it** (§2.3): the token
+  when the identity is usable, the stored secret when it is not, and no request at all when the
+  entry holds neither. The list deliberately contains rows for Weaves this browser has read but not
+  joined, and rows whose identity has been invalidated, so assuming a token would fail precisely on
+  the rows that most need their title. A `401`/`403` from a token read invalidates the identity
+  exactly as §2.6 says — the secret survives — and the refresh then tries once more with it.
 - Sorted by `lastOpenedAt` descending, ties by title. A filter box appears once there are more than
   ~8 rows. Rows past ~25 are behind "Show more" — cheap now, and the shape the layout overhaul can
   replace wholesale.
@@ -753,6 +790,11 @@ panel that is the only time the secret is displayed:
 - the storage entry is written **before** the panel renders, with `token`, `participantId`,
   `secret`, `title` — so the link survives a closed tab and reappears as **Copy link** on the My
   Weaves row (§4.2). Losing the secret when the panel is dismissed would be the obvious bug here.
+- **One write, and the panel branches on that write's verdict.** Splitting it — the identity first,
+  the secret after — would let the small write persist while the large one failed, which is exactly
+  what happens near a quota limit, and the panel would then relax on the strength of a verdict that
+  never covered the secret. The secret is the part that cannot be recovered, so it is the part the
+  verdict has to be about.
 
 **When that write was not durable** (§2.4 returns `"memory"`), this panel is the recovery panel and
 it hardens rather than softens:
