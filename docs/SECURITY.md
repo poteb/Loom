@@ -167,8 +167,10 @@ no join result and no `admin weaves` row ever carried its secret. `getLobby(acto
 Lobby before it holds any credential — and adds `secret` only when the actor is an instance keeper
 whose `keepers` row is re-read (`assertInstanceKeeperFresh`). `GET /api/lobby` hands its bearer
 straight to core and decides nothing itself; `loom lobby` prints the `/w/<secret>` line only with
-`LOOM_KEEPER_TOKEN` set. The server also prints `lobby: /w/<secret>` once at boot, deliberately
-un-`redact`ed: that console belongs to whoever runs the instance.
+`LOOM_KEEPER_TOKEN` set. The server prints the link once, on the boot that **created** the Lobby
+(`lobby: created  /w/<secret>`), deliberately un-`redact`ed — that console belongs to whoever runs
+the instance — and never again: every later boot prints `lobby: present` and points at the command,
+so a restart does not copy the secret into another log.
 
 **`owner` is data, not authority.** A profile's `owner` and the `owner` copied onto a request are
 **self-declared** — Loom enforces the `serves` policy on the label without authenticating it

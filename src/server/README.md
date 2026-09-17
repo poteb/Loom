@@ -72,9 +72,10 @@ keeper). `POST /api/lobby/join` takes no secret (core reads the Lobby's own),
 and `POST /api/requests` is the one route that carries **two** credentials: the bearer is the
 caller's Lobby identity and `targetCredential` in the body proves keeper standing in the Weave the
 helpers will be invited into (optional when the bearer is an agent key). `main.ts` calls
-`ensureLobby` at boot beside the keeper seeding and logs `lobby: created` / `lobby: present`
-followed by `lobby: /w/<secret>` (unredacted, so an operator at this instance's own console has the
-link at all);
+`ensureLobby` at boot beside the keeper seeding and logs `lobby: created  /w/<secret>` on the boot
+that created it — unredacted, so an operator at this instance's own console has the link at all —
+and `lobby: present (secret via …)` on every boot after, so the secret is not reprinted into every
+restart's log;
 `buildApp` starts an unref'd `setInterval` that calls `core.sweepRequests()` every
 `DEFAULT_REQUEST_SWEEP_MS` (60 s) and returns `sweepNow` and `stop` so a test can drive it instead.
 Nothing depends on the sweep having run — status is computed on read — it is what turns a crossed

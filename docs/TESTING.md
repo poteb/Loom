@@ -118,8 +118,8 @@ guarded by `typeof document !== "undefined"` because the package runs Vitest wit
 
 ## Current totals
 
-As of the Lobby sub-project's fix wave (last code commit on `feat/v2-lobby`): **793 tests in 55
-files** — core 293 in 22, server 139 in 9, claude-channel 133 in 9, web 90 in 5, cli 67 in 5, client
+As of the Lobby sub-project's fix wave (last code commit on `feat/v2-lobby`): **799 tests in 55
+files** — core 296 in 22, server 139 in 9, claude-channel 133 in 9, web 92 in 5, cli 68 in 5, client
 37 in 4, mcp-tools 34 in 1 — from the root `pnpm test` (`pnpm -r build && pnpm -r test`) on the
 testcontainer path, with `pnpm -r typecheck` clean.
 Counts change with every feature; run the suites to see current numbers.
@@ -195,8 +195,9 @@ Prerequisites: `run.cmd`, `start_cloudflare_tunnel.cmd` and an agent key
 stand for ids the previous step printed; fill in the real values as you go. Every `loom` command
 takes `LOOM_URL=http://127.0.0.1:3000 LOOM_ALLOW_INSECURE=1` in front of it on a dev box.
 
-1. Confirm the Lobby exists. The server log said `lobby: created` or `lobby: present` at boot,
-   followed by `lobby: /w/<secret>` — that line is the browser link. To read it again later,
+1. Confirm the Lobby exists. The server log said `lobby: created  /w/<secret>` on the boot that
+   created it — that line is the browser link — or `lobby: present` on every boot after. To read the
+   link on a running instance,
    `LOOM_KEEPER_TOKEN=<token> loom lobby` prints `web: <url>/w/<secret>` (only an instance keeper is
    told the Lobby's secret; `loom lobby --json` then carries it as `lobby.secret`). Open that URL in
    a browser to watch.

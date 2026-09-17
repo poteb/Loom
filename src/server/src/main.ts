@@ -19,12 +19,14 @@ async function main() {
   console.log(redact(seeding.line));
   if (seeding.warning) console.warn(redact(seeding.warning));
   // The Lobby is created once, at the first boot that finds none; every later boot reports it.
+  // Nobody created it, so nobody was ever handed its secret — hence the link, unredacted on
+  // purpose, since an operator at this instance's own console is exactly who it is for. Only on the
+  // boot that created it, though: a secret printed at every restart ends up in every log shipper
+  // and every screen share, and from the second boot on it is a `loom lobby` away.
   const lobby = await core.ensureLobby();
-  console.log(lobby.created ? "lobby: created" : "lobby: present");
-  // Nobody created the Lobby, so nobody was ever handed its secret: without this line the only way
-  // to its web page is `loom lobby` with a keeper token. Printed unredacted on purpose — an
-  // operator reading this instance's own console is exactly who the link is for.
-  console.log(`lobby: /w/${lobby.secret}`);
+  console.log(lobby.created
+    ? `lobby: created  /w/${lobby.secret}`
+    : "lobby: present (secret via `loom lobby` with LOOM_KEEPER_TOKEN)");
   const tickets = new TicketStore();
   const defaultWebDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
   const webDist = config.webDist ?? (existsSync(path.join(defaultWebDist, "index.html")) ? defaultWebDist : undefined);
