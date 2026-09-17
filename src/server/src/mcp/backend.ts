@@ -57,9 +57,9 @@ export class CoreToolBackend implements LoomToolBackend {
     const targetActor = targetCredential ? await this.actor(targetCredential) : undefined;
     return this.core.openRequest(await this.actor(c), targetActor, { ...rest, url: rest.url ?? null });
   }
-  async listRequests(c: string, opts: { status?: string }) {
+  async listRequests(c: string, opts: { status?: string; limit?: number }) {
     // Passed through as the string it is: which words name a status is core's rule.
-    return this.core.listRequests(await this.actor(c), { status: opts.status as RequestStatus | undefined });
+    return this.core.listRequests(await this.actor(c), { status: opts.status as RequestStatus | undefined, limit: opts.limit });
   }
   async getRequest(c: string, requestId: string) { return this.core.getRequest(await this.actor(c), requestId); }
   async offer(c: string, requestId: string, input: OfferInput) { return this.core.offer(await this.actor(c), requestId, input); }

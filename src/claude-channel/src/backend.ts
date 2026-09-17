@@ -177,7 +177,7 @@ export class ClientToolBackend implements LoomToolBackend {
     // rule, checked there, so it is handed on as it came.
     return this.as(c).openRequest({ ...input, requirements: input.requirements as Requirements, url: input.url ?? null });
   }
-  listRequests(c: string, opts: { status?: string }) { return this.as(c).listRequests(opts.status as RequestStatus | undefined); }
+  listRequests(c: string, opts: { status?: string; limit?: number }) { return this.as(c).listRequests(opts.status as RequestStatus | undefined, { limit: opts.limit }); }
   getRequest(c: string, requestId: string) { return this.as(c).getRequest(requestId); }
   offer(c: string, requestId: string, input: OfferInput) { return this.as(c).offer(requestId, input); }
   acceptRequest(c: string, requestId: string, participantIds: string[]) { return this.as(c).acceptRequest(requestId, participantIds); }

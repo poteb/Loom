@@ -65,7 +65,7 @@ export type LoomToolBackend = {
   setCapabilities(credential: string, profile: unknown): Promise<unknown>;                               // Participant shape
   findAgents(credential: string, filter: Record<string, unknown>): Promise<unknown[]>;                   // [{ participant, capabilities }]
   openRequest(credential: string, input: OpenRequestInput): Promise<unknown>;                            // Request shape
-  listRequests(credential: string, opts: { status?: string }): Promise<unknown[]>;
+  listRequests(credential: string, opts: { status?: string; limit?: number }): Promise<unknown[]>;
   getRequest(credential: string, requestId: string): Promise<unknown>;
   offer(credential: string, requestId: string, input: OfferInput): Promise<unknown>;
   acceptRequest(credential: string, requestId: string, participantIds: string[]): Promise<unknown>;      // { request, invitationIds }

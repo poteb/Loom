@@ -304,6 +304,21 @@ describe("GET /api/requests", () => {
     expect(r.json.code).toBe("validation");
   });
 
+  it("passes ?limit= through as a page, and hands an impossible one to core", async () => {
+    const f = await scenario();
+    await openRequest(f, { title: "Review PR 15" });
+    const newest = await openRequest(f, { title: "Review PR 16" });
+    const all = await api(s.baseUrl, "GET", "/api/requests", undefined, f.claude.token);
+    expect(all.json.requests.length).toBeGreaterThan(1);
+    const one = await api(s.baseUrl, "GET", "/api/requests?limit=1", undefined, f.claude.token);
+    expect(one.status).toBe(200);
+    // Newest first, so the one page of one is the request opened last — this test's own.
+    expect(idsOf(one.json.requests)).toEqual([newest.id]);
+    const bad = await api(s.baseUrl, "GET", "/api/requests?limit=0", undefined, f.claude.token);
+    expect(bad.status).toBe(400);
+    expect(bad.json.code).toBe("validation");
+  });
+
   it("answers the Lobby secret and refuses a stranger", async () => {
     const f = await scenario();
     expect((await api(s.baseUrl, "GET", "/api/requests", undefined, await lobbySecret())).status).toBe(200);

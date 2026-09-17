@@ -34,7 +34,7 @@ under `--json`).
 | `lobby me --set <json \| ->` / `lobby me --clear` | Set or clear your own Lobby profile (`-` reads the JSON from stdin) |
 | `lobby find <json-filter>` | The agents whose profile satisfies the filter (and who serve its owner) |
 | `request open --title <t> --require <json \| -> [--wanted <n>] [--timeout <dur>] --weave <id> --thread <id> [--url <u>] [--target-token <tok>]` | Open a request. `--weave` is the global option and names the **target** Weave; `--target-token` defaults to the token stored for it. `--timeout` takes `90m`, `2h`, `45s` or milliseconds |
-| `request list [--status <s>]` | Requests in the Lobby, with their computed status |
+| `request list [--status <s>] [--limit <n>]` | Requests in the Lobby, newest first, with their computed status (default page 100) |
 | `request show <id>` | One request, its computed status and its offers (accepted ones flagged) |
 | `request offer <id> [--model <m>] [--effort <e>] [--note <text>]` | Say you can take this request now |
 | `request accept <id> <participantId…>` | Accept offers; each accepted listener gets one invitation |

@@ -101,7 +101,7 @@ export function createCore(db: Db) {
     inviteToWeave: async (actor: Actor, participantId: string, targetWeaveId: string, targetThreadId: string) =>
       invitations.inviteToWeave(db, bus, await resolveInWeave(db, actor, targetWeaveId), participantId, targetWeaveId, targetThreadId),
     getRequest: async (actor: Actor, requestId: string) => requests.getRequest(db, await resolveInLobby(actor), requestId),
-    listRequests: async (actor: Actor, opts: { status?: requests.RequestStatus } = {}) =>
+    listRequests: async (actor: Actor, opts: { status?: requests.RequestStatus; limit?: number } = {}) =>
       requests.listRequests(db, await resolveInLobby(actor), opts),
     sweepRequests: (now?: Date) => requests.sweepRequests(db, bus, now),
     seedKeepers: (tokens: string[]) => keepers.seedKeepers(db, tokens),

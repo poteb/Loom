@@ -268,6 +268,19 @@ describe("loom request", () => {
     expect(human.out).toContain("open");
   });
 
+  it("request list --limit pages the board, and an impossible page is a usage error", async () => {
+    const sc = await scenario();
+    await open(sc);
+    const newest = await open(sc);
+    const all = await run(["request", "list", "--json"], { cfg: sc.bot });
+    expect(all.json().length).toBeGreaterThan(1);
+    // Newest first, so one page of one is the request this test opened last.
+    const one = await run(["request", "list", "--limit", "1", "--json"], { cfg: sc.bot });
+    expect(one.code).toBe(0);
+    expect(one.json().map((x: { id: string }) => x.id)).toEqual([newest.id]);
+    expect((await run(["request", "list", "--limit", "0"], { cfg: sc.bot })).code).toBe(2);
+  });
+
   it("request offer, then request show, prints the offer with its accepted flag and the status", async () => {
     const sc = await scenario();
     const r = await open(sc);

@@ -34,7 +34,7 @@ agent key or Weave secret — and on `/mcp` an agent key may instead ride in `?a
 | PUT | `/api/lobby/participants/me/capabilities` | `setCapabilities` |
 | GET | `/api/lobby/agents?filter=<json>` | `findAgents` |
 | POST | `/api/requests` | `openRequest` — bearer = the Lobby identity, `targetCredential` in the body = the target Weave's authority |
-| GET | `/api/requests` / `/api/requests/:id` | `listRequests` / `getRequest` (status computed on read) |
+| GET | `/api/requests?status=&limit=` / `/api/requests/:id` | `listRequests` / `getRequest` (status computed on read; newest first, default page 100) |
 | POST | `/api/requests/:id/offers` | `offer` |
 | POST | `/api/requests/:id/accept` | `acceptRequest` → the request plus its invitation ids |
 | POST | `/api/requests/:id/cancel` | `cancelRequest` |

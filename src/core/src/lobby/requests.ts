@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, lte, or, sql } from "drizzle-orm";
 import type { Db, Queryable, Tx } from "../db/index.js";
 import { events, keepers, participants, requestOffers, requests, threads, weaves } from "../db/schema.js";
 import type { EventBus } from "../bus.js";
@@ -7,6 +7,7 @@ import { isUuid, newId } from "../ids.js";
 import { withWeaveLock, withWeaveLocks, type NewEvent } from "../events.js";
 import { actorId, assertCanRead, assertIsKeeperOf, assertParticipantOf, assertStillKeeperOf } from "../actors.js";
 import { getThread, validateThreadUrl } from "../threads.js";
+import { validatePage } from "../paging.js";
 import { getLobby } from "./lobby.js";
 import { invitationRowAndEvent } from "./invitations.js";
 import { eligible as isEligible, validateRequirements, type Profile, type Requirements } from "./matching.js";
@@ -19,6 +20,8 @@ const MIN_TIMEOUT_MS = 60_000, MAX_TIMEOUT_MS = 86_400_000, DEFAULT_TIMEOUT_MS =
 /** How many requests one requester may have open at once, so a runaway agent cannot flood the Lobby. */
 const MAX_OPEN_REQUESTS = 5;
 const MAX_NOTE = 1000;
+/** Page size when the caller names none. The maximum it may name is core's MAX_PAGE_LIMIT. */
+const DEFAULT_REQUESTS_PAGE = 100;
 
 export type RequestStatus = "open" | "filled" | "expired" | "cancelled";
 /** Why a request closed. The reason and the stored status are the same word. */
@@ -107,8 +110,14 @@ async function hydrate(db: Queryable, lobbyId: string, rows: RequestRow[], now: 
   if (rows.length === 0) return [];
   const titles = new Map((await db.select({ id: weaves.id, title: weaves.title }).from(weaves)
     .where(inArray(weaves.id, rows.map((r) => r.targetWeaveId)))).map((w) => [w.id, w.title]));
-  const offers = await db.select().from(requestOffers)
-    .where(inArray(requestOffers.requestId, rows.map((r) => r.id))).orderBy(asc(requestOffers.createdAt));
+  // Indexed by request once rather than re-scanned per row: a page of requests each carrying a
+  // handful of offers turned the join into rows × offers comparisons.
+  const offersByRequest = new Map<string, PublicOffer[]>();
+  for (const o of await db.select().from(requestOffers)
+    .where(inArray(requestOffers.requestId, rows.map((r) => r.id))).orderBy(asc(requestOffers.createdAt))) {
+    const list = offersByRequest.get(o.requestId);
+    if (list) list.push(toPublicOffer(o)); else offersByRequest.set(o.requestId, [toPublicOffer(o)]);
+  }
   const eligible = await eligibleByThread(db, lobbyId, rows.map((r) => r.threadId));
   return rows.map((r) => ({
     id: r.id, threadId: r.threadId, requesterId: r.requesterId, owner: r.owner,
@@ -118,7 +127,7 @@ async function hydrate(db: Queryable, lobbyId: string, rows: RequestRow[], now: 
     expiresAt: r.expiresAt.toISOString(), closedAt: r.closedAt ? r.closedAt.toISOString() : null,
     lastEventSeq: r.lastEventSeq, createdAt: r.createdAt.toISOString(),
     eligible: eligible.get(r.threadId) ?? [],
-    offers: offers.filter((o) => o.requestId === r.id).map(toPublicOffer),
+    offers: offersByRequest.get(r.id) ?? [],
   }));
 }
 
@@ -414,21 +423,32 @@ export async function getRequest(db: Db, actor: Actor, requestId: string, now = 
   return onePublic(db, lobbyId, await requestRow(db, requestId), now);
 }
 
+/**
+ * The computed status as a predicate the database can answer. `computedStatus` is the same rule in
+ * TypeScript — a row still stored `open` past its deadline reads `expired` — expressed here so the
+ * filter costs one indexed scan instead of every request row the Lobby has ever held.
+ */
+function statusCondition(status: RequestStatus, now: Date) {
+  if (status === "open") return and(eq(requests.status, "open"), gt(requests.expiresAt, now));
+  if (status === "expired") {
+    return or(eq(requests.status, "expired"), and(eq(requests.status, "open"), lte(requests.expiresAt, now)));
+  }
+  return eq(requests.status, status);          // filled and cancelled are stored exactly as read
+}
+
 export async function listRequests(
-  db: Db, actor: Actor, opts: { status?: RequestStatus } = {}, now = new Date(),
+  db: Db, actor: Actor, opts: { status?: RequestStatus; limit?: number } = {}, now = new Date(),
 ): Promise<PublicRequest[]> {
   const { weaveId: lobbyId } = await getLobby(db);
   assertCanRead(actor, lobbyId);
   if (opts.status !== undefined && !["open", "filled", "expired", "cancelled"].includes(opts.status)) {
     throw errors.validation("status must be open, filled, expired or cancelled");
   }
-  const rows = await db.select().from(requests).orderBy(desc(requests.createdAt));
-  // Filtered in memory because the status a caller asks for is the computed one: an unswept row
-  // still marked `open` past its deadline belongs in `expired`, never in `open`.
-  const wanted = opts.status
-    ? rows.filter((r) => computedStatus(r, now) === opts.status)
-    : rows;
-  return hydrate(db, lobbyId, wanted, now);
+  validatePage({ limit: opts.limit });
+  const rows = await db.select().from(requests)
+    .where(opts.status ? statusCondition(opts.status, now) : undefined)
+    .orderBy(desc(requests.createdAt)).limit(opts.limit ?? DEFAULT_REQUESTS_PAGE);
+  return hydrate(db, lobbyId, rows, now);
 }
 
 /**

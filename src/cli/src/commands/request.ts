@@ -101,13 +101,15 @@ export function registerRequestCommands(program: Command, ctx: () => CliContext,
     });
 
   request.command("list")
-    .description("Requests in the Lobby")
-    // Passed through as typed: which words name a status is core's rule.
+    .description("Requests in the Lobby, newest first")
+    // Passed through as typed: which words name a status, and which numbers make a page, are core's
+    // rules. Only the shape is read here, so a typo is a usage error rather than a round trip.
     .option("--status <status>", "open | filled | expired | cancelled")
-    .action(async (o: { status?: string }) => {
+    .option("--limit <n>", "Max requests to return (default 100)", positiveInt)
+    .action(async (o: { status?: string; limit?: number }) => {
       const c = ctx();
       const { client } = await lobbyContext(c);
-      const requests = await client.listRequests(o.status as RequestStatus | undefined);
+      const requests = await client.listRequests(o.status as RequestStatus | undefined, { limit: o.limit });
       emit(c, requests, requests.map(requestLine).join("\n") || "(no requests)");
     });
 

@@ -232,9 +232,12 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
   }, ({ credential, requestId }) => toToolResult(Promise.resolve().then(() => backend.cancelRequest(resolve(credential), requestId))));
 
   server.registerTool("list_requests", {
-    description: "List the Lobby's requests, newest first, with their offers. status filters on the computed status — open, filled, expired or cancelled — so a request past its deadline is never listed as open, whether or not the server has swept it yet. Omit status for all of them.",
-    inputSchema: { credential: cred(hint), status: z.string().optional().describe("open, filled, expired or cancelled") },
-  }, ({ credential, status }) => toToolResult(Promise.resolve().then(() => backend.listRequests(resolve(credential), { status }))));
+    description: "List the Lobby's requests, newest first, with their offers. status filters on the computed status — open, filled, expired or cancelled — so a request past its deadline is never listed as open, whether or not the server has swept it yet. Omit status for all of them. `limit` is an integer from 1 to 1000 (default 100).",
+    inputSchema: {
+      credential: cred(hint), status: z.string().optional().describe("open, filled, expired or cancelled"),
+      limit: z.number().int().optional(),
+    },
+  }, ({ credential, status, limit }) => toToolResult(Promise.resolve().then(() => backend.listRequests(resolve(credential), { status, limit }))));
 
   server.registerTool("get_request", {
     description: "One request with its offers and computed status. Every request event carries its requestId, so a session that never saw the opening event can still act on a later one by reading it here.",

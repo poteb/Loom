@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import type { Core, RequestStatus } from "@loom/core";
+import { errors } from "@loom/core";
 import { requireActor, type Env } from "../auth.js";
 import { body } from "../validate.js";
 
@@ -27,10 +28,13 @@ export function requestRoutes(core: Core) {
 
   r.get("/", async (c) => {
     const actor = await requireActor(c, core);
-    // Passed through as the string it is: which words name a status is core's rule, and the status
-    // it filters on is the computed one, so a crossed but unswept request is never `open`.
-    const status = c.req.query("status") as RequestStatus | undefined;
-    return c.json({ requests: await core.listRequests(actor, { status }) });
+    // Types only: the status is passed through as the string it is (which words name one is core's
+    // rule, and the status it filters on is the computed one, so a crossed but unswept request is
+    // never `open`), and whether the number is an acceptable page is core's rule too.
+    const q = z.object({ status: z.string().optional(), limit: z.coerce.number().optional() }).safeParse(c.req.query());
+    if (!q.success) throw errors.validation("Invalid query parameters");
+    const status = q.data.status as RequestStatus | undefined;
+    return c.json({ requests: await core.listRequests(actor, { status, limit: q.data.limit }) });
   });
 
   r.get("/:id", async (c) => {

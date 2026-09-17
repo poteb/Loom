@@ -537,4 +537,25 @@ describe("reading requests", () => {
     expect(got.offers.map((o) => o.participantId)).toEqual([f.pawbot.id, f.shared.id]);
     expect(got.targetWeaveTitle).toBe(TARGET_TITLE);
   });
+
+  // The status a caller asks for is the computed one, and the filter now runs in SQL: a row still
+  // stored `open` past its deadline has to be selected by the `expired` query and left out of the
+  // `open` one, exactly as the in-memory filter used to decide.
+  it("lists a crossed but unswept request as expired, never as open", async () => {
+    const f = await setup();
+    const req = await openRequest(db, bus, f.claude.actor, f.targetKeeper, inputFor(f, { timeoutMs: 60_000 }));
+    const at = new Date(new Date(req.expiresAt).getTime() + 1000);
+    expect((await rowOf(req.id)).status).toBe("open");
+    expect((await listRequests(db, f.claude.actor, { status: "expired" }, at)).map((r) => r.id)).toEqual([req.id]);
+    expect(await listRequests(db, f.claude.actor, { status: "open" }, at)).toEqual([]);
+  });
+
+  it("takes a limit, newest first, and refuses one outside the page bounds", async () => {
+    const f = await setup();
+    const first = await openRequest(db, bus, f.claude.actor, f.targetKeeper, inputFor(f));
+    const second = await openRequest(db, bus, f.claude.actor, f.targetKeeper, inputFor(f, { title: "Review PR 15" }));
+    expect((await listRequests(db, f.claude.actor, {})).map((r) => r.id)).toEqual([second.id, first.id]);
+    expect((await listRequests(db, f.claude.actor, { limit: 1 })).map((r) => r.id)).toEqual([second.id]);
+    await expect(listRequests(db, f.claude.actor, { limit: 0 })).rejects.toMatchObject({ code: "validation" });
+  });
 });

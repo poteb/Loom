@@ -129,9 +129,14 @@ export class LoomClient {
   openRequest(input: OpenRequestInput): Promise<LoomRequest> {
     return this.call("POST", "/api/requests", input);
   }
-  /** Open requests read `expired` once their deadline passes, whether or not the sweeper has been. */
-  async listRequests(status?: RequestStatus): Promise<LoomRequest[]> {
-    const r = await this.call<{ requests: LoomRequest[] }>("GET", `/api/requests${status ? `?status=${encodeURIComponent(status)}` : ""}`);
+  /** The Lobby's requests, newest first. Open ones read `expired` once their deadline passes,
+   *  whether or not the sweeper has been. `limit` is 1..1000 (the server's default when absent). */
+  async listRequests(status?: RequestStatus, opts: { limit?: number } = {}): Promise<LoomRequest[]> {
+    const q = new URLSearchParams();
+    if (status) q.set("status", status);
+    if (opts.limit !== undefined) q.set("limit", String(opts.limit));
+    const qs = q.toString();
+    const r = await this.call<{ requests: LoomRequest[] }>("GET", `/api/requests${qs ? `?${qs}` : ""}`);
     return r.requests;
   }
   getRequest(requestId: string): Promise<LoomRequest> {
