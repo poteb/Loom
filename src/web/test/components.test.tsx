@@ -199,6 +199,12 @@ describe("RequestsPanel", () => {
     expect(screen.queryByText(/left$/)).toBeNull();
   });
 
+  it("agrees with the countdown at the very instant of the deadline", () => {
+    render(<RequestsPanel state={lobbyState()} session={session()} onError={() => {}} now={Date.parse("2026-09-16T14:00:00.000Z")} />);
+    expect(screen.getByText("Closed (1)")).toBeTruthy();
+    expect(screen.queryByText(/left$/)).toBeNull();
+  });
+
   it("greys every Accept once `wanted` acceptances are in", () => {
     const offers = [anOffer("p2", { accepted: true }), anOffer("p3")];
     const others = [me, helper, { ...helper, id: "p3", name: "Other" }];

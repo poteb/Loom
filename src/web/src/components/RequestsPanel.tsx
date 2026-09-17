@@ -38,17 +38,19 @@ const spec = (o: Offer): string => [o.model, o.effort].filter(Boolean).join("/")
 export function RequestsPanel({ state, session, onError, now }: {
   state: SessionState; session: Session; onError: (e: unknown) => void; now?: number;
 }) {
+  // The panel belongs to the Lobby's page alone; every other Weave has no requests to show — and
+  // renders nothing, so the countdown must not tick there either.
+  const onLobby = !!state.lobby && state.lobby.weaveId === state.weave?.id;
   const [tick, setTick] = useState(() => Date.now());
   useEffect(() => {
-    if (now !== undefined) return;
+    if (now !== undefined || !onLobby) return;
     const timer = setInterval(() => setTick(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, [now]);
+  }, [now, onLobby]);
   const [opening, setOpening] = useState(false);
   const nowMs = now ?? tick;
 
-  // The panel belongs to the Lobby's page alone; every other Weave has no requests to show.
-  if (!state.lobby || state.lobby.weaveId !== state.weave?.id) return null;
+  if (!onLobby) return null;
 
   const rows = Object.values(state.requests)
     .map((r) => ({ r, status: displayStatus(r, nowMs) }))

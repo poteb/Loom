@@ -28,7 +28,9 @@ export const acceptedIds = (r: LoomRequest): string[] => r.offers.filter((o) => 
  */
 export function displayStatus(r: LoomRequest, nowMs: number): RequestStatus {
   if (isClosed(r.status)) return r.status;
-  return nowMs > Date.parse(r.expiresAt) ? "expired" : "open";
+  // The deadline itself is past: core counts a request open only while `expiresAt > now`, and the
+  // panel's countdown says "expired" at exactly zero, so all three agree on the same instant.
+  return nowMs >= Date.parse(r.expiresAt) ? "expired" : "open";
 }
 
 /**
@@ -98,9 +100,9 @@ export function applyEvent(reqs: Requests, e: LoomEvent): Requests {
       break;
     }
     case "request.closed": {
-      // The reason and the stored status are the same word (core), so it is the status this closes to.
-      const reason = str(e.payload.reason);
-      next.status = (reason ?? "cancelled") as RequestStatus;
+      // The reason and the stored status are the same word (core), so it is the status this closes
+      // to — but only a word that names a terminal state; anything else still closes the row.
+      next.status = closedStatus(e.payload.reason);
       next.closedAt = e.at;
       const accepted = list(e.payload.accepted);
       next.offers = held.offers.map((o) => (accepted.includes(o.participantId) ? { ...o, accepted: true } : o));
@@ -109,6 +111,10 @@ export function applyEvent(reqs: Requests, e: LoomEvent): Requests {
   }
   return { ...reqs, [id]: next };
 }
+
+const CLOSED_STATUSES: RequestStatus[] = ["filled", "expired", "cancelled"];
+const closedStatus = (v: unknown): RequestStatus =>
+  CLOSED_STATUSES.find((s) => s === v) ?? "cancelled";
 
 const str = (v: unknown): string | null => (typeof v === "string" && v.length > 0 ? v : null);
 const list = (v: unknown): string[] => (Array.isArray(v) ? v.map((x) => String(x)) : []);

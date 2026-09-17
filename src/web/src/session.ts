@@ -178,8 +178,11 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
     set({ events, ...deriveInvites(events, state.me?.participant.id, seenUpTo) });
     // thread.url_changed carries the new url in the event, but the url the UI renders lives on the
     // Thread record, so it needs the same refresh as any other thread change.
+    // participant.capabilities_changed is here for the same reason: a Lobby profile lives on the
+    // Participant record, so the panel and the Offer form only see it once the metadata is re-read.
     if (e.type === "thread.created" || e.type === "thread.closed" || e.type === "thread.url_changed"
-      || e.type === "participant.joined" || e.type === "participant.role_changed") {
+      || e.type === "participant.joined" || e.type === "participant.role_changed"
+      || e.type === "participant.capabilities_changed") {
       scheduleRefresh();
     } else if (e.type === "weave.guidelines_changed") {
       // An older change can still be replayed after a newer snapshot was accepted (history, then

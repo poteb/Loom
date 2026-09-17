@@ -834,6 +834,20 @@ describe("session requests", () => {
     } finally { session.dispose(); }
   });
 
+  it("a profile declared after load lands on the participant it belongs to", async () => {
+    const f = await lobbyFixture();
+    const session = await makeSession(f.secret, f.storage);
+    try {
+      await waitFor(() => session.getState().connection === "open");
+      const late = await anon.joinLobby({ name: `Late-${++fixtureN}`, kind: "agent" });
+      // The join's own refresh has landed before the profile exists: only the capabilities event
+      // itself can bring it in, which is what the panel and the Offer form read.
+      await waitFor(() => session.getState().participants.some((p) => p.id === late.participant.id));
+      await anon.withToken(late.token).setCapabilities({ models: [MODEL], serves: "anyone", owner: `late-${fixtureN}` });
+      await waitFor(() => session.getState().participants.find((p) => p.id === late.participant.id)?.capabilities != null);
+    } finally { session.dispose(); }
+  });
+
   it("a Weave that is not the Lobby carries no requests", async () => {
     const f = await lobbyFixture();
     await f.open();

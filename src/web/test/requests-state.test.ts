@@ -91,6 +91,15 @@ describe("requests-state", () => {
     expect(r.r1!.version).toBe(5);
   });
 
+  it("reads a request as expired at the very instant of its deadline, as the countdown does", () => {
+    expect(displayStatus(two().r1!, Date.parse(EXPIRES))).toBe("expired");
+  });
+
+  it("closes to cancelled when the reason names no state it knows", () => {
+    const r = applyEvent(two(), ev(20, "request.closed", { requestId: "r1", requesterId: "p1", to: ["p1"], reason: "whatever", accepted: [] }));
+    expect(r.r1!.status).toBe("cancelled");
+  });
+
   it("the sweeper's later closure advances the version like any other mutation", () => {
     const r = applyEvent(two(), ev(20, "request.closed", { requestId: "r1", requesterId: "p1", to: ["p1"], reason: "expired", accepted: [] }));
     expect(r.r1!.version).toBe(20);
