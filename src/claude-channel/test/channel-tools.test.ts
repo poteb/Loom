@@ -78,10 +78,17 @@ function leaveState(weaves: Record<string, JoinedWeave>): { state: ChannelState;
   return { state, removed };
 }
 
-/** A client whose Lobby profile write answers as `answer` says. */
-function capabilitiesClient(answer: () => Promise<unknown>): { client: LoomClient; calls: (unknown)[] } {
+/**
+ * A client whose Lobby profile write answers as `answer` says, and whose Lobby pointer answers as
+ * `lobby` says — the lookup `leave_weave` makes for a stored entry that carries no `isLobby` flag.
+ */
+function capabilitiesClient(answer: () => Promise<unknown>, lobby: () => Promise<{ weaveId: string }> = async () => ({ weaveId: "somewhere-else" })):
+  { client: LoomClient; calls: (unknown)[] } {
   const calls: unknown[] = [];
-  const client = { withToken: () => ({ setCapabilities: (profile: unknown) => { calls.push(profile); return answer(); } }) };
+  const client = {
+    withToken: () => ({ setCapabilities: (profile: unknown) => { calls.push(profile); return answer(); } }),
+    getLobby: () => lobby(),
+  };
   return { client: client as unknown as LoomClient, calls };
 }
 
@@ -125,6 +132,30 @@ describe("leave_weave", () => {
     expect(r.isError).toBeFalsy();
     expect(body).toMatchObject({ weaveId: "L", left: true, profileMayRemain: true });
     expect(removed).toEqual(["L"]);
+  });
+
+  // A credential can reach the Lobby without join_lobby (a secret join), and entries predate the
+  // flag; the leave must not decide from the flag alone that there is no profile to clear.
+  it("recognises the Lobby at leave time for a stored entry that carries no flag", async () => {
+    const { state, removed } = leaveState({ L: joined(1) });
+    const { client, calls } = capabilitiesClient(async () => ({ id: "p1" }), async () => ({ weaveId: "L" }));
+    const { r, body } = await call(state, client, { weaveId: "L" });
+    expect(r.isError).toBeFalsy();
+    expect(calls).toEqual([null]);                 // the profile was cleared first…
+    expect(removed).toEqual(["L"]);                // …and only then was the credential dropped
+    expect(body).toMatchObject({ weaveId: "L", left: true });
+  });
+
+  it("rejects the leave when it cannot tell whether the Weave is the Lobby", async () => {
+    const { state, removed } = leaveState({ L: joined(1) });
+    const { client, calls } = capabilitiesClient(async () => ({ id: "p1" }), async () => { throw new Error("fetch failed"); });
+    let stopped = 0;
+    const { r, body } = await call(state, client, { weaveId: "L" }, () => { stopped++; });
+    expect(r.isError).toBe(true);
+    expect(body.code).toBe("network");
+    expect(calls).toEqual([]);
+    expect(removed).toEqual([]);
+    expect(stopped).toBe(0);
   });
 
   it("leaves an ordinary Weave without touching any profile", async () => {

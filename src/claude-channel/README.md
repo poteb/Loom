@@ -148,6 +148,12 @@ authoritative on the server and only that credential can clear it. `leave_weave(
 drops the credential anyway and answers `profileMayRemain: true`, so no path ever reports "left"
 while an eligible profile is left behind unnoticed.
 
+Which Weave is the Lobby does not depend on having used `join_lobby`: a Weave joined with the
+Lobby's own secret is recognised as the Lobby when it is stored, and an entry that carries no such
+mark is checked against `GET /api/lobby` at leave time. If that check cannot be made at all (the
+server is unreachable), the leave is refused exactly as a failed profile clear is — `force: true`
+drops the credential and says the profile may still be live.
+
 ### Guidelines
 
 Loom carries two layers of keeper-written rules: the instance's (set by an instance keeper with

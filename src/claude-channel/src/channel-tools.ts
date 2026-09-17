@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { LoomClient } from "@loom/client";
+import { LoomClientError, type LoomClient } from "@loom/client";
 import { fail, ok } from "@loom/mcp-tools";
 import type { ChannelState, Prefs } from "./state.js";
 import { redact } from "./log.js";
@@ -66,7 +66,25 @@ export function registerChannelTools(server: McpServer, state: ChannelState, cli
     const w = state.load().weaves[weaveId];
     if (!w) return fail("no_weave", "Not joined to that Weave");
     let profileMayRemain = false;
-    if (w.isLobby) {
+    // An entry without the flag is not proof this is not the Lobby: it may have been joined by
+    // secret, or stored before the flag existed. Ask, and treat a match as the Lobby. Not being able
+    // to ask is the same situation as not being able to clear the profile — the credential a retry
+    // needs is what is about to be dropped — so it is refused the same way.
+    let isLobby = w.isLobby === true;
+    if (!isLobby) {
+      try {
+        isLobby = (await client.getLobby()).weaveId === weaveId;
+      } catch (e) {
+        // `weave_not_found` is an answer rather than a failure: this instance has no Lobby at all,
+        // so this Weave is certainly not it and an ordinary leave proceeds.
+        if (!(e instanceof LoomClientError && e.code === "weave_not_found")) {
+          const why = redact(e instanceof Error ? e.message : String(e));
+          if (!force) return fail("network", `Could not check whether this Weave is the Lobby, so nothing was removed — you are still joined. Retry when the server is reachable, or pass force: true to drop the credential anyway (a Lobby profile, if this is the Lobby, stays live until someone clears it): ${why}`);
+          profileMayRemain = true;
+        }
+      }
+    }
+    if (isLobby) {
       try {
         await client.withToken(w.token).setCapabilities(null);
       } catch (e) {

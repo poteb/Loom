@@ -48,7 +48,7 @@ export class ClientToolBackend implements LoomToolBackend {
     const stored = this.state.load().weaves[weaveId];
     if (stored && who.name !== undefined && sameName(stored.participantName, who.name)) {
       const reused = await this.reuseStored(weaveId, stored);
-      if (reused) return reused;
+      if (reused) { await this.flagIfLobby(weaveId); return reused; }
     }
     const info = await this.as(secret).getWeave(weaveId);
     const general = info.threads.find((t) => t.isGeneral) ?? info.threads[0]!;
@@ -62,7 +62,7 @@ export class ClientToolBackend implements LoomToolBackend {
         const raced = this.state.load().weaves[weaveId];
         if (raced && who.name !== undefined && sameName(raced.participantName, who.name)) {
           const reused = await this.reuseStored(weaveId, raced);
-          if (reused) return reused;
+          if (reused) { await this.flagIfLobby(weaveId); return reused; }
         }
       }
       throw e;
@@ -72,8 +72,21 @@ export class ClientToolBackend implements LoomToolBackend {
       generalThreadId: general.id, wake: "all", lastSeq: 0,
     };
     await this.state.upsertWeave(j.weaveId, joined);
+    await this.flagIfLobby(j.weaveId);
     await this.hooks.onJoined(j.weaveId, joined);
     return j;
+  }
+  /**
+   * Flags a stored Weave as the Lobby when it is the Lobby, whatever way it was joined — by secret,
+   * or by redeeming an invitation into it. `join_lobby` is not the only door, and an identity that
+   * reached the Lobby through another one must still clear its profile before leaving (spec 5).
+   * One cheap public call; if it cannot be made the join stands unflagged, and `leave_weave` asks
+   * again rather than dropping the credential on a guess.
+   */
+  private async flagIfLobby(weaveId: string): Promise<void> {
+    try {
+      if ((await this.client.getLobby()).weaveId === weaveId) await this.state.markLobby(weaveId);
+    } catch { /* not knowable now; leave_weave checks again for an entry without the flag */ }
   }
   /** Validates a stored identity with its own token and re-arms its stream. Returns undefined only
    * when the identity is definitively dead (token rejected, Weave gone, participant removed); a
@@ -137,7 +150,9 @@ export class ClientToolBackend implements LoomToolBackend {
     const stored = this.state.load().weaves[weaveId];
     if (stored && who.name !== undefined && sameName(stored.participantName, who.name)) {
       const reused = await this.reuseStored(weaveId, stored);
-      if (reused) return reused;
+      // The id is already in hand here, so the flag needs no lookup: an entry joined by secret, or
+      // stored before the flag existed, is upgraded on this path rather than staying unrecognised.
+      if (reused) { if (!stored.isLobby) await this.state.markLobby(weaveId); return reused; }
     }
     const j = await this.client.joinLobby(who);
     const joined: JoinedWeave = {
@@ -163,6 +178,7 @@ export class ClientToolBackend implements LoomToolBackend {
       generalThreadId: j.generalThreadId, wake: "all", lastSeq: 0,
     };
     await this.state.upsertWeave(j.weaveId, joined);
+    await this.flagIfLobby(j.weaveId);
     await this.hooks.onJoined(j.weaveId, joined);
     return j;
   }

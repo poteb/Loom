@@ -146,6 +146,18 @@ export class ChannelState {
     });
   }
 
+  /**
+   * Marks a stored Weave as the Lobby. Idempotent, and it touches nothing else — an entry joined by
+   * secret (or stored before the flag existed) keeps its identity, watermark and preferences and
+   * simply gains the flag, which is what `leave_weave` reads to clear the profile first.
+   */
+  markLobby(id: string): Promise<void> {
+    return this.mutate((c) => {
+      const w = c.weaves[id];
+      if (w) w.isLobby = true;
+    });
+  }
+
   removeWeave(id: string): Promise<void> {
     return this.mutate((c) => {
       delete c.weaves[id];

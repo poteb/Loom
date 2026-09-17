@@ -203,6 +203,28 @@ describe("the Lobby over the channel", () => {
     }, SESSION);
   });
 
+  // join_lobby is not the only way in: the Lobby has a secret of its own, and an identity that
+  // reached it that way owes the same two-step on the way out (spec 5).
+  it("recognises a Lobby joined by its secret, so leaving still clears the profile", async () => {
+    const L = await lobbyId();
+    const { secret } = await s!.core.ensureLobby();                 // idempotent; the Lobby's own secret
+    await withChannel(stateDir, async (a) => {
+      const j = json(await a.callTool({ name: "join_weave", arguments: { secret, name: uniq("Sneaky") } }));
+      expect(j.weaveId).toBe(L);
+      expect(readState(stateDir).weaves[L]).toMatchObject({ token: j.token, isLobby: true });
+      await a.callTool({ name: "set_capabilities", arguments: { credential: j.token, profile: { owner: "paw", serves: "anyone" } } });
+      const actor = await s!.core.resolveCredential(j.token);
+      expect((await s!.core.getWeave(actor, L)).participants.find((p) => p.id === j.participant.id)?.capabilities).toMatchObject({ owner: "paw" });
+
+      const left = json(await a.callTool({ name: "leave_weave", arguments: { weaveId: L } }));
+      expect(left).toEqual({ weaveId: L, left: true });
+      // The point of the flag: the profile is gone from the server before the credential is,
+      // so nothing eligible is left behind with nobody to answer for it.
+      expect((await s!.core.getWeave(actor, L)).participants.find((p) => p.id === j.participant.id)?.capabilities).toBeNull();
+      expect(readState(stateDir).weaves[L]).toBeUndefined();
+    });
+  });
+
   it("clears the Lobby profile on the server before it forgets the credential", async () => {
     const L = await lobbyId();
     await withChannel(stateDir, async (a) => {
