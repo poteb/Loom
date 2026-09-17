@@ -268,16 +268,17 @@ describe("loom request", () => {
     expect(human.out).toContain("open");
   });
 
+  // Only that the page is a page: which request is newest is decided across the whole shared Lobby
+  // (and by a wall clock), so the ordering itself is core's test, on rows it stamps itself.
   it("request list --limit pages the board, and an impossible page is a usage error", async () => {
     const sc = await scenario();
     await open(sc);
-    const newest = await open(sc);
+    await open(sc);
     const all = await run(["request", "list", "--json"], { cfg: sc.bot });
     expect(all.json().length).toBeGreaterThan(1);
-    // Newest first, so one page of one is the request this test opened last.
     const one = await run(["request", "list", "--limit", "1", "--json"], { cfg: sc.bot });
     expect(one.code).toBe(0);
-    expect(one.json().map((x: { id: string }) => x.id)).toEqual([newest.id]);
+    expect(one.json()).toHaveLength(1);
     expect((await run(["request", "list", "--limit", "0"], { cfg: sc.bot })).code).toBe(2);
   });
 
@@ -369,17 +370,21 @@ describe("loom read renders the Lobby events", () => {
     expect(read.out).toContain(`* request closed (filled): accepted ${sc.botName}`);
   });
 
+  // The Lobby's General thread is shared by every test in this file, so the read is anchored with
+  // `--since` at the Lobby's last seq as of this test's own join: the page then holds this test's
+  // two profile events and nothing else, whatever the tests before it left behind.
   it("renders a profile change as a system line", async () => {
     const cfg = newCfg();
     const name = uniq("Renderer");
     const joined = (await run(["lobby", "join", "--name", name, "--json"], { cfg })).json();
+    const since = String(joined.weave.lastSeq);
     // The two writes are checked, not assumed: a refused profile would otherwise show up only as a
     // line missing from the read, which reads like a rendering bug and is not one.
     expect((await run(["lobby", "me", "--set", JSON.stringify({ runtime: "node", owner: uniq("own") }), "--json"], { cfg })).code).toBe(0);
-    const set = await run(["read", "--weave", lobbyWeaveId, "--thread", joined.generalThreadId], { cfg });
+    const set = await run(["read", "--weave", lobbyWeaveId, "--thread", joined.generalThreadId, "--since", since], { cfg });
     expect(set.out).toContain(`* profile set by ${name}`);
     expect((await run(["lobby", "me", "--clear", "--json"], { cfg })).code).toBe(0);
-    const cleared = await run(["read", "--weave", lobbyWeaveId, "--thread", joined.generalThreadId], { cfg });
+    const cleared = await run(["read", "--weave", lobbyWeaveId, "--thread", joined.generalThreadId, "--since", since], { cfg });
     expect(cleared.out).toContain(`* profile cleared by ${name}`);
   });
 });

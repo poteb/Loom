@@ -307,13 +307,13 @@ describe("GET /api/requests", () => {
   it("passes ?limit= through as a page, and hands an impossible one to core", async () => {
     const f = await scenario();
     await openRequest(f, { title: "Review PR 15" });
-    const newest = await openRequest(f, { title: "Review PR 16" });
+    await openRequest(f, { title: "Review PR 16" });
     const all = await api(s.baseUrl, "GET", "/api/requests", undefined, f.claude.token);
     expect(all.json.requests.length).toBeGreaterThan(1);
     const one = await api(s.baseUrl, "GET", "/api/requests?limit=1", undefined, f.claude.token);
     expect(one.status).toBe(200);
-    // Newest first, so the one page of one is the request opened last — this test's own.
-    expect(idsOf(one.json.requests)).toEqual([newest.id]);
+    // Only that it is one page: which request is newest is decided across the whole shared Lobby.
+    expect(one.json.requests).toHaveLength(1);
     const bad = await api(s.baseUrl, "GET", "/api/requests?limit=0", undefined, f.claude.token);
     expect(bad.status).toBe(400);
     expect(bad.json.code).toBe("validation");

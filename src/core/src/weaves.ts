@@ -122,7 +122,12 @@ export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { na
   if (who.kind !== "human" && who.kind !== "agent") throw errors.validation("kind must be human or agent");
   const [found] = await db.select().from(weaves).where(eq(weaves.secret, secret));
   if (!found) throw errors.weaveNotFound();
-  const [general] = await db.select().from(threads).where(eq(threads.weaveId, found.id)).orderBy(asc(threads.createdAt)).limit(1);
+  // By the flag, not by age: every General Thread has carried `is_general` since the first
+  // migration, and "the oldest row" is a guess that a Weave full of other Threads — the Lobby, one
+  // per request — gets wrong the moment two `created_at` values are out of order, which no caller
+  // controls (a host clock that steps back is enough). Same rule as `lobbyGeneralThreadId`.
+  const [general] = await db.select().from(threads)
+    .where(and(eq(threads.weaveId, found.id), eq(threads.isGeneral, true))).limit(1);
   if (!general) throw errors.weaveNotFound();
   const agentId = actor?.kind === "agent" ? actor.agent.id : null;
   // The participant this agent already owns here, read raw: the caller needs its token, so

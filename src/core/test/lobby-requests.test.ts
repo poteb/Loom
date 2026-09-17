@@ -554,6 +554,10 @@ describe("reading requests", () => {
     const f = await setup();
     const first = await openRequest(db, bus, f.claude.actor, f.targetKeeper, inputFor(f));
     const second = await openRequest(db, bus, f.claude.actor, f.targetKeeper, inputFor(f, { title: "Review PR 15" }));
+    // Stamped here rather than trusted: `created_at` is whatever the database clock said, and what
+    // is under test is that the page is taken from the newest end of that column, not the clock.
+    await db.update(requestsTable).set({ createdAt: new Date("2026-09-16T10:00:00Z") }).where(eq(requestsTable.id, first.id));
+    await db.update(requestsTable).set({ createdAt: new Date("2026-09-16T11:00:00Z") }).where(eq(requestsTable.id, second.id));
     expect((await listRequests(db, f.claude.actor, {})).map((r) => r.id)).toEqual([second.id, first.id]);
     expect((await listRequests(db, f.claude.actor, { limit: 1 })).map((r) => r.id)).toEqual([second.id]);
     await expect(listRequests(db, f.claude.actor, { limit: 0 })).rejects.toMatchObject({ code: "validation" });
