@@ -952,6 +952,88 @@ describe("session requests", () => {
     } finally { session.dispose(); }
   });
 
+  /** A client whose fetch is intercepted: `hook` answers a request, or null to let it through. */
+  const clientWith = (hook: (url: URL) => Promise<Response> | null) => new LoomClient({
+    baseUrl: s.baseUrl,
+    allowInsecure: true,
+    fetch: (input, init) => {
+      const url = typeof input === "string" ? input : input.toString();
+      return hook(new URL(url)) ?? fetch(url, init);
+    },
+  });
+
+  // Where the Lobby is is a public read like any other, and it can fail. Taken for "this instance
+  // has no Lobby" it hides the requests panel and the profile cards for the life of the page: every
+  // one of them gates on `state.lobby`, and nothing else ever reads the pointer again.
+  it("retries a failed Lobby discovery instead of hiding the panels for good", async () => {
+    const f = await lobbyFixture();
+    const r = await f.open();
+    let lobbyCalls = 0;
+    const flaky = clientWith((url) => url.pathname === "/api/lobby" && ++lobbyCalls === 1
+      ? Promise.reject(new Error("simulated network failure")) : null);
+    const session = createSession({ client: flaky, secret: f.secret, storage: f.storage, retry: FAST_RETRY });
+    await session.load();
+    try {
+      expect(session.getState().status).toBe("ready");
+      expect(session.getState().lobby).toBeUndefined();
+      // Not "there is nothing to load": it is not yet known whether this page has a board at all.
+      expect(session.getState().requestsLoaded).toBe(false);
+      expect(session.getState().requests[r.id]).toBeUndefined();
+
+      const events = session.getState().events.length;
+      await waitFor(() => session.getState().lobby !== undefined);
+      await waitFor(() => session.getState().requests[r.id] !== undefined);
+      expect(session.getState().lobby?.weaveId).toBe((await s.core.getLobby()).weaveId);
+      expect(session.getState().requestsLoaded).toBe(true);
+      expect(session.getState().requestsError).toBeUndefined();
+      expect(session.getState().events.length).toBe(events);     // no event was needed
+    } finally { session.dispose(); }
+  });
+
+  it("settles the pointer on an ordinary Weave page without reading any requests", async () => {
+    const f = await lobbyFixture();
+    await f.open();
+    let lobbyCalls = 0; let requestReads = 0;
+    const flaky = clientWith((url) => {
+      if (url.pathname === "/api/requests") requestReads++;
+      return url.pathname === "/api/lobby" && ++lobbyCalls === 1
+        ? Promise.reject(new Error("simulated network failure")) : null;
+    });
+    const session = createSession({ client: flaky, secret: f.target.secret, storage: f.storage, retry: FAST_RETRY });
+    await session.load();
+    try {
+      expect(session.getState().lobby).toBeUndefined();
+      await waitFor(() => session.getState().lobby !== undefined);
+      expect(session.getState().weave?.id).not.toBe(session.getState().lobby?.weaveId);
+      expect(session.getState().requests).toEqual({});
+      expect(requestReads).toBe(0);                              // the pointer was the whole job
+      expect(session.getState().requestsLoaded).toBe(true);
+      expect(session.getState().requestsError).toBeUndefined();
+    } finally { session.dispose(); }
+  });
+
+  it("takes weave_not_found for a settled answer: no Lobby, and nothing to retry", async () => {
+    const f = await lobbyFixture();
+    let lobbyCalls = 0;
+    const absent = clientWith((url) => {
+      if (url.pathname !== "/api/lobby") return null;
+      lobbyCalls++;
+      return Promise.resolve(new Response(JSON.stringify({ code: "weave_not_found", message: "No Lobby on this instance" }),
+        { status: 404, headers: { "content-type": "application/json" } }));
+    });
+    const session = createSession({ client: absent, secret: f.secret, storage: f.storage, retry: FAST_RETRY });
+    await session.load();
+    try {
+      expect(session.getState().status).toBe("ready");
+      expect(session.getState().lobby).toBeUndefined();
+      expect(session.getState().requestsLoaded).toBe(true);      // settled: there is nothing to load
+      expect(session.getState().requestsError).toBeUndefined();
+      expect(lobbyCalls).toBe(1);
+      await new Promise((done) => setTimeout(done, 150));        // many backoffs of FAST_RETRY
+      expect(lobbyCalls).toBe(1);                                // no loop is running
+    } finally { session.dispose(); }
+  });
+
   it("a Weave that is not the Lobby carries no requests", async () => {
     const f = await lobbyFixture();
     await f.open();

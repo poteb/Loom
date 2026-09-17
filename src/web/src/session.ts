@@ -148,6 +148,24 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
 
   const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+  /**
+   * Where the Lobby is, and whether that is now known.
+   *
+   * `weave_not_found` is the instance's own answer — it has no Lobby — and settles the question.
+   * Every other failure is a failed read: taken for "no Lobby" it would hide the requests panel and
+   * the profile cards for the life of the page, because both gate on `state.lobby` and nothing else
+   * ever asks again.
+   */
+  const discoverLobby = async (): Promise<{ lobby?: Lobby; settled: boolean; error?: string }> => {
+    try { return { lobby: await client.getLobby(), settled: true }; }
+    catch (e) {
+      if (e instanceof LoomClientError && e.code === "weave_not_found") return { settled: true };
+      return { settled: false, error: messageOf(e) };
+    }
+  };
+  /** False until a `getLobby()` has answered for this load; `state.lobby` means nothing before that. */
+  let lobbyKnown = false;
+
   const refreshInfo = async () => {
     if (!weaveId) return;
     // Neither the instance text nor the requests are part of the Weave, so a failure to read either
@@ -179,8 +197,13 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
       if (state.requestsError !== undefined || !state.requestsLoaded) set({ requestsLoaded: true, requestsError: undefined });
     } else if (requests) {
       set({ requestsError: requests.error });
-      retryRequests(myGeneration);
+      retryLobbyData(myGeneration);
     }
+    // `onLobby()` is false while the pointer is unknown, so a refresh in that state reads no
+    // requests and — deliberately — cannot report the board as loaded. Nudging the loop here costs
+    // nothing (it returns at once when one is already running for this generation) and means a
+    // page whose discovery failed converges even if its loop were somehow never started.
+    if (!lobbyKnown) retryLobbyData(myGeneration);
   };
 
   // Coalesced, retried refresh for events that arrive off the wire: a failed refresh is retried
@@ -210,18 +233,22 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
     }
   };
   /**
-   * The requests read, retried on its own. A failed read must not break the rest of the page — the
-   * Weave does not depend on it — but it must not be shown as an empty board either: the failure is
-   * held in state, and the read is retried on the same backoff a refresh uses until it succeeds or
-   * the session goes away. One loop per generation, and it retires with the generation that started
-   * it, so a pending sleep never outlives its load (dispose aborts the sleep as well).
+   * What the panel needs and the Weave does not: where the Lobby is, and — on the Lobby's own page
+   * — the request snapshot. Neither may break the rest of the page, and neither may be given up on:
+   * a missed request has no later event that would bring it in, and a missed pointer would hide the
+   * panel and the profile cards for good. So the failure is held in state and the read is retried,
+   * in one loop, on the same backoff a refresh uses, until it succeeds or the session goes away.
+   *
+   * Discovery comes first because the second half depends on it; off the Lobby the pointer was the
+   * whole job. One loop per generation, and it retires with the generation that started it, so a
+   * pending sleep never outlives its load (dispose aborts the sleep as well).
    *
    * The guard is keyed on that generation rather than being a bare "a loop is running" flag: a
    * second `load()` retires the first one's loop, and a bare flag would make the new load skip its
    * own retry on the strength of a loop that is about to exit — leaving the board unread for good.
    */
   let retryingFor: number | undefined;
-  const retryRequests = (myGeneration: number) => {
+  const retryLobbyData = (myGeneration: number) => {
     if (retryingFor === myGeneration || disposed || myGeneration !== generation) return;
     retryingFor = myGeneration;
     void (async () => {
@@ -229,6 +256,17 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
         for (let attempt = 0; ; attempt++) {
           await sleep(attempt < retry.delaysMs.length ? retry.delaysMs[attempt]! : retry.slowMs, lifetime.signal);
           if (disposed || myGeneration !== generation) return;
+          if (!lobbyKnown) {
+            const found = await discoverLobby();
+            if (disposed || myGeneration !== generation) return;
+            if (!found.settled) { set({ requestsError: found.error }); continue; }
+            lobbyKnown = true;
+            // Published before the read below, so the panels appear as soon as the pointer is known.
+            set({ lobby: found.lobby });
+          }
+          // Not the Lobby's page (or no Lobby at all): there is no board here, and saying so is
+          // honest — unlike the same claim made while the pointer was still unknown.
+          if (!onLobby()) { set({ requestsLoaded: true, requestsError: undefined }); return; }
           try {
             const snaps = await readRequests();
             if (disposed || myGeneration !== generation) return;
@@ -322,23 +360,24 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
         }
         // The instance guidelines and the Lobby pointer are public and independent of this Weave, so
         // they are fetched alongside the metadata and a failure only costs the panel its section.
-        const [info, instance, lobby] = await Promise.all([
+        const [info, instance, discovery] = await Promise.all([
           reader.getWeave(id),
           client.getInstanceGuidelines().catch(() => ""),
-          client.getLobby().catch(() => undefined),
+          discoverLobby(),
         ]);
         if (stale()) return;
         // Only the Lobby's own page has requests, and they are read with this browser's Lobby
-        // credential — the same secret the rest of the page is read with. A failure here costs the
-        // panel its section and nothing else, but it is remembered rather than shown as an empty
-        // board, and retried below once this load has published its state.
+        // credential — the same secret the rest of the page is read with. A failure here (or of the
+        // discovery above) costs the panel its section and nothing else, but it is remembered
+        // rather than shown as an empty board, and retried below once this load has published.
         let requests: LoomRequest[] = [];
-        let requestsError: string | undefined;
-        if (lobby?.weaveId === id) {
+        let requestsError = discovery.error;
+        if (discovery.settled && discovery.lobby?.weaveId === id) {
           try { requests = await readRequests(); } catch (e) { requestsError = messageOf(e); }
         }
         if (stale()) return;
         weaveId = id;
+        lobbyKnown = discovery.settled;
         guidelinesSeq = info.weave.lastSeq;
         let me: SessionState["me"];
         const stored = storage.get(key);
@@ -355,13 +394,15 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
         let held: Requests = {};
         for (const snap of requests) held = applySnapshot(held, snap);
         set({ status: "ready", weave: info.weave, threads: info.threads, participants: info.participants, events, me,
-          instanceGuidelines: instance, currentThreadId: first, lobby, requests: held,
-          requestsLoaded: requestsError === undefined, requestsError,
+          instanceGuidelines: instance, currentThreadId: first, lobby: discovery.lobby, requests: held,
+          // An unsettled pointer is not an empty board: until it is known whether this page even has
+          // one, the panel has nothing to render and nothing may claim the requests are loaded.
+          requestsLoaded: lobbyKnown && requestsError === undefined, requestsError,
           ...deriveInvites(events, me?.participant.id, seenUpTo) });
-        // After readiness, never before it: the page is usable while the board catches up. The
-        // opening event of a request read here is already in history, so nothing would ever replay
-        // it — only this retry can bring the row in.
-        if (requestsError !== undefined) retryRequests(myGeneration);
+        // After readiness, never before it: the page is usable while the pointer and the board catch
+        // up. The opening event of a request read here is already in history, so nothing would ever
+        // replay it — only this retry can bring the row in, and only it can settle the pointer.
+        if (!lobbyKnown || requestsError !== undefined) retryLobbyData(myGeneration);
         let sawOpen = false;
         const opened = reader.stream(id, {
           since: events.at(-1)?.seq ?? 0,
