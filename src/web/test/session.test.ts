@@ -868,6 +868,65 @@ describe("session requests", () => {
     } finally { session.dispose(); }
   });
 
+  /** A client whose `status=open` listing fails on exactly the calls named, and works otherwise. */
+  const flakyListing = (failOn: number[]) => {
+    let calls = 0;
+    return new LoomClient({
+      baseUrl: s.baseUrl,
+      allowInsecure: true,
+      fetch: (input, init) => {
+        const url = typeof input === "string" ? input : input.toString();
+        const parsed = new URL(url);
+        if (parsed.pathname === "/api/requests" && parsed.searchParams.get("status") === "open") {
+          if (failOn.includes(++calls)) return Promise.reject(new Error("simulated network failure"));
+        }
+        return fetch(url, init);
+      },
+    });
+  };
+  const FAST_RETRY = { delaysMs: [5, 5, 5, 5, 5], slowMs: 20 };
+
+  // The opening event is already in history when the session loads, so nothing will ever be replayed
+  // to bring the request in: only a retried read can, and until it lands the panel must say so.
+  it("shows a failed initial request read as an error, then retries it until it lands", async () => {
+    const f = await lobbyFixture();
+    const r = await f.open();
+    const session = createSession({ client: flakyListing([1]), secret: f.secret, storage: f.storage, retry: FAST_RETRY });
+    await session.load();
+    try {
+      expect(session.getState().status).toBe("ready");
+      expect(session.getState().requestsError).toBeDefined();
+      expect(session.getState().requestsLoaded).toBe(false);
+      expect(session.getState().requests[r.id]).toBeUndefined();
+
+      const events = session.getState().events.length;
+      await waitFor(() => session.getState().requests[r.id] !== undefined);
+      expect(session.getState().requestsError).toBeUndefined();
+      expect(session.getState().requestsLoaded).toBe(true);
+      expect(session.getState().events.length).toBe(events);      // no new event brought it in
+    } finally { session.dispose(); }
+  });
+
+  it("keeps the requests it holds when a refresh read fails, and retries that read", async () => {
+    const f = await lobbyFixture();
+    const r = await f.open();
+    // Call 1 is the read inside load(); call 2 is the refresh the join below triggers.
+    const session = createSession({ client: flakyListing([2]), secret: f.secret, storage: f.storage, retry: FAST_RETRY });
+    await session.load();
+    try {
+      expect(session.getState().requests[r.id]).toBeDefined();
+      await waitFor(() => session.getState().connection === "open");
+
+      await anon.joinLobby({ name: `Late-${++fixtureN}`, kind: "agent" });
+      await waitFor(() => session.getState().requestsError !== undefined);
+      expect(session.getState().requests[r.id]).toBeDefined();     // the held row survives the failure
+
+      await waitFor(() => session.getState().requestsError === undefined);
+      expect(session.getState().requestsLoaded).toBe(true);
+      expect(session.getState().requests[r.id]).toBeDefined();
+    } finally { session.dispose(); }
+  });
+
   it("a Weave that is not the Lobby carries no requests", async () => {
     const f = await lobbyFixture();
     await f.open();

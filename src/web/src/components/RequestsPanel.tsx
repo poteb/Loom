@@ -66,7 +66,10 @@ export function RequestsPanel({ state, session, onError, now }: {
         {state.me && <button type="button" onClick={() => setOpening((v) => !v)}>{opening ? "Never mind" : "Open a request"}</button>}
       </div>
       {opening && <OpenRequestForm session={session} onError={onError} onDone={() => setOpening(false)} />}
-      {open.length === 0 && <p class="muted">No open requests.</p>}
+      {/* A read that failed is not an empty board: say which of the two this is. */}
+      {state.requestsError !== undefined
+        ? <p class="muted">Could not load requests — retrying…</p>
+        : open.length === 0 && state.requestsLoaded && <p class="muted">No open requests.</p>}
       <ul class="request-list">
         {open.map(({ r }) => (
           <RequestRow key={r.id} request={r} title={title(r)} state={state} session={session} onError={onError} nowMs={nowMs} />

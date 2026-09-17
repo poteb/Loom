@@ -20,7 +20,7 @@ const pr = { id: "t1", weaveId: "w1", name: "PR 12", isGeneral: false, createdBy
 function state(over: Partial<SessionState> = {}): SessionState {
   return { status: "ready", weave: { id: "w1", title: "W", createdAt: "", archivedAt: null, lastSeq: 3, guidelines: "" }, threads: [general, pr], participants: [me, bot],
     events: [], me: { participant: me, token: "t" }, currentThreadId: "g1", connection: "open", needsName: false, invitesForMe: new Set(), invited: {},
-    instanceGuidelines: "", requests: {}, closedRequestsPage: CLOSED_REQUESTS_PAGE, ...over };
+    instanceGuidelines: "", requests: {}, requestsLoaded: true, closedRequestsPage: CLOSED_REQUESTS_PAGE, ...over };
 }
 function session(over: Partial<Session> = {}): Session {
   return { getState: () => state(), subscribe: () => () => {}, load: async () => {}, join: async () => {}, selectThread: vi.fn(), post: async () => {},
@@ -162,6 +162,21 @@ describe("MessageList", () => {
 
 describe("RequestsPanel", () => {
   const asHelper = (over: Partial<SessionState> = {}) => lobbyState({ me: { participant: helper, token: "t" }, ...over });
+
+  // A read that failed is not an empty board: the panel must not say "no open requests" when what it
+  // actually knows is that it could not find out.
+  it("says the requests could not be loaded rather than claiming the board is empty", () => {
+    const st = lobbyState({ requests: {}, requestsLoaded: false, requestsError: "simulated network failure" });
+    render(<RequestsPanel state={st} session={session()} onError={() => {}} now={NOW} />);
+    expect(screen.getByText("Could not load requests — retrying…")).toBeTruthy();
+    expect(screen.queryByText("No open requests.")).toBeNull();
+  });
+
+  it("says the board is empty once a read has actually come back empty", () => {
+    const st = lobbyState({ requests: {} });
+    render(<RequestsPanel state={st} session={session()} onError={() => {}} now={NOW} />);
+    expect(screen.getByText("No open requests.")).toBeTruthy();
+  });
 
   it("renders nothing on a Weave that is not the Lobby", () => {
     const { container } = render(<RequestsPanel state={state()} session={session()} onError={() => {}} now={NOW} />);

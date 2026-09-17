@@ -23,6 +23,10 @@ export type SessionState = {
   lobby?: Lobby;
   /** The Lobby's requests, each at the version this session holds for it. Empty off the Lobby. */
   requests: Requests;
+  /** Whether a request read has actually come back. False means "not known yet", never "empty". */
+  requestsLoaded: boolean;
+  /** Why the last request read failed, while a retry is pending. Cleared by the first success. */
+  requestsError?: string;
   /** How many closed requests per terminal status this session loads; the panel says so when the
    *  closed section may be a page rather than the whole history. */
   closedRequestsPage: number;
@@ -79,7 +83,7 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
   const closedPage = opts.closedRequestsPage ?? CLOSED_REQUESTS_PAGE;
   const key = `loom:${secret}`;
   let state: SessionState = { status: "loading", threads: [], participants: [], events: [], connection: "closed", needsName: false,
-    invitesForMe: new Set(), invited: {}, instanceGuidelines: "", requests: {}, closedRequestsPage: closedPage };
+    invitesForMe: new Set(), invited: {}, instanceGuidelines: "", requests: {}, requestsLoaded: false, closedRequestsPage: closedPage };
   const listeners = new Set<() => void>();
   let weaveId: string | undefined;
   // How far the guidelines text in `state.weave` has been advanced, as a Weave seq. Guidelines are
@@ -142,15 +146,19 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
     if (next !== state.requests) set({ requests: next });
   };
 
+  const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
   const refreshInfo = async () => {
     if (!weaveId) return;
     // Neither the instance text nor the requests are part of the Weave, so a failure to read either
-    // must not fail the refresh the rest of the UI depends on: keep what is on screen and try again
-    // on the next refresh.
+    // must not fail the refresh the rest of the UI depends on. The instance text falls back to what
+    // is on screen; the requests keep what is held, record the failure and get their own retry —
+    // there is no later event that would bring a missed request in.
+    const myGeneration = generation;
     const [info, instance, requests] = await Promise.all([
       reader.getWeave(weaveId),
       client.getInstanceGuidelines().catch(() => state.instanceGuidelines),
-      onLobby() ? readRequests().catch(() => null) : null,
+      onLobby() ? readRequests().then((rs) => ({ rs }), (e: unknown) => ({ error: messageOf(e) })) : null,
     ]);
     // A snapshot that predates the last applied guidelines change keeps the text that change
     // delivered; one that is at least as new is authoritative and moves the watermark up.
@@ -166,7 +174,13 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
       me: state.me && info.participants.some((p) => p.id === state.me!.participant.id)
         ? { token: state.me.token, participant: info.participants.find((p) => p.id === state.me!.participant.id)! }
         : state.me });
-    if (requests) applyRequests(requests);
+    if (requests && "rs" in requests) {
+      applyRequests(requests.rs);
+      if (state.requestsError !== undefined || !state.requestsLoaded) set({ requestsLoaded: true, requestsError: undefined });
+    } else if (requests) {
+      set({ requestsError: requests.error });
+      retryRequests(myGeneration);
+    }
   };
 
   // Coalesced, retried refresh for events that arrive off the wire: a failed refresh is retried
@@ -195,6 +209,37 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
       }
     }
   };
+  /**
+   * The requests read, retried on its own. A failed read must not break the rest of the page — the
+   * Weave does not depend on it — but it must not be shown as an empty board either: the failure is
+   * held in state, and the read is retried on the same backoff a refresh uses until it succeeds or
+   * the session goes away. One loop at a time, and it retires with the generation that started it,
+   * so a pending sleep never outlives its load (dispose aborts the sleep as well).
+   */
+  let requestsRetrying = false;
+  const retryRequests = (myGeneration: number) => {
+    if (requestsRetrying || disposed || myGeneration !== generation) return;
+    requestsRetrying = true;
+    void (async () => {
+      try {
+        for (let attempt = 0; ; attempt++) {
+          await sleep(attempt < retry.delaysMs.length ? retry.delaysMs[attempt]! : retry.slowMs, lifetime.signal);
+          if (disposed || myGeneration !== generation) return;
+          try {
+            const snaps = await readRequests();
+            if (disposed || myGeneration !== generation) return;
+            applyRequests(snaps);
+            set({ requestsLoaded: true, requestsError: undefined });
+            return;
+          } catch (e) {
+            if (disposed || myGeneration !== generation) return;
+            set({ requestsError: messageOf(e) });
+          }
+        }
+      } finally { requestsRetrying = false; }
+    })();
+  };
+
   const scheduleRefresh = () => {
     if (disposed) return;
     if (refreshInFlight) { refreshDirty = true; return; }
@@ -279,8 +324,14 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
         ]);
         if (stale()) return;
         // Only the Lobby's own page has requests, and they are read with this browser's Lobby
-        // credential — the same secret the rest of the page is read with.
-        const requests = lobby?.weaveId === id ? await readRequests().catch(() => []) : [];
+        // credential — the same secret the rest of the page is read with. A failure here costs the
+        // panel its section and nothing else, but it is remembered rather than shown as an empty
+        // board, and retried below once this load has published its state.
+        let requests: LoomRequest[] = [];
+        let requestsError: string | undefined;
+        if (lobby?.weaveId === id) {
+          try { requests = await readRequests(); } catch (e) { requestsError = messageOf(e); }
+        }
         if (stale()) return;
         weaveId = id;
         guidelinesSeq = info.weave.lastSeq;
@@ -300,7 +351,12 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
         for (const snap of requests) held = applySnapshot(held, snap);
         set({ status: "ready", weave: info.weave, threads: info.threads, participants: info.participants, events, me,
           instanceGuidelines: instance, currentThreadId: first, lobby, requests: held,
+          requestsLoaded: requestsError === undefined, requestsError,
           ...deriveInvites(events, me?.participant.id, seenUpTo) });
+        // After readiness, never before it: the page is usable while the board catches up. The
+        // opening event of a request read here is already in history, so nothing would ever replay
+        // it — only this retry can bring the row in.
+        if (requestsError !== undefined) retryRequests(myGeneration);
         let sawOpen = false;
         const opened = reader.stream(id, {
           since: events.at(-1)?.seq ?? 0,
