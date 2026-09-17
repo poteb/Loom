@@ -34,9 +34,9 @@ async function expireInDb(requestId: string): Promise<void> {
 
 /** The Lobby's own secret: read authority for anyone who can open `/w/<secret>`. */
 async function lobbySecret(): Promise<string> {
-  const { weaveId } = await s.core.getLobby();
-  const rows = await sqlUnsafe<{ secret: string }>("select secret from weaves where id = $1", [weaveId]);
-  return rows[0]!.secret;
+  const r = await api(s.baseUrl, "GET", "/api/lobby", undefined, KEEPER);
+  expect(r.status).toBe(200);
+  return r.json.secret as string;
 }
 
 /** Polls until `check` holds, so a test never sleeps for longer than the interval it is watching. */
@@ -116,10 +116,24 @@ async function openRequest(f: Scenario, over: Record<string, unknown> = {}) {
 const idsOf = (rows: { id: string }[]) => rows.map((r) => r.id);
 
 describe("GET /api/lobby", () => {
-  it("answers without a credential", async () => {
+  it("answers without a credential, and without the secret", async () => {
     const r = await api(s.baseUrl, "GET", "/api/lobby");
     expect(r.status).toBe(200);
     expect(r.json).toEqual({ weaveId: (await s.core.getLobby()).weaveId, title: "Lobby" });
+  });
+
+  it("includes the Lobby's own secret for an instance keeper", async () => {
+    const r = await api(s.baseUrl, "GET", "/api/lobby", undefined, KEEPER);
+    expect(r.status).toBe(200);
+    const rows = await sqlUnsafe<{ secret: string }>("select secret from weaves where id = $1", [r.json.weaveId]);
+    expect(r.json.secret).toBe(rows[0]!.secret);
+  });
+
+  it("withholds the secret from a Lobby participant's own token", async () => {
+    const me = await joinLobby(uniq("Nosy"));
+    const r = await api(s.baseUrl, "GET", "/api/lobby", undefined, me.token);
+    expect(r.status).toBe(200);
+    expect(r.json.secret).toBeUndefined();
   });
 });
 

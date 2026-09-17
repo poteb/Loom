@@ -2,7 +2,7 @@ import { describe, it, expect, afterAll, beforeEach } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { freshDb, closeTestDb, keeperToken } from "./helpers.js";
 import { EventBus } from "../src/bus.js";
-import { settings, threads, weaves, participants } from "../src/db/schema.js";
+import { keepers, settings, threads, weaves, participants } from "../src/db/schema.js";
 import { readEvents } from "../src/events.js";
 import { resolveCredential } from "../src/actors.js";
 import { seedKeepers } from "../src/keepers.js";
@@ -37,8 +37,15 @@ describe("ensureLobby", () => {
   it("records the pointer so a second call is a lookup", async () => {
     const first = await ensureLobby(db);
     const second = await ensureLobby(db);
-    expect(second).toEqual({ weaveId: first.weaveId, created: false });
+    expect(second).toEqual({ weaveId: first.weaveId, created: false, secret: first.secret });
     expect(await lobbyCount("Lobby")).toBe(1);
+  });
+
+  it("reports the Lobby's secret to its boot-time caller, created or not", async () => {
+    const created = await ensureLobby(db);
+    const [w] = await db.select({ secret: weaves.secret }).from(weaves).where(eq(weaves.id, created.weaveId));
+    expect(created.secret).toBe(w!.secret);
+    expect((await ensureLobby(db)).secret).toBe(w!.secret);
   });
 
   it("takes the title from settings.lobbyTitle", async () => {
@@ -73,6 +80,30 @@ describe("getLobby", () => {
 
   it("reports weave_not_found before the Lobby exists", async () => {
     await expect(getLobby(db)).rejects.toMatchObject({ code: "weave_not_found" });
+  });
+
+  it("hands an instance keeper the Lobby's own secret", async () => {
+    const { weaveId } = await ensureLobby(db);
+    await seedKeepers(db, [keeperToken("k")]);
+    const keeper = await resolveCredential(db, keeperToken("k"));
+    const [w] = await db.select({ secret: weaves.secret }).from(weaves).where(eq(weaves.id, weaveId));
+    expect(await getLobby(db, keeper)).toEqual({ weaveId, title: "Lobby", secret: w!.secret });
+  });
+
+  it("withholds the secret from an anonymous caller and from a Lobby participant", async () => {
+    const { weaveId } = await ensureLobby(db);
+    const j = await joinLobby(db, bus, { name: "Paw", kind: "human" });
+    const participant = await resolveCredential(db, j.token);
+    expect(await getLobby(db)).toEqual({ weaveId, title: "Lobby" });
+    expect(await getLobby(db, participant)).toEqual({ weaveId, title: "Lobby" });
+  });
+
+  it("refuses the secret to a keeper token whose keeper has since been removed", async () => {
+    await ensureLobby(db);
+    await seedKeepers(db, [keeperToken("k")]);
+    const keeper = await resolveCredential(db, keeperToken("k"));
+    await db.delete(keepers).where(eq(keepers.token, keeperToken("k")));
+    await expect(getLobby(db, keeper)).rejects.toMatchObject({ code: "invalid_token" });
   });
 });
 

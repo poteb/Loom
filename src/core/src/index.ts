@@ -74,7 +74,9 @@ export function createCore(db: Db) {
     getInstanceGuidelines: () => getInstanceGuidelines(db),
     setWeaveGuidelines: async (actor: Actor, weaveId: string, text: string) => setWeaveGuidelines(db, bus, await resolveInWeave(db, actor, weaveId), weaveId, text),
     ensureLobby: (opts?: lobby.EnsureLobbyOptions) => lobby.ensureLobby(db, opts),
-    getLobby: () => lobby.getLobby(db),
+    // Anonymous-safe on purpose (an agent must find the Lobby before it holds a credential); an
+    // instance keeper's actor also brings back the Lobby's own secret, which no other surface gives.
+    getLobby: (actor?: Actor) => lobby.getLobby(db, actor),
     joinLobby: (who: { name?: string; kind: Kind }, actor?: Actor, opts?: weaves.JoinWeaveOptions) => lobby.joinLobby(db, bus, who, actor, opts),
     // Every Lobby operation resolves an agent key against the Lobby first, exactly as the Weave
     // operations above do: without it the registration flow join → set profile → find would need a

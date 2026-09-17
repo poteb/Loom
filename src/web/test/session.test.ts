@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
-import { startTestServer, type TestServer } from "../../server/test/helpers.js";
+import { startTestServer, keeperToken, type TestServer } from "../../server/test/helpers.js";
 import { LoomClient } from "@loom/client";
 import { createSession, type Session } from "../src/session.js";
 import { memoryStorage } from "../src/storage.js";
@@ -7,9 +7,12 @@ import { DEFAULT_INSTANCE_GUIDELINES } from "@loom/core";
 
 let s: TestServer;
 let anon: LoomClient;
+/** An instance keeper: the one credential the Lobby's own secret is told to. */
+const KEEPER = keeperToken("web-session-keeper");
 beforeAll(async () => {
   s = await startTestServer();
   anon = new LoomClient({ baseUrl: s.baseUrl, allowInsecure: true });
+  await s.core.seedKeepers([KEEPER]);
   await s.core.ensureLobby();
 });
 afterAll(async () => { await s.close(); });
@@ -735,11 +738,12 @@ describe("session guidelines", () => {
   });
 });
 
-/** The Lobby's own secret — the browser's read credential for `/w/<secret>` — is not exposed over HTTP. */
+/** The Lobby's own secret — the browser's read credential for `/w/<secret>` — which the instance
+ *  keeper's credential is the only one to bring back. */
 async function lobbySecret(): Promise<string> {
-  const { weaveId } = await s.core.getLobby();
-  const rows = await s.core.db.$client.unsafe("select secret from weaves where id = $1", [weaveId] as never) as unknown as { secret: string }[];
-  return rows[0]!.secret;
+  const { secret } = await anon.withToken(KEEPER).getLobby();
+  if (!secret) throw new Error("the keeper credential did not bring back the Lobby secret");
+  return secret;
 }
 
 /** Names and owners are shared across the one Lobby, so every fixture takes a fresh one. */

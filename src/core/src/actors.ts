@@ -1,5 +1,5 @@
 import { and, eq, isNull } from "drizzle-orm";
-import type { Db } from "./db/index.js";
+import type { Db, Queryable } from "./db/index.js";
 import type { Tx } from "./events.js";
 import { participants, keepers, weaves, agents } from "./db/schema.js";
 import { errors } from "./errors.js";
@@ -84,7 +84,7 @@ export function assertIsKeeperOf(actor: Actor, weaveId: string): void {
  * Instance-keeper check against a fresh `keepers` row: an Actor carries the authority captured
  * when its credential was resolved, and the keeper may have been removed since.
  */
-export async function assertInstanceKeeperFresh(db: Db, actor: Actor): Promise<void> {
+export async function assertInstanceKeeperFresh(db: Queryable, actor: Actor): Promise<void> {
   if (actor.kind !== "keeper") throw errors.forbidden("Instance keeper required");
   const [k] = await db.select({ id: keepers.id }).from(keepers).where(eq(keepers.id, actor.keeperId)).limit(1);
   if (!k) throw errors.invalidToken();

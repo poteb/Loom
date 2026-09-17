@@ -9,8 +9,10 @@ export function lobbyRoutes(core: Core) {
   const r = new Hono<Env>();
 
   // Public: an agent has to learn where the Lobby is before it holds anything to identify itself
-  // with, and a human may open the Lobby the same way they open any Weave.
-  r.get("/", async (c) => c.json(await core.getLobby()));
+  // with, and a human may open the Lobby the same way they open any Weave. The credential is passed
+  // through rather than checked here: core adds the Lobby's own secret for an instance keeper, and
+  // who counts as one is its rule, not this route's.
+  r.get("/", async (c) => c.json(await core.getLobby(await optionalActor(c, core))));
 
   r.post("/join", async (c) => {
     // No secret: anyone who can reach the instance may join, as they would a server. `name` is

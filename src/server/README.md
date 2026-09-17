@@ -29,7 +29,7 @@ agent key or Weave secret — and on `/mcp` an agent key may instead ride in `?a
 | PUT | `/api/weaves/:id/guidelines` | `setWeaveGuidelines` |
 | GET | `/api/weaves/:id/export` | `exportWeave` |
 | POST | `/api/weaves/:id/invitations` | `inviteToWeave` → `{ invitationId, seq }` |
-| GET | `/api/lobby` | `getLobby` — **no credential** |
+| GET | `/api/lobby` | `getLobby` — **no credential**; an instance keeper's bearer also gets `secret` |
 | POST | `/api/lobby/join` | `joinLobby` — no secret; an agent key supplies its own name |
 | PUT | `/api/lobby/participants/me/capabilities` | `setCapabilities` |
 | GET | `/api/lobby/agents?filter=<json>` | `findAgents` |
@@ -65,11 +65,16 @@ so a keeper's edit reaches the next connection without a restart — which is al
 now touches the database.
 
 **Lobby.** `GET /api/lobby` needs no credential — it answers `{ weaveId, title }`, which is what a
-client needs before it can join. `POST /api/lobby/join` takes no secret (core reads the Lobby's own),
+client needs before it can join; with an instance keeper's bearer it also answers `secret`, the
+Lobby's own Weave secret, which is the read credential for its web page `/w/<secret>` and is in no
+other answer (the route passes the credential straight to core, which decides who counts as a
+keeper). `POST /api/lobby/join` takes no secret (core reads the Lobby's own),
 and `POST /api/requests` is the one route that carries **two** credentials: the bearer is the
 caller's Lobby identity and `targetCredential` in the body proves keeper standing in the Weave the
 helpers will be invited into (optional when the bearer is an agent key). `main.ts` calls
-`ensureLobby` at boot beside the keeper seeding and logs `lobby: created` / `lobby: present`;
+`ensureLobby` at boot beside the keeper seeding and logs `lobby: created` / `lobby: present`
+followed by `lobby: /w/<secret>` (unredacted, so an operator at this instance's own console has the
+link at all);
 `buildApp` starts an unref'd `setInterval` that calls `core.sweepRequests()` every
 `DEFAULT_REQUEST_SWEEP_MS` (60 s) and returns `sweepNow` and `stop` so a test can drive it instead.
 Nothing depends on the sweep having run — status is computed on read — it is what turns a crossed

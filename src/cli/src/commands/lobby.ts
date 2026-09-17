@@ -9,7 +9,9 @@ import { emit } from "../output.js";
  * other join — and an agent key stands in for that stored token exactly as `resolveWeave` lets it.
  */
 export async function lobbyContext(c: CliContext): Promise<{ lobby: Lobby; client: LoomClient }> {
-  const lobby = await c.client().getLobby();
+  // Asked with the keeper token when the caller has one: the route answers everyone, but only an
+  // instance keeper is told the Lobby's own secret, and `loom lobby` prints the page it opens.
+  const lobby = await c.client(c.io.env.LOOM_KEEPER_TOKEN).getLobby();
   const token = c.io.env.LOOM_AGENT_KEY ?? c.config.weaves[lobby.weaveId]?.token;
   if (!token) throw new CliError("no_lobby_token", `No Lobby identity: run "loom lobby join --name <name>" first`);
   return { lobby, client: c.client(token) };
@@ -44,6 +46,9 @@ export function registerLobbyCommands(program: Command, ctx: () => CliContext, i
     const info = await client.getWeave(where.weaveId);
     emit(c, { lobby: where, participants: info.participants }, [
       `${where.title} (${where.weaveId})`,
+      // Nobody created the Lobby, so nobody holds its secret: an instance keeper is the only caller
+      // the server tells, and this is the one place the link to its web page can be read.
+      ...(where.secret ? [`  web: ${c.baseUrl}/w/${where.secret}`] : []),
       "Participants:",
       ...info.participants.map(participantLine),
     ].join("\n"));

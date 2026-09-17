@@ -116,6 +116,18 @@ describe("loom lobby", () => {
     expect(human.out).toContain("serves: owner");
   });
 
+  it("lobby prints the Lobby's web URL to an instance keeper, and to nobody else", async () => {
+    const cfg = newCfg();
+    await run(["lobby", "join", "--name", uniq("Keeperly"), "--json"], { cfg });
+    const plain = await run(["lobby"], { cfg });
+    expect(plain.out).not.toContain("web:");
+    const asKeeper = await run(["lobby"], { cfg, env: { LOOM_KEEPER_TOKEN: keeperToken("k1") } });
+    expect(asKeeper.code).toBe(0);
+    const secret = (await run(["lobby", "--json"], { cfg, env: { LOOM_KEEPER_TOKEN: keeperToken("k1") } })).json().lobby.secret;
+    expect(secret).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(asKeeper.out).toContain(`web: ${s.baseUrl}/w/${secret}`);
+  });
+
   it("lobby marks a participant with no profile", async () => {
     const cfg = newCfg();
     const name = uniq("Bare");

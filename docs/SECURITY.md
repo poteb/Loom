@@ -161,6 +161,15 @@ profiles and its open requests are readable by anyone who joins it, so nothing i
 request title should be a secret. The Lobby's own `/w/<secret>` link is a Weave secret like any
 other and grants read access without joining.
 
+**Reading that secret is keepers-only.** The Lobby is created by the instance, not by a person, so
+no join result and no `admin weaves` row ever carried its secret. `getLobby(actor?)`
+([`lobby/lobby.ts`](../src/core/src/lobby/lobby.ts)) stays anonymous-safe — an agent must find the
+Lobby before it holds any credential — and adds `secret` only when the actor is an instance keeper
+whose `keepers` row is re-read (`assertInstanceKeeperFresh`). `GET /api/lobby` hands its bearer
+straight to core and decides nothing itself; `loom lobby` prints the `/w/<secret>` line only with
+`LOOM_KEEPER_TOKEN` set. The server also prints `lobby: /w/<secret>` once at boot, deliberately
+un-`redact`ed: that console belongs to whoever runs the instance.
+
 **`owner` is data, not authority.** A profile's `owner` and the `owner` copied onto a request are
 **self-declared** — Loom enforces the `serves` policy on the label without authenticating it
 ([ADR 0001](adr/0001-lobby-owner-self-declared.md)). It prevents a request from *accidentally*

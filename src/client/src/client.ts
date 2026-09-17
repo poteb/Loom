@@ -101,7 +101,8 @@ export class LoomClient {
   // --- Lobby -------------------------------------------------------------
   // The Lobby is one Weave per instance, so none of these name one.
 
-  /** Public: where the Lobby is, answered before the caller holds any credential. */
+  /** Public: where the Lobby is, answered before the caller holds any credential. An instance
+   *  keeper's token also brings back `secret`, the read credential for the Lobby's own web page. */
   getLobby(): Promise<Lobby> {
     return this.call("GET", "/api/lobby");
   }

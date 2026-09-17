@@ -69,7 +69,12 @@ export type Requirements = {
 /** A `requirements` filter, plus the owner whose requests the agent would have to serve. */
 export type AgentFilter = Requirements & { owner?: string };
 export type FoundAgent = { participant: Participant; capabilities: Profile };
-export type Lobby = { weaveId: string; title: string };
+export type Lobby = {
+  weaveId: string; title: string;
+  /** The Lobby's own Weave secret — the read credential for `/w/<secret>`. Only an instance keeper's
+   *  credential brings it back; it is absent for everyone else, including an anonymous caller. */
+  secret?: string;
+};
 
 export type RequestStatus = "open" | "filled" | "expired" | "cancelled";
 
