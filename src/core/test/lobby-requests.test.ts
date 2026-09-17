@@ -487,6 +487,73 @@ describe("cancelRequest", () => {
   });
 });
 
+/**
+ * A lock wait is unbounded: whoever holds the Weave row decides how long the next writer waits, and
+ * the deadline may pass in the meantime. Every mutation must therefore decide expiry from a clock
+ * read taken **inside** the lock — a reader looking at the same row already calls it `expired`.
+ *
+ * The deadline is pushed with a JS time this test controls rather than a database `now()`: the host
+ * clock here can step backwards by about a second, so the margins below are generous and both sides
+ * of the comparison come from the same clock.
+ */
+describe("a deadline crossed while waiting for the Weave lock", () => {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const expiresIn = (requestId: string, ms: number) =>
+    db.update(requestsTable).set({ expiresAt: new Date(Date.now() + ms) }).where(eq(requestsTable.id, requestId));
+  /** The rejection's code, or what the call answered when it wrongly succeeded. */
+  const codeOf = (p: Promise<unknown>) => p.then(() => "resolved" as const, (e: { code?: string }) => e.code ?? "error");
+
+  it("refuses an accept whose wait for the target row crossed the deadline", async () => {
+    const f = await setup();
+    const req = await twoOffers(f);
+    const before = (await threadEvents(f, req.threadId)).length;
+    const held = await holdWeaveRow(f.target.weave.id);
+
+    await expiresIn(req.id, 400);
+    const accepting = codeOf(accept(db, bus, f.claude.actor, req.id, [f.pawbot.id]));
+    expect(await settledWithin(accepting, 200)).toBe("waiting");
+    await sleep(1200);                                   // the deadline passes while accept waits
+    await held.release();
+
+    expect(await accepting).toBe("request_closed");
+    expect((await offersOf(req.id)).filter((o) => o.accepted)).toEqual([]);
+    expect(await invitationsOf(req.id)).toEqual([]);
+    expect((await threadEvents(f, req.threadId)).slice(before)).toEqual([]);
+  });
+
+  it("refuses an offer whose wait for the Lobby row crossed the deadline", async () => {
+    const f = await setup();
+    const req = await openRequest(db, bus, f.claude.actor, f.targetKeeper, inputFor(f));
+    const before = (await threadEvents(f, req.threadId)).length;
+    const held = await holdWeaveRow(f.lobbyId);
+
+    await expiresIn(req.id, 400);
+    const offering = codeOf(offer(db, bus, f.pawbot.actor, req.id, { note: "pawbot" }));
+    await sleep(1200);
+    await held.release();
+
+    expect(await offering).toBe("request_closed");
+    expect(await offersOf(req.id)).toEqual([]);
+    expect((await threadEvents(f, req.threadId)).slice(before)).toEqual([]);
+  });
+
+  it("refuses a cancel whose wait for the Lobby row crossed the deadline", async () => {
+    const f = await setup();
+    const req = await openRequest(db, bus, f.claude.actor, f.targetKeeper, inputFor(f));
+    const before = (await threadEvents(f, req.threadId)).length;
+    const held = await holdWeaveRow(f.lobbyId);
+
+    await expiresIn(req.id, 400);
+    const cancelling = codeOf(cancelRequest(db, bus, f.claude.actor, req.id));
+    await sleep(1200);
+    await held.release();
+
+    expect(await cancelling).toBe("request_closed");
+    expect((await rowOf(req.id)).status).toBe("open");   // left for the sweeper to close as expired
+    expect((await threadEvents(f, req.threadId)).slice(before)).toEqual([]);
+  });
+});
+
 describe("expiry", () => {
   const later = (req: { expiresAt: string }) => new Date(new Date(req.expiresAt).getTime() + 1000);
 

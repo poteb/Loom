@@ -277,8 +277,8 @@ export async function offer(
   const { weaveId: lobbyId } = await getLobby(db);
   const me = assertParticipantOf(actor, lobbyId);
   const row = await requestRow(db, requestId);
-  const now = new Date();
-  if (computedStatus(row, now) !== "open") throw errors.requestClosed();
+  // A cheap first answer, taken before the work below; the binding one is taken inside the lock.
+  if (computedStatus(row, new Date()) !== "open") throw errors.requestClosed();
 
   const eligible = (await eligibleByThread(db, lobbyId, [row.threadId])).get(row.threadId) ?? [];
   if (!eligible.includes(me.id)) throw errors.forbidden("This request is not addressed to you");
@@ -295,6 +295,9 @@ export async function offer(
   }
 
   return withWeaveLock(db, bus, lobbyId, async (tx, lobby) => {
+    // Read here, not before the lock: waiting for the row is unbounded, and a deadline crossed while
+    // waiting has already made every reader of this request call it `expired`.
+    const now = new Date();
     const [fresh] = await tx.select().from(requests).where(eq(requests.id, requestId));
     if (computedStatus(fresh!, now) !== "open") throw errors.requestClosed();
     const [existing] = await tx.select().from(requestOffers)
@@ -327,8 +330,8 @@ export async function accept(
   if (!Array.isArray(participantIds) || participantIds.length === 0) throw errors.validation("participantIds must name at least one participant");
   if (new Set(participantIds).size !== participantIds.length) throw errors.validation("participantIds must be distinct");
   for (const id of participantIds) if (!isUuid(id)) throw errors.validation("No such participant in this Lobby");
-  const now = new Date();
-  if (computedStatus(row, now) !== "open") throw errors.requestClosed();
+  // A cheap first answer; the binding one is taken from a fresh clock read inside the locks below.
+  if (computedStatus(row, new Date()) !== "open") throw errors.requestClosed();
 
   if (opts.beforeLock) await opts.beforeLock();
 
@@ -336,6 +339,9 @@ export async function accept(
   return withWeaveLocks(db, bus, [lobbyId, row.targetWeaveId], async (tx, byId) => {
     const lobby = byId[lobbyId]!;
     const targetWeave = byId[row.targetWeaveId]!;
+    // Read here, not before the locks: both waits are unbounded, and a request whose deadline passed
+    // while this transaction queued reads `expired` to everyone else — it must not still be filled.
+    const now = new Date();
     if (!isRequester) await assertStillKeeperOf(tx, actor, lobbyId);
     const [fresh] = await tx.select().from(requests).where(eq(requests.id, requestId));
     if (computedStatus(fresh!, now) !== "open") throw errors.requestClosed();
@@ -404,9 +410,12 @@ export async function cancelRequest(db: Db, bus: EventBus, actor: Actor, request
   const { weaveId: lobbyId } = await getLobby(db);
   const row = await requestRow(db, requestId);
   const isRequester = assertRequesterOrLobbyKeeper(actor, lobbyId, row.requesterId);
-  const now = new Date();
-  if (computedStatus(row, now) !== "open") throw errors.requestClosed();
+  // A cheap first answer; the binding one is taken from a fresh clock read inside the lock.
+  if (computedStatus(row, new Date()) !== "open") throw errors.requestClosed();
   return withWeaveLock(db, bus, lobbyId, async (tx, lobby) => {
+    // Read here, not before the lock: a deadline crossed while waiting for the row means this
+    // request is already `expired` to every reader, and the sweeper's reason is the true one.
+    const now = new Date();
     if (!isRequester) await assertStillKeeperOf(tx, actor, lobbyId);
     const [fresh] = await tx.select().from(requests).where(eq(requests.id, requestId));
     if (computedStatus(fresh!, now) !== "open") throw errors.requestClosed();
