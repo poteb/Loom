@@ -10,6 +10,13 @@ import type { PersistenceNotice } from "./persistence.js";
 export type WeaveEntry = {
   token?: string; participantId?: string; identity?: "invalid";
   secret?: string; title?: string; archived?: boolean; lastOpenedAt?: string;
+  /**
+   * The name this browser is joined under in that Weave — a display cache like `title`, never a
+   * credential and never sent anywhere. It is what lets "joined as `dana`" be rendered from storage
+   * alone, with no request (spec §4.1, §4.2); it belongs to the identity, so it is written with it
+   * and deleted with it.
+   */
+  name?: string;
 };
 
 /** Both stored shapes. Legacy `loom:<secret>` entries stay readable forever (spec §2.4). */
@@ -43,21 +50,26 @@ export function saveWeaveEntry(storage: KeyValueStorage, weaveId: string, patch:
  */
 export function setIdentity(
   storage: KeyValueStorage, weaveId: string,
-  who: { token: string; participantId: string }, extra: Partial<WeaveEntry> = {},
+  who: { token: string; participantId: string; name?: string }, extra: Partial<WeaveEntry> = {},
 ): WriteResult {
   // Spread-minus, not `saveWeaveEntry`: a rejoin has to *clear* `identity`, and a merge cannot.
   // One write, `extra` included: two writes would let the credential persist while the secret beside
   // it did not (or the reverse), and leave the caller branching on the verdict of the wrong one.
+  // `name` travels inside `who` rather than in `extra`, because it is part of the identity: it is
+  // written with the token and deleted with it.
   const { identity: _dropped, ...rest } = readWeaveEntry(storage, weaveId) ?? {};
   const next: WeaveEntry = { ...rest, token: who.token, participantId: who.participantId };
+  if (who.name !== undefined) next.name = who.name;
   for (const [k, v] of Object.entries(extra)) if (v !== undefined) (next as Record<string, unknown>)[k] = v;
   return storage.set(weaveKey(weaveId), JSON.stringify(next));
 }
 
-/** Deletes `token`/`participantId`, sets `identity: "invalid"`. Keeps `secret` and the display cache. */
+/** Deletes `token`/`participantId`/`name`, sets `identity: "invalid"`. Keeps `secret` and the cache. */
 export function invalidateIdentity(storage: KeyValueStorage, weaveId: string): WriteResult {
   // The secret is an independent credential: a dead token is no evidence against it (spec §2.6).
-  const { token: _t, participantId: _p, ...rest } = readWeaveEntry(storage, weaveId) ?? {};
+  // `name` goes with the token, because it names *that* identity — the Weave's own title, its
+  // archived flag and when it was last opened are facts about the Weave and stay.
+  const { token: _t, participantId: _p, name: _n, ...rest } = readWeaveEntry(storage, weaveId) ?? {};
   return storage.set(weaveKey(weaveId), JSON.stringify({ ...rest, identity: "invalid" as const }));
 }
 

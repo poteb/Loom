@@ -454,8 +454,11 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       // The display cache, and — on a `/w/<secret>` visit — the entry itself, written before anyone
       // has joined (spec §10.9) and only after a successful metadata read, so a failed load stores
       // nothing.
+      // `name` rides along in the same patch — no extra write. It is how an entry written before the
+      // field existed, or adopted from a legacy key, gets its "joined as" line on the next visit.
       onWrite(saveWeaveEntry(storage, weaveId!, {
         secret, title: info.weave.title, archived: !!info.weave.archivedAt, lastOpenedAt: new Date().toISOString(),
+        name: me?.participant.name,
       }));
       // The thread this load lands on is on screen, so an invite to it is not an unopened one.
       const first = info.threads.find((t) => t.isGeneral)?.id ?? info.threads[0]?.id;
@@ -528,7 +531,8 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       // The write happens whether or not anyone is listening: `onWrite?.(setIdentity(…))` would
       // skip the argument entirely when no `onWrite` was passed, and the credential with it. One
       // write, identity and secret together, so no verdict stands for a larger write than it made.
-      const wrote = setIdentity(storage, weaveId, { token: j.token, participantId: j.participant.id },
+      const wrote = setIdentity(storage, weaveId,
+        { token: j.token, participantId: j.participant.id, name: j.participant.name },
         { secret: sec, title: j.weave.title, lastOpenedAt: new Date().toISOString() });
       onWrite(wrote);
       // A brand-new identity has its own fallback to spend if it ever dies (see `retriedWithSecret`).

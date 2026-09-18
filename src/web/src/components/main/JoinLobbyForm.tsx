@@ -63,7 +63,8 @@ export function JoinLobbyForm({ client, storage, notice, lobby, onJoined, onJoin
       // whether leaving is safe at all (spec §3.1). The write goes into a variable and is reported
       // afterwards — nested inside an optional call (`onWrite?.(setIdentity(…))`) it would simply
       // not happen whenever that callback were absent.
-      const result = setIdentity(storage, j.weaveId, { token: j.token, participantId: j.participant.id },
+      const result = setIdentity(storage, j.weaveId,
+        { token: j.token, participantId: j.participant.id, name: j.participant.name },
         { title: j.weave.title, lastOpenedAt: new Date().toISOString() });
       notice.note(result);
       done = { weaveId: j.weaveId, hand: result === "durable" ? onJoined : onJoinedInPlace };

@@ -119,6 +119,15 @@ describe("setIdentity", () => {
       token: "tok", participantId: "p1", secret: "s", title: "T", lastOpenedAt: "t",
     });
   });
+
+  it("caches the name this browser joined as, in that same single write", () => {
+    // The name travels with the identity it belongs to, so nothing has to read it back off the
+    // network to say "joined as dana" (spec §4.1, §4.2 — the list paints with no request at all).
+    const c = counting();
+    setIdentity(c.storage, ID, { token: "tok", participantId: "p1", name: "dana" }, { title: "T" });
+    expect([c.sets(), readWeaveEntry(c.storage, ID)])
+      .toEqual([1, { token: "tok", participantId: "p1", name: "dana", title: "T" }]);
+  });
 });
 
 describe("mergeLegacy", () => {
@@ -210,6 +219,13 @@ describe("invalidateIdentity", () => {
     expect(readWeaveEntry(storage, ID)).toEqual({
       identity: "invalid", secret: "s", title: "T", archived: true, lastOpenedAt: "t",
     });
+  });
+
+  it("deletes the name too: it names the identity that just died, not the Weave", () => {
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, ID, { token: "tok", participantId: "p1", name: "dana", secret: "s", title: "T" });
+    invalidateIdentity(storage, ID);
+    expect(readWeaveEntry(storage, ID)).toEqual({ identity: "invalid", secret: "s", title: "T" });
   });
 });
 

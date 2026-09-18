@@ -74,6 +74,17 @@ describe("session", () => {
     b.dispose();
   });
 
+  it("join caches the name it joined under, beside the identity it just wrote", async () => {
+    // My Weaves and the main page both say "joined as dana" from storage alone (spec §4.1, §4.2),
+    // and only the join knows that name — nothing reads it back off the network to find out.
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const storage = memoryStorage();
+    const a = await makeSession({ kind: "secret", secret: r.secret }, storage);
+    await a.join("Paw");
+    a.dispose();
+    expect(readWeaveEntry(storage, r.weave.id)?.name).toBe("Paw");
+  });
+
   it("join hands the verdict of its credential write to onWrite", async () => {
     const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
     const verdicts: WriteResult[] = [];
@@ -1150,6 +1161,17 @@ describe("session by weave id", () => {
       await anon.withToken(r.token).postMessage(r.generalThread.id, "from claude");
       await waitFor(() => session.getState().events.some((e) => e.payload.text === "from claude"));
     } finally { session.dispose(); }
+  });
+
+  it("caches the name of the identity a load resolved, for a browser that joined before it was kept", async () => {
+    // The display cache is written on every successful load anyway (spec §2.4); carrying the name in
+    // that same patch is what gives an entry written by an older build — or adopted from a legacy key
+    // — its "joined as" line, without a write of its own.
+    const { r, j } = await joinedWeave("Paw");
+    const storage = storedIdentity(r.weave.id, j);
+    const session = await makeSession({ kind: "id", weaveId: r.weave.id }, storage);
+    session.dispose();
+    expect(readWeaveEntry(storage, r.weave.id)?.name).toBe("Paw");
   });
 
   it("reads the same Weave whether it is opened by secret or by id", async () => {

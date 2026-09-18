@@ -7,9 +7,12 @@ import { JoinLobbyForm } from "../src/components/main/JoinLobbyForm.js";
 import { isValidName, suggestName } from "../src/name.js";
 import { browserStorage, memoryStorage, type KeyValueStorage } from "../src/storage.js";
 import { createPersistenceNotice } from "../src/persistence.js";
-import { createWeavesSignal } from "../src/weaves-signal.js";
+import { createWeavesSignal, type WeavesSignal } from "../src/weaves-signal.js";
 import { CLOSED_REQUESTS_PAGE } from "../src/session.js";
-import { readWeaveEntry, setIdentity } from "../src/weaves-store.js";
+import { legacyKey, readWeaveEntry, saveWeaveEntry, setIdentity } from "../src/weaves-store.js";
+import { PersistenceBar } from "../src/components/PersistenceBar.js";
+import { InstanceGuidelines } from "../src/components/main/InstanceGuidelines.js";
+import { LobbySummary } from "../src/components/main/LobbySummary.js";
 
 // `http://loom.test` is refused by the client's own URL policy (http is allowed on loopback only,
 // `src/client/src/url.ts`), so the stubbed instance speaks https to the same host: the scheme is
@@ -163,7 +166,8 @@ describe("JoinLobbyForm persistence branch (spec §3.1, §4.1)", () => {
     v.send();
     await flush();
     const entry = readWeaveEntry(v.storage, LOBBY.weaveId);
-    expect([entry?.token, entry?.participantId, entry?.title]).toEqual(["participant-token", "p-dana", "Lobby"]);
+    expect([entry?.token, entry?.participantId, entry?.name, entry?.title])
+      .toEqual(["participant-token", "p-dana", "dana", "Lobby"]);
   });
 
   it("keeps a join whose credential did not persist in this JS context", async () => {
@@ -332,16 +336,17 @@ const INSTANCE: Routes = { ...OK, [LOBBY_URL]: () => json(LOBBY), ...weaveRoutes
 /** Several macrotask turns: a route resolving, a session loading, and a rebuilt one loading again. */
 const settle = async () => { for (let i = 0; i < 12; i++) await new Promise((r) => setTimeout(r, 0)); };
 
-function mountApp(opts: { path: string; routes?: Routes; storage?: KeyValueStorage }) {
+function mountApp(opts: { path: string; routes?: Routes; storage?: KeyValueStorage; weaves?: WeavesSignal }) {
   history.replaceState(null, "", opts.path);
   const fetchStub = stubFetch({ ...INSTANCE, ...opts.routes });
   const client = new LoomClient({ baseUrl: BASE, allowInsecure: true, fetch: fetchStub as unknown as typeof fetch });
   const storage = opts.storage ?? memoryStorage();
   const notice = createPersistenceNotice();
-  const view = render(<App client={client} storage={storage} notice={notice} weaves={createWeavesSignal()} />);
+  const weaves = opts.weaves ?? createWeavesSignal();
+  const view = render(<App client={client} storage={storage} notice={notice} weaves={weaves} />);
   const field = () => screen.getByLabelText("Name") as HTMLInputElement;
   return {
-    ...view, fetchStub, storage, notice,
+    ...view, fetchStub, storage, notice, weaves,
     calls: (url: string) => fetchStub.mock.calls.filter((c) => String(c[0]) === url).length,
     /** Who the page says I am, which is `state.me` and nothing else. */
     iAm: () => view.container.querySelector(".header-right strong")?.textContent ?? null,
@@ -484,9 +489,12 @@ describe("the other routes (spec §3.1)", () => {
   });
 
   it("mounts no session on the main page", async () => {
+    // The main page has public reads of its own (the guidelines, the Lobby pointer); what it must
+    // not do is load a Weave. Every session read is under `/api/weaves/`, so their absence is the
+    // assertion, rather than "no request at all", which the page outgrew.
     const v = mountApp({ path: "/" });
     await settle();
-    expect(v.fetchStub.mock.calls).toEqual([]);
+    expect(v.fetchStub.mock.calls.map((c) => String(c[0])).filter((u) => u.includes("/api/weaves/"))).toEqual([]);
   });
 
   it("offers the main page from a path that is no page at all", async () => {
@@ -494,5 +502,242 @@ describe("the other routes (spec §3.1)", () => {
     await settle();
     expect([v.container.textContent, v.container.querySelector("a")!.getAttribute("href")])
       .toEqual(["LoomNo such page. Go to the main page.", "/"]);
+  });
+});
+
+// --- The main page (spec §4, §6) --------------------------------------------
+
+const GUIDELINES_URL = `${BASE}/api/guidelines`;
+const LOBBY_WEAVE_URL = `${BASE}/api/weaves/${LOBBY.weaveId}`;
+const OPEN_REQUESTS_URL = `${BASE}/api/requests?status=open&limit=1000`;
+const LEGACY_LOOKUP = `${BASE}/api/weaves/${SECRET}/lookup`;
+
+/** The request headers the stub was called with for one URL — how "read with the stored token" is
+ *  observed, rather than inferred from the answer coming back. */
+function headersOf(stub: ReturnType<typeof stubFetch>, url: string): Record<string, string> {
+  const call = stub.mock.calls.find((c) => String(c[0]) === url);
+  return (call?.[1]?.headers ?? {}) as Record<string, string>;
+}
+
+describe("the persistence notice (spec §6)", () => {
+  function mountBar() {
+    const notice = createPersistenceNotice();
+    const view = render(<PersistenceBar notice={notice} />);
+    return { ...view, notice, bars: () => view.container.querySelectorAll(".persistence-bar").length };
+  }
+
+  it("stays out of the way while writes are persisting", () => {
+    expect(mountBar().bars()).toBe(0);
+  });
+
+  it("appears the first time a write reports that nothing is being saved", async () => {
+    const v = mountBar();
+    v.notice.note("memory");
+    await flush();
+    expect(v.bars()).toBe(1);
+  });
+
+  it("is one bar per page load, however many later writes fail", async () => {
+    const v = mountBar();
+    v.notice.note("memory");
+    await flush();
+    v.notice.note("memory");
+    await flush();
+    expect(v.bars()).toBe(1);
+  });
+
+  it("goes away when it is dismissed", async () => {
+    const v = mountBar();
+    v.notice.note("memory");
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    await flush();
+    expect(v.bars()).toBe(0);
+  });
+
+  it("says what is happening in the human's terms, never in the browser's", async () => {
+    const v = mountBar();
+    v.notice.note("memory");
+    await flush();
+    const text = v.container.textContent ?? "";
+    expect([/quota/i.test(text), /localstorage/i.test(text),
+      text.includes("This browser is not saving anything for this site")]).toEqual([false, false, true]);
+  });
+});
+
+describe("the instance guidelines (spec §4.3)", () => {
+  const RULES = Array.from({ length: 20 }, (_, i) => `rule ${i + 1}`).join("\n");
+  function mountGuidelines(text: string) {
+    const fetchStub = stubFetch({ [GUIDELINES_URL]: () => json({ guidelines: text }) });
+    const client = new LoomClient({ baseUrl: BASE, allowInsecure: true, fetch: fetchStub as unknown as typeof fetch });
+    return { ...render(<InstanceGuidelines client={client} />), fetchStub };
+  }
+
+  it("renders the text as Markdown, through the renderer that escapes HTML", async () => {
+    const v = mountGuidelines("**house rules**");
+    await flush();
+    expect(v.container.querySelector("strong")?.textContent).toBe("house rules");
+  });
+
+  it("collapses a long text at twelve lines", async () => {
+    const v = mountGuidelines(RULES);
+    await flush();
+    const text = v.container.textContent ?? "";
+    expect([text.includes("rule 12"), text.includes("rule 13")]).toEqual([true, false]);
+  });
+
+  it("shows the rest once Show all is clicked", async () => {
+    const v = mountGuidelines(RULES);
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: "Show all" }));
+    await flush();
+    expect(v.container.textContent).toContain("rule 20");
+  });
+
+  it("offers no Show all for a text that fits", async () => {
+    mountGuidelines("rule 1\nrule 2");
+    await flush();
+    expect(screen.queryByRole("button", { name: "Show all" })).toBeNull();
+  });
+
+  it("renders nothing at all when the instance has no guidelines", async () => {
+    const v = mountGuidelines("");
+    await flush();
+    expect(v.container.innerHTML).toBe("");
+  });
+});
+
+describe("the Lobby summary (spec §4.4)", () => {
+  /** Three participants, two of them carrying a profile — the "listeners" of §4.4. */
+  const people = (n: number, listeners: number) => Array.from({ length: n }, (_, i) => ({
+    ...JOINED.participant, id: `p${i}`, name: `p${i}`, capabilities: i < listeners ? { runtime: "claude-code" } : null,
+  }));
+  const COUNTS: Routes = {
+    [LOBBY_WEAVE_URL]: () => json({ ...weaveInfo(LOBBY.weaveId, "Lobby"), participants: people(3, 2) }),
+    [OPEN_REQUESTS_URL]: () => json({ requests: [{ id: "r1" }] }),
+  };
+  function mountSummary(opts: { routes?: Routes; storage?: KeyValueStorage } = {}) {
+    const fetchStub = stubFetch(opts.routes ?? {});
+    const client = new LoomClient({ baseUrl: BASE, allowInsecure: true, fetch: fetchStub as unknown as typeof fetch });
+    const storage = opts.storage ?? memoryStorage();
+    return { ...render(<LobbySummary client={client} storage={storage} lobby={LOBBY} />), fetchStub, storage };
+  }
+  function joinedStorage() {
+    const storage = memoryStorage();
+    setIdentity(storage, LOBBY.weaveId, { token: "participant-token", participantId: "p0", name: "dana" });
+    return storage;
+  }
+
+  it("shows the title and what the Lobby is, and reads nothing, without a Lobby identity", async () => {
+    const v = mountSummary();
+    await settle();
+    expect([v.container.textContent?.includes("Lobby"),
+      !!screen.queryByText("Every agent on this instance is here; join to see who and what is being asked for."),
+      v.fetchStub.mock.calls.length]).toEqual([true, true, 0]);
+  });
+
+  it("counts participants, listeners and open requests once this browser holds a Lobby token", async () => {
+    const v = mountSummary({ storage: joinedStorage(), routes: COUNTS });
+    await settle();
+    expect([...v.container.querySelectorAll(".lobby-counts li")].map((li) => li.textContent))
+      .toEqual(["3 participants", "2 listeners", "1 open request"]);
+  });
+
+  it("reads those counts with the stored token", async () => {
+    const v = mountSummary({ storage: joinedStorage(), routes: COUNTS });
+    await settle();
+    expect(headersOf(v.fetchStub, LOBBY_WEAVE_URL)["authorization"]).toBe("Bearer participant-token");
+  });
+});
+
+describe("the main page (spec §4)", () => {
+  function legacyStore() {
+    const storage = memoryStorage();
+    storage.set(legacyKey(SECRET), JSON.stringify({ token: "legacy-token", participantId: "p-old" }));
+    return storage;
+  }
+  /** The page's own signal, plus a count of the bumps its writers made through it. */
+  function countingSignal() {
+    const inner = createWeavesSignal();
+    let bumps = 0;
+    const signal: WeavesSignal = { bump: () => { bumps++; inner.bump(); }, subscribe: inner.subscribe };
+    return { signal, bumps: () => bumps };
+  }
+
+  it("keeps the rest of the page when the guidelines cannot be read", async () => {
+    const v = mountApp({ path: "/", routes: { [GUIDELINES_URL]: () => json({ code: "internal", message: "boom" }, 500) } });
+    await settle();
+    expect([v.container.querySelector(".lobby-summary")?.textContent?.includes("Lobby"),
+      !!screen.queryByRole("heading", { name: "Join the Lobby" })]).toEqual([true, true]);
+  });
+
+  it("says the instance has no Lobby yet, and offers no way in", async () => {
+    mountApp({ path: "/", routes: { [LOBBY_URL]: () => json({ code: "weave_not_found", message: "No lobby" }, 404) } });
+    await settle();
+    expect([!!screen.queryByText("This instance has no Lobby yet."),
+      !!screen.queryByRole("heading", { name: "Join the Lobby" }),
+      !!screen.queryByRole("link", { name: "Open the Lobby" })]).toEqual([true, false, false]);
+  });
+
+  it("offers the join form to a browser that holds no Lobby identity", async () => {
+    mountApp({ path: "/" });
+    await settle();
+    expect(!!screen.queryByRole("heading", { name: "Join the Lobby" })).toBe(true);
+  });
+
+  it("offers Open the Lobby, naming the participant, to a browser that already joined", async () => {
+    const storage = memoryStorage();
+    setIdentity(storage, LOBBY.weaveId, { token: "participant-token", participantId: "p-dana", name: "dana" });
+    const v = mountApp({ path: "/", storage });
+    await settle();
+    expect([screen.queryByRole("link", { name: "Open the Lobby" })?.getAttribute("href"),
+      v.container.querySelector(".lobby-open")?.textContent,
+      !!screen.queryByRole("heading", { name: "Join the Lobby" })])
+      .toEqual(["/lobby", "You are in the Lobby as dana. Open the Lobby", false]);
+  });
+
+  it("offers the form again, and says why, for a Lobby identity that stopped working", async () => {
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, LOBBY.weaveId, { identity: "invalid", title: "Lobby" });
+    mountApp({ path: "/", storage });
+    await settle();
+    expect([!!screen.queryByRole("heading", { name: "Join the Lobby" }),
+      !!screen.queryByText("The identity this browser had in the Lobby stopped working — join again.")])
+      .toEqual([true, true]);
+  });
+
+  it("resolves the legacy entries this browser still holds, and says so per entry written", async () => {
+    const w = countingSignal();
+    mountApp({ path: "/", storage: legacyStore(), weaves: w.signal,
+      routes: { [LEGACY_LOOKUP]: () => json({ weaveId: OTHER }) } });
+    const atMount = w.bumps();
+    await settle();
+    expect([atMount, w.bumps()]).toEqual([0, 1]);
+  });
+
+  it("starts that pass once per page load, not once per render", async () => {
+    // A bump re-renders this page, and a second pass would re-walk keys the first is still writing.
+    // The lookup is held open on purpose, so the legacy key is still there for a second pass to find.
+    let release: (r: Response) => void = () => {};
+    const gate = new Promise<Response>((r) => { release = r; });
+    const w = countingSignal();
+    const v = mountApp({ path: "/", storage: legacyStore(), weaves: w.signal, routes: { [LEGACY_LOOKUP]: () => gate } });
+    await flush();
+    w.signal.bump();
+    await flush();
+    w.signal.bump();
+    await flush();
+    const during = v.calls(LEGACY_LOOKUP);
+    release(json({ weaveId: OTHER }));
+    await settle();
+    expect([during, v.calls(LEGACY_LOOKUP)]).toEqual([1, 1]);
+  });
+
+  it("renders the Lobby in place after a join from here whose credential did not persist", async () => {
+    installThrowingLocalStorage();
+    const v = mountApp({ path: "/", storage: browserStorage() });
+    await settle();
+    await v.joinAs("dana");
+    expect([v.iAm(), v.writable(), location.pathname]).toEqual(["dana", true, "/"]);
   });
 });
