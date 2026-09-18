@@ -26,6 +26,34 @@ function installLocalStorage() {
   Object.defineProperty(globalThis, "localStorage", { value: api, configurable: true, writable: true });
   return { raw, api, setMode: (m: Mode) => { mode = m; } };
 }
+/**
+ * Which part of a store that is not merely full but **unreadable** refuses. Blocked site data is
+ * the primary scenario of §6, and it does not arrive as a tidy `QuotaExceededError`: the
+ * `localStorage` accessor itself can throw, `getItem` can throw, and enumeration (`length`/`key`)
+ * can throw — each on its own, each guarded separately in `browserStorage`.
+ */
+type Hostile = "accessor" | "getItem" | "enumeration";
+
+function installHostileLocalStorage(how: Hostile) {
+  const raw = new Map<string, string>();
+  const blocked = () => { throw new Error("The operation is insecure."); };
+  const api = {
+    getItem: (k: string) => (how === "getItem" ? blocked() : raw.get(k) ?? null),
+    setItem: (k: string, v: string) => { raw.set(k, v); },
+    removeItem: (k: string) => { raw.delete(k); },
+    key: (i: number) => (how === "enumeration" ? blocked() : [...raw.keys()][i] ?? null),
+    get length(): number { return how === "enumeration" ? (blocked() as never) : raw.size; },
+    clear: () => raw.clear(),
+  };
+  if (how === "accessor") {
+    // The property itself throws on read — what a context that refuses storage outright looks like.
+    Object.defineProperty(globalThis, "localStorage", { get: () => blocked() as never, configurable: true });
+  } else {
+    Object.defineProperty(globalThis, "localStorage", { value: api, configurable: true, writable: true });
+  }
+  return { raw };
+}
+
 afterEach(() => { Reflect.deleteProperty(globalThis as object, "localStorage"); });
 
 describe("memoryStorage", () => {
@@ -56,6 +84,16 @@ describe("browserStorage write verdict", () => {
     const s = browserStorage();
     expect(s.set("k", "v")).toBe("memory");     // a 'did not throw' check would say durable here
     expect(s.get("k")).toBe("v");
+  });
+
+  it("is durable when setItem threw but the store already held that very value", () => {
+    // The read-back is the verdict, not the throw: the value the caller asked for is in the store,
+    // so a page that reloaded would find it — nothing has been lost and nothing needs a warning.
+    const ls = installLocalStorage();
+    const s = browserStorage();
+    s.set("k", "v");
+    ls.setMode("throw");
+    expect([s.set("k", "v"), ls.raw.get("k")]).toEqual(["durable", "v"]);
   });
 
   it("judges each key on its own", () => {
@@ -90,12 +128,14 @@ describe("browserStorage read precedence", () => {
     expect(ls.raw.get("k")).toBe("v");
   });
 
-  it("keys() includes a key that exists only as an override", () => {
+  it("keys() lists a key whose write never reached localStorage", () => {
+    // What it proves is the pair: the page lists the key, and the browser does not hold it. A bare
+    // `toContain` would pass on the in-memory fallback alone and say nothing about either.
     const ls = installLocalStorage();
     ls.setMode("throw");
     const s = browserStorage();
     s.set("k", "v");
-    expect(s.keys()).toContain("k");
+    expect([s.keys().includes("k"), ls.raw.has("k")]).toEqual([true, false]);
   });
 
   it("a later successful write clears the override", () => {
@@ -176,5 +216,63 @@ describe("browserStorage when localStorage cannot be consulted", () => {
     s.remove("k");                              // getItem answers null: confirmed gone
     expect(s.get("k")).toBeNull();
     expect(s.keys()).not.toContain("k");
+  });
+});
+
+describe("browserStorage under a hostile localStorage", () => {
+  const MODES: Hostile[] = ["accessor", "getItem", "enumeration"];
+
+  // A write is only ever `durable` on a read-back that succeeded, so a store whose *reads* throw
+  // can never confirm one — however willingly it accepted the `setItem`.
+  for (const how of ["accessor", "getItem"] as const) {
+    it(`reports memory, and still reads the value back, when the ${how} throws`, () => {
+      installHostileLocalStorage(how);
+      const s = browserStorage();
+      expect([s.set("k", "v"), s.get("k")]).toEqual(["memory", "v"]);
+    });
+  }
+
+  it("keeps a write durable when only enumeration throws: the listing is what is lost, not the value", () => {
+    const ls = installHostileLocalStorage("enumeration");
+    const s = browserStorage();
+    expect([s.set("k", "v"), s.get("k"), ls.raw.get("k")]).toEqual(["durable", "v", "v"]);
+  });
+
+  for (const how of MODES) {
+    it(`a removal reads as absent and drops out of keys() when the ${how} throws`, () => {
+      installHostileLocalStorage(how);
+      const s = browserStorage();
+      s.set("k", "v");
+      s.remove("k");
+      expect([s.get("k"), s.keys().includes("k")]).toEqual([null, false]);
+    });
+
+    it(`answers every call without throwing when the ${how} throws`, () => {
+      installHostileLocalStorage(how);
+      const s = browserStorage();
+      expect(() => {
+        s.set("k", "v"); s.get("k"); s.keys(); s.remove("k"); s.get("k"); s.keys();
+      }).not.toThrow();
+    });
+  }
+
+  it("keys() still says what this page wrote, minus what it removed, when enumeration throws", () => {
+    installHostileLocalStorage("enumeration");
+    const s = browserStorage();
+    s.set("a", "1");
+    s.set("b", "2");
+    s.remove("b");
+    expect(s.keys()).toEqual(["a"]);
+  });
+
+  it("keys() answers from the overrides and their tombstones when reads throw as well", () => {
+    // Every write here is an override (nothing can be read back to confirm it) and the removal is a
+    // tombstone, so the listing is the override half of `keys()` and nothing else.
+    installHostileLocalStorage("getItem");
+    const s = browserStorage();
+    s.set("a", "1");
+    s.set("b", "2");
+    s.remove("b");
+    expect(s.keys()).toEqual(["a"]);
   });
 });
