@@ -10,11 +10,14 @@ import { InstanceGuidelines } from "./InstanceGuidelines.js";
 import { LobbySummary } from "./LobbySummary.js";
 import { JoinLobbyForm } from "./JoinLobbyForm.js";
 
-/** The Lobby pointer: one of the page's four independent cells (spec §6). */
-type LobbyCell = { kind: "loading" } | { kind: "lobby"; lobby: Lobby } | { kind: "error"; message: string };
-
-/** The instance's own answer — it has no Lobby — rather than a failed read. §4.1 is then hidden. */
-const NO_LOBBY = "This instance has no Lobby yet.";
+/**
+ * The Lobby pointer: one of the page's four independent cells (spec §6). `none` is the instance's
+ * own answer — it has no Lobby yet — and is deliberately not an `error`: nothing went wrong, §4.1 is
+ * simply hidden, and the summary says so in its own voice.
+ */
+type LobbyCell =
+  | { kind: "loading" } | { kind: "lobby"; lobby: Lobby }
+  | { kind: "none" } | { kind: "error"; message: string };
 
 /**
  * The main page (spec §4): what this instance is, how to get into the Lobby, what this browser
@@ -43,9 +46,9 @@ export function MainPage({ client, storage, notice, weaves, openInPlace }: Route
       (lobby) => { if (live) setCell({ kind: "lobby", lobby }); },
       (e: unknown) => {
         if (!live) return;
-        const message = e instanceof LoomClientError && e.code === "weave_not_found"
-          ? NO_LOBBY : e instanceof Error ? e.message : String(e);
-        setCell({ kind: "error", message });
+        setCell(e instanceof LoomClientError && e.code === "weave_not_found"
+          ? { kind: "none" }
+          : { kind: "error", message: e instanceof Error ? e.message : String(e) });
       },
     );
     return () => { live = false; };
@@ -81,7 +84,7 @@ export function MainPage({ client, storage, notice, weaves, openInPlace }: Route
       <h1>Loom</h1>
       <InstanceGuidelines client={client} />
       <LobbySummary client={client} storage={storage} lobby={lobby}
-        error={cell.kind === "error" ? cell.message : undefined} />
+        error={cell.kind === "error" ? cell.message : undefined} noLobby={cell.kind === "none"} />
       {lobby && (joined ? (
         joinedAs !== undefined
           ? <p class="lobby-open">You are in the Lobby as <strong>{joinedAs}</strong>. <a href="/lobby">Open the Lobby</a></p>

@@ -4,6 +4,7 @@ import type { RouteDeps } from "../app.js";
 import type { SessionTarget } from "../session.js";
 import { useSession } from "../useSession.js";
 import { WeaveView } from "./WeaveView.js";
+import { PersistenceBar } from "./PersistenceBar.js";
 import { JoinLobbyForm } from "./main/JoinLobbyForm.js";
 
 /**
@@ -119,5 +120,11 @@ function WeaveMount({ client, storage, notice, target, lobby, onJoined }:
         </div>
       )
       : undefined;
-  return <WeaveView session={session} state={state} noCredential={noCredential} />;
+  // The §6 notice belongs to the page, not to the main page's layout. A join made from `/` whose
+  // credential did not persist replaces `MainPage` — and its bar — with this route in the very same
+  // render, and a `/w/<secret>` load writes its own entry here (§10.9), so without this seam the one
+  // warning the human needs would be latched and never drawn. `App` hands every route the same
+  // notice and mounts one route at a time, so it stays one bar, and one dismissal, per page load.
+  return <WeaveView session={session} state={state} banner={<PersistenceBar notice={notice} />}
+    noCredential={noCredential} />;
 }

@@ -489,12 +489,13 @@ describe("the other routes (spec §3.1)", () => {
   });
 
   it("mounts no session on the main page", async () => {
-    // The main page has public reads of its own (the guidelines, the Lobby pointer); what it must
-    // not do is load a Weave. Every session read is under `/api/weaves/`, so their absence is the
-    // assertion, rather than "no request at all", which the page outgrew.
+    // The main page has two public reads of its own now, so "no request at all" is no longer the
+    // rule — but the exact set is, and it still fails the moment a session (or anything else) adds
+    // a call. An anonymous visitor asks for the guidelines and where the Lobby is, and nothing else.
     const v = mountApp({ path: "/" });
     await settle();
-    expect(v.fetchStub.mock.calls.map((c) => String(c[0])).filter((u) => u.includes("/api/weaves/"))).toEqual([]);
+    expect([...new Set(v.fetchStub.mock.calls.map((c) => String(c[0])))].sort())
+      .toEqual([`${BASE}/api/guidelines`, `${BASE}/api/lobby`]);
   });
 
   it("offers the main page from a path that is no page at all", async () => {
@@ -636,6 +637,20 @@ describe("the Lobby summary (spec §4.4)", () => {
       v.fetchStub.mock.calls.length]).toEqual([true, true, 0]);
   });
 
+  it("says so while the counts it is entitled to are still in flight", async () => {
+    // A cell with a credential and no answer yet is `loading`, not empty (spec §6): a browser that
+    // holds a token must not be shown the same nothing as one that holds none.
+    let release = () => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    const v = mountSummary({ storage: joinedStorage(), routes: {
+      ...COUNTS, [LOBBY_WEAVE_URL]: async () => { await gate; return json(weaveInfo(LOBBY.weaveId, "Lobby")); } } });
+    await flush();
+    const seen = v.container.querySelector(".lobby-summary")!.textContent ?? "";
+    release();
+    await settle();
+    expect(seen).toContain("Loading…");
+  });
+
   it("counts participants, listeners and open requests once this browser holds a Lobby token", async () => {
     const v = mountSummary({ storage: joinedStorage(), routes: COUNTS });
     await settle();
@@ -677,6 +692,14 @@ describe("the main page (spec §4)", () => {
     expect([!!screen.queryByText("This instance has no Lobby yet."),
       !!screen.queryByRole("heading", { name: "Join the Lobby" }),
       !!screen.queryByRole("link", { name: "Open the Lobby" })]).toEqual([true, false, false]);
+  });
+
+  it("says it in the instance's own voice, not as a failed read", async () => {
+    // "There is no Lobby" is this instance's answer (spec §4.4), not something that went wrong, and
+    // the page must not dress it in the colour it uses for failures.
+    const v = mountApp({ path: "/", routes: { [LOBBY_URL]: () => json({ code: "weave_not_found", message: "No lobby" }, 404) } });
+    await settle();
+    expect(v.container.querySelector(".lobby-summary .error")).toBeNull();
   });
 
   it("offers the join form to a browser that holds no Lobby identity", async () => {
@@ -739,5 +762,62 @@ describe("the main page (spec §4)", () => {
     await settle();
     await v.joinAs("dana");
     expect([v.iAm(), v.writable(), location.pathname]).toEqual(["dana", true, "/"]);
+  });
+});
+
+describe("the not-persisting notice follows the page (spec §6)", () => {
+  const bars = (c: ParentNode) => c.querySelectorAll(".persistence-bar").length;
+  /** A Weave page reached by its own link, which writes its §10.9 entry as it loads. */
+  const secretRoutes: Routes = {
+    [`${BASE}/api/weaves/${SECRET}/lookup`]: () => json({ weaveId: OTHER }),
+    ...weaveRoutes(OTHER, "Test Weave"),
+  };
+
+  it("warns on the Lobby the in-place join just rendered — the page the warning is about", async () => {
+    // The join is the flow §4.1 raises the notice for, and it is also the flow that replaces the
+    // main page: the bar has to exist on the destination or nobody is ever told.
+    installThrowingLocalStorage();
+    const v = mountApp({ path: "/", storage: browserStorage() });
+    await settle();
+    await v.joinAs("dana");
+    expect(bars(v.container)).toBe(1);
+  });
+
+  it("lets that warning be dismissed where it is shown", async () => {
+    installThrowingLocalStorage();
+    const v = mountApp({ path: "/", storage: browserStorage() });
+    await settle();
+    await v.joinAs("dana");
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    await flush();
+    expect(bars(v.container)).toBe(0);
+  });
+
+  it("warns on a /w/<secret> page whose own entry write did not persist", async () => {
+    installThrowingLocalStorage();
+    const v = mountApp({ path: `/w/${SECRET}`, storage: browserStorage(), routes: secretRoutes });
+    await settle();
+    expect(bars(v.container)).toBe(1);
+  });
+
+  it("stays quiet on a Weave page whose writes persisted", async () => {
+    const v = mountApp({ path: `/w/${SECRET}`, routes: secretRoutes });
+    await settle();
+    expect(bars(v.container)).toBe(0);
+  });
+
+  it("is one notice for the page: dismissed on the main page, it does not come back on the Weave", async () => {
+    // Every route is handed the same notice and only one is mounted at a time, so the latch — not a
+    // count of components — is what makes it one bar and one dismissal per page load.
+    installThrowingLocalStorage();
+    const storage = browserStorage();
+    storage.set(legacyKey(SECRET), JSON.stringify({ token: "legacy-token" }));
+    const v = mountApp({ path: "/", storage, routes: { [`${BASE}/api/weaves/${SECRET}/lookup`]: () => json({ weaveId: OTHER }) } });
+    await settle();                       // the migration's non-durable write raises it on `/`
+    const onMain = bars(v.container);
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    await flush();
+    await v.joinAs("dana");
+    expect([onMain, bars(v.container)]).toEqual([1, 0]);
   });
 });

@@ -21,13 +21,17 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
  * token** or not at all. A stored *secret* is deliberately not used here either — the Lobby's secret
  * belongs to an instance keeper, and this section is not the place to spend one.
  *
- * The pointer itself is the page's cell, not this one's: `lobby` is the answer and `error` is what
- * went wrong reading it, including the instance's own "there is no Lobby yet".
+ * The pointer itself is the page's cell, not this one's: `lobby` is the answer, `error` is what went
+ * wrong reading it, and `noLobby` is the instance saying it has none — which is an answer rather than
+ * a failure, and is worded and coloured as one.
  */
-export function LobbySummary({ client, storage, lobby, error }: {
+export function LobbySummary({ client, storage, lobby, error, noLobby }: {
   client: LoomClient; storage: KeyValueStorage;
   lobby?: { weaveId: string; title: string };
+  /** A failed *read* of the pointer, in the server's own words. */
   error?: string;
+  /** The instance's own answer — it has no Lobby yet. Not an error, and not coloured as one. */
+  noLobby?: boolean;
 }) {
   const [counts, setCounts] = useState<Counts | undefined>();
   const [countsError, setCountsError] = useState<string | undefined>();
@@ -60,25 +64,30 @@ export function LobbySummary({ client, storage, lobby, error }: {
   return (
     <section class="lobby-summary">
       <h2>The Lobby</h2>
-      {error !== undefined
-        ? <p class="error">{error}</p>
-        : lobby === undefined
-          ? <p class="muted">Loading…</p>
-          : (
-            <>
-              <p class="lobby-summary-title">{lobby.title}</p>
-              {token === undefined
-                ? <p class="muted">Every agent on this instance is here; join to see who and what is being asked for.</p>
-                : counts !== undefined && (
-                  <ul class="lobby-counts">
-                    <li>{plural(counts.participants, "participant")}</li>
-                    <li>{plural(counts.listeners, "listener")}</li>
-                    <li>{plural(counts.open, "open request")}</li>
-                  </ul>
-                )}
-              {countsError !== undefined && <p class="error">{countsError}</p>}
-            </>
-          )}
+      {noLobby
+        ? <p class="muted">This instance has no Lobby yet.</p>
+        : error !== undefined
+          ? <p class="error">{error}</p>
+          : lobby === undefined
+            ? <p class="muted">Loading…</p>
+            : (
+              <>
+                <p class="lobby-summary-title">{lobby.title}</p>
+                {token === undefined
+                  ? <p class="muted">Every agent on this instance is here; join to see who and what is being asked for.</p>
+                  // A cell with a credential and no answer yet is loading, not empty (spec §6).
+                  : counts !== undefined
+                    ? (
+                      <ul class="lobby-counts">
+                        <li>{plural(counts.participants, "participant")}</li>
+                        <li>{plural(counts.listeners, "listener")}</li>
+                        <li>{plural(counts.open, "open request")}</li>
+                      </ul>
+                    )
+                    : countsError === undefined && <p class="muted">Loading…</p>}
+                {countsError !== undefined && <p class="error">{countsError}</p>}
+              </>
+            )}
     </section>
   );
 }
