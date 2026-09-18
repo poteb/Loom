@@ -82,18 +82,3 @@ export function browserStorage(): KeyValueStorage {
     },
   };
 }
-
-/** The `/w/<secret>` identities this browser holds: one stored token per Weave it has joined. */
-export function storedWeaves(storage: KeyValueStorage): { secret: string; token: string }[] {
-  const out: { secret: string; token: string }[] = [];
-  for (const key of storage.keys()) {
-    if (!key.startsWith("loom:")) continue;
-    const raw = storage.get(key);
-    if (!raw) continue;
-    try {
-      const { token } = JSON.parse(raw) as { token?: string };
-      if (token) out.push({ secret: key.slice("loom:".length), token });
-    } catch { /* a corrupt entry is simply not a Weave this browser can offer */ }
-  }
-  return out;
-}

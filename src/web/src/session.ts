@@ -1,6 +1,7 @@
 import { LoomClient, LoomClientError, type Lobby, type LoomEvent, type LoomRequest, type OpenRequestInput,
   type Participant, type StreamHandle, type Thread, type Weave } from "@loom/client";
-import { storedWeaves, type KeyValueStorage, type WriteResult } from "./storage.js";
+import type { KeyValueStorage, WriteResult } from "./storage.js";
+import { storedWeaves } from "./weaves-store.js";
 import { applyEvent, applySnapshot, isRequestEvent, type Requests } from "./requests-state.js";
 
 export type Connection = "connecting" | "open" | "reconnecting" | "closed";
@@ -536,7 +537,10 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
     },
     async targets() {
       const out: TargetWeave[] = [];
-      for (const { secret, token } of storedWeaves(storage)) {
+      for (const w of storedWeaves(storage)) {
+        // Only the legacy shape today; Task 4 gives id-keyed entries a target of their own.
+        if (w.kind !== "legacy") continue;
+        const { secret, token } = w;
         // One Weave this browser can no longer reach (revoked token, deleted Weave) must not cost
         // the picker the others, so each is resolved on its own and a failure simply omits it.
         try {
