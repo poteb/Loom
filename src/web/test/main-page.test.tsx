@@ -845,6 +845,24 @@ describe("the not-persisting notice follows the page (spec §6)", () => {
     expect(bars(v.container)).toBe(0);
   });
 
+  // The §2.6 corner the bar used to be invisible in: the token is dead, there is no secret behind
+  // it, and the invalidation that recorded that reached memory alone. The page ends at
+  // `no-credential`, which is a state the bar has to survive or nobody is ever told.
+  it("warns on a no-credential page whose invalidation reached memory alone", async () => {
+    installThrowingLocalStorage();
+    const storage = browserStorage();
+    saveWeaveEntry(storage, OTHER, { token: "dead-token", participantId: "p-gone" });
+    const refused = () => json({ code: "invalid_token", message: "Credential is not valid" }, 401);
+    const v = mountApp({ path: `/weave/${OTHER}`, storage, routes: {
+      ...weaveRoutes(OTHER, "Test Weave"),
+      [`${BASE}/api/weaves/${OTHER}/events?since=0&limit=1000`]: refused,
+      [weaveUrl(OTHER)]: refused,
+    } });
+    await settle();
+    expect([bars(v.container), !!screen.queryByText("Your identity in this Weave is no longer valid")])
+      .toEqual([1, true]);
+  });
+
   it("is one notice for the page: dismissed on the main page, it does not come back on the Weave", async () => {
     // Every route is handed the same notice and only one is mounted at a time, so the latch — not a
     // count of components — is what makes it one bar and one dismissal per page load.

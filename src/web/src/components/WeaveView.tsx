@@ -39,9 +39,13 @@ export function WeaveView({ session, state, banner, noCredential }: {
   // rather than provoked by typing a message the session cannot post.
   const [askName, setAskName] = useState(false);
 
-  if (state.status === "no-credential") return noCredential ?? <NoCredential state={state} />;
-  if (state.status === "loading") return <div class="center">Loading…</div>;
-  if (state.status === "error") return <div class="center error"><h1>Loom</h1><p>{state.error}</p></div>;
+  // The banner rides on every state the page can be in, not just the loaded one. The case that
+  // forces it: a §2.6 invalidation whose write reached only memory, on an entry with no secret,
+  // ends here at `no-credential` — and without the bar the page says the identity is dead and never
+  // says the browser is keeping nothing, which is the one thing the human can act on (§6).
+  if (state.status === "no-credential") return <>{banner}{noCredential ?? <NoCredential state={state} />}</>;
+  if (state.status === "loading") return <>{banner}<div class="center">Loading…</div></>;
+  if (state.status === "error") return <>{banner}<div class="center error"><h1>Loom</h1><p>{state.error}</p></div></>;
 
   const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
   // Every mutation funnels through here so none of them can swallow a failure or leave an unhandled

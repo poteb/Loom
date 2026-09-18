@@ -405,6 +405,26 @@ describe("WeaveView (spec §2.6, §2.7, §3.3)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
     expect(screen.getByText("Choose a name")).toBeTruthy();
   });
+
+  // The §6 bar is the caller's banner, and every state this view can return is a state the bar may
+  // have to be seen in — a no-credential page whose invalidation only reached memory most of all.
+  for (const [label, st] of [
+    ["no-credential", noCredentialState()],
+    ["loading", state({ status: "loading", weave: undefined, me: undefined })],
+    ["error", state({ status: "error", error: "boom", weave: undefined, me: undefined })],
+    ["ready", state()],
+  ] as const) {
+    it(`renders the banner on the ${label} page, exactly once`, () => {
+      const { container } = render(<WeaveView session={session()} state={st} banner={<div class="bar">note</div>} />);
+      expect(container.querySelectorAll(".bar").length).toBe(1);
+    });
+  }
+
+  it("renders the banner above the caller's own no-credential element too", () => {
+    const { container } = render(<WeaveView session={session()} state={noCredentialState()}
+      banner={<div class="bar">note</div>} noCredential={<p>Join the Lobby here</p>} />);
+    expect([container.firstElementChild!.className, container.querySelectorAll(".bar").length]).toEqual(["bar", 1]);
+  });
 });
 
 describe("GuidelinesPanel", () => {
