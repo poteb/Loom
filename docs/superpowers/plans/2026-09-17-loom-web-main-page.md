@@ -51,11 +51,29 @@
 >    ref stopped duplicate requests but never limited the total. The batch helper is gone entirely;
 >    `MyWeaves` now holds **one** `createRefreshQueue(6, …)` for the life of the mounted list, and
 >    the effect only claims keys and enqueues (Task 9).
+>
+> **Corrected during implementation (2026-09-18).** Three gaps the tasks found, folded into the text
+> below so this plan stays the record of what was built:
+>
+> 10. **The stored entry needed a `name`.** Spec §4.1 ("You are in the Lobby as `dana`") and §4.2
+>     ("joined as `dana`", from storage with no network) both need the name this browser joined
+>     under, and no task produced one. `WeaveEntry` gains `name?: string` and `setIdentity`'s `who`
+>     carries it, in the same single write; `invalidateIdentity` deletes it with the token; the
+>     load's ready-path save caches it once `me` resolves. Landed inside Task 8's commit, and
+>     consumed by Task 9's `foldRows` and Task 10's creator name (Tasks 3, 4, 6, 8, 9 and 10).
+> 11. **No task owned the notice on a Weave page.** Task 7 declared `WeaveView`'s `banner` and
+>     nothing ever passed one, so an in-place join — the very case §6 exists for — hid the bar.
+>     `WeaveRoute` now renders `<PersistenceBar notice={notice}/>` into that `banner` for all three
+>     Weave routes, sharing the page's one notice object (Tasks 7 and 8).
+> 12. **The DOM harness's base URL.** `new LoomClient({ baseUrl: "http://loom.test", allowInsecure: true })`
+>     throws `insecure_url` — the client allows plain `http:` on loopback hosts only
+>     ([`src/client/src/url.ts`](../../../src/client/src/url.ts)) — so the DOM tests use
+>     `https://loom.test` (Task 6 onward).
 
 ## Global Constraints
 
 - **No core rule change and no route authorization change.** `src/core` is not touched at all. `src/server` gains static `index.html` routes and one boot log line — nothing else. Any task that finds itself editing a `core` rule or an auth check has misread the spec.
-- **Storage key** `loom:weave:<weaveId>`; entry `{ token?, participantId?, identity?: "invalid", secret?, title?, archived?, lastOpenedAt? }`. `token`/`participantId` are the **identity**; `secret` is an **independent credential**; `title`/`archived` are a display cache; `lastOpenedAt` orders My Weaves.
+- **Storage key** `loom:weave:<weaveId>`; entry `{ token?, participantId?, name?, identity?: "invalid", secret?, title?, archived?, lastOpenedAt? }`. `token`/`participantId` are the **identity** and `name` is the name this browser joined under — a display cache that belongs to the identity, written with it and deleted with it; `secret` is an **independent credential**; `title`/`archived` are a display cache; `lastOpenedAt` orders My Weaves.
 - **`WriteResult = "durable" | "memory"`**, returned by `KeyValueStorage.set`. `browserStorage().set` attempts `localStorage.setItem` and then **verifies by reading back from `localStorage` itself**, never through `get` — `"durable"` when `localStorage.getItem(k) === v`, `"memory"` otherwise. `memoryStorage({ durable })` defaults to `"durable"`; `browserStorage`'s internal fallback is `memoryStorage({ durable: false })`.
 - **One storage instance (§2.4a invariant):** `browserStorage()` is called exactly once in the whole web package, in `src/web/src/main.tsx`, and the instance is passed to `App` → the main-page forms, My Weaves/`storedWeaves()`, and `useSession`/`createSession`. `RequestsPanel` needs no plumbing: it reaches storage only through `session.targets()`. A guard test asserts `browserStorage(` appears exactly once in `src/web/src` outside `storage.ts`. Tests keep injecting `memoryStorage()`.
 - **Storage that cannot be consulted is not storage that is empty.** `peek(k)` is three-valued: a `string` or `null` **only** from a successful `localStorage.getItem`, and `undefined` whenever the store is missing or throws. `undefined` therefore never confirms anything — a `set` under it is `"memory"` with an override, and a `remove` under it leaves a **tombstone**. Treating it as "absent" would drop the tombstone and resurrect the value the moment storage came back.
@@ -65,7 +83,7 @@
 - **Every entry write on the main page reports its `WriteResult`.** Join, creation, migration *and* every write My Weaves makes (the refresh's title/`archived` save and its `invalidateIdentity`) pass their verdict to `notice.note`, so the one-time notice of §6 covers all of them. `notice.note` is the only function ever passed as an `onWrite`. `forgetWeave` is the one write that reports nothing: `remove` returns `void`, and the tombstone rule above makes a failed removal read as absent for the rest of the page anyway.
 - **Legacy coexistence:** `loom:<secret>` entries stay readable forever. Migration is lazy (a `/w/<secret>` load, or the main page resolving them through the **public** `GET /api/weaves/:secret/lookup`), the id-keyed entry is written **first**, and the legacy key is removed **only** on a `"durable"` verdict. A `"memory"` verdict stops migration for the rest of the page. A failed lookup leaves the legacy entry alone. My Weaves folds a legacy and an id entry into one row when their `secret` matches, else when their `token` matches.
 - **The id-keyed entry is authoritative over a legacy duplicate.** Duplicates are a supported state, so migration merges through one pure `mergeLegacy(existing, legacy)`: an id entry with a **usable identity keeps it**; an entry marked `identity: "invalid"` **never takes the legacy identity** (invalidation deletes the dead token without recording it, so nothing can tell whether the legacy token is that same dead one — adopting it would loop the session through the 401 it just survived); an entry with no identity and no marker **adopts** the legacy one; in every case a missing `secret` is carried over. Never a blind merge: a leftover legacy key must not undo a rejoin.
-- **Invalid identity:** a `401 invalid_token` / `403 forbidden` on a token read, or a stored `participantId` absent from `participants`, **deletes `token` and `participantId` and sets `identity: "invalid"`**, keeping `secret`, `title`, `archived`, `lastOpenedAt`. A stored `secret` then becomes the reader (read-only, `readOnlyReason: "secret-fallback"`, join offered); with no secret the status is `no-credential`. A network failure invalidates nothing. **Nothing ever deletes a `secret`.** Only `Forget` deletes an entry.
+- **Invalid identity:** a `401 invalid_token` / `403 forbidden` on a token read, or a stored `participantId` absent from `participants`, **deletes `token`, `participantId` and `name` and sets `identity: "invalid"`**, keeping `secret`, `title`, `archived`, `lastOpenedAt`. A stored `secret` then becomes the reader (read-only, `readOnlyReason: "secret-fallback"`, join offered); with no secret the status is `no-credential`. A network failure invalidates nothing. **Nothing ever deletes a `secret`.** Only `Forget` deletes an entry.
 - **`target` union:** `{ kind: "secret"; secret } | { kind: "id"; weaveId }`. `reader` = the secret for a secret target; for an id target the stored token when usable, else the stored secret, else nothing (`status: "no-credential"`). A token target never calls `lookupWeave`.
 - **Routes:** `/` main page, `/lobby` (shortcut to the Lobby's id), `/weave/<uuid>`, `/w/<secret>` **unchanged in every respect**. The server serves `index.html` for exactly `/`, `/lobby`, `/lobby/`, `/weave/:id`, `/weave/:id/`, `/w/:secret`, `/w/:secret/`. **No SPA catch-all**: unknown paths keep the JSON `{ code: "not_found" }` 404, and an app built without `webDist` answers that 404 for all seven.
 - **Name rule** `^[A-Za-z0-9_.-]{1,32}$` (A-Z a-z 0-9 `_ . -`, 1–32), one exported constant shared by the join form, the create form and `NamePrompt`. `kind: "human"` fixed on both forms.
@@ -651,6 +669,9 @@ Produces:
 export type WeaveEntry = {
   token?: string; participantId?: string; identity?: "invalid";
   secret?: string; title?: string; archived?: boolean; lastOpenedAt?: string;
+  /** The name this browser is joined under: a display cache that belongs to the identity, so it is
+   *  written with the token and deleted with it. */
+  name?: string;
 };
 export type StoredWeave =
   | ({ kind: "id"; weaveId: string } & WeaveEntry)
@@ -671,9 +692,9 @@ export function saveWeaveEntry(storage: KeyValueStorage, weaveId: string, patch:
  */
 export function setIdentity(
   storage: KeyValueStorage, weaveId: string,
-  who: { token: string; participantId: string }, extra?: Partial<WeaveEntry>,
+  who: { token: string; participantId: string; name?: string }, extra?: Partial<WeaveEntry>,
 ): WriteResult;
-/** Deletes `token`/`participantId`, sets `identity: "invalid"`. Keeps `secret` and the display cache. */
+/** Deletes `token`/`participantId`/`name`, sets `identity: "invalid"`. Keeps `secret` and the display cache. */
 export function invalidateIdentity(storage: KeyValueStorage, weaveId: string): WriteResult;
 export function forgetWeave(storage: KeyValueStorage, weaveId: string): void;
 export function hasIdentity(e: WeaveEntry | undefined): e is WeaveEntry & { token: string; participantId: string };
@@ -719,7 +740,7 @@ export function isCredentialFailure(e: unknown): boolean;
   - `mergeLegacy` table — existing `{ token: "new", participantId: "pNew" }` + legacy `{ token: "old" }` → keeps `"new"`; existing `{ identity: "invalid", secret: "s" }` + legacy `{ token: "old" }` → **no** `token` and `identity` still `"invalid"`; existing `{ title: "T" }` (no identity, no marker) + legacy `{ token: "old", participantId: "pOld" }` → adopts both and keeps `title`; existing without `secret` → the legacy `secret` is carried over; existing **with** a `secret` → it is not overwritten; `existing === undefined` → the legacy identity and secret.
   - `readerFor` table — usable identity → `{ withToken: true }` and the token as the credential; `identity: "invalid"` with a `secret` → `{ withToken: false, readOnlyReason: "secret-fallback" }`; no identity but a `secret` → the same; neither → `undefined`.
   - `migrateLegacyOne` with no legacy key present → `undefined`, and nothing is written (counting double).
-  - `invalidateIdentity` deletes `token` and `participantId`, sets `identity: "invalid"`, and keeps `secret`, `title`, `archived`, `lastOpenedAt`.
+  - `invalidateIdentity` deletes `token`, `participantId` and `name`, sets `identity: "invalid"`, and keeps `secret`, `title`, `archived`, `lastOpenedAt`.
   - `hasIdentity` is false for `{}`, false for `{ token, participantId, identity: "invalid" }`, true for `{ token, participantId }`.
   - `forgetWeave` removes the key; `storedWeaves` no longer lists it.
   - Migration, durable: a legacy entry + a `lookup` returning an id → the id entry holds `token`, `participantId` and `secret`, and the legacy key is **gone**.
@@ -741,13 +762,16 @@ export function saveWeaveEntry(storage: KeyValueStorage, weaveId: string, patch:
 
 export function setIdentity(
   storage: KeyValueStorage, weaveId: string,
-  who: { token: string; participantId: string }, extra: Partial<WeaveEntry> = {},
+  who: { token: string; participantId: string; name?: string }, extra: Partial<WeaveEntry> = {},
 ): WriteResult {
   // Spread-minus, not `saveWeaveEntry`: a rejoin has to *clear* `identity`, and a merge cannot.
   // One write, `extra` included: two writes would let the credential persist while the secret beside
   // it did not (or the reverse), and leave the caller branching on the verdict of the wrong one.
+  // `name` travels inside `who` rather than in `extra`, because it is part of the identity: it is
+  // written with the token and deleted with it.
   const { identity: _dropped, ...rest } = readWeaveEntry(storage, weaveId) ?? {};
   const next: WeaveEntry = { ...rest, token: who.token, participantId: who.participantId };
+  if (who.name !== undefined) next.name = who.name;
   for (const [k, v] of Object.entries(extra)) if (v !== undefined) (next as Record<string, unknown>)[k] = v;
   return storage.set(weaveKey(weaveId), JSON.stringify(next));
 }
@@ -980,9 +1004,10 @@ export function useSession(
 ```ts
         onWrite(saveWeaveEntry(storage, weaveId!, {
           secret, title: info.weave.title, archived: !!info.weave.archivedAt, lastOpenedAt: new Date().toISOString(),
+          name: me?.participant.name,
         }));
 ```
-    (a `/w/<secret>` visit therefore writes an entry before any join — spec §10.9 — and only after a **successful** metadata read, so a failed load stores nothing.)
+    (a `/w/<secret>` visit therefore writes an entry before any join — spec §10.9 — and only after a **successful** metadata read, so a failed load stores nothing. `name` rides along in the same patch, with no extra write: it is how an entry written before that field existed, or one adopted from a legacy key, acquires its "joined as" line.)
   - `set({ status: "ready", …, readOnlyReason: picked.readOnlyReason })`.
   - the catch:
 ```ts
@@ -1004,7 +1029,7 @@ export function useSession(
       }
 ```
     with `let retriedWithSecret = false;` beside `generation`, reset to `false` at the top of `doLoad`'s successful path only when the load came from a token (`readingWithToken`).
-- [ ] **Step 4: Implement `join()` and `targets()`.** `join(name)` joins with `secret` (the target's, or the entry's on the fallback path) and throws `new LoomClientError("validation", "This session has no way to join")` when there is none; on success it calls `setIdentity(storage, weaveId!, { token: j.token, participantId: j.participant.id }, { secret, title: j.weave.title, lastOpenedAt: new Date().toISOString() })` — **one** write, so the verdict covers the identity and the secret together — reports it through `onWrite`, and keeps the rest of today's body (optimistic participant list, `deriveInvites`, `scheduleRefresh`) plus `readOnlyReason: undefined`. `targets()` iterates `storedWeaves(storage)`:
+- [ ] **Step 4: Implement `join()` and `targets()`.** `join(name)` joins with `secret` (the target's, or the entry's on the fallback path) and throws `new LoomClientError("validation", "This session has no way to join")` when there is none; on success it calls `setIdentity(storage, weaveId!, { token: j.token, participantId: j.participant.id, name: j.participant.name }, { secret, title: j.weave.title, lastOpenedAt: new Date().toISOString() })` — **one** write, so the verdict covers the identity, the name and the secret together — reports it through `onWrite`, and keeps the rest of today's body (optimistic participant list, `deriveInvites`, `scheduleRefresh`) plus `readOnlyReason: undefined`. `targets()` iterates `storedWeaves(storage)`:
 ```ts
       for (const w of storedWeaves(storage)) {
         // A target credential must pass `assertIsKeeperOf` in the target Weave, which a secret does
@@ -1104,7 +1129,7 @@ main page `onJoined` navigates to `/lobby` and `onJoinedInPlace` switches the ro
 a `weaves` prop here would be a prop nothing reads. The **creation** form is the opposite case (§4.5
 does not navigate), which is why Task 10 does take one.
 
-- [ ] **Step 1: Failing tests** in `main-page.test.tsx`. Build the injected client with a stubbed `fetch` (`new LoomClient({ baseUrl: "http://loom.test", allowInsecure: true, fetch: stub })`) so every case is a table of URL → response, and pass `onJoined`/`onJoinedInPlace` as `vi.fn()` spies — the form never touches `location`.
+- [ ] **Step 1: Failing tests** in `main-page.test.tsx`. Build the injected client with a stubbed `fetch` (`new LoomClient({ baseUrl: "https://loom.test", fetch: stub })` — **`https`**: the client allows plain `http:` on loopback hosts only, so `http://loom.test` throws `insecure_url` whatever `allowInsecure` says) so every case is a table of URL → response, and pass `onJoined`/`onJoinedInPlace` as `vi.fn()` spies — the form never touches `location`.
   - The form renders whatever the caller mounts it with; deciding *whether* to mount it is `hasIdentity`'s job at the two call sites, and the form asserts nothing about it.
   - Name validation at the boundaries: `a` valid, 32 chars valid, 33 chars invalid, `"a b"` invalid, `"a@b"` invalid; submit disabled while invalid.
   - The request body is `{ name, kind: "human" }` — `kind` is not a field on the form.
@@ -1119,7 +1144,8 @@ does not navigate), which is why Task 10 does take one.
     const j = await client.joinLobby({ name, kind: "human" });
     // One write, before anything that could destroy this JS context, and its verdict decides
     // whether leaving is safe at all (spec §3.1).
-    const result = setIdentity(storage, j.weaveId, { token: j.token, participantId: j.participant.id },
+    const result = setIdentity(storage, j.weaveId,
+      { token: j.token, participantId: j.participant.id, name: j.participant.name },
       { title: j.weave.title, lastOpenedAt: new Date().toISOString() });
     notice.note(result);
     (result === "durable" ? onJoined : onJoinedInPlace)(j.weaveId);
@@ -1237,6 +1263,7 @@ export function App({ client, storage, notice, weaves }: AppDeps) {
 ```
     and `undefined` (the generic explanation) when they do not.
   - Both callbacks stay in this JS context: `reloadKey` is part of `useSession`'s memo key, so the session is rebuilt over the **same** storage instance and picks up the identity just written. A durable join could reload the page instead, but there is no reason to — the session it would rebuild is the one it already has, and one code path is easier to be sure of than two.
+  - **The §6 notice belongs to the page, not to the main page's layout**, so `WeaveRoute` also passes `banner={<PersistenceBar notice={notice}/>}` into `WeaveView` on **all three** Weave routes. A join from `/` whose credential did not persist replaces `MainPage` — and its bar — with this route in the very same render, and a `/w/<secret>` load writes an entry of its own (spec §10.9), so without this seam the one warning the human needs would be latched and never drawn. `App` hands every route the same notice object and mounts one route at a time, so it stays **one bar, and one dismissal, per page load**, and a dismissal carries across the in-place switch. (`PersistenceBar` itself is Task 8's; until it lands, the stub of Step 5 is what is passed.)
 - [ ] **Step 5: Stub the rest.** `MainPage` and `PersistenceBar` arrive in Task 8; until then stub them as one-line components rendering their heading, so this task compiles and its tests run. The `MainPage` stub already takes `weaves: WeavesSignal` in its props type (Task 8 gives it the exact signature), so the prop is typed from the moment it is passed.
 - [ ] **Step 6: GREEN** — `cd src/web && npx vitest run && pnpm typecheck && pnpm build`.
 - [ ] **Step 7: Commit** — `feat(web): route /, /lobby and /weave/<id>, and offer the join form on an unjoined Lobby`
@@ -1264,6 +1291,9 @@ export function InstanceGuidelines(props: { client: LoomClient }): JSX.Element |
 export function LobbySummary(props: {
   client: LoomClient; storage: KeyValueStorage;
   lobby?: { weaveId: string; title: string }; error?: string;
+  /** The instance's own answer — it has no Lobby yet. Not a failed read, so it is worded and
+   *  coloured as ordinary text rather than as an error. */
+  noLobby?: boolean;
 }): JSX.Element;
 ```
 
@@ -1274,6 +1304,7 @@ export function LobbySummary(props: {
   - `LobbySummary` with one shows the participant count, the listener count (participants whose `capabilities` is non-null) and the open-request count, read with the stored token.
   - `getLobby()` answering `weave_not_found` renders "This instance has no Lobby yet" and no join affordance.
   - `PersistenceBar` renders nothing while `notice.degraded()` is false, renders once after a `note("memory")`, does **not** render a second bar after a second `note("memory")`, disappears on dismiss, and its text names neither "quota" nor "localStorage".
+  - **The bar follows the page, not the layout**: it is rendered by `MainPage` *and*, through `WeaveView`'s `banner`, by `WeaveRoute` (Task 7) — so a non-durable join from `/` that switches to the Weave in place still shows exactly **one** `.persistence-bar`, as does a non-durable `/w/<secret>` load and a join made from the §3.3 fork. One notice object per page means one bar and one dismissal, carried across the in-place switch.
   - `MainPage` runs `migrateLegacy` once on mount with `lookup = (s) => client.lookupWeave(s)` and `onChanged = () => weaves.bump()`: with a stub `lookup` that resolves after the first paint, the injected `weaves` spy records a `bump()` it did not have at mount.
   - `MainPage` starts migration **once per page load, not once per render**: a `weaves.bump()` and a resolving guidelines cell both re-render it, and the `lookup` spy is still called once per legacy entry in total.
   - (`MainPage` passing `notice.note` as `MyWeaves`' `onWrite` and the **same** `weaves` object to `MyWeaves` and `CreateWeaveForm` is asserted where those components are real: Task 9's "an invalidation that cannot persist raises this page's one bar" and Task 10's "the created Weave appears in the list". Here it is the typecheck on the stubs' props — not a test against a stub, which would only prove the stub.)
@@ -1304,7 +1335,9 @@ export function LobbySummary(props: {
   }, []);
 ```
 
-  The join form's callbacks here are `onJoined={() => navigate("/lobby")}` and `onJoinedInPlace={openInPlace}` — both leave this page, which is why the join form takes no `weaves` (Task 6). The notice bar's wording: *"This browser is not saving anything for this site, so Weaves you join or create here will be gone when you close the tab. Copy any Weave link you want to keep, or allow this site to store data."* `PersistenceBar` subscribes to the notice with `useEffect` and a `useState` counter.
+  `<LobbySummary/>` takes the pointer cell apart into its three inputs — `lobby` (the answer), `error` (a failed *read* of the pointer) and `noLobby` (the instance saying it has none) — so "this instance has no Lobby yet" is not rendered in the error's voice or colour.
+
+  The join form's callbacks here are `onJoined={() => navigate("/lobby")}` and `onJoinedInPlace={openInPlace}` — both leave this page, which is why the join form takes no `weaves` (Task 6). The notice bar's wording: *"This browser is not saving anything for this site, so Weaves you join or create here will be gone when you close the tab. Copy any Weave link you want to keep, or allow this site to store data."* `PersistenceBar` subscribes to the notice with `useEffect` and a `useState` counter, and is rendered **both** here and through `WeaveView`'s `banner` from `WeaveRoute` (Task 7), over the one notice object — one bar and one dismissal per page load, wherever the page ends up.
 - [ ] **Step 4: GREEN** — `cd src/web && npx vitest run && pnpm typecheck && pnpm build`.
 - [ ] **Step 5: Commit** — `feat(web): the main page shell with instance guidelines, the Lobby summary and the persistence notice`
 
@@ -1346,7 +1379,11 @@ instantiates it once as `createRefreshQueue<WeaveRow>(6, …)`; the unit tests i
 // src/web/src/components/main/MyWeaves.tsx
 export type WeaveRow = {
   weaveId?: string; secret?: string; title: string;
-  state: "joined" | "read-only" | "identity-invalid" | "unavailable";
+  /** `"unresolved"` is a legacy row nothing has turned into a Weave id yet: it has no `weaveId`, so
+   *  it cannot be linked to and cannot be Forgotten either — `forget()` needs one. */
+  state: "joined" | "read-only" | "identity-invalid" | "unavailable" | "unresolved";
+  /** From the entry's `name` (Task 3), so "joined as `dana`" costs no request. An invalidated row
+   *  never has one: the name is deleted with the identity. */
   joinedAs?: string; isLobby: boolean; archived: boolean; lastOpenedAt?: string;
   /** What the stored entry alone already says (e.g. an unresolved legacy row's unknown title). The
    *  refresh's own markers live in component state keyed by `rowKey`, because they are not in
@@ -1394,9 +1431,10 @@ Three rules this component exists to honour, all from spec §4.2:
   - The list renders from storage **with no fetch at all** (the stub `fetch` is not called during the first paint).
   - Ordering by `lastOpenedAt` descending, ties by title.
   - `foldRows` folds a legacy and an id entry sharing a `secret` into one row, and one sharing only a `token` into one row; the id entry wins.
-  - Each row state of §4.2 renders its own text: usable identity → "joined as `dana`"; `secret` and no identity → "read-only — not joined"; `identity: "invalid"` with a secret → "your identity here stopped working — open to rejoin"; `identity: "invalid"` with no secret → greyed, not a link, with **Forget**; a 404 refresh → "this Weave is gone" with **Forget**; a network failure → the cached title with a quiet marker and still a link.
+  - Each row state of §4.2 renders its own text: usable identity → "joined as `dana`"; `secret` and no identity → "read-only — not joined"; `identity: "invalid"` with a secret → "your identity here stopped working — open to rejoin"; `identity: "invalid"` with no secret → greyed, not a link, with **Forget**; no identity and no secret → greyed with its *own* sentence ("this browser holds no key for this Weave" — a different thing to be told from an identity that died); an unresolved legacy entry → `"unresolved"`, an unknown title, no row link and no **Forget** (there is no id to forget), but Copy link still works; a 404 refresh → "this Weave is gone" with **Forget**; a network failure → the cached title with a quiet marker and still a link.
   - **Forget** removes the entry and the row; nothing else removes a row.
   - **Copy link** appears only where the entry carries a `secret`, and the row links to `/weave/<id>` — never to `/w/<secret>`.
+  - **Copy link always answers.** An insecure origin has no `navigator.clipboard` at all, and one that exists can refuse by rejecting *or* by throwing outright; all three land in a manual fallback that shows the link in one selectable read-only field with a **Hide** button. That field is the one place a stored secret reaches the DOM here (spec §5) and only after an explicit click on that row, and at most **one** is open at a time: a click on another row, a filter keystroke, "Show more" and a Forget of that row all close it, and a slower answer from a superseded click may not reopen it (a click ticket decides).
   - The Lobby row carries a Lobby badge; an archived row an archived badge.
   - Rows behind "Show more" are not fetched at all: seed 30 id entries, mount, let everything settle, and assert the stub was never called with the id of a row past the 25-row slice.
   - The filter box appears only past 8 rows and narrows by title, case-insensitively.
@@ -1661,7 +1699,8 @@ My Weaves included — so the Weave that was just created has to appear in that 
     // secret beside it did not — near a quota limit the small one fits and the large one does not —
     // and the panel would then branch on the verdict of the write that was never at risk. The
     // secret is the part that cannot be recovered, so it is the part the verdict must cover.
-    const result = setIdentity(storage, r.weave.id, { token: r.token, participantId: r.participant.id },
+    const result = setIdentity(storage, r.weave.id,
+      { token: r.token, participantId: r.participant.id, name: r.participant.name },
       { secret: r.secret, title: r.weave.title, lastOpenedAt: new Date().toISOString() });
     notice.note(result);
     // The panel keeps this page on screen (§4.5), so the list beside it has to learn about the new

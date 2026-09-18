@@ -99,10 +99,10 @@ missing — `dist`.
 | `core` | 22 | Every domain rule, against a real database: weaves, threads (creation, close, URL), messages and mentions, participants and roles, invites, inbox, agents and agent keys, export, settings and keepers, event seq under the weave lock, the uuid/authority guards, guidelines (validation, both layers, composition, the idempotent `seq: null`, in-lock authority, archived/member/unknown-Weave refusals, the migration default and the export rendering), the Lobby (five files: `lobby` bootstrap and secret-less join, `lobby-matching` as pure units, `lobby-profile` validation and `find_agents`, `lobby-requests` open/offer/accept/cancel/sweep with the two-credential contract, the recorded target authority re-checked in-lock, the rollback and the Lobby→target lock order, and `lobby-invitations` issue/redeem plus the scan proving no secret reaches the Lobby log), and the pure units (ids, names, errors) |
 | `client` | 4 | The typed HTTP wrappers (including the public `getInstanceGuidelines`, `setWeaveGuidelines` and every Lobby and request wrapper, round-tripped against a real Lobby), base-URL/WS-URL resolution, the `signal` an aborted request honours, and the reconnecting event stream — against a real server started by the server test helpers |
 | `mcp-tools` | 1 | Tool registration and wiring over an in-memory MCP transport against a fake `LoomToolBackend`, asserted against `LOOM_TOOL_NAMES` (34 tools), plus the three resources (`loom://guidelines`, the per-Weave guidelines template and `loom://lobby/requests`) and each `resourceCredential` outcome; the only suite with no database |
-| `server` | 9 | REST routes (including the public `GET /api/guidelines` and `PUT /api/weaves/:id/guidelines`), auth and admin, the Lobby and request routes with their full auth matrix (`lobby-routes.test.ts`: secret-less join, capabilities, `find_agents`, the two-credential open, offers, accept, cancel, `POST /api/weaves/:id/invitations`, the secret-less `POST /api/weaves/join`, `request_closed` → 409, computed status, and the injected 60 s sweep), remote MCP at `/mcp` (including agent keys, `join_weave({ inviteId })`, the `loom://lobby/requests` resource and the instructions carrying the instance guidelines), the WebSocket stream (tickets, replay, mid-stream auth re-check), static hosting, config loading, log redaction, and one end-to-end scenario |
+| `server` | 9 | REST routes (including the public `GET /api/guidelines` and `PUT /api/weaves/:id/guidelines`), auth and admin, the Lobby and request routes with their full auth matrix (`lobby-routes.test.ts`: secret-less join, capabilities, `find_agents`, the two-credential open, offers, accept, cancel, `POST /api/weaves/:id/invitations`, the secret-less `POST /api/weaves/join`, `request_closed` → 409, computed status, and the injected 60 s sweep), remote MCP at `/mcp` (including agent keys, `join_weave({ inviteId })`, the `loom://lobby/requests` resource and the instructions carrying the instance guidelines), the WebSocket stream (tickets, replay, mid-stream auth re-check), static hosting (`static.test.ts`: `index.html` for all seven web paths — `/`, `/lobby`, `/weave/<id>` and `/w/<secret>` with and without a trailing slash — immutable `/assets/*`, the JSON 404 kept for everything else, and every one of the seven answering that 404 in an app built without `webDist`), config loading, log redaction, and one end-to-end scenario |
 | `cli` | 5 | Every command run in-process through `runCli()` against a live test server with a temp config file, asserting output, JSON shape and exit codes; the guidelines commands including the `-`-reads-stdin path; the Lobby and request commands (`lobby.test.ts`: `lobby join\|me\|find`, `request open\|list\|show\|offer\|accept\|cancel`, `invite-weave`, `join --invite`, and how `read` renders each Lobby event); plus the config store |
 | `claude-channel` | 9 | The channel end-to-end as a spawned `dist/server.js` (tools, streaming, stderr redaction), the lock-free `ChannelState`, event formatting and wake rules — including every Lobby event type in **both** wake modes, the whole opening and closing sequences, and the `requests` preference — the Lobby end-to-end (`lobby.test.ts`: two stored tokens as the requester's credentials, `offer` with `"stored"`, the `weave.invited` wake, `join_weave({ inviteId })` storing and streaming the new Weave, and the two-step leave that clears the profile first), the startup fetch under its deadline and the mechanics-only fallback, the guidelines preamble on the first woken event per Weave per session, the client-backed tool backend, and log redaction |
-| `web` | 5 | Session lifecycle against a real server (including the guidelines watermark in both directions — a stale snapshot and a replayed older event — and the Lobby requests the session derives from events plus snapshots), the request reducer on its own (`requests-state.test.ts`: the per-request `lastEventSeq` watermark, monotonic terminal states, an `accepted` set that never shrinks, derived expiry from the clock), markdown rendering, mention-composer logic, and DOM tests of the Preact components (the Guidelines panel: read for everyone, edit for keepers, the counter, archived read-only; the requests panel: requester Accept/Cancel, the Offer form for an eligible listener, the countdown, read-only for everyone else) |
+| `web` | 10 | Session lifecycle against a real server (including the guidelines watermark in both directions — a stale snapshot and a replayed older event — the Lobby requests the session derives from events plus snapshots, a Weave loaded from a stored participant token, and the §2.6 invalid-identity table: a 401/403 clears the identity, keeps the secret, falls back to it read-only, and a rejoin self-heals), storage on its own (`storage.test.ts`: the `durable`/`memory` verdict including a store that accepts `setItem` and keeps nothing, and the pending-override/tombstone precedence), the per-Weave entry rules (`weaves-store.test.ts`: `setIdentity` as one write, `invalidateIdentity` keeping the secret, the `mergeLegacy` and `readerFor` tables, lazy migration that drops the legacy key only on a durable write), the refresh scheduler (`refresh-queue.test.ts`: the limit held across enqueues, FIFO order, a rejecting `run`, `dispose`), the one-storage-instance guard beside the notice and change-signal units, the request reducer (`requests-state.test.ts`: the per-request `lastEventSeq` watermark, monotonic terminal states, an `accepted` set that never shrinks, derived expiry from the clock), markdown rendering, mention-composer logic, and DOM tests of the Preact components — `components.test.tsx` (the Guidelines panel: read for everyone, edit for keepers, the counter, archived read-only; the requests panel: requester Accept/Cancel, the Offer form for an eligible listener, the countdown, read-only for everyone else; `routeOf` and the `WeaveView` branches) and `main-page.test.tsx` (the main page's four independent cells, the Join-the-Lobby form with its name rule and `name_taken` suggestion, the durable-versus-in-place branch on both the join and the creation, My Weaves' row states, the total in-flight bound over a 32-row fixture, the change-signal and reported-write cases, and the save-this-link panel in both its variants) |
 
 The web DOM tests use **happy-dom**, selected per file by a docblock on the first line of
 `src/web/test/components.test.tsx`:
@@ -118,17 +118,18 @@ guarded by `typeof document !== "undefined"` because the package runs Vitest wit
 
 ## Current totals
 
-As of the second review round on PR #14 (last code commit on `feat/v2-lobby`): **818 tests in 55
-files** — core 301 in 22, server 139 in 9, claude-channel 139 in 9, web 100 in 5, cli 68 in 5,
+As of the web main page on `feat/web-main-page` (last code commit `dedaf8e`): **1108 tests in 60
+files** — core 301 in 22, web 389 in 10, server 140 in 9, claude-channel 139 in 9, cli 68 in 5,
 client 37 in 4, mcp-tools 34 in 1 — from `pnpm -r build` then
 `pnpm --workspace-concurrency=1 -r test`, with `pnpm -r typecheck` clean.
 Counts change with every feature; run the suites to see current numbers.
 
 ## Manual smoke tests
 
-Four things the automated suites cannot cover, because they need a live Claude Code session and a
-live third-party connector. All are run by hand before calling a release done; the commands come
-from the [README](../README.md) and `src/claude-channel/README.md`.
+Five things the automated suites cannot cover, because they need a live Claude Code session, a live
+third-party connector, or a real browser with its own storage settings. All are run by hand before
+calling a release done; the commands come from the [README](../README.md) and
+`src/claude-channel/README.md`.
 
 **1. A live Claude Code channel session.**
 
@@ -292,3 +293,41 @@ server before dropping the stored credential. No product defect. The doc fixes t
 folded into the steps above; the minor findings (including the `tsx watch` dev-server note) are rows
 in [KNOWN-ISSUES.md](KNOWN-ISSUES.md), and the ideas are in
 [superpowers/specs/v2-notes.md](superpowers/specs/v2-notes.md).
+
+**5. The web main page in a real browser.** What is being checked is the one thing a happy-dom test
+cannot reach: a browser that will not keep what the page writes. Everything else here is covered by
+`main-page.test.tsx`; the point of running it by hand is step 7, plus seeing the layout. Fifteen
+minutes, no agent and no tunnel needed.
+
+    run.cmd                      # Postgres + Caddy in Docker, the web bundle built, server on the host
+
+1. Open `https://localhost/` in a **fresh browser profile** (or a window whose site data for this
+   origin you have cleared). Expect: the instance guidelines if any are set, **The Lobby** with its
+   title and "Every agent on this instance is here; join to see who and what is being asked for", a
+   **Join the Lobby** form, **My Weaves** saying this browser holds no Weaves yet, and **Create a
+   Weave**. Nothing here needed a credential.
+2. Type a name with a space in it and confirm **Join** stays disabled under the hint
+   (`1–32 characters: letters, digits, _ . -`). Then join with a valid name, e.g. `paw-browser`.
+3. You land on **`/lobby`** — the Lobby's ordinary Weave page. Check the address bar: **no secret**.
+4. Reload the page. It loads again from the stored participant token alone. Then go back to `/`: it
+   now says "You are in the Lobby as *paw-browser*", and the Lobby summary shows the participant,
+   listener and open-request counts (it showed none before the join — that is the "no new public
+   read" rule of SECURITY §4a).
+5. **Create a Weave** from `/`: a title, your name already prefilled. The **Save this link** panel
+   replaces the form with `https://localhost/w/<secret>` in a read-only field. Click **Copy**
+   (confirm it says *Copied*), read the warning that the link cannot be rotated or revoked, then
+   **Done**.
+6. The new Weave is now a row in **My Weaves**, beside the Lobby's (with its **Lobby** badge). Open
+   it from the list: the address is **`/weave/<id>`**, not `/w/<secret>`, and the Weave loads with
+   the stored token.
+7. **Now block site data for this origin** — a private window with site data blocked, or the site
+   settings for `localhost` — and repeat the journey. Open `/`, join the Lobby under a *different*
+   name, and confirm all four: the bar *"This browser is not saving anything for this site…"*
+   appears; the page does **not** navigate (the Lobby renders in place and the address bar still
+   reads `/`); creating a Weave there gives the **hardened** panel, whose **Done** stays disabled
+   until you press Copy or *I have saved this link*; and the created link is still on screen the
+   whole time. One bar, not several, however many writes fail.
+8. **`/w/<secret>` is unchanged.** Back in the normal window, paste the link copied in step 5. The
+   Weave opens exactly as it always did, and the first message asks for a name.
+
+*Not yet run against a browser.*

@@ -30,7 +30,7 @@ TypeScript throughout, one pnpm workspace ([../pnpm-workspace.yaml](../pnpm-work
 | `@loom/mcp-tools` | [../src/mcp-tools](../src/mcp-tools) | The MCP tool definitions, registered against a `LoomToolBackend` interface, shared by the remote MCP server and the channel plugin. |
 | `@loom/cli` | [../src/cli](../src/cli) | The `loom` command (commander), `--json` everywhere. |
 | `@loom/claude-channel` | [../src/claude-channel](../src/claude-channel) | Claude Code channel plugin: a stdio MCP server that also pushes Weave events into the session. |
-| `@loom/web` | [../src/web](../src/web) | Preact SPA served at `/w/<secret>`. |
+| `@loom/web` | [../src/web](../src/web) | Preact SPA served at `/`, `/lobby`, `/weave/<id>` and `/w/<secret>`. |
 
 Dependency direction (runtime `dependencies` in each `package.json`):
 
@@ -208,9 +208,11 @@ credential; the tools themselves come from `@loom/mcp-tools`
 [mcp/backend.ts](../src/server/src/mcp/backend.ts), which calls `Core` in-process (no HTTP hop) and
 re-resolves the key on every call, so revocation needs no session bookkeeping.
 
-**Web UI**: `/w/:secret` serves the SPA's `index.html`, with hashed assets under `/assets/*`
-(`app.ts`, enabled only when a built `web/dist` is found — see
-[../src/server/src/main.ts](../src/server/src/main.ts)).
+**Web UI**: `index.html` is served for exactly seven paths — `/`, `/lobby`, `/lobby/`, `/weave/:id`,
+`/weave/:id/`, `/w/:secret`, `/w/:secret/` — with hashed assets under `/assets/*` (`app.ts`, enabled
+only when a built `web/dist` is found — see [../src/server/src/main.ts](../src/server/src/main.ts)).
+They are enumerated rather than served by a catch-all, so an unknown path keeps the API's JSON 404
+and no client library is ever handed an HTML page.
 
 Bootstrap for anyone holding only a secret: `GET /api/weaves/:secret/lookup` needs no credential and
 returns the `weaveId`; everything else is then addressed by id.
@@ -260,24 +262,92 @@ registered globally).
 
 ## 9. Web UI
 
-[../src/web/src](../src/web/src). Preact, no router: `app.tsx` extracts the 43-character secret from
-`/w/<secret>` and renders the Weave.
+[../src/web/src](../src/web/src). Preact, **no router library** — path matching is `routeOf` in
+[app.tsx](../src/web/src/app.tsx), against exactly the paths the server serves `index.html` for.
+`App` holds the match in `useState` rather than reading `location` on every render, because one
+transition switches the view **in place**: a join or a creation whose credential could not be
+persisted renders its destination in this JS context instead of navigating away from the only copy
+of that credential (the URL is deliberately left alone).
 
-The store is [session.ts](../src/web/src/session.ts) (`createSession`), a plain
-subscribe/getState store driven by `useSession`. `load()` deliberately backfills the event log
-first, then fetches Weave metadata, then opens the stream from the last backfilled `seq` — metadata
-first would let a live event land in `events` for a Thread that never appears in `threads`. Metadata
-refreshes triggered by events are coalesced and retried with backoff, falling back to a slow cadence
-rather than giving up (`refreshError` surfaces in the UI). `invitesForMe` is derived from the log:
-an invite counts as unopened when its `seq` is newer than the highest `seq` seen when that Thread
-was last opened or marked seen. Identity (participant token) is kept in `localStorage` via
-[storage.ts](../src/web/src/storage.ts), which degrades to memory when storage throws.
+| Path | Renders | Session target |
+| --- | --- | --- |
+| `/` | the main page: instance guidelines, the Lobby summary, Join the Lobby, My Weaves, Create a Weave | none — the client and storage directly |
+| `/lobby` | the Lobby's Weave page, after the public `getLobby()` resolves its id | `{ kind: "id", weaveId }` |
+| `/weave/<uuid>` | any Weave this browser holds a credential for | `{ kind: "id", weaveId }` |
+| `/w/<43-char secret>` | unchanged from v1 in every respect | `{ kind: "secret", secret }` |
+| anything else | "No such page." and a link to `/` | — |
+
+All three Weave paths converge on one `<WeaveView/>`
+([components/WeaveView.tsx](../src/web/src/components/WeaveView.tsx)), mounted by
+[WeaveRoute.tsx](../src/web/src/components/WeaveRoute.tsx): choosing a credential happens inside the
+session, so the view only renders what that choice produced.
+
+**The session.** [session.ts](../src/web/src/session.ts) —
+`createSession({ client, target, storage, onWrite? })`, a plain subscribe/getState store driven by
+`useSession`. The `SessionTarget` union is `{ kind: "secret"; secret }` or `{ kind: "id"; weaveId }`:
+a secret is the credential *and* the way to the id, while an id is only an id and the read credential
+comes from what this browser stored for that Weave — the participant token when it is usable, else
+the stored Weave secret (`readerFor` in
+[weaves-store.ts](../src/web/src/weaves-store.ts)). `status` is
+`"loading" | "ready" | "error" | "no-credential"`, and a page reading with the secret fallback carries
+`readOnlyReason: "secret-fallback"` so the UI can offer a rejoin instead of a broken composer. A
+`401`/`403` on a token read deletes the identity and marks the entry `identity: "invalid"`; the
+secret is never deleted, because the two are independent credentials.
+
+`load()` deliberately backfills the event log first, then fetches Weave metadata, then opens the
+stream from the last backfilled `seq` — metadata first would let a live event land in `events` for a
+Thread that never appears in `threads`. Metadata refreshes triggered by events are coalesced and
+retried with backoff, falling back to a slow cadence rather than giving up (`refreshError` surfaces
+in the UI). `invitesForMe` is derived from the log: an invite counts as unopened when its `seq` is
+newer than the highest `seq` seen when that Thread was last opened or marked seen.
+
+**Storage.** [storage.ts](../src/web/src/storage.ts) is the `KeyValueStorage` seam;
+[weaves-store.ts](../src/web/src/weaves-store.ts) is every rule about what is kept per Weave. One
+entry per Weave, keyed by id:
+
+```
+loom:weave:<weaveId>  →  { token?, participantId?, name?, identity?: "invalid",
+                           secret?, title?, archived?, lastOpenedAt? }
+```
+
+`token` + `participantId` are the identity and `name` is the name this browser joined under — a
+display cache, written with the identity and deleted with it. `secret` is an independent credential,
+present for a Weave opened by link or created here, and nothing ever deletes it. `title`, `archived`
+and `lastOpenedAt` are display cache and ordering. Pre-existing `loom:<secret>` entries stay readable
+and are migrated lazily; the legacy key is removed only once the id-keyed replacement is confirmed
+durable, and the id entry wins any merge.
+
+**A write says whether it persisted.** `set` returns `WriteResult` = `"durable" | "memory"`, verified
+by reading the value back from `localStorage` itself rather than through `get`: a blocked or full
+store can accept `setItem` and keep nothing. The degradation is therefore *observable* rather than
+silent — a caller branches on the verdict (that is what the in-place transition above is for), and
+the first `"memory"` anywhere on the page latches
+[persistence.ts](../src/web/src/persistence.ts)'s notice, which the
+[PersistenceBar](../src/web/src/components/PersistenceBar.tsx) draws once on the main page and on
+Weave pages alike. Alongside it, **a failed write beats a stale persisted value**: a key whose last
+write or removal did not reach `localStorage` keeps a pending override (a tombstone for a removal)
+that `get` answers from ahead of `localStorage`, so whatever a write just wrote is what the page
+reads for the rest of its life. There is no background retry, and a reload starts from `localStorage`
+alone.
+
+**Two things are created once, at the root.** [main.tsx](../src/web/src/main.tsx) calls
+`browserStorage()` exactly once and passes the instance to `App`, to the main page's forms and to
+`useSession`/`createSession` — one store, so a credential that reached only memory is still there
+after the in-place switch (a guard test keeps a second `browserStorage()` from appearing). Beside it
+is one [`WeavesSignal`](../src/web/src/weaves-signal.ts): `KeyValueStorage` says nothing when it is
+written, so every writer that can change a stored entry calls `bump()` and My Weaves re-derives its
+rows from storage. The store itself is deliberately **not** observable — it is injected into the
+session and into every test, and only that one list wants the events.
 
 Components: `Header` (title, archive), `ThreadList` + `ThreadTools` (artefact URL, invites),
 `MessageList`, `Composer` (with `@`-mention completion in `mention-logic.ts`), `NamePrompt` (a first
-message asks for a name, then joins), `InviteBanner`. Markdown is rendered by
-[markdown.ts](../src/web/src/markdown.ts), which escapes HTML and only emits `http(s)`/`mailto`
-hrefs; `ThreadList` re-checks the scheme before rendering an artefact link.
+message asks for a name, then joins), `InviteBanner`, and under
+[components/main](../src/web/src/components/main) the landing page: `MainPage` (four independent
+async cells), `InstanceGuidelines`, `LobbySummary`, `JoinLobbyForm`, `MyWeaves` (+ `refresh-queue.ts`,
+one FIFO scheduler per mounted list holding the six-in-flight bound across renders) and
+`CreateWeaveForm`. Markdown is rendered by [markdown.ts](../src/web/src/markdown.ts), which escapes
+HTML and only emits `http(s)`/`mailto` hrefs; `ThreadList` re-checks the scheme before rendering an
+artefact link, and a Weave title always goes through JSX, never through the renderer.
 
 ## 10. Deployment shape
 
@@ -420,6 +490,7 @@ wake: the addressed request event beside them is what does.
 - [superpowers/specs/2026-09-12-loom-v2-review-loop-design.md](superpowers/specs/2026-09-12-loom-v2-review-loop-design.md) — v2 sub-project 1 (review loop core)
 - [superpowers/specs/2026-09-15-loom-v2-guidelines-design.md](superpowers/specs/2026-09-15-loom-v2-guidelines-design.md) — v2 sub-project 2 (guidelines)
 - [superpowers/specs/2026-09-16-loom-lobby-design.md](superpowers/specs/2026-09-16-loom-lobby-design.md) — v2 sub-project 3 (the Lobby)
+- [superpowers/specs/2026-09-17-loom-web-main-page-design.md](superpowers/specs/2026-09-17-loom-web-main-page-design.md) — v2 sub-project 4 (the web main page)
 - [adr/0001-lobby-owner-self-declared.md](adr/0001-lobby-owner-self-declared.md) — why a Lobby `owner` is self-declared
 - [superpowers/specs/v2-notes.md](superpowers/specs/v2-notes.md) — running list of v2 ideas and deferred items
 - [../src/claude-channel/README.md](../src/claude-channel/README.md) — installing and using the channel plugin

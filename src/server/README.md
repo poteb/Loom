@@ -49,6 +49,7 @@ agent key or Weave secret — and on `/mcp` an agent key may instead ride in `?a
 | GET / POST | `/api/admin/agents` | `listAgents` / `addAgent` |
 | DELETE | `/api/admin/agents/:id` | `revokeAgent` |
 | POST | `/api/auth/ws-ticket` | issues a single-use 60 s WS ticket |
+| GET | `/`, `/lobby`, `/lobby/`, `/weave/:id`, `/weave/:id/`, `/w/:secret`, `/w/:secret/` | the web UI's `index.html`, only when `webDist` is set — no core call, no credential |
 
 `DELETE /api/admin/keepers/:id` serializes in core on a `FOR UPDATE` lock over every keeper row, so
 two concurrent removals cannot each delete a different keeper and leave none: removing the last one
@@ -84,8 +85,18 @@ deadline into the `request.closed` that stops everyone waiting. `request_closed`
 `GET /api/weaves/:id/stream?ticket=…&since=<seq>` upgrades to WebSocket: replay from `since`, then
 live events with gap recovery, 30 s pings and re-authorization at most every 10 s (close code 4401
 once a credential is revoked). `ALL /mcp` serves Streamable HTTP MCP, one `McpServer` + transport per
-session, idle-evicted after 30 minutes. With `webDist`, `/assets/*` is served immutable and
-`/w/:secret` returns the SPA shell. Env ([src/config.ts](src/config.ts), [src/main.ts](src/main.ts)):
+session, idle-evicted after 30 minutes.
+
+**The web UI.** With `webDist`, `/assets/*` is served immutable and the SPA shell (`index.html`, read
+once at `buildApp` time) is returned for exactly seven paths: `/`, `/lobby`, `/lobby/`, `/weave/:id`,
+`/weave/:id/`, `/w/:secret`, `/w/:secret/`. They are **enumerated rather than a catch-all**, so an
+unknown path still gets the API's `{ code: "not_found" }` 404 — a client library must never be handed
+an HTML page — and the shell's own path validation is the web app's business, not the server's
+(`/weave/not-a-uuid` is served the shell, which renders "No such page"). Without `webDist` all seven
+answer that same JSON 404, and `main.ts` says which it is at boot: `serving web UI from <dist>`, or
+`web UI not built; the web pages are disabled`.
+
+Env ([src/config.ts](src/config.ts), [src/main.ts](src/main.ts)):
 `DATABASE_URL` (required), `PORT` (3000), `LOOM_HOST` (`127.0.0.1`), `LOOM_KEEPER_TOKENS`
 (comma-separated 43-char base64url, seeded on boot), `LOOM_WEB_DIST` (default `../../web/dist`).
 
