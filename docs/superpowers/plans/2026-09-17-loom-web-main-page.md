@@ -40,6 +40,17 @@
 >    every write it makes passes its verdict to it — otherwise an invalidation that reached only
 >    memory leaves the page saying "invalid" while durable storage still holds the old token, with no
 >    warning (Tasks 8 and 9).
+>
+> **Third plan review round (2026-09-18).** One, again in My Weaves:
+>
+> 9. **The refresh bound is a bound on the browser, not on one render.** The previous text ran the
+>    pending rows through a six-at-a-time batch helper created **inside** the refresh effect, which
+>    runs on every change of `visible` — so "Show more", a filter change or a migration bump arriving
+>    while six requests were still in flight started a **second** six beside them (the reviewer ran
+>    that helper with two overlapping batches and counted 12 simultaneous requests). The `fetched`
+>    ref stopped duplicate requests but never limited the total. The batch helper is gone entirely;
+>    `MyWeaves` now holds **one** `createRefreshQueue(6, …)` for the life of the mounted list, and
+>    the effect only claims keys and enqueues (Task 9).
 
 ## Global Constraints
 
@@ -50,6 +61,7 @@
 - **Storage that cannot be consulted is not storage that is empty.** `peek(k)` is three-valued: a `string` or `null` **only** from a successful `localStorage.getItem`, and `undefined` whenever the store is missing or throws. `undefined` therefore never confirms anything — a `set` under it is `"memory"` with an override, and a `remove` under it leaves a **tombstone**. Treating it as "absent" would drop the tombstone and resurrect the value the moment storage came back.
 - **Read precedence (§2.4b):** a key whose last write or removal did not reach `localStorage` carries a pending override — the value, or a **tombstone** for a failed removal — and `get` answers from that override first (tombstone → `null`), ahead of `localStorage`; every other key keeps `localStorage` first, then the memory fallback. `keys()` = today's union **plus** override keys **minus** tombstoned keys. **Invariant: whatever verdict a write returns, the value it just wrote is what `get` returns for the rest of this page.** An override is cleared **only** by a later successful `set` or `remove` of that same key — no background retry, no timer, `get` stays side-effect-free. Overrides live for the page; a reload starts from `localStorage` alone. No cross-tab sync.
 - **One change signal (§4.2):** the page holds one `WeavesSignal` — `{ bump(): void; subscribe(fn: () => void): () => void }` — created in `main.tsx` beside the one storage instance and passed down with it. **Every writer that can change what My Weaves shows bumps it**: `migrateLegacy` (once per entry it writes), a row refresh that saves a new title/`archived`, an identity invalidation, `Forget`, and a creation that completes while the main page stays on screen. `MyWeaves` subscribes, re-derives `foldRows(storedWeaves(storage), …)` on each bump, and unsubscribes on unmount. `KeyValueStorage` is **not** made observable — the session and every test inject it, and nothing outside this list needs the events. A bump never restarts an in-flight refresh nor re-reads a row already refreshed.
+- **The refresh bound is total (§4.2):** **one scheduler per mounted list, six active requests in total across renders.** `MyWeaves` creates a single `createRefreshQueue(6, …)` once per mount and keeps it in a ref; the refresh effect never creates one. "At most six `getWeave` calls in flight" is a statement about this browser at any instant, not about one render's batch — `visible` changes on "Show more", on every keystroke in the filter and on every `weaves.bump()`, and a scheduler created per effect run would stack a new six on top of the six still running. Rows enqueued later wait behind earlier ones; `dispose()` on unmount drops what has not started, and what is already in flight finishes without touching component state.
 - **Every entry write on the main page reports its `WriteResult`.** Join, creation, migration *and* every write My Weaves makes (the refresh's title/`archived` save and its `invalidateIdentity`) pass their verdict to `notice.note`, so the one-time notice of §6 covers all of them. `notice.note` is the only function ever passed as an `onWrite`. `forgetWeave` is the one write that reports nothing: `remove` returns `void`, and the tombstone rule above makes a failed removal read as absent for the rest of the page anyway.
 - **Legacy coexistence:** `loom:<secret>` entries stay readable forever. Migration is lazy (a `/w/<secret>` load, or the main page resolving them through the **public** `GET /api/weaves/:secret/lookup`), the id-keyed entry is written **first**, and the legacy key is removed **only** on a `"durable"` verdict. A `"memory"` verdict stops migration for the rest of the page. A failed lookup leaves the legacy entry alone. My Weaves folds a legacy and an id entry into one row when their `secret` matches, else when their `token` matches.
 - **The id-keyed entry is authoritative over a legacy duplicate.** Duplicates are a supported state, so migration merges through one pure `mergeLegacy(existing, legacy)`: an id entry with a **usable identity keeps it**; an entry marked `identity: "invalid"` **never takes the legacy identity** (invalidation deletes the dead token without recording it, so nothing can tell whether the legacy token is that same dead one — adopting it would loop the session through the 401 it just survived); an entry with no identity and no marker **adopts** the legacy one; in every case a missing `secret` is carried over. Never a blind merge: a leftover legacy key must not undo a rejoin.
@@ -82,6 +94,7 @@
 | `src/web/src/components/main/LobbySummary.tsx` (new) | Title always; counts only with a stored Lobby identity |
 | `src/web/src/components/main/JoinLobbyForm.tsx` (new) | Name field, `joinLobby`, the error map, the `name_taken` two-case message and suffix suggestion, the durable/in-place branch |
 | `src/web/src/components/main/MyWeaves.tsx` (new) | List from cache, duplicate folding, bounded refresh, filter, row states, Copy link, Forget |
+| `src/web/src/components/main/refresh-queue.ts` (new) | `createRefreshQueue(limit, run)`: the one FIFO scheduler that holds the total in-flight bound across renders. Pure — no Preact, no storage, no client |
 | `src/web/src/components/main/CreateWeaveForm.tsx` (new) | `createWeave`, the 403 branch, the save-this-link panel and its hardened non-durable variant |
 | `src/web/src/components/NamePrompt.tsx` (modify) | Imports `NAME_RE` instead of inlining it |
 | `src/web/src/styles.css` (modify) | Main-page layout, notice bar, row states |
@@ -91,6 +104,7 @@
 | `src/web/test/storage.test.ts` (new) | Durable verdicts and read precedence |
 | `src/web/test/weaves-store.test.ts` (new) | Entry shape, discrimination, identity helpers, migration |
 | `src/web/test/one-storage-instance.test.ts` (new) | The `browserStorage(` guard |
+| `src/web/test/refresh-queue.test.ts` (new) | `createRefreshQueue` as a unit: the limit across several `enqueue` calls, FIFO order, a rejecting `run`, `dispose`, draining |
 | `src/web/test/session.test.ts` (modify) | Target union, secret fallback, invalidation, rejoin |
 | `src/web/test/components.test.tsx` (modify) | `WeaveView` branches |
 | `src/web/test/main-page.test.tsx` (new, happy-dom) | Every `/` component |
@@ -1301,7 +1315,7 @@ export function LobbySummary(props: {
 
 Spec §4.2.
 
-**Files:** Create `src/web/src/components/main/MyWeaves.tsx`; Modify `src/web/src/components/main/MainPage.tsx`, `src/web/src/styles.css`; Test `src/web/test/main-page.test.tsx` (extend).
+**Files:** Create `src/web/src/components/main/MyWeaves.tsx`, `src/web/src/components/main/refresh-queue.ts`; Modify `src/web/src/components/main/MainPage.tsx`, `src/web/src/styles.css`; Test `src/web/test/main-page.test.tsx` (extend), `src/web/test/refresh-queue.test.ts` (new).
 
 **Interfaces:**
 
@@ -1309,6 +1323,27 @@ Consumes: `KeyValueStorage`, `WriteResult` (Task 1); `WeavesSignal` (Task 2); `S
 
 Produces:
 ```ts
+// src/web/src/components/main/refresh-queue.ts
+/** One scheduler, shared by every render of one mounted list. Not a component, not Preact-aware. */
+export type RefreshQueue<T> = {
+  /** Appends items to the FIFO and starts work up to the limit. A no-op after `dispose()`. */
+  enqueue(items: T[]): void;
+  /** Drops everything not yet started. Runs already in flight finish; nothing new begins. */
+  dispose(): void;
+};
+export function createRefreshQueue<T>(
+  limit: number,
+  run: (item: T) => Promise<void>,
+): RefreshQueue<T>;
+```
+
+It is generic in `T` rather than typed to `WeaveRow` for one reason: `WeaveRow` lives in
+`MyWeaves.tsx`, which imports this module, so naming it here would be a cycle. `MyWeaves`
+instantiates it once as `createRefreshQueue<WeaveRow>(6, …)`; the unit tests instantiate it at
+`number` and `string`.
+
+```ts
+// src/web/src/components/main/MyWeaves.tsx
 export type WeaveRow = {
   weaveId?: string; secret?: string; title: string;
   state: "joined" | "read-only" | "identity-invalid" | "unavailable";
@@ -1334,7 +1369,7 @@ A row is refreshed with **`readerFor`** (Task 3) — the same credential choice 
 never with an assumed token: the list deliberately holds rows for Weaves this browser has read but
 not joined, and rows whose identity has been invalidated, and both of those have no token at all.
 
-Two rules this component exists to honour, both from spec §4.2:
+Three rules this component exists to honour, all from spec §4.2:
 
 - **It follows storage.** Rows are re-derived from `foldRows(storedWeaves(storage), lobbyWeaveId)` on
   every `weaves.bump()`, never captured once at mount. Everything that writes an entry while this
@@ -1346,6 +1381,14 @@ Two rules this component exists to honour, both from spec §4.2:
   `localStorage` read as absent for the rest of the page (the tombstone) and drop out of `keys()`, so
   the row goes and stays gone; the whole cost of a failed removal is that the entry is back after a
   reload, and no credential was created that could be lost.
+- **The refresh bound is total, across renders.** §4.2 bounds the requests this browser has in
+  flight, not the requests one render started. `visible` changes whenever the human clicks "Show
+  more", types a character into the filter, or a writer bumps the signal — and a scheduler built
+  inside the refresh effect would therefore be rebuilt on each of those, each new one free to start
+  six more beside the six already running. So the component holds **one** `createRefreshQueue(6, …)`
+  for the life of the mount, in a ref, and the effect only computes `pending`, claims its keys and
+  calls `enqueue`. This is the finding of the third review round, and it is the reason no
+  batch-at-a-time helper exists anywhere in this plan any more.
 
 - [ ] **Step 1: Failing tests:**
   - The list renders from storage **with no fetch at all** (the stub `fetch` is not called during the first paint).
@@ -1355,8 +1398,14 @@ Two rules this component exists to honour, both from spec §4.2:
   - **Forget** removes the entry and the row; nothing else removes a row.
   - **Copy link** appears only where the entry carries a `secret`, and the row links to `/weave/<id>` — never to `/w/<secret>`.
   - The Lobby row carries a Lobby badge; an archived row an archived badge.
-  - The refresh is bounded: with 30 rendered rows, at most 6 `getWeave` calls are in flight at once (count concurrent stub invocations), and rows behind "Show more" are not fetched at all.
+  - Rows behind "Show more" are not fetched at all: seed 30 id entries, mount, let everything settle, and assert the stub was never called with the id of a row past the 25-row slice.
   - The filter box appears only past 8 rows and narrows by title, case-insensitively.
+
+  Then the bound group. All four share one fixture: **32 id entries** (`weave-00` … `weave-31`, distinct titles so the filter can select them), and a `getWeave` stub that does **not** settle on its own — it records the id, increments `inFlight`, updates `maxInFlight = Math.max(maxInFlight, inFlight)`, and returns a promise held in a `Map<string, () => void>` of releases; releasing one decrements `inFlight`. `maxInFlight` is a **running maximum**, sampled on every call, so no test has to guess when to look:
+  - **Six at a time, and only six.** Mount, flush microtasks. Expected: exactly 6 stub calls, for the first six rows of the sorted slice in that order, and `maxInFlight === 6`. Nothing else has been called.
+  - **A new slice while six are blocked starts nothing new** — the reviewer's case, and the regression test for the third review round. With those first six still unreleased: type `weave-2` into the filter (a new `visible`), clear it, then click **Show more** (another new `visible`), flushing after each. Expected: the stub call count is **still 6** and `maxInFlight` is **still 6** — the rows the filter and "Show more" brought on screen are queued behind the six, not started beside them. With a scheduler built per render this reaches 12 or more.
+  - **A bump that adds a row respects the same bound.** Again with the first six blocked: write a newly migrated id entry into the injected storage and call `weaves.bump()`, flush. Expected: call count still 6, `maxInFlight` still 6, and the new row is on screen (the list follows storage even while the queue is saturated).
+  - **The queue drains, each row exactly once.** After the three steps above, release every held promise (with a `{ weave: { title: <id>, archivedAt: null } }` answer) and flush to quiescence. Expected: every row of the final rendered slice has been fetched, the per-id call counts are all exactly `1` (no row fetched twice by the second and third steps' re-derives), and `maxInFlight === 6` for the whole run.
   - **A `secret`-only row refreshes through its secret**: the entry has a `secret` and no identity, and the `getWeave` call carries the **secret** as its bearer; the row's cached `title` is updated from the answer.
   - **An `identity: "invalid"` row with a secret refreshes through the secret**, the same way.
   - **A token read answering `401`** invalidates the stored identity: afterwards the entry has no `token`/`participantId`, reads `identity: "invalid"`, still holds its `secret`, and the row has moved to the "your identity here stopped working" state. Then the refresh **retries once with the secret** and the title is updated from that answer.
@@ -1371,12 +1420,20 @@ Two rules this component exists to honour, both from spec §4.2:
   - **A bump does not re-fetch a row already refreshed**: let the first pass settle (N stub calls), then `weaves.bump()` and flush — the stub call count is **unchanged**. The rendered slice is re-derived, but rows already fetched are remembered by key.
   - **A bump during an in-flight refresh does not duplicate it**: with a `getWeave` that never settles for one row, bump twice, then resolve — exactly one call was made for that row.
   - **Unmount unsubscribes**: wrap the signal so `subscribe` records the teardown it returns; after `unmount()` that teardown has been called and a later `bump()` reaches no listener.
+  - **Unmount stops the queue and the run in flight touches nothing**: 32 id entries, the blocking `getWeave` stub above so six are in flight and the rest are queued; `unmount()`; release every held promise and flush. Expected: the stub call count is **unchanged** at 6 (the queued rows never started), no `set` reached the injected storage after the unmount (a counting storage double), `onWrite` was not called again, and the test ends with no "state update on an unmounted component" warning and no unhandled rejection — the six in flight finished and were dropped.
 
   Then the reported-writes group, mounting `MyWeaves` with `onWrite={notice.note}` beside a `<PersistenceBar notice={notice}/>` (Task 8), over a real `browserStorage()` on the fake `localStorage` of Task 1:
   - **An invalidation that cannot persist is not silent**: `setItem` throws for that entry's key, a token read answers `401` → the row shows the invalid-identity state (the override layer of §2.4b keeps it true for this page), `notice.degraded()` is `true`, and **one** persistence bar is on screen. Without `onWrite` here the page would say "invalid" while `localStorage` still held the old token, and say nothing about it.
   - **A title write that cannot persist raises the same one notice**, and the row still shows the **new** title.
   - **With durable writes the notice stays quiet**: the same refresh over a working store leaves `notice.degraded()` false and renders no bar.
-- [ ] **Step 2: RED** — `cd src/web && npx vitest run test/main-page.test.tsx`.
+
+  And the scheduler as a unit, in **`src/web/test/refresh-queue.test.ts`** (a plain node-environment test — no DOM, no Preact, no storage). Each uses a `run` built from a `Map<T, { resolve, reject }>` of deferred promises, with `active`/`maxActive` counters kept the same way as above and an `order: T[]` recording each call:
+  - **The limit holds across several `enqueue` calls.** `createRefreshQueue<number>(2, run)`; `enqueue([1, 2, 3])`, flush, then `enqueue([4, 5, 6])` while 1 and 2 are still unresolved, flush. Expected: `order` is `[1, 2]` and `maxActive` is `2` — the second `enqueue` started nothing. Resolve 1 → `order` becomes `[1, 2, 3]`; resolve the rest → `order` is `[1, 2, 3, 4, 5, 6]`, `maxActive` is still `2`.
+  - **A rejecting `run` frees its slot.** `createRefreshQueue<number>(1, run)`; `enqueue([1, 2])`; reject 1 with `new Error("boom")`; flush. Expected: 2 has started (`order` is `[1, 2]`), and the rejection did not surface — the test registers a `process.on("unhandledRejection")` spy for its duration and asserts it recorded nothing, and `enqueue` itself returned `undefined` synchronously without throwing.
+  - **FIFO order.** `createRefreshQueue<string>(1, run)`; `enqueue(["a", "b"])`, then `enqueue(["c"])`; resolve each as it starts. Expected: `order` is exactly `["a", "b", "c"]` — items enqueued later wait behind items enqueued earlier, whatever the queue is doing when they arrive.
+  - **`dispose()` starts nothing further, and a later `enqueue` is a no-op.** `createRefreshQueue<number>(1, run)`; `enqueue([1, 2, 3])`; `dispose()`; resolve 1; `enqueue([4])`; flush. Expected: `order` is `[1]` — 2 and 3 were dropped when the queue was disposed, resolving 1 started nothing behind it, and 4 was never accepted.
+  - **The queue drains fully.** `createRefreshQueue<number>(2, run)` and `enqueue([1..7])`, resolving each call as it arrives. Expected: all seven ran, `order` is `[1, 2, 3, 4, 5, 6, 7]`, `maxActive` is `2`, and a final `enqueue([8])` still runs 8 — a drained queue is idle, not finished.
+- [ ] **Step 2: RED** — `cd src/web && npx vitest run test/main-page.test.tsx test/refresh-queue.test.ts`.
 - [ ] **Step 3: Implement.** Rows are **derived on every render**, never captured: the component subscribes to the signal, and a bump re-runs the derivation against storage.
 
 ```ts
@@ -1395,8 +1452,13 @@ export function MyWeaves({ client, storage, weaves, onWrite, lobbyWeaveId }: {
   const markRow = (row: WeaveRow, e: unknown) =>
     setNotes((n) => ({ ...n, [rowKey(row)]:
       e instanceof LoomClientError && e.code === "weave_not_found" ? "this Weave is gone" : "could not refresh" }));
-  // Below, in this order: the sort, the filter box, the slice (`visible`), the refresh effect, the
-  // row list, and the Copy link / Forget actions — all of them reading `rows`, `notes` and `visible`.
+  // "This component is still mounted." Checked before every state touch a finished request makes,
+  // because `dispose()` only stops rows that have not started — the six in flight still resolve.
+  const alive = useRef(true);
+  // Below, in this order: the sort, the filter box, the slice (`visible`), `refreshRow`, the
+  // scheduler that runs it, the refresh effect that feeds the scheduler, the row list, and the
+  // Copy link / Forget actions — all of them reading `rows`, `notes` and `visible`. `refreshRow`
+  // comes before the scheduler because the scheduler's ref is seeded with it.
 }
 
 /** A row's identity across a re-derive. An unresolved legacy row has no id yet, only its secret. */
@@ -1405,19 +1467,88 @@ export function rowKey(row: WeaveRow): string {
 }
 ```
 
-  Sorting, the filter box and the slice to 25 with "Show more" are unchanged by any of this and run over `rows`; their result is `visible` — the rows this render actually puts on screen, in order. Refresh is a `useEffect` over that **rendered slice** — the rendered rows are the definition of "on screen", not an `IntersectionObserver` — through a pool of 6, with its own memory of which rows it has already fetched:
+  Sorting, the filter box and the slice to 25 with "Show more" are unchanged by any of this and run over `rows`; their result is `visible` — the rows this render actually puts on screen, in order. Refresh is a `useEffect` over that **rendered slice** — the rendered rows are the definition of "on screen", not an `IntersectionObserver`. The effect does **not** schedule: it computes `pending`, claims those keys, and hands them to the one scheduler this mount owns.
+
+  The scheduler is its own file, with no Preact and no knowledge of Weaves, so the bound can be tested without a DOM:
 
 ```ts
-/** At most `n` refreshes in flight, taken in the order the slice renders them. */
-async function pool<T>(n: number, items: T[], run: (item: T) => Promise<void>): Promise<void> {
-  let next = 0;
-  const worker = async () => { while (next < items.length) await run(items[next++]!); };
-  await Promise.all(Array.from({ length: Math.min(n, items.length) }, worker));
-}
+// src/web/src/components/main/refresh-queue.ts
+// The `RefreshQueue<T>` type of the Interfaces block above is declared at the top of this file;
+// this factory and that type are the whole module. No imports at all.
 
-// Which rows have been fetched (or are in flight) this page, by row key rather than by position —
-// a bump re-derives the whole list, and this must survive that. A ref, not state: changing it must
-// not itself cause a render.
+/**
+ * A FIFO with a cap on how many `run` calls are in flight at once — **the** bound of spec §4.2.
+ *
+ * It exists as a long-lived object rather than an `await`-all-the-batches helper because the bound
+ * is on the browser, not on one batch: `MyWeaves` recomputes its visible slice on "Show more", on
+ * each filter keystroke and on every `WeavesSignal` bump, and a per-batch helper would start a
+ * fresh `limit` of work for each of those while the previous batch was still running. One queue per
+ * mounted list keeps `active` honest across all of them.
+ */
+export function createRefreshQueue<T>(limit: number, run: (item: T) => Promise<void>): RefreshQueue<T> {
+  const waiting: T[] = [];
+  let active = 0;
+  let disposed = false;
+
+  const pump = (): void => {
+    while (!disposed && active < limit && waiting.length > 0) {
+      const item = waiting.shift()!;
+      active += 1;
+      void (async () => {
+        try {
+          await run(item);
+        } catch {
+          // Deliberately swallowed. `run` is `refreshRow`, which already records a failed row for
+          // the human (`markRow`); anything that still escapes it is a bug in that function, not a
+          // reason to strand this slot. Rethrowing here would skip the `finally` of every caller
+          // there is (there is none — nobody awaits this), leave `active` counted up forever, and
+          // starve every row behind it. It would also be an unhandled rejection in the page.
+        } finally {
+          active -= 1;
+          pump();   // a freed slot immediately takes the next item, if any and if still alive
+        }
+      })();
+    }
+  };
+
+  return {
+    enqueue: (items) => {
+      if (disposed) return;          // after unmount nothing new starts, including a late enqueue
+      waiting.push(...items);        // appended: rows that arrive later wait behind earlier rows
+      pump();
+    },
+    // Drops what has not started. What *has* started cannot be cancelled — `LoomClient` offers no
+    // abort — so those requests finish and their results are discarded by the caller's own
+    // mounted-check (`alive` in `MyWeaves`), which is why this needs no callback.
+    dispose: () => { disposed = true; waiting.length = 0; },
+  };
+}
+```
+
+  And in the component, created once and kept:
+
+```ts
+// One queue for the life of this mount. `useRef(createRefreshQueue(...))` would build — and throw
+// away — a new queue on every render, which is exactly the bug this replaces, so it is built lazily
+// on first use instead.
+const queueRef = useRef<RefreshQueue<WeaveRow> | null>(null);
+// `refreshRow` closes over `client`, `storage`, `weaves` and `onWrite`, so a new one exists on every
+// render, while the queue is built once. The queue therefore calls the row refresh *indirectly*,
+// through a ref that each render updates — never the closure that happened to exist at mount, which
+// would keep writing through a stale `onWrite` after `MainPage` re-rendered.
+const latestRefresh = useRef(refreshRow);
+useEffect(() => { latestRefresh.current = refreshRow; });   // no dep array: every render, and this
+                                                           // effect is declared *before* the one
+                                                           // below, so it has already run when a
+                                                           // freshly enqueued row starts
+if (queueRef.current === null) {
+  queueRef.current = createRefreshQueue<WeaveRow>(6, (row) => latestRefresh.current(row));
+}
+useEffect(() => () => { alive.current = false; queueRef.current?.dispose(); }, []);   // unmount
+
+// Which rows have been fetched (or are in flight, or are queued) this page, by row key rather than
+// by position — a bump re-derives the whole list, and this must survive that. A ref, not state:
+// changing it must not itself cause a render.
 const fetched = useRef(new Set<string>());
 useEffect(() => {
   // Runs on every render, which is cheap and correct: `pending` is empty unless a row entered the
@@ -1425,10 +1556,12 @@ useEffect(() => {
   // row with an id — which is a new key and genuinely does want one fetch).
   const pending = visible.filter((r) => !fetched.current.has(rowKey(r)));
   if (pending.length === 0) return;
-  for (const r of pending) fetched.current.add(rowKey(r));   // claimed *before* awaiting, so a bump
-  void pool(6, pending, refreshRow);                          // mid-flight cannot start a second one
+  for (const r of pending) fetched.current.add(rowKey(r));   // claimed *before* enqueueing, so a
+  queueRef.current!.enqueue(pending);                        // bump mid-flight cannot queue it twice
 }, [visible]);
 ```
+
+  Nothing here starts work directly: `enqueue` is the only entry point, and it is the queue — not the effect — that decides when the seventh row begins.
 
   Each row picks its credential exactly as the session does, and every write it makes reports its verdict:
 
@@ -1442,11 +1575,17 @@ const refreshRow = async (row: WeaveRow): Promise<void> => {
   if (!choice) return;                                   // nothing to read with: keep the cache as it is
   try {
     const info = await choice.reader.getWeave(row.weaveId);
+    if (!alive.current) return;                          // unmounted mid-flight: the request finishes,
+                                                         // this component does not. Every path out of
+                                                         // the await is gated, so nothing calls
+                                                         // `onWrite`, `weaves.bump()` or `markRow`
+                                                         // after `dispose()`.
     // The verdict goes to the notice like every other write on this page: a title that reached only
     // memory is the same degraded browser a join or a creation would have found (spec §4.2, §6).
     onWrite(saveWeaveEntry(storage, row.weaveId, { title: info.weave.title, archived: !!info.weave.archivedAt }));
     weaves.bump();                                       // the stored row changed: re-derive the list
   } catch (e) {
+    if (!alive.current) return;                          // same gate on the failure path
     if (choice.withToken && isCredentialFailure(e)) {
       // Exactly what the session does (spec §2.6): the identity goes, the secret stays, and a
       // stored secret gets one more try — so a dead token costs a row its identity, not its title.
@@ -1463,6 +1602,14 @@ const refreshRow = async (row: WeaveRow): Promise<void> => {
 };
 ```
   `isCredentialFailure` is the same two-code test the session uses (`invalid_token`, `forbidden`); export it from `weaves-store.ts` beside `readerFor` so there is one copy. The recursion is bounded: the retry only happens when `choice.withToken` was true, and after `invalidateIdentity` it never can be again — and it does **not** go back through the effect, so `fetched` is untouched by it. Nothing is deleted anywhere in this path.
+
+  **The secret retry stays inside this one `run`, and that is on purpose.** The recursive
+  `refreshRow(row)` above is awaited by the same queue slot that started the row, so a row that
+  invalidates and retries costs the bound **one** request at a time, never two, and never jumps the
+  FIFO ahead of rows that have been waiting. Do not "fix" it into a second `enqueue`: that would put
+  the retry at the back of the queue behind up to 24 other rows, make the row's identity state and
+  its title arrive far apart, and — because the key is already in `fetched` — need a second claim
+  mechanism to avoid being dropped as a duplicate. One row, one slot, from first request to last.
 
   `Forget` is the last writer: `forgetWeave(storage, weaveId); weaves.bump();` — and nothing is reported, because `remove` returns no verdict and a removal that did not reach `localStorage` still reads as absent for this page (§2.4b's tombstone). Say so in a comment where it is called, so the asymmetry with the two `onWrite` calls above reads as a decision rather than an omission.
 - [ ] **Step 4: GREEN** — `cd src/web && npx vitest run && pnpm typecheck && pnpm build`.
@@ -1553,11 +1700,11 @@ Spec §8.
 - **§2.6** every table row, the rejoin self-heal, the three asymmetries → Task 4 (store tests) and Task 7 (`WeaveView` branches); the same rule applied to a list row → Task 9's `refreshRow`.
 - **§2.7** convergence on one `<WeaveView/>` → Task 7.
 - **§3.1** routes, full page loads, the one exception, the URL deliberately unchanged → Task 7; the durable/in-place branch at each call site → Tasks 6 (join), 8 (main page) and 10 (create). **§3.2** server paths, no catch-all, API-only → Task 5. **§3.3** the three-way fork → Task 4 (credential resolution, including the secret fallback) and Task 7 (the Lobby fork on both `/lobby` and `/weave/<lobbyId>`, the generic explanation otherwise).
-- **§4.1** → Task 6 (the form) and Task 8 (where the main page puts it); **§4.2** → Task 9, including the two rules of the second review round: *the list follows storage* (the `WeavesSignal` of Task 2, bumped by Task 8's `migrateLegacy(… , onChanged)`, by Task 9's refresh, invalidation and Forget, and by Task 10's creation; subscribed and unsubscribed in `MyWeaves`) and *every write reports its verdict* (`onWrite` = `notice.note`, wired in Task 8, on both of Task 9's writes, with Forget's `remove` reporting nothing and §2.4b's tombstone being why that is safe). **§4.3**, **§4.4** → Task 8; **§4.5** → Task 10, one write, the panel branching on its verdict, and the bump that puts the new Weave in the list beside it.
+- **§4.1** → Task 6 (the form) and Task 8 (where the main page puts it); **§4.2** → Task 9, including the two rules of the second review round: *the list follows storage* (the `WeavesSignal` of Task 2, bumped by Task 8's `migrateLegacy(… , onChanged)`, by Task 9's refresh, invalidation and Forget, and by Task 10's creation; subscribed and unsubscribed in `MyWeaves`) and *every write reports its verdict* (`onWrite` = `notice.note`, wired in Task 8, on both of Task 9's writes, with Forget's `remove` reporting nothing and §2.4b's tombstone being why that is safe), and the rule of the third review round: *the bounded refresh is bounded across renders* — one `createRefreshQueue(6, …)` per mounted list in Task 9, built once in a ref, fed by an effect that only claims keys and enqueues, disposed on unmount, with the secret retry occupying the slot its row already holds. **§4.3**, **§4.4** → Task 8; **§4.5** → Task 10, one write, the panel branching on its verdict, and the bump that puts the new Weave in the list beside it.
 - **§5** security: nothing new is written, so the review lands in docs → Task 11 (SECURITY §8, §9.9, §4a). The "a Weave title must go through JSX, never the Markdown renderer" rule is enforced by Task 9's row rendering and Task 8's guidelines-only use of `markdown.ts`.
 - **§6** no new error code; `no-credential` + `readOnlyReason` → Task 4; four independent cells and the never-crashing degraded mode → Task 8; the one-time notice → Task 8 (`PersistenceBar`), latched by Task 2's `PersistenceNotice`, and fed by **every** write on the page: the join (Task 6), the creation (Task 10), migration (Task 8) and My Weaves' title write and invalidation (Task 9's `onWrite`).
-- **§7 test by test**: one storage instance + `useSession` keeps it → Task 2. Durable-write result (6 cases) and read precedence (7 cases), plus the 3 inaccessible-storage cases → Task 1. Storage entry unit cases, the `mergeLegacy` and `readerFor` tables, the one-write `setIdentity` → Task 3. Migration (6 cases, including the conflicting duplicate and the invalid-marked entry) → Task 3. Store: token load, secret-vs-id equality, Lobby board, no entry, network failure, mutations, `needsName`, and the three bookmarked-`/w/<secret>` cases → Task 4. Invalid identity (7 cases incl. the two non-durable ones) → Task 4. DOM: name boundaries, `name_taken` + suggestion, the durable/non-durable join → Task 6; `routeOf`, the `WeaveView` branches, the unjoined Lobby on both routes, the blocked-storage join ending in a writable session → Task 7; the notice, the cells, the Lobby summary, Open-the-Lobby vs the form, migration started once with its `onChanged` → Task 8; the row states, the four refresh-credential cases, the seven change-signal cases (delayed migration, refresh result, invalidation, Forget, no re-fetch after a bump, no duplicate mid-flight, unmount unsubscribes) and the three reported-write cases → Task 9; create 403/201, the single write, the size-threshold and all-blocked panels → Task 10. Server (3 cases) → Task 5. Manual smoke → Task 11.
+- **§7 test by test**: one storage instance + `useSession` keeps it → Task 2. Durable-write result (6 cases) and read precedence (7 cases), plus the 3 inaccessible-storage cases → Task 1. Storage entry unit cases, the `mergeLegacy` and `readerFor` tables, the one-write `setIdentity` → Task 3. Migration (6 cases, including the conflicting duplicate and the invalid-marked entry) → Task 3. Store: token load, secret-vs-id equality, Lobby board, no entry, network failure, mutations, `needsName`, and the three bookmarked-`/w/<secret>` cases → Task 4. Invalid identity (7 cases incl. the two non-durable ones) → Task 4. DOM: name boundaries, `name_taken` + suggestion, the durable/non-durable join → Task 6; `routeOf`, the `WeaveView` branches, the unjoined Lobby on both routes, the blocked-storage join ending in a writable session → Task 7; the notice, the cells, the Lobby summary, Open-the-Lobby vs the form, migration started once with its `onChanged` → Task 8; the row states, the four refresh-credential cases, the four **total-bound** cases over one 32-row fixture (six at a time; a filter change and "Show more" while six are blocked add nothing; a bump that adds a row adds nothing; the queue then drains each row exactly once, `maxInFlight === 6` throughout), the eight change-signal cases (delayed migration, refresh result, invalidation, Forget, no re-fetch after a bump, no duplicate mid-flight, unmount unsubscribes, unmount disposes the queue) and the three reported-write cases → Task 9, with the scheduler itself covered as a unit in `refresh-queue.test.ts` (limit across enqueues, a rejecting `run`, FIFO, `dispose`, draining); create 403/201, the single write, the size-threshold and all-blocked panels → Task 10. Server (3 cases) → Task 5. Manual smoke → Task 11.
 - **§8** docs list → Task 11, item for item.
 - **§9** implementation order followed, with one deliberate change: the spec's step 8 (Join the Lobby) runs **before** the router, because §3.3's unjoined-Lobby fork renders that form and a task may not consume what no earlier task produced. Everything else is in the spec's order; 11 tasks plus Task 0 for the branch.
 - **§10** assumptions: 9 (an entry written on a `/w/<secret>` load before any join) is Task 4 Step 3's `saveWeaveEntry` after a successful metadata read, with `migrateLegacyOne` before it for a browser that joined under the old key; 10 (nothing deleted automatically) is Task 9's Forget-only rule and the never-delete-a-secret rule in Tasks 3, 4 and 9; 12 (the instance is a prop, not a singleton) is Task 2; 13 (page-lifetime overrides, no cross-tab sync) is Task 1.
-- **Type consistency**: `WriteResult` is the return of `set`, `saveWeaveEntry`, `setIdentity`, `invalidateIdentity` and `migrateLegacyOne`, and the parameter of `PersistenceNotice.note`, of the session's `onWrite` and of `MyWeaves`' `onWrite`, everywhere — and `notice.note` is the only function ever passed as an `onWrite`; `WeavesSignal` is `{ bump(): void; subscribe(fn: () => void): () => void }` in Task 2, in `AppDeps`, in `MainPage`, in `MyWeaves` and in `CreateWeaveForm`, and `migrateLegacy`'s fourth parameter is a plain `onChanged?: () => void` so `weaves-store.ts` stays free of it; `JoinLobbyForm` deliberately has no `weaves` prop (Task 6 says why); `setIdentity(storage, weaveId, who, extra?)` has that one signature in Tasks 3, 4, 6 and 10; `readerFor(client, entry)` and `isCredentialFailure(e)` are defined once in `weaves-store.ts` and consumed by the session (Task 4) and My Weaves (Task 9); `mergeLegacy` is the only merge rule, reached through `migrateLegacyOne` from both triggers; `WeaveEntry` is the stored shape and `StoredWeave` the listed one, never swapped; `SessionTarget` has the same two members in `createSession`, `useSession` and `app.tsx`; `hasIdentity(e)` is the single test for "usable identity"; `JoinLobbyForm`'s `onJoined`/`onJoinedInPlace` pair is the same contract in Tasks 6, 7 and 8. Placeholder scan: no "TBD", no "similar to Task N", no "add error handling"; every symbol a task consumes is produced by an earlier task's **Produces** block.
+- **Type consistency**: `WriteResult` is the return of `set`, `saveWeaveEntry`, `setIdentity`, `invalidateIdentity` and `migrateLegacyOne`, and the parameter of `PersistenceNotice.note`, of the session's `onWrite` and of `MyWeaves`' `onWrite`, everywhere — and `notice.note` is the only function ever passed as an `onWrite`; `WeavesSignal` is `{ bump(): void; subscribe(fn: () => void): () => void }` in Task 2, in `AppDeps`, in `MainPage`, in `MyWeaves` and in `CreateWeaveForm`, and `migrateLegacy`'s fourth parameter is a plain `onChanged?: () => void` so `weaves-store.ts` stays free of it; `JoinLobbyForm` deliberately has no `weaves` prop (Task 6 says why); `setIdentity(storage, weaveId, who, extra?)` has that one signature in Tasks 3, 4, 6 and 10; `readerFor(client, entry)` and `isCredentialFailure(e)` are defined once in `weaves-store.ts` and consumed by the session (Task 4) and My Weaves (Task 9); `mergeLegacy` is the only merge rule, reached through `migrateLegacyOne` from both triggers; `WeaveEntry` is the stored shape and `StoredWeave` the listed one, never swapped; `SessionTarget` has the same two members in `createSession`, `useSession` and `app.tsx`; `hasIdentity(e)` is the single test for "usable identity"; `JoinLobbyForm`'s `onJoined`/`onJoinedInPlace` pair is the same contract in Tasks 6, 7 and 8; `createRefreshQueue(limit, run)` returning `RefreshQueue<T>` (`enqueue(items: T[]): void`, `dispose(): void`) is declared once, in Task 9's `refresh-queue.ts`, instantiated once as `RefreshQueue<WeaveRow>`, and the per-batch helper it replaced appears **nowhere** in this plan — a batch-scoped concurrency helper is the shape the third review round removed. Placeholder scan: no "TBD", no "similar to Task N", no "add error handling"; every symbol a task consumes is produced by an earlier task's **Produces** block.

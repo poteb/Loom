@@ -53,6 +53,15 @@ Found by the Lobby manual smoke test of 2026-09-17 (`v2-notes.md`, "Lobby smoke 
 > 10. **My Weaves reports its own failed writes.** A refresh's title write and its identity
 >     invalidation each carry a `WriteResult` to the one-time notice; without it a row can show an
 >     invalid identity while durable storage still holds the old token, and say nothing (§4.2, §6).
+>
+> **Third planning review (2026-09-18).** One, again in My Weaves:
+>
+> 11. **"At most six requests in flight" is a bound on the browser, not on a batch.** The list
+>     recomputes its visible rows on "Show more", on each filter keystroke and on every change signal
+>     bump, so a bounded batch started per recompute lets each new one add six more beside the six
+>     still running. The bound now belongs to **one scheduler per mounted list** that outlives every
+>     render, rows that become visible later queue behind rows already waiting, and the secret retry
+>     of §2.6 reuses its row's slot (§4.2, §7).
 
 ## 1. Purpose
 
@@ -679,16 +688,24 @@ Per Paw's scale note, this has to survive hundreds of rows:
 
 - **Rows render from storage with no network at all**, using the cached `title`/`archived` written
   at join/create/load time (§2.4). A browser with 300 entries paints instantly.
-- Refresh is **lazy and bounded**: only rows currently on screen are re-read, at most ~6 requests in
-  flight, and a failed row keeps its cached title with a quiet "could not refresh" marker. Nothing
-  fans out 300 `getWeave` calls on page load. (This is the same pressure as the cursor-less
-  `listRequests` row in KNOWN-ISSUES; it is handled here by not needing the server.)
+- Refresh is **lazy and bounded**: only rows currently on screen are re-read, at most **6 requests in
+  flight in total**, and a failed row keeps its cached title with a quiet "could not refresh" marker.
+  Nothing fans out 300 `getWeave` calls on page load. (This is the same pressure as the cursor-less
+  `listRequests` row in KNOWN-ISSUES; it is handled here by not needing the server.) **The bound is
+  total across renders, not per batch**: the list recomputes what is on screen when the human clicks
+  "Show more", on each keystroke in the filter, and on every change signal below, so the six is held
+  by **one scheduler per mounted list** — a FIFO with a count of active requests, living for as long
+  as the list does — and not by a helper created inside whatever recomputed the slice. A bounded
+  batch started per recompute is not a bound at all: three overlapping recomputes are eighteen
+  requests. Rows that become visible later queue behind rows already waiting, a row that fails frees
+  its slot like any other, and leaving the page drops what has not started.
 - A row is refreshed with **the credential the session would have picked for it** (§2.3): the token
   when the identity is usable, the stored secret when it is not, and no request at all when the
   entry holds neither. The list deliberately contains rows for Weaves this browser has read but not
   joined, and rows whose identity has been invalidated, so assuming a token would fail precisely on
   the rows that most need their title. A `401`/`403` from a token read invalidates the identity
-  exactly as §2.6 says — the secret survives — and the refresh then tries once more with it.
+  exactly as §2.6 says — the secret survives — and the refresh then tries once more with it, within
+  the same slot of the bound below rather than as a newly scheduled row.
 - Sorted by `lastOpenedAt` descending, ties by title. A filter box appears once there are more than
   ~8 rows. Rows past ~25 are behind "Show more" — cheap now, and the shape the layout overhaul can
   replace wholesale.
@@ -717,8 +734,9 @@ Per Paw's scale note, this has to survive hundreds of rows:
   **Forget**, and a creation that completes while this page stays on screen (§4.5 does not navigate).
   The list re-derives from storage on each bump. Nothing polls; `KeyValueStorage` itself does **not**
   become observable — the session and every test inject it, and that blast radius buys nothing here;
-  and a bump must never restart a refresh already in flight or re-read a row already refreshed, so
-  the rendered-slice rule and the bounded pool above still hold. Without this, a migration that
+  and a bump must never restart a refresh already in flight, re-read a row already refreshed, or
+  raise the number of requests in flight — it feeds the one scheduler above like every other
+  recompute, so the rendered-slice rule and the total bound still hold. Without this, a migration that
   finishes a moment after the first paint leaves a legacy row unresolved on screen until the human
   reloads, and a refreshed title never appears at all.
 - **Every write this list makes reports whether it persisted.** The refresh's `title`/`archived`
@@ -1049,6 +1067,17 @@ happy-dom DOM tests selected by the `// @vitest-environment happy-dom` docblock)
   paint turns a legacy row into an id row; a refresh result (new title, archived flag) appears; a
   401 invalidation changes the row state; Forget removes the row; and a change signal bump does
   **not** re-fetch a row already refreshed (counted on the stub).
+- My Weaves keeps the refresh bound **in total, across renders** — the regression test for a bound
+  that was only ever per batch. With 30+ rows and a `getWeave` the test releases by hand, the first
+  six block; then the visible slice changes repeatedly while they are still blocked (a filter
+  keystroke, "Show more", and a change signal bump that brings a newly migrated row in), and a
+  running maximum of concurrent stub calls never exceeds 6. Releasing the block drains the queue and
+  each row is fetched exactly once. Leaving the page starts nothing further: after unmount the
+  queued rows never begin and the in-flight ones write nothing back.
+- The scheduler holding that bound is tested as a unit too, with no DOM: the limit is honoured across
+  several separate submissions, items run first-in-first-out, a rejecting run frees its slot rather
+  than stranding it, disposal starts nothing further and ignores later submissions, and the queue
+  drains completely.
 - My Weaves **reports its failed writes**: an invalidation that cannot persist still shows the
   invalid-identity row *and* raises the notice bar once; a title write that cannot persist raises the
   same one notice and still updates the title on screen; with durable writes the notice stays quiet.
