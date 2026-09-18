@@ -1816,6 +1816,22 @@ describe("the save-this-link panel (spec §4.5, §5)", () => {
       .toEqual([`${location.origin}/w/${NEW_SECRET}`, true]);
   });
 
+  // The form is replaced in place, with no navigation and no heading change a reader would notice,
+  // so the one moment the secret is on screen would otherwise pass in silence.
+  it("announces itself as a live region, without re-reading the secret on every later change", async () => {
+    // `aria-atomic="false"` on purpose: `role="status"` implies atomic, which would read the whole
+    // panel — the 43-character link included — again the moment "Copied" appears beside it.
+    const v = mountCreate();
+    await v.create();
+    expect([v.panel()!.getAttribute("role"), v.panel()!.getAttribute("aria-atomic")]).toEqual(["status", "false"]);
+  });
+
+  it("takes focus to its heading, so a reader lands on the panel rather than where the form was", async () => {
+    const v = mountCreate();
+    await v.create();
+    expect([document.activeElement?.tagName, document.activeElement?.textContent]).toEqual(["H2", "Save this link"]);
+  });
+
   it("says what the link is, in the words that say it cannot be taken back", async () => {
     const v = mountCreate();
     await v.create();
@@ -1919,6 +1935,13 @@ describe("the save-this-link panel hardens when nothing was saved (spec §3.1, �
     await v.create();
     expect([!!v.container.querySelector(".create-saved-hardened"), v.button("Done").disabled])
       .toEqual([true, true]);
+  });
+
+  it("takes focus to its heading in this variant too, which is the one that must not be missed", async () => {
+    installThrowingLocalStorage();
+    const v = mountCreate({ storage: browserStorage() });
+    await v.create();
+    expect([document.activeElement?.tagName, document.activeElement?.textContent]).toEqual(["H2", "Save this link"]);
   });
 
   it("says why this link is the only copy there is", async () => {

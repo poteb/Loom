@@ -1,4 +1,4 @@
-import { useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { LoomClientError, type LoomClient } from "@loom/client";
 import type { KeyValueStorage } from "../../storage.js";
 import type { PersistenceNotice } from "../../persistence.js";
@@ -68,6 +68,13 @@ export function CreateWeaveForm({ client, storage, notice, weaves, defaultName, 
   /** The link has been copied or explicitly acknowledged — what unlocks a hardened dismissal. */
   const [saved, setSaved] = useState(false);
   const [copied, setCopied] = useState<"done" | "manual" | undefined>();
+  /**
+   * The panel's heading, and the focus that lands on it the moment the panel replaces the form.
+   * The live region below says a panel appeared; this is what puts a keyboard or screen-reader user
+   * *inside* it, next to the one copy of a credential that cannot be recovered (spec §4.5, §5) —
+   * the form they were in has gone, and without this the cursor stays where it was.
+   */
+  const savedHeading = useRef<HTMLHeadingElement>(null);
 
   const name = typedName ?? defaultName ?? "";
   const trimmed = title.trim();
@@ -114,6 +121,11 @@ export function CreateWeaveForm({ client, storage, notice, weaves, defaultName, 
     if (done) { setCreated(done); weaves.bump(); }
   };
 
+  // Before the branch below, because a hook cannot live behind a return. It fires on the render
+  // that puts the panel up (and on a later creation, which is a new `created`), and does nothing
+  // when the panel is dismissed.
+  useEffect(() => { if (created) savedHeading.current?.focus(); }, [created]);
+
   if (created) {
     const link = `${location.origin}/w/${created.secret}`;
     // A secret that reached only this tab's memory is one closed tab from an unrecoverable Weave, so
@@ -135,8 +147,12 @@ export function CreateWeaveForm({ client, storage, notice, weaves, defaultName, 
       setTitle(""); setOpener(""); setGuidelines("");   // the name is this browser's and stays
     };
     return (
-      <section class={`create-weave create-saved${hardened ? " create-saved-hardened" : ""}`}>
-        <h2>Save this link</h2>
+      <section class={`create-weave create-saved${hardened ? " create-saved-hardened" : ""}`}
+        role="status" aria-atomic="false">
+        {/* `aria-atomic="false"` against the `role="status"` default: atomic would re-read the whole
+            panel — the 43-character link included — every time something inside it changes, and
+            "Copied" appearing beside the button is exactly such a change. */}
+        <h2 tabIndex={-1} ref={savedHeading}>Save this link</h2>
         <p class="create-saved-title">{created.title}</p>
         <div class="create-saved-link">
           {/* The one place a freshly created secret reaches the DOM — that is this panel's whole
