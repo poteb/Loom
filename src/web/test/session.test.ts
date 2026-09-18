@@ -1144,6 +1144,32 @@ function storedIdentity(weaveId: string, j: { token: string; participant: { id: 
   return storage;
 }
 
+/**
+ * A client whose reads with `token` are refused with `invalid_token` once `revoke()` is called —
+ * what a keeper removing this participant looks like from a tab that is already open. The refusals
+ * are counted, so "one fallback, and then nothing" is observed rather than hoped for.
+ */
+function revocableClient(token: string): { client: LoomClient; revoke: () => void; denied: () => number } {
+  let revoked = false;
+  let denied = 0;
+  const client = new LoomClient({
+    baseUrl: s.baseUrl, allowInsecure: true,
+    fetch: (input, init) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (revoked && (init?.headers as Record<string, string> | undefined)?.["authorization"] === `Bearer ${token}`) {
+        denied++;
+        return Promise.resolve(new Response(JSON.stringify({ code: "invalid_token", message: "Credential is not valid" }),
+          { status: 401, headers: { "content-type": "application/json" } }));
+      }
+      return fetch(url, init);
+    },
+  });
+  return { client, revoke: () => { revoked = true; }, denied: () => denied };
+}
+
+/** Short enough that an endless retry shows up inside a test, rather than being waited out. */
+const QUICK_RETRY = { delaysMs: [5, 5, 5, 5, 5], slowMs: 20 };
+
 describe("session by weave id", () => {
   it("loads a Weave from a stored participant token, with no secret in play", async () => {
     const { r, j } = await joinedWeave("Paw");
@@ -1449,6 +1475,81 @@ describe("session by weave id", () => {
       expect(session.getState().status).toBe("ready");
       expect(session.getState().readOnlyReason).toBe("secret-fallback");
       expect(readWeaveEntry(storage, r.weave.id)?.identity).toBe("invalid");
+    } finally { session.dispose(); }
+  });
+
+  // The whole §2.6 rule, on the reads a *loaded* session keeps making. Before `/weave/<id>` a
+  // session read with a secret, which cannot be revoked; a stored token can die while the tab is
+  // open, and treating that as a transient failure retries a credential that is provably dead.
+  it("invalidates a token that dies mid-session and falls back to the stored secret, once", async () => {
+    const { r, j } = await joinedWeave("Paw");
+    const storage = storedIdentity(r.weave.id, j, { secret: r.secret });
+    const c = revocableClient(j.token);
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: r.weave.id }, storage, retry: QUICK_RETRY });
+    await session.load();
+    try {
+      expect(session.getState().me?.participant.name).toBe("Paw");
+      await waitFor(() => session.getState().connection === "open");
+      c.revoke();
+      // Someone else's thread is what asks this session for the metadata read that is now refused.
+      await anon.withToken(r.token).createThread(r.weave.id, "Design");
+      await waitFor(() => session.getState().readOnlyReason === "secret-fallback");
+      expect(session.getState().status).toBe("ready");
+      expect(session.getState().me).toBeUndefined();
+      const e = readWeaveEntry(storage, r.weave.id)!;
+      expect([e.identity, e.token, e.participantId, e.secret]).toEqual(["invalid", undefined, undefined, r.secret]);
+      const atFallback = c.denied();
+      await new Promise((done) => setTimeout(done, 200));     // many backoffs of QUICK_RETRY
+      expect([atFallback, c.denied()]).toEqual([1, 1]);       // one refusal, and no loop behind it
+    } finally { session.dispose(); }
+  });
+
+  it("settles at no-credential when that token dies and no secret was stored", async () => {
+    const { r, j } = await joinedWeave("Paw");
+    const storage = storedIdentity(r.weave.id, j);
+    const c = revocableClient(j.token);
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: r.weave.id }, storage, retry: QUICK_RETRY });
+    await session.load();
+    try {
+      await waitFor(() => session.getState().connection === "open");
+      c.revoke();
+      await anon.withToken(r.token).createThread(r.weave.id, "Design");
+      await waitFor(() => session.getState().status === "no-credential");
+      expect(session.getState().error).toMatch(/no longer valid/i);
+      expect(session.getState().refreshError).toBeUndefined();
+      expect(readWeaveEntry(storage, r.weave.id)).toMatchObject({ identity: "invalid" });
+      const atSettle = c.denied();
+      await new Promise((done) => setTimeout(done, 200));
+      expect([atSettle, c.denied()]).toEqual([1, 1]);
+    } finally { session.dispose(); }
+  });
+
+  it("still retries a refresh that failed for a transient reason, and leaves the entry alone", async () => {
+    const { r, j } = await joinedWeave("Paw");
+    const storage = storedIdentity(r.weave.id, j, { secret: r.secret });
+    let getWeaveCalls = 0;
+    const flaky = new LoomClient({
+      baseUrl: s.baseUrl, allowInsecure: true,
+      fetch: (input, init) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (/^\/api\/weaves\/[^/]+$/.test(new URL(url).pathname)) {
+          getWeaveCalls++;
+          // Call 1 belongs to load(); fail the refresh the thread below triggers.
+          if (getWeaveCalls === 2) return Promise.reject(new Error("simulated network failure"));
+        }
+        return fetch(url, init);
+      },
+    });
+    const session = createSession({ client: flaky, target: { kind: "id", weaveId: r.weave.id }, storage, retry: QUICK_RETRY });
+    await session.load();
+    const after = storage.get(weaveKey(r.weave.id));
+    try {
+      await waitFor(() => session.getState().connection === "open");
+      await anon.withToken(r.token).createThread(r.weave.id, "Design");
+      await waitFor(() => session.getState().threads.some((t) => t.name === "Design"));
+      expect(session.getState().readOnlyReason).toBeUndefined();
+      expect(session.getState().me?.participant.name).toBe("Paw");
+      expect(storage.get(weaveKey(r.weave.id))).toBe(after);
     } finally { session.dispose(); }
   });
 });

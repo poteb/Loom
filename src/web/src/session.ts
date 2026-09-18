@@ -128,6 +128,37 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
   const entry = (): WeaveEntry | undefined => (weaveId ? readWeaveEntry(storage, weaveId) : undefined);
 
   /**
+   * The Global Constraint of §2.6, applied wherever a read made **with the stored token** comes back
+   * `401 invalid_token` / `403 forbidden`: the load's own read, a background refresh, or the request
+   * board. That credential is provably unusable, so the identity is deleted (never the secret) and,
+   * once per identity, the page falls back to what the entry still holds. It lives here rather than
+   * in the load alone because a token can die *after* a load — a keeper removing a participant while
+   * the tab is open — and a refresh that took that for a transient failure would retry a dead
+   * credential for as long as the page is open.
+   *
+   * `undefined` means this is not that failure (a network failure, or a credential failure while
+   * reading with the **secret**, which is an ordinary error), so the caller handles it as it always
+   * did. `{ reload: true }` asks the caller to re-enter the load on the stored secret; `{ reload:
+   * false }` means the session has already settled at `no-credential` and there is nothing to retry.
+   */
+  const recoverFromCredentialFailure = (e: unknown): { reload: boolean } | undefined => {
+    if (!readingWithToken || !isCredentialFailure(e) || !weaveId || retriedWithSecret) return undefined;
+    // Into a variable first: `onWrite?.(invalidateIdentity(…))` would skip the *argument* — and the
+    // write with it — whenever nobody is listening.
+    const wrote = invalidateIdentity(storage, weaveId);
+    onWrite(wrote);
+    retriedWithSecret = true;
+    if (readWeaveEntry(storage, weaveId)?.secret) return { reload: true };
+    // Nothing left to read with. Retire the stream and the generation that owns this session's
+    // loops, so nothing keeps asking with a credential that is gone, and say what happened.
+    stream?.close();
+    stream = undefined;
+    generation++;
+    set({ status: "no-credential", error: "Your identity in this Weave is no longer valid" });
+    return { reload: false };
+  };
+
+  /**
    * The credential this load reads with (spec §2.3).
    *
    * A secret target reads with its secret, exactly as before — that is what grants read *before*
@@ -274,6 +305,11 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
         return;
       } catch (e) {
         if (disposed) return;
+        // A credential this read has just proven dead is not something to retry: §2.6 takes over,
+        // and the load it re-enters (or the `no-credential` it settles at) replaces this loop —
+        // which retires with the generation that started it.
+        const recovered = recoverFromCredentialFailure(e);
+        if (recovered) { if (recovered.reload) void doLoad(); return; }
         set({ refreshError: e instanceof Error ? e.message : String(e) });
         const delay = attempt < retry.delaysMs.length ? retry.delaysMs[attempt]! : retry.slowMs;
         await sleep(delay, lifetime.signal);
@@ -323,6 +359,10 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
             return;
           } catch (e) {
             if (disposed || myGeneration !== generation) return;
+            // The board is read with the same credential the rest of the page is, so the same rule
+            // applies to it: a dead token is invalidated once rather than retried for good.
+            const recovered = recoverFromCredentialFailure(e);
+            if (recovered) { if (recovered.reload) void doLoad(); return; }
             set({ requestsError: messageOf(e) });
           }
         }
@@ -499,12 +539,11 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       if (stale()) return;
       // The credential in hand is provably unusable: clear the identity (never the secret) and,
       // when a secret is stored, load again with it. Once only — `retriedWithSecret` makes a
-      // second failure an error rather than a loop.
-      if (readingWithToken && isCredentialFailure(e) && weaveId && !retriedWithSecret) {
-        onWrite(invalidateIdentity(storage, weaveId));
-        retriedWithSecret = true;
-        if (readWeaveEntry(storage, weaveId)?.secret) return await doLoad();
-        set({ status: "no-credential", error: "Your identity in this Weave is no longer valid" });
+      // second failure an error rather than a loop. The rule itself lives in one place, because the
+      // refresh and the request board meet the same failure on the same credential.
+      const recovered = recoverFromCredentialFailure(e);
+      if (recovered) {
+        if (recovered.reload) await doLoad();
         return;
       }
       const msg = e instanceof LoomClientError && e.code === "weave_not_found"
