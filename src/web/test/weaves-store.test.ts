@@ -83,6 +83,24 @@ describe("storedWeaves", () => {
     saveWeaveEntry(storage, ID2, { title: "T" });
     expect(storedWeaves(storage)).toEqual([{ kind: "id", weaveId: ID2, title: "T" }]);
   });
+
+  // The key is the fact; the value is what the key holds. A stored value that happens to carry
+  // `kind` or `weaveId` must not be able to say it is a legacy row, or name a different Weave —
+  // `targets()` would then take the legacy branch and look for a secret that is not there.
+  it("lets a stored value override neither the discriminator nor the id its key implies", () => {
+    const storage = memoryStorage();
+    storage.set(weaveKey(ID), JSON.stringify({ kind: "legacy", weaveId: ID2, secret: SECRET, token: "tok" }));
+    expect(storedWeaves(storage)).toEqual([{ kind: "id", weaveId: ID, secret: SECRET, token: "tok" }]);
+  });
+
+  for (const [label, raw] of [["a bare string", "\"123\""], ["null", "null"], ["an array", "[]"]] as const) {
+    it(`skips ${label}, under an id key and a legacy key alike`, () => {
+      const storage = memoryStorage();
+      storage.set(weaveKey(ID), raw);
+      storage.set(legacyKey(SECRET), raw);
+      expect(storedWeaves(storage)).toEqual([]);
+    });
+  }
 });
 
 describe("saveWeaveEntry", () => {

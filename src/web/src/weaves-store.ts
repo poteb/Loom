@@ -91,9 +91,15 @@ export function storedWeaves(storage: KeyValueStorage): StoredWeave[] {
     if (!raw) continue;
     try {
       const v = JSON.parse(raw) as WeaveEntry;
+      // An entry is an object or it is not an entry. A string, a number, `null` or an array parses
+      // fine and spreads into something that is not one — `{...("12")}` is `{0:"1",1:"2"}` — so the
+      // shape is checked before anything is built from it.
+      if (typeof v !== "object" || v === null || Array.isArray(v)) continue;
       if (rest.startsWith("weave:")) {
         const weaveId = rest.slice("weave:".length);
-        if (weaveId) out.push({ kind: "id", weaveId, ...v });
+        // The parsed value first, the key's own facts last: the **key** says this is an id entry and
+        // which Weave it is for, and a stored `kind`/`weaveId` must not be able to contradict it.
+        if (weaveId) out.push({ ...v, kind: "id" as const, weaveId });
       } else if (!rest.includes(":") && v.token) {
         out.push({ kind: "legacy", secret: rest, token: v.token, participantId: v.participantId });
       }
