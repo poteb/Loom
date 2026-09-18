@@ -17,10 +17,13 @@ const TITLE_MAX = 200;
  */
 const CLOSED = "This instance only lets keepers create Weaves.";
 
-/** What a failed creation says. `validation` keeps the server's own words, as on the join form. */
+/**
+ * What a failed creation says. `validation` keeps the server's own words, as on the join form.
+ * `forbidden` is deliberately absent: `submit` takes that answer out of the error line altogether
+ * and closes the form instead, so a branch for it here would be dead.
+ */
 function messageFor(e: unknown): string {
   if (e instanceof LoomClientError) {
-    if (e.code === "forbidden") return CLOSED;
     if (e.code === "network") return "Could not reach the server.";
     return e.message;
   }
@@ -72,7 +75,10 @@ export function CreateWeaveForm({ client, storage, notice, weaves, defaultName, 
 
   const submit = async (e: Event) => {
     e.preventDefault();
-    if (!valid || busy) return;
+    // `closed` as well as `valid`/`busy`: the Create button is gone once the instance has refused,
+    // but a submit can still be raised — Enter in a field does it — and spending a round trip to be
+    // told the same standing answer is exactly what the closed state exists to avoid.
+    if (!valid || busy || closed) return;
     setBusy(true);
     setError(undefined);
     let done: Created | undefined;
@@ -172,18 +178,20 @@ export function CreateWeaveForm({ client, storage, notice, weaves, defaultName, 
     <section class="create-weave">
       <h2>Create a Weave</h2>
       {closed && <p class="create-closed error">{CLOSED}</p>}
+      {/* Disabled, not cleared and not removed, once the instance has said no: what was typed stays
+          readable (spec §6), and nothing on screen invites input this form can no longer act on. */}
       <form onSubmit={submit}>
-        <label>Title <input value={title} onInput={(e) => { setTitle((e.target as HTMLInputElement).value); setError(undefined); }} /></label>
-        <label>Your name <input value={name} onInput={(e) => { setTypedName((e.target as HTMLInputElement).value); setError(undefined); }} /></label>
+        <label>Title <input value={title} disabled={closed} onInput={(e) => { setTitle((e.target as HTMLInputElement).value); setError(undefined); }} /></label>
+        <label>Your name <input value={name} disabled={closed} onInput={(e) => { setTypedName((e.target as HTMLInputElement).value); setError(undefined); }} /></label>
         <label class="create-opener">First message
-          <textarea value={opener} onInput={(e) => setOpener((e.target as HTMLTextAreaElement).value)} />
+          <textarea value={opener} disabled={closed} onInput={(e) => setOpener((e.target as HTMLTextAreaElement).value)} />
         </label>
         {/* A disclosure rather than a field: a Weave's own rules are the rare case, and the form
             has to stay readable for the common one (spec §4.5). */}
-        <button type="button" class="create-more" aria-expanded={more} onClick={() => setMore(!more)}>More options</button>
+        <button type="button" class="create-more" aria-expanded={more} disabled={closed} onClick={() => setMore(!more)}>More options</button>
         {more && (
           <label class="create-guidelines">Weave guidelines
-            <textarea value={guidelines} onInput={(e) => setGuidelines((e.target as HTMLTextAreaElement).value)} />
+            <textarea value={guidelines} disabled={closed} onInput={(e) => setGuidelines((e.target as HTMLTextAreaElement).value)} />
           </label>
         )}
         {/* Gone once the instance has said creation is restricted: the answer is about this

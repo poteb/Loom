@@ -1774,6 +1774,32 @@ describe("the create form (spec §4.5)", () => {
     expect(v.titleField().value).toBe("Test Weave");
   });
 
+  // The `403` is the instance's standing answer, not this attempt's: the form cannot be accepted
+  // again, so it stops taking input rather than looking ready for a retry it would have to refuse.
+  it("disables every field after that refusal, with what was typed still on screen", async () => {
+    const v = mountCreate({ routes: CREATE_CLOSED });
+    fireEvent.click(v.button("More options"));
+    fireEvent.input(screen.getByLabelText("First message"), { target: { value: "hello" } });
+    fireEvent.input(screen.getByLabelText("Weave guidelines"), { target: { value: "be kind" } });
+    await v.create();
+    const fields = ["Title", "Your name", "First message", "Weave guidelines"]
+      .map((label) => (screen.getByLabelText(label) as HTMLInputElement).disabled);
+    expect([fields, v.button("More options").disabled, v.titleField().value,
+      (screen.getByLabelText("First message") as HTMLTextAreaElement).value])
+      .toEqual([[true, true, true, true], true, "Test Weave", "hello"]);
+  });
+
+  it("creates nothing more after it, however the form is submitted", async () => {
+    // The Create button is gone, but a submit can still be raised — by Enter in a field, or by a
+    // test. The guard, not the missing button, is what makes the closed answer stick.
+    const v = mountCreate({ routes: CREATE_CLOSED });
+    await v.create();
+    const afterRefusal = v.fetchStub.mock.calls.length;
+    v.send();
+    await settle();
+    expect([afterRefusal, v.fetchStub.mock.calls.length]).toEqual([1, 1]);
+  });
+
   it("shows the server's own words for a validation failure", async () => {
     const message = "Title must be 1-200 characters";
     const v = mountCreate({ routes: { [CREATE_URL]: () => json({ code: "validation", message }, 400) } });
