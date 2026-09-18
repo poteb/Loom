@@ -482,7 +482,10 @@ describe("joining from an unjoined Lobby page (spec §3.1, §3.3)", () => {
       const v = mountApp({ path, storage: browserStorage() });
       await settle();
       await v.joinAs("dana");
-      expect([v.iAm(), v.writable()]).toEqual(["dana", true]);
+      // The bar as well as the session: this is the path §6 is most likely to be lost on, because
+      // the join replaces the page the notice was raised on with the one it has to be seen on.
+      expect([v.iAm(), v.writable(), v.container.querySelectorAll(".persistence-bar").length])
+        .toEqual(["dana", true, 1]);
     });
   }
 

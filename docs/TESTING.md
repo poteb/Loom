@@ -320,14 +320,23 @@ minutes, no agent and no tunnel needed.
 6. The new Weave is now a row in **My Weaves**, beside the Lobby's (with its **Lobby** badge). Open
    it from the list: the address is **`/weave/<id>`**, not `/w/<secret>`, and the Weave loads with
    the stored token.
-7. **Now block site data for this origin** — a private window with site data blocked, or the site
-   settings for `localhost` — and repeat the journey. Open `/`, join the Lobby under a *different*
+7. **Now block site data for this origin** — the **site settings** for `localhost` ("Block" for
+   cookies and site data), which is the only variant that reproduces this. A private window does
+   **not** block `localStorage`: it gives the window its own store that is merely cleared when the
+   window closes, so every write there persists for as long as the session lasts and the bar never
+   appears. With site data blocked, repeat the journey: open `/`, join the Lobby under a *different*
    name, and confirm all four: the bar *"This browser is not saving anything for this site…"*
    appears; the page does **not** navigate (the Lobby renders in place and the address bar still
    reads `/`); creating a Weave there gives the **hardened** panel, whose **Done** stays disabled
    until you press Copy or *I have saved this link*; and the created link is still on screen the
    whole time. One bar, not several, however many writes fail.
 8. **`/w/<secret>` is unchanged.** Back in the normal window, paste the link copied in step 5. The
-   Weave opens exactly as it always did, and the first message asks for a name.
+   route itself is untouched: it looks the Weave up by its secret and then finds the identity the
+   id-keyed entry holds. This browser **created** that Weave, so `loom:weave:<id>` already carries
+   the token — expect the Weave to open **already joined as you** (the header names you, the
+   composer is there), with **no** name prompt and the address bar still showing `/w/<secret>`.
+   To see the name prompt, open the same link in a **different browser profile** (or one whose site
+   data for this origin has been cleared): that browser holds nothing for the Weave, so it reads
+   with the secret and the first message asks for a name.
 
 *Not yet run against a browser.*
