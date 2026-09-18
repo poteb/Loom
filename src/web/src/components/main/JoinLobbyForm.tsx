@@ -56,6 +56,7 @@ export function JoinLobbyForm({ client, storage, notice, lobby, onJoined, onJoin
     setBusy(true);
     setError(undefined);
     setTaken(undefined);
+    let done: { weaveId: string; hand: (weaveId: string) => void } | undefined;
     try {
       const j = await client.joinLobby({ name, kind: "human" });
       // One write, before anything that could destroy this JS context, and its verdict decides
@@ -65,7 +66,7 @@ export function JoinLobbyForm({ client, storage, notice, lobby, onJoined, onJoin
       const result = setIdentity(storage, j.weaveId, { token: j.token, participantId: j.participant.id },
         { title: j.weave.title, lastOpenedAt: new Date().toISOString() });
       notice.note(result);
-      (result === "durable" ? onJoined : onJoinedInPlace)(j.weaveId);
+      done = { weaveId: j.weaveId, hand: result === "durable" ? onJoined : onJoinedInPlace };
     } catch (err) {
       // The typed name is never discarded on a failure (spec §6): only the message changes.
       if (err instanceof LoomClientError && err.code === "name_taken") setTaken(name);
@@ -73,6 +74,11 @@ export function JoinLobbyForm({ client, storage, notice, lobby, onJoined, onJoin
     } finally {
       setBusy(false);
     }
+    // Outside the `try` on purpose. The join and the write have both succeeded by now, so an
+    // exception raised by the destination — it is the caller's code, and it replaces this page —
+    // must not be reported here as a failed join: that would invite a retry of a join that already
+    // happened, and the retry answers `name_taken`.
+    if (done) done.hand(done.weaveId);
   };
 
   return (

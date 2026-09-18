@@ -83,3 +83,6 @@ select { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid 
 .join-lobby .hint, .join-lobby .error, .join-taken { flex: 1 1 100%; margin: 0; }
 .join-lobby .hint { color: var(--muted); font-size: 12px; }
 .join-taken p { margin: 0 0 6px; }
+/* The same form as the whole page, when a Weave route turns out to be the unjoined Lobby (§3.3). */
+.page-join { max-width: 560px; margin: 48px auto; }
+.page-join .join-lobby { border: 1px solid var(--line); border-radius: 10px; }
