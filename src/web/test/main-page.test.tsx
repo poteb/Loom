@@ -1,15 +1,20 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/preact";
+import { render, screen, fireEvent, act } from "@testing-library/preact";
+import { render as paint } from "preact";
 import { LoomClient } from "@loom/client";
 import { App } from "../src/app.js";
 import { JoinLobbyForm } from "../src/components/main/JoinLobbyForm.js";
 import { isValidName, suggestName } from "../src/name.js";
-import { browserStorage, memoryStorage, type KeyValueStorage } from "../src/storage.js";
+import { browserStorage, memoryStorage, type KeyValueStorage, type WriteResult } from "../src/storage.js";
 import { createPersistenceNotice } from "../src/persistence.js";
 import { createWeavesSignal, type WeavesSignal } from "../src/weaves-signal.js";
 import { CLOSED_REQUESTS_PAGE } from "../src/session.js";
-import { legacyKey, readWeaveEntry, saveWeaveEntry, setIdentity } from "../src/weaves-store.js";
+import {
+  legacyKey, migrateLegacy, readWeaveEntry, saveWeaveEntry, setIdentity,
+  type StoredWeave, type WeaveEntry,
+} from "../src/weaves-store.js";
+import { MyWeaves, foldRows, rowKey } from "../src/components/main/MyWeaves.js";
 import { PersistenceBar } from "../src/components/PersistenceBar.js";
 import { InstanceGuidelines } from "../src/components/main/InstanceGuidelines.js";
 import { LobbySummary } from "../src/components/main/LobbySummary.js";
@@ -51,14 +56,18 @@ function stubFetch(routes: Routes) {
 /** A macrotask turn: it drains the join's await chain *and* Preact's microtask-scheduled rerender. */
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
-/** A localStorage that can refuse writes, so a non-durable join is reachable over a real store. */
+/**
+ * A localStorage that refuses the writes `refuses` picks out — every key by default — so a
+ * non-durable write is reachable over a real store. The per-key form exists for My Weaves, where
+ * one entry has to fail to persist while the fixture around it was seeded normally.
+ */
 let restoreLocalStorage: (() => void) | undefined;
-function installThrowingLocalStorage() {
+function installLocalStorage(refuses: (key: string) => boolean = () => true) {
   const prior = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
   const raw = new Map<string, string>();
   const api = {
     getItem: (k: string) => raw.get(k) ?? null,
-    setItem: () => { throw new Error("QuotaExceededError"); },
+    setItem: (k: string, v: string) => { if (refuses(k)) throw new Error("QuotaExceededError"); raw.set(k, v); },
     removeItem: (k: string) => { raw.delete(k); },
     key: (i: number) => [...raw.keys()][i] ?? null,
     get length() { return raw.size; },
@@ -70,6 +79,7 @@ function installThrowingLocalStorage() {
     else Reflect.deleteProperty(globalThis as object, "localStorage");
   };
 }
+const installThrowingLocalStorage = () => installLocalStorage();
 afterEach(() => { restoreLocalStorage?.(); restoreLocalStorage = undefined; });
 
 function mount(opts: { routes?: Routes; storage?: KeyValueStorage;
@@ -819,5 +829,585 @@ describe("the not-persisting notice follows the page (spec §6)", () => {
     await flush();
     await v.joinAs("dana");
     expect([onMain, bars(v.container)]).toEqual([1, 0]);
+  });
+});
+
+// --- My Weaves (spec §4.2) --------------------------------------------------
+
+const weaveUrl = (id: string) => `${BASE}/api/weaves/${id}`;
+/** A usable identity, in the shape `saveWeaveEntry` takes it. */
+const HELD = { token: "participant-token", participantId: "p-dana" };
+
+/** The `WeaveInfo` a refresh reads, with an `archivedAt` a test can set. */
+function weaveAnswer(id: string, title: string, archivedAt: string | null = null) {
+  const info = weaveInfo(id, title);
+  return { ...info, weave: { ...info.weave, archivedAt } };
+}
+
+type FetchStub = ReturnType<typeof stubFetch>;
+
+/**
+ * Lets the asynchronous half of My Weaves run to quiescence: a refresh answers, its write bumps the
+ * signal, the re-render computes a new slice, and *that* render's effect may start the next request.
+ * Preact flushes effects on its own animation-frame path outside `act`, so each round is an `act`
+ * that first lets the pending promises land and then runs the effects they scheduled.
+ */
+const settleRows = async (rounds = 6) => { for (let i = 0; i < rounds; i++) await act(async () => { await settle(); }); };
+
+function mountWeaves(opts: {
+  storage?: KeyValueStorage; weaves?: WeavesSignal; lobbyWeaveId?: string;
+  routes?: Routes; fetchStub?: FetchStub; onWrite?: (r: WriteResult) => void;
+} = {}) {
+  const fetchStub = opts.fetchStub ?? stubFetch(opts.routes ?? {});
+  const client = new LoomClient({ baseUrl: BASE, allowInsecure: true, fetch: fetchStub as unknown as typeof fetch });
+  const storage = opts.storage ?? memoryStorage();
+  const weaves = opts.weaves ?? createWeavesSignal();
+  const onWrite = vi.fn(opts.onWrite ?? ((_r: WriteResult) => {}));
+  const view = render(
+    <MyWeaves client={client} storage={storage} weaves={weaves} onWrite={onWrite} lobbyWeaveId={opts.lobbyWeaveId} />,
+  );
+  const rows = () => [...view.container.querySelectorAll(".weave-row")];
+  return {
+    ...view, fetchStub, storage, weaves, onWrite, rows,
+    titles: () => rows().map((r) => r.querySelector(".weave-row-title")!.textContent),
+    dead: (i: number) => rows()[i]!.classList.contains("weave-row-dead"),
+    href: (i: number) => rows()[i]!.querySelector("a")?.getAttribute("href") ?? null,
+  };
+}
+
+describe("My Weaves renders from storage (spec §4.2)", () => {
+  it("paints every row it holds from the cache, before a single request", () => {
+    // Rendered through Preact directly: @testing-library's `render` runs inside `act`, which flushes
+    // the refresh effect, and what this asserts is the *first paint* — which §4.2 requires to need
+    // no network at all, so that a browser with 300 entries paints instantly.
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, OTHER, { ...HELD, title: "Cached Weave" });
+    const fetchStub = stubFetch({});
+    const client = new LoomClient({ baseUrl: BASE, allowInsecure: true, fetch: fetchStub as unknown as typeof fetch });
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    paint(<MyWeaves client={client} storage={storage} weaves={createWeavesSignal()} onWrite={() => {}} />, host);
+    const painted = [host.textContent?.includes("Cached Weave"), fetchStub.mock.calls.length];
+    paint(null, host);      // unmounted before the effect could be flushed: nothing is left behind
+    host.remove();
+    expect(painted).toEqual([true, 0]);
+  });
+
+  it("puts the most recently opened Weave first", () => {
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, "w-old", { title: "Old", lastOpenedAt: "2026-01-01T00:00:00.000Z" });
+    saveWeaveEntry(storage, "w-new", { title: "New", lastOpenedAt: "2026-02-01T00:00:00.000Z" });
+    expect(mountWeaves({ storage }).titles()).toEqual(["New", "Old"]);
+  });
+
+  it("breaks a tie on the title", () => {
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, "w-b", { title: "Beta", lastOpenedAt: "2026-01-01T00:00:00.000Z" });
+    saveWeaveEntry(storage, "w-a", { title: "Alpha", lastOpenedAt: "2026-01-01T00:00:00.000Z" });
+    expect(mountWeaves({ storage }).titles()).toEqual(["Alpha", "Beta"]);
+  });
+});
+
+describe("folding a legacy entry into an id entry (spec §2.4, §4.2)", () => {
+  const idEntry = (extra: Partial<WeaveEntry> = {}): StoredWeave => ({ kind: "id", weaveId: OTHER, title: "Test Weave", ...extra });
+  const legacyEntry = (secret = SECRET, token = "legacy-token"): StoredWeave => ({ kind: "legacy", secret, token });
+
+  it("folds the two into one row when they share a secret", () => {
+    expect(foldRows([idEntry({ secret: SECRET }), legacyEntry()]).length).toBe(1);
+  });
+
+  it("folds them when only the token matches", () => {
+    expect(foldRows([idEntry({ token: "legacy-token", participantId: "p" }), legacyEntry("z".repeat(43))]).length).toBe(1);
+  });
+
+  it("lets the id entry win that fold", () => {
+    const [row] = foldRows([idEntry({ secret: SECRET }), legacyEntry()]);
+    expect([row!.weaveId, row!.title]).toEqual([OTHER, "Test Weave"]);
+  });
+
+  it("keeps a legacy entry nothing has resolved as a row of its own", () => {
+    const [row] = foldRows([legacyEntry()]);
+    expect([row!.weaveId, row!.secret]).toEqual([undefined, SECRET]);
+  });
+
+  it("identifies a row by its Weave id, or by its secret while it has none", () => {
+    const [resolved] = foldRows([idEntry()]);
+    const [unresolved] = foldRows([legacyEntry()]);
+    expect([rowKey(resolved!), rowKey(unresolved!)]).toEqual([OTHER, `legacy:${SECRET}`]);
+  });
+});
+
+describe("My Weaves row states (spec §4.2)", () => {
+  const held = (entry: Partial<WeaveEntry>) => {
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, OTHER, { title: "Test Weave", ...entry });
+    return storage;
+  };
+
+  it("says who this browser is joined as", () => {
+    const storage = memoryStorage();
+    setIdentity(storage, OTHER, { ...HELD, name: "dana" }, { title: "Test Weave" });
+    mountWeaves({ storage, routes: { [weaveUrl(OTHER)]: () => json(weaveAnswer(OTHER, "Test Weave")) } });
+    expect(screen.getByText("joined as dana")).toBeTruthy();
+  });
+
+  it("says a Weave this browser only holds a link for is read-only", () => {
+    mountWeaves({ storage: held({ secret: SECRET }), routes: { [weaveUrl(OTHER)]: () => json(weaveAnswer(OTHER, "Test Weave")) } });
+    expect(screen.getByText("read-only — not joined")).toBeTruthy();
+  });
+
+  it("offers a rejoin where the identity died but the link survived", () => {
+    mountWeaves({ storage: held({ identity: "invalid", secret: SECRET }),
+      routes: { [weaveUrl(OTHER)]: () => json(weaveAnswer(OTHER, "Test Weave")) } });
+    expect(screen.getByText("your identity here stopped working — open to rejoin")).toBeTruthy();
+  });
+
+  it("greys a row with no credential left, offering only Forget", () => {
+    const v = mountWeaves({ storage: held({ identity: "invalid" }) });
+    expect([v.dead(0), v.href(0), !!screen.queryByRole("button", { name: "Forget" })]).toEqual([true, null, true]);
+  });
+
+  it("says a Weave the server no longer has is gone, and offers to forget it", async () => {
+    const v = mountWeaves({ storage: held(HELD),
+      routes: { [weaveUrl(OTHER)]: () => json({ code: "weave_not_found", message: "gone" }, 404) } });
+    await settleRows();
+    expect([!!screen.queryByText("this Weave is gone"), v.dead(0), !!screen.queryByRole("button", { name: "Forget" })])
+      .toEqual([true, true, true]);
+  });
+
+  it("keeps the cached title and the link when a refresh fails on the network", async () => {
+    const v = mountWeaves({ storage: held(HELD),
+      routes: { [weaveUrl(OTHER)]: () => Promise.reject(new TypeError("fetch failed")) } });
+    await settleRows();
+    expect([v.titles(), !!screen.queryByText("could not refresh"), v.href(0)])
+      .toEqual([["Test Weave"], true, `/weave/${OTHER}`]);
+  });
+});
+
+describe("My Weaves row actions (spec §4.2, §5)", () => {
+  it("removes the entry and the row when Forget is clicked", async () => {
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, OTHER, { identity: "invalid", title: "Test Weave" });
+    const v = mountWeaves({ storage });
+    fireEvent.click(screen.getByRole("button", { name: "Forget" }));
+    await flush();
+    expect([v.rows().length, readWeaveEntry(storage, OTHER)]).toEqual([0, undefined]);
+  });
+
+  it("offers Copy link where the entry carries a secret", () => {
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, OTHER, { secret: SECRET, title: "Test Weave" });
+    mountWeaves({ storage, routes: { [weaveUrl(OTHER)]: () => json(weaveAnswer(OTHER, "Test Weave")) } });
+    expect(!!screen.queryByRole("button", { name: "Copy link" })).toBe(true);
+  });
+
+  it("offers none where it does not", () => {
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, OTHER, { ...HELD, title: "Test Weave" });
+    mountWeaves({ storage, routes: { [weaveUrl(OTHER)]: () => json(weaveAnswer(OTHER, "Test Weave")) } });
+    expect(screen.queryByRole("button", { name: "Copy link" })).toBeNull();
+  });
+
+  it("links the row to the Weave id and never puts the secret in the markup", () => {
+    // §5: the address bar must not gain a secret it did not already have, so a row that knows one
+    // still links to `/weave/<id>`.
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, OTHER, { ...HELD, secret: SECRET, title: "Test Weave" });
+    const v = mountWeaves({ storage, routes: { [weaveUrl(OTHER)]: () => json(weaveAnswer(OTHER, "Test Weave")) } });
+    expect([v.href(0), v.container.innerHTML.includes(SECRET)]).toEqual([`/weave/${OTHER}`, false]);
+  });
+
+  it("badges the Lobby row", () => {
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, OTHER, { title: "Test Weave" });
+    mountWeaves({ storage, lobbyWeaveId: OTHER });
+    expect(!!screen.queryByText("Lobby")).toBe(true);
+  });
+
+  it("badges an archived row", () => {
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, OTHER, { title: "Test Weave", archived: true });
+    mountWeaves({ storage });
+    expect(!!screen.queryByText("Archived")).toBe(true);
+  });
+});
+
+/** Thirty-two id rows, each with a cached title equal to its id, so ordering and the filter are
+ *  both readable straight off the fixture. */
+const pad = (i: number) => String(i).padStart(2, "0");
+const BOUND_IDS = Array.from({ length: 32 }, (_, i) => `weave-${pad(i)}`);
+/** The row a migration adds mid-flight; it sorts between `weave-00` and `weave-01`. */
+const MIGRATED = "weave-00a";
+
+function boundStorage(count = BOUND_IDS.length, inner: KeyValueStorage = memoryStorage()) {
+  for (const id of BOUND_IDS.slice(0, count)) saveWeaveEntry(inner, id, { ...HELD, title: id });
+  return inner;
+}
+
+/**
+ * A `getWeave` that never answers on its own: it records the id, counts what is in flight, keeps a
+ * running maximum, and hands back a promise the test releases. The running maximum is the point —
+ * no test has to guess the instant at which to look at the bound.
+ */
+function heldWeaves() {
+  const held = new Map<string, (r: Response) => void>();
+  const calls: string[] = [];
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const fetchStub = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+    const id = String(input).slice(`${BASE}/api/weaves/`.length);
+    calls.push(id);
+    inFlight += 1;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    return await new Promise<Response>((resolve) => {
+      held.set(id, (r) => { inFlight -= 1; held.delete(id); resolve(r); });
+    });
+  });
+  const releaseAll = async () => {
+    for (let turn = 0; turn < 24 && held.size > 0; turn++) {
+      await act(async () => {
+        for (const [id, release] of [...held]) release(json(weaveAnswer(id, id)));
+        await settle();
+      });
+    }
+  };
+  return { fetchStub, calls, releaseAll, maxInFlight: () => maxInFlight };
+}
+
+/** Two fresh slices while the first six are still unanswered: a filter typed and cleared, then
+ *  "Show more". With a scheduler built per render, this is where the seventh request starts. */
+async function changeTheSliceWhileBlocked() {
+  await flush();
+  const box = () => screen.getByLabelText("Filter") as HTMLInputElement;
+  fireEvent.input(box(), { target: { value: "weave-2" } });
+  await flush();
+  fireEvent.input(box(), { target: { value: "" } });
+  await flush();
+  fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+  await flush();
+}
+
+describe("the My Weaves filter box (spec §4.2)", () => {
+  /** Title-only entries: this browser holds no credential for any of them, so the list is long
+   *  without a single request to get in the way of what these tests are about. */
+  function titlesOnly(names: string[]) {
+    const storage = memoryStorage();
+    for (const [i, title] of names.entries()) saveWeaveEntry(storage, `w-${pad(i)}`, { title });
+    return storage;
+  }
+  const many = (n: number) => Array.from({ length: n }, (_, i) => `Weave ${pad(i)}`);
+
+  it("offers no filter box for a list short enough to read", () => {
+    mountWeaves({ storage: titlesOnly(many(8)) });
+    expect(screen.queryByLabelText("Filter")).toBeNull();
+  });
+
+  it("offers one past eight rows", () => {
+    mountWeaves({ storage: titlesOnly(many(9)) });
+    expect(!!screen.queryByLabelText("Filter")).toBe(true);
+  });
+
+  it("narrows by title, whatever case it is typed in", async () => {
+    const v = mountWeaves({ storage: titlesOnly([...many(8), "Alpha"]) });
+    fireEvent.input(screen.getByLabelText("Filter"), { target: { value: "ALPHA" } });
+    await flush();
+    expect(v.titles()).toEqual(["Alpha"]);
+  });
+});
+
+describe("the refresh bound is total across renders (spec §4.2)", () => {
+  it("starts the first six rows of the slice, and only those", async () => {
+    const f = heldWeaves();
+    mountWeaves({ storage: boundStorage(), fetchStub: f.fetchStub });
+    await flush();
+    expect([f.calls, f.maxInFlight()]).toEqual([BOUND_IDS.slice(0, 6), 6]);
+  });
+
+  it("starts nothing new for the slices the filter and Show more bring on screen", async () => {
+    const f = heldWeaves();
+    mountWeaves({ storage: boundStorage(), fetchStub: f.fetchStub });
+    await changeTheSliceWhileBlocked();
+    expect([f.calls.length, f.maxInFlight()]).toEqual([6, 6]);
+  });
+
+  it("starts nothing new for a row a bump adds while those six are blocked", async () => {
+    const f = heldWeaves();
+    const storage = boundStorage();
+    const weaves = createWeavesSignal();
+    const v = mountWeaves({ storage, weaves, fetchStub: f.fetchStub });
+    await changeTheSliceWhileBlocked();
+    saveWeaveEntry(storage, MIGRATED, { ...HELD, title: MIGRATED });
+    await act(() => { weaves.bump(); });
+    expect([f.calls.length, f.maxInFlight(), v.titles().includes(MIGRATED)]).toEqual([6, 6, true]);
+  });
+
+  it("drains every row exactly once, never more than six at a time", async () => {
+    const f = heldWeaves();
+    const storage = boundStorage();
+    const weaves = createWeavesSignal();
+    mountWeaves({ storage, weaves, fetchStub: f.fetchStub });
+    await changeTheSliceWhileBlocked();
+    saveWeaveEntry(storage, MIGRATED, { ...HELD, title: MIGRATED });
+    await act(() => { weaves.bump(); });
+    await f.releaseAll();
+    await settleRows();
+    const expected = [...BOUND_IDS, MIGRATED].sort();
+    expect([[...new Set(f.calls)].sort(), f.calls.length, f.maxInFlight()])
+      .toEqual([expected, expected.length, 6]);
+  });
+
+  it("asks for nothing that is behind Show more", async () => {
+    const f = heldWeaves();
+    mountWeaves({ storage: boundStorage(30), fetchStub: f.fetchStub });
+    await f.releaseAll();
+    await settleRows();
+    expect([f.calls.includes("weave-24"), f.calls.includes("weave-25")]).toEqual([true, false]);
+  });
+});
+
+describe("My Weaves refreshes one row (spec §4.2, §2.6)", () => {
+  /** Answers `401` to the stored token and the real thing to the stored secret — the two credentials
+   *  §2.6 distinguishes, told apart by the header they arrive in. */
+  const tokenIsDead = (id: string, title: string) => vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) !== weaveUrl(id)) throw new Error(`no stub for ${String(input)}`);
+    const auth = ((init?.headers ?? {}) as Record<string, string>)["authorization"];
+    return auth === `Bearer ${SECRET}`
+      ? json(weaveAnswer(id, title))
+      : json({ code: "invalid_token", message: "dead" }, 401);
+  });
+
+  it("reads a row this browser only holds a link for with that link's secret", async () => {
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, OTHER, { secret: SECRET, title: "Old" });
+    const v = mountWeaves({ storage, routes: { [weaveUrl(OTHER)]: () => json(weaveAnswer(OTHER, "New")) } });
+    await settleRows();
+    expect(headersOf(v.fetchStub, weaveUrl(OTHER))["authorization"]).toBe(`Bearer ${SECRET}`);
+  });
+
+  it("updates that row's cached title from the answer", async () => {
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, OTHER, { secret: SECRET, title: "Old" });
+    const v = mountWeaves({ storage, routes: { [weaveUrl(OTHER)]: () => json(weaveAnswer(OTHER, "New")) } });
+    await settleRows();
+    expect(v.titles()).toEqual(["New"]);
+  });
+
+  it("reads an invalidated row through the secret it kept", async () => {
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, OTHER, { identity: "invalid", secret: SECRET, title: "Old" });
+    const v = mountWeaves({ storage, routes: { [weaveUrl(OTHER)]: () => json(weaveAnswer(OTHER, "New")) } });
+    await settleRows();
+    expect(headersOf(v.fetchStub, weaveUrl(OTHER))["authorization"]).toBe(`Bearer ${SECRET}`);
+  });
+
+  it("deletes the identity a 401 proved dead, and keeps the secret beside it", async () => {
+    const storage = memoryStorage();
+    setIdentity(storage, OTHER, { token: "dead", participantId: "p", name: "dana" }, { secret: SECRET, title: "Old" });
+    mountWeaves({ storage, fetchStub: tokenIsDead(OTHER, "New") });
+    await settleRows();
+    const e = readWeaveEntry(storage, OTHER);
+    expect([e?.token, e?.participantId, e?.name, e?.identity, e?.secret])
+      .toEqual([undefined, undefined, undefined, "invalid", SECRET]);
+  });
+
+  it("moves that row to the identity-stopped-working state", async () => {
+    const storage = memoryStorage();
+    setIdentity(storage, OTHER, { token: "dead", participantId: "p" }, { secret: SECRET, title: "Old" });
+    mountWeaves({ storage, fetchStub: tokenIsDead(OTHER, "New") });
+    await settleRows();
+    expect(!!screen.queryByText("your identity here stopped working — open to rejoin")).toBe(true);
+  });
+
+  it("retries once with the secret, and takes the title from that answer", async () => {
+    const storage = memoryStorage();
+    setIdentity(storage, OTHER, { token: "dead", participantId: "p" }, { secret: SECRET, title: "Old" });
+    const v = mountWeaves({ storage, fetchStub: tokenIsDead(OTHER, "New") });
+    await settleRows();
+    expect([v.fetchStub.mock.calls.length, v.titles()]).toEqual([2, ["New"]]);
+  });
+
+  it("makes no second attempt for a dead token with no secret behind it", async () => {
+    const storage = memoryStorage();
+    setIdentity(storage, OTHER, { token: "dead", participantId: "p" }, { title: "Old" });
+    const v = mountWeaves({ storage, fetchStub: tokenIsDead(OTHER, "New") });
+    await settleRows();
+    expect(v.fetchStub.mock.calls.length).toBe(1);
+  });
+
+  it("leaves that row unavailable, with Forget", async () => {
+    const storage = memoryStorage();
+    setIdentity(storage, OTHER, { token: "dead", participantId: "p" }, { title: "Old" });
+    const v = mountWeaves({ storage, fetchStub: tokenIsDead(OTHER, "New") });
+    await settleRows();
+    expect([v.dead(0), !!screen.queryByRole("button", { name: "Forget" })]).toEqual([true, true]);
+  });
+
+  it("asks for nothing at all for a row with neither an identity nor a secret", async () => {
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, OTHER, { title: "Test Weave" });
+    const v = mountWeaves({ storage });
+    await settleRows();
+    expect(v.fetchStub.mock.calls.length).toBe(0);
+  });
+});
+
+describe("My Weaves follows storage (spec §4.2)", () => {
+  const legacyStorage = () => {
+    const storage = memoryStorage();
+    storage.set(legacyKey(SECRET), JSON.stringify({ token: "legacy-token", participantId: "p-old" }));
+    return storage;
+  };
+
+  it("shows a legacy entry nothing has resolved as a Weave whose title it does not know", () => {
+    expect(mountWeaves({ storage: legacyStorage() }).titles()).toEqual(["(title unknown)"]);
+  });
+
+  it("resolves that row by itself once a migration lands, with nothing clicked", async () => {
+    // The regression test for the gap the change signal closes: without it the row stays unresolved
+    // until the human reloads the page.
+    const storage = legacyStorage();
+    const weaves = createWeavesSignal();
+    const v = mountWeaves({ storage, weaves, routes: { [weaveUrl(OTHER)]: () => json(weaveAnswer(OTHER, "Test Weave")) } });
+    void migrateLegacy(storage, createPersistenceNotice(), async () => { await flush(); return OTHER; }, () => weaves.bump());
+    await settleRows();
+    expect([v.titles(), v.href(0)]).toEqual([["Test Weave"], `/weave/${OTHER}`]);
+  });
+
+  it("shows a refreshed title and its archived badge with nothing clicked", async () => {
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, OTHER, { ...HELD, title: "Old" });
+    const v = mountWeaves({ storage, routes: {
+      [weaveUrl(OTHER)]: () => json(weaveAnswer(OTHER, "New", "2026-01-01T00:00:00.000Z")) } });
+    await settleRows();
+    expect([v.titles(), !!screen.queryByText("Archived")]).toEqual([["New"], true]);
+  });
+
+  it("does not re-read a row a later bump re-derives", async () => {
+    const storage = boundStorage(3);
+    const weaves = createWeavesSignal();
+    const v = mountWeaves({ storage, weaves, routes: Object.fromEntries(
+      BOUND_IDS.slice(0, 3).map((id) => [weaveUrl(id), () => json(weaveAnswer(id, id))])) });
+    await settleRows();
+    const once = v.fetchStub.mock.calls.length;
+    await act(() => { weaves.bump(); });
+    await settleRows();
+    expect([once, v.fetchStub.mock.calls.length]).toEqual([3, 3]);
+  });
+
+  it("does not start a second read for a row still in flight", async () => {
+    const f = heldWeaves();
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, OTHER, { ...HELD, title: "Old" });
+    const weaves = createWeavesSignal();
+    mountWeaves({ storage, weaves, fetchStub: f.fetchStub });
+    await act(() => { weaves.bump(); });
+    await act(() => { weaves.bump(); });
+    await f.releaseAll();
+    await settleRows();
+    expect(f.calls).toEqual([OTHER]);
+  });
+});
+
+describe("My Weaves lets go on unmount (spec §4.2)", () => {
+  /** A signal that records what its subscription handed back, and who is still listening. */
+  function watchedSignal() {
+    const inner = createWeavesSignal();
+    let torn = 0;
+    let notified = 0;
+    const signal: WeavesSignal = {
+      bump: inner.bump,
+      subscribe: (fn) => {
+        const off = inner.subscribe(() => { notified += 1; fn(); });
+        return () => { torn += 1; off(); };
+      },
+    };
+    return { signal, torn: () => torn, notified: () => notified };
+  }
+
+  /** A store that counts the writes made through it, so "touched nothing" is observable. */
+  function countingStorage() {
+    const inner = memoryStorage();
+    let sets = 0;
+    const store: KeyValueStorage = { ...inner, set: (k, v) => { sets += 1; return inner.set(k, v); } };
+    return { store, sets: () => sets };
+  }
+
+  it("calls the teardown its subscription returned", () => {
+    const w = watchedSignal();
+    mountWeaves({ weaves: w.signal }).unmount();
+    expect(w.torn()).toBe(1);
+  });
+
+  it("leaves no listener behind for a later bump", () => {
+    const w = watchedSignal();
+    mountWeaves({ weaves: w.signal }).unmount();
+    w.signal.bump();
+    expect(w.notified()).toBe(0);
+  });
+
+  it("starts nothing further, and touches nothing, once it is gone", async () => {
+    const f = heldWeaves();
+    const counted = countingStorage();
+    const v = mountWeaves({ storage: boundStorage(BOUND_IDS.length, counted.store), fetchStub: f.fetchStub });
+    await flush();
+    const started = f.calls.length;
+    const writes = counted.sets();
+    v.unmount();
+    const rejected = await whileIgnoringRejections(async () => { await f.releaseAll(); await settle(); });
+    expect([started, f.calls.length, counted.sets() - writes, v.onWrite.mock.calls.length, rejected])
+      .toEqual([6, 6, 0, 0, []]);
+  });
+});
+
+describe("My Weaves reports its writes (spec §4.2, §6)", () => {
+  function mountWithBar(opts: { storage: KeyValueStorage; routes?: Routes; fetchStub?: FetchStub }) {
+    const fetchStub = opts.fetchStub ?? stubFetch(opts.routes ?? {});
+    const client = new LoomClient({ baseUrl: BASE, allowInsecure: true, fetch: fetchStub as unknown as typeof fetch });
+    const notice = createPersistenceNotice();
+    const view = render(
+      <>
+        <PersistenceBar notice={notice} />
+        <MyWeaves client={client} storage={opts.storage} weaves={createWeavesSignal()} onWrite={notice.note} />
+      </>,
+    );
+    return {
+      ...view, notice, fetchStub,
+      bars: () => view.container.querySelectorAll(".persistence-bar").length,
+      titles: () => [...view.container.querySelectorAll(".weave-row-title")].map((e) => e.textContent),
+    };
+  }
+
+  const tokenIsDead = (id: string) => vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+    if (String(input) !== weaveUrl(id)) throw new Error(`no stub for ${String(input)}`);
+    return json({ code: "invalid_token", message: "dead" }, 401);
+  });
+
+  it("is not silent about an invalidation that could not persist", async () => {
+    // Without this the page would say the identity is dead while `localStorage` still held the old
+    // token, and say nothing about the disagreement.
+    installLocalStorage();
+    const storage = browserStorage();
+    setIdentity(storage, OTHER, { token: "dead", participantId: "p" }, { secret: SECRET, title: "Old" });
+    const v = mountWithBar({ storage, fetchStub: tokenIsDead(OTHER) });
+    await settleRows();
+    expect([!!screen.queryByText("your identity here stopped working — open to rejoin"),
+      v.notice.degraded(), v.bars()]).toEqual([true, true, 1]);
+  });
+
+  it("raises the same one notice for a title write that could not persist", async () => {
+    installLocalStorage();
+    const storage = browserStorage();
+    saveWeaveEntry(storage, OTHER, { ...HELD, title: "Old" });
+    const v = mountWithBar({ storage, routes: { [weaveUrl(OTHER)]: () => json(weaveAnswer(OTHER, "New")) } });
+    await settleRows();
+    expect([v.bars(), v.titles()]).toEqual([1, ["New"]]);
+  });
+
+  it("stays quiet while the writes are persisting", async () => {
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, OTHER, { ...HELD, title: "Old" });
+    const v = mountWithBar({ storage, routes: { [weaveUrl(OTHER)]: () => json(weaveAnswer(OTHER, "New")) } });
+    await settleRows();
+    expect([v.notice.degraded(), v.bars()]).toEqual([false, 0]);
   });
 });

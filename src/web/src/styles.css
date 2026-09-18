@@ -98,3 +98,15 @@ select { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid 
 .lobby-counts { display: flex; flex-wrap: wrap; gap: 4px 12px; list-style: none; margin: 0; padding: 0; color: var(--muted); font-size: 13px; }
 .lobby-open { margin: 0 0 16px; }
 .muted { color: var(--muted); }
+/* My Weaves (§4.2): a list rather than cards, because this has to survive hundreds of rows. */
+.weave-filter { display: flex; gap: 6px; align-items: center; margin: 0 0 8px; color: var(--muted); font-size: 13px; }
+.weave-list { list-style: none; margin: 0; padding: 0; }
+.weave-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.weave-row-title { font-weight: 600; }
+.weave-row-state, .weave-row-note { color: var(--muted); font-size: 12px; }
+/* Nothing left to open it with, or gone from the server: greyed, unlinked, and only Forget. */
+.weave-row-dead .weave-row-title { font-weight: 400; color: var(--muted); }
+.weave-row-copy, .weave-row-forget { font-size: 12px; }
+.weave-row-copy { margin-left: auto; }
+.weave-row-dead .weave-row-forget { margin-left: auto; }
+.weave-more { margin-top: 8px; }

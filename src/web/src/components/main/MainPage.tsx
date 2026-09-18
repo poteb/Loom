@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { LoomClientError, type Lobby, type LoomClient } from "@loom/client";
 import type { RouteDeps } from "../../app.js";
-import type { KeyValueStorage, WriteResult } from "../../storage.js";
+import type { KeyValueStorage } from "../../storage.js";
 import type { PersistenceNotice } from "../../persistence.js";
 import type { WeavesSignal } from "../../weaves-signal.js";
 import { hasIdentity, migrateLegacy, readWeaveEntry } from "../../weaves-store.js";
@@ -9,6 +9,7 @@ import { PersistenceBar } from "../PersistenceBar.js";
 import { InstanceGuidelines } from "./InstanceGuidelines.js";
 import { LobbySummary } from "./LobbySummary.js";
 import { JoinLobbyForm } from "./JoinLobbyForm.js";
+import { MyWeaves } from "./MyWeaves.js";
 
 /**
  * The Lobby pointer: one of the page's four independent cells (spec §6). `none` is the instance's
@@ -108,18 +109,11 @@ export function MainPage({ client, storage, notice, weaves, openInPlace }: Route
 }
 
 /**
- * Task 9 (§4.2) and Task 10 (§4.5) replace these two with the real components. They are headings
- * here so this page is complete on its own — and, more to the point, so the props those tasks
- * consume are already declared and handed down from the one place that owns them: the same `weaves`
- * object both of them write through, and `notice.note` as the only `onWrite` there is.
+ * Task 10 (§4.5) replaces this with the real form. It is a heading here so this page is complete on
+ * its own — and, more to the point, so the props that task consumes are already declared and handed
+ * down from the one place that owns them: the same `weaves` object My Weaves writes through, and
+ * `notice.note` as the only `onWrite` there is.
  */
-function MyWeaves(_props: {
-  client: LoomClient; storage: KeyValueStorage; weaves: WeavesSignal;
-  onWrite: (r: WriteResult) => void; lobbyWeaveId?: string;
-}) {
-  return <section class="my-weaves"><h2>My Weaves</h2></section>;
-}
-
 function CreateWeaveForm(_props: {
   client: LoomClient; storage: KeyValueStorage; notice: PersistenceNotice; weaves: WeavesSignal;
   defaultName?: string; openInPlace: (weaveId: string) => void; navigate: (path: string) => void;
