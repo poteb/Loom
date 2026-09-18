@@ -1,12 +1,27 @@
 import { LoomClient, LoomClientError, type Lobby, type LoomEvent, type LoomRequest, type OpenRequestInput,
   type Participant, type StreamHandle, type Thread, type Weave } from "@loom/client";
 import type { KeyValueStorage, WriteResult } from "./storage.js";
-import { storedWeaves } from "./weaves-store.js";
+import {
+  hasIdentity, invalidateIdentity, isCredentialFailure, migrateLegacyOne, readWeaveEntry, readerFor,
+  saveWeaveEntry, setIdentity, storedWeaves, type ReaderChoice, type WeaveEntry,
+} from "./weaves-store.js";
 import { applyEvent, applySnapshot, isRequestEvent, type Requests } from "./requests-state.js";
+
+/**
+ * What a session is pointed at. A secret is the credential *and* the id the router has; an id is
+ * only an id, and the credential comes from what this browser stored for that Weave (spec §2.3).
+ */
+export type SessionTarget =
+  | { kind: "secret"; secret: string }      // /w/<secret> — unchanged behaviour
+  | { kind: "id"; weaveId: string };        // /weave/<id>, /lobby
 
 export type Connection = "connecting" | "open" | "reconnecting" | "closed";
 export type SessionState = {
-  status: "loading" | "ready" | "error"; error?: string;
+  /** `no-credential`: this browser holds nothing usable for the Weave, which the page renders as a
+   *  way in rather than as a failure (spec §2.6). */
+  status: "loading" | "ready" | "error" | "no-credential"; error?: string;
+  /** Set when the page is reading with a stored secret because the identity is gone (spec §2.6). */
+  readOnlyReason?: "secret-fallback";
   weave?: Weave; threads: Thread[]; participants: Participant[];
   events: LoomEvent[];
   me?: { participant: Participant; token: string };
@@ -76,20 +91,25 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 export type RetryOptions = { delaysMs: number[]; slowMs: number };
 const DEFAULT_RETRY: RetryOptions = { delaysMs: [250, 500, 1000, 2000, 4000], slowMs: 10_000 };
 
-export function createSession(opts: { client: LoomClient; secret: string; storage: KeyValueStorage; retry?: RetryOptions;
+export function createSession(opts: { client: LoomClient; target: SessionTarget; storage: KeyValueStorage; retry?: RetryOptions;
   /** Told the verdict of every entry write this session makes, so the page can raise the one-time
    *  "storage is not persisting" notice of §6 for a credential that only reached memory. */
   onWrite?: (r: WriteResult) => void;
   /** Override for `CLOSED_REQUESTS_PAGE`; a knob, and the seam a test uses to fill the page cheaply. */
   closedRequestsPage?: number }): Session {
-  const { client, secret, storage, onWrite } = opts;
+  const { client, target, storage } = opts;
+  // Defaulted rather than optional-called: `onWrite?.(storage.set(…))` would skip the *argument*
+  // when nobody is listening, and the write with it.
+  const onWrite = opts.onWrite ?? (() => {});
   const retry = opts.retry ?? DEFAULT_RETRY;
   const closedPage = opts.closedRequestsPage ?? CLOSED_REQUESTS_PAGE;
-  const key = `loom:${secret}`;
+  let weaveId: string | undefined = target.kind === "id" ? target.weaveId : undefined;
+  let secret: string | undefined = target.kind === "secret" ? target.secret : undefined;
+  let reader: LoomClient = client;                 // replaced by pickReader() on every load()
+  let readingWithToken = false;
   let state: SessionState = { status: "loading", threads: [], participants: [], events: [], connection: "closed", needsName: false,
     invitesForMe: new Set(), invited: {}, instanceGuidelines: "", requests: {}, requestsLoaded: false, closedRequestsPage: closedPage };
   const listeners = new Set<() => void>();
-  let weaveId: string | undefined;
   // How far the guidelines text in `state.weave` has been advanced, as a Weave seq. Guidelines are
   // not one-way (they change repeatedly and can be cleared), so the archive trick of "keep whichever
   // saw it" cannot be used: only the seq decides. A snapshot is applied when its `lastSeq` is at
@@ -97,7 +117,26 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
   let guidelinesSeq = 0;
   let stream: StreamHandle | undefined;
   let generation = 0;
-  const reader = client.withToken(secret);
+  /** Whether this session has already spent its one re-entry of load() on the stored secret. */
+  let retriedWithSecret = false;
+
+  const entry = (): WeaveEntry | undefined => (weaveId ? readWeaveEntry(storage, weaveId) : undefined);
+
+  /**
+   * The credential this load reads with (spec §2.3).
+   *
+   * A secret target reads with its secret, exactly as before — that is what grants read *before*
+   * joining. An id target reads with the stored token while it is usable and falls back to a stored
+   * secret when it is not, which is read-only until a join. `undefined` means this browser holds
+   * nothing for this Weave.
+   */
+  const pickReader = (): ReaderChoice | undefined => {
+    if (target.kind === "secret") return { reader: client.withToken(secret!), withToken: false };
+    const e = entry();
+    secret ??= e?.secret;
+    // One shared rule, so My Weaves refreshes a row with the credential this page would have used.
+    return readerFor(client, secret && !e?.secret ? { ...e, secret } : e);
+  };
 
   const set = (patch: Partial<SessionState>) => { state = { ...state, ...patch }; for (const l of listeners) l(); };
 
@@ -331,114 +370,156 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
     }
   };
 
+  const doLoad = async (): Promise<void> => {
+    stream?.close();
+    stream = undefined;
+    generation++;
+    const myGeneration = generation;
+    // A load() that has been superseded (a newer load(), or dispose()) owns nothing any more: it
+    // must not publish state and must clean up anything it managed to open. Checked after every
+    // await, since each one is a chance for a newer load to have taken over.
+    const stale = () => disposed || myGeneration !== generation;
+    set({ status: "loading", error: undefined, refreshError: undefined });
+    try {
+      const picked = pickReader();
+      if (!picked) { set({ status: "no-credential", readOnlyReason: undefined }); return; }
+      reader = picked.reader;
+      readingWithToken = picked.withToken;
+      if (target.kind === "secret") {
+        const id = await reader.lookupWeave(secret!);     // unchanged: the secret-only route
+        if (stale()) return;
+        weaveId = id;
+        // Spec §2.4, migration trigger 1. This is the load that learns the id, and a browser that
+        // joined before this work has its only identity under `loom:<secret>` — without this, a
+        // bookmarked link comes back as a stranger and the name prompt asks for a name it already
+        // has. `migrateLegacyOne` owns the merge rule and removes the legacy key only on
+        // `"durable"`, so the non-durable case keeps both and is still joined for this page.
+        const migrated = migrateLegacyOne(storage, weaveId, secret!);
+        if (migrated) onWrite(migrated);
+      }
+      // Backfill events BEFORE fetching threads/participants metadata: anything committed after
+      // the backfill starts arrives live over the stream (started from the last backfilled seq)
+      // and triggers the normal refresh. Fetching metadata first would let a thread/participant
+      // change land in `events` (via the stream) without ever showing up in `threads`/
+      // `participants`, since the stream only starts listening after that seq.
+      const events: LoomEvent[] = [];
+      let since = 0;
+      for (;;) {
+        const page = await reader.readEvents(weaveId!, { since, limit: PAGE });
+        if (stale()) return;
+        events.push(...page);
+        if (page.length < PAGE) break;
+        since = page.at(-1)!.seq;
+      }
+      // The instance guidelines and the Lobby pointer are public and independent of this Weave, so
+      // they are fetched alongside the metadata and a failure only costs the panel its section.
+      const [info, instance, discovery] = await Promise.all([
+        reader.getWeave(weaveId!),
+        client.getInstanceGuidelines().catch(() => ""),
+        discoverLobby(),
+      ]);
+      if (stale()) return;
+      // The credential in hand has just been proven usable, so the one re-entry below is available
+      // again — a token that works today and fails tomorrow gets its own fallback.
+      if (readingWithToken) retriedWithSecret = false;
+      // Only the Lobby's own page has requests, and they are read with this browser's Lobby
+      // credential — the same one the rest of the page is read with. A failure here (or of the
+      // discovery above) costs the panel its section and nothing else, but it is remembered
+      // rather than shown as an empty board, and retried below once this load has published.
+      let requests: LoomRequest[] = [];
+      let requestsError = discovery.error;
+      if (discovery.settled && discovery.lobby?.weaveId === weaveId) {
+        try { requests = await readRequests(); } catch (e) { requestsError = messageOf(e); }
+      }
+      if (stale()) return;
+      lobbyKnown = discovery.settled;
+      guidelinesSeq = info.weave.lastSeq;
+      const e = entry();
+      let me: SessionState["me"];
+      if (hasIdentity(e) && e.identity !== "invalid") {
+        const p = info.participants.find((x) => x.id === e.participantId);
+        // A token that reads but names nobody is a corrupt identity, and on a token load it is
+        // also the credential in hand — treated exactly like a 401 (spec §2.6).
+        if (p) me = { token: e.token, participant: p };
+        else if (readingWithToken) throw new LoomClientError("invalid_token", "Stored identity is not in this Weave");
+      }
+      // The display cache, and — on a `/w/<secret>` visit — the entry itself, written before anyone
+      // has joined (spec §10.9) and only after a successful metadata read, so a failed load stores
+      // nothing.
+      onWrite(saveWeaveEntry(storage, weaveId!, {
+        secret, title: info.weave.title, archived: !!info.weave.archivedAt, lastOpenedAt: new Date().toISOString(),
+      }));
+      // The thread this load lands on is on screen, so an invite to it is not an unopened one.
+      const first = info.threads.find((t) => t.isGeneral)?.id ?? info.threads[0]?.id;
+      if (first) seenUpTo.set(first, maxSeq(events));
+      let held: Requests = {};
+      for (const snap of requests) held = applySnapshot(held, snap);
+      set({ status: "ready", weave: info.weave, threads: info.threads, participants: info.participants, events, me,
+        instanceGuidelines: instance, currentThreadId: first, lobby: discovery.lobby, requests: held,
+        readOnlyReason: picked.readOnlyReason,
+        // An unsettled pointer is not an empty board: until it is known whether this page even has
+        // one, the panel has nothing to render and nothing may claim the requests are loaded.
+        requestsLoaded: lobbyKnown && requestsError === undefined, requestsError,
+        ...deriveInvites(events, me?.participant.id, seenUpTo) });
+      // After readiness, never before it: the page is usable while the pointer and the board catch
+      // up. The opening event of a request read here is already in history, so nothing would ever
+      // replay it — only this retry can bring the row in, and only it can settle the pointer.
+      if (!lobbyKnown || requestsError !== undefined) retryLobbyData(myGeneration);
+      let sawOpen = false;
+      const opened = reader.stream(weaveId!, {
+        since: events.at(-1)?.seq ?? 0,
+        onEvent: (ev) => { if (stale()) return; onEvent(ev); },
+        onStatus: (st) => {
+          if (stale()) return;
+          set({ connection: st });
+          // A reconnect's "open" (as opposed to the first "open" after this load()) means the
+          // stream was down for a while; refresh derived state in case a qualifying event was
+          // missed while disconnected.
+          if (st === "open") {
+            if (sawOpen) scheduleRefresh(); else sawOpen = true;
+          }
+        },
+      });
+      // stream() is synchronous, but the state it was built from is not: if this load lost the
+      // race while it was being constructed, close the socket instead of leaking it.
+      if (stale()) { opened.close(); return; }
+      stream = opened;
+    } catch (e) {
+      if (stale()) return;
+      // The credential in hand is provably unusable: clear the identity (never the secret) and,
+      // when a secret is stored, load again with it. Once only — `retriedWithSecret` makes a
+      // second failure an error rather than a loop.
+      if (readingWithToken && isCredentialFailure(e) && weaveId && !retriedWithSecret) {
+        onWrite(invalidateIdentity(storage, weaveId));
+        retriedWithSecret = true;
+        if (readWeaveEntry(storage, weaveId)?.secret) return await doLoad();
+        set({ status: "no-credential", error: "Your identity in this Weave is no longer valid" });
+        return;
+      }
+      const msg = e instanceof LoomClientError && e.code === "weave_not_found"
+        ? "Weave not found: the link may be wrong" : (e as Error).message;
+      set({ status: "error", error: msg });
+    }
+  };
+
   return {
     getState: () => state,
     subscribe: (fn) => { listeners.add(fn); return () => { listeners.delete(fn); }; },
 
-    async load() {
-      stream?.close();
-      stream = undefined;
-      generation++;
-      const myGeneration = generation;
-      // A load() that has been superseded (a newer load(), or dispose()) owns nothing any more: it
-      // must not publish state and must clean up anything it managed to open. Checked after every
-      // await, since each one is a chance for a newer load to have taken over.
-      const stale = () => disposed || myGeneration !== generation;
-      set({ status: "loading", error: undefined, refreshError: undefined });
-      try {
-        // Backfill events BEFORE fetching threads/participants metadata: anything committed after
-        // the backfill starts arrives live over the stream (started from the last backfilled seq)
-        // and triggers the normal refresh. Fetching metadata first would let a thread/participant
-        // change land in `events` (via the stream) without ever showing up in `threads`/
-        // `participants`, since the stream only starts listening after that seq.
-        const id = await reader.lookupWeave(secret);
-        if (stale()) return;
-        const events: LoomEvent[] = [];
-        let since = 0;
-        for (;;) {
-          const page = await reader.readEvents(id, { since, limit: PAGE });
-          if (stale()) return;
-          events.push(...page);
-          if (page.length < PAGE) break;
-          since = page.at(-1)!.seq;
-        }
-        // The instance guidelines and the Lobby pointer are public and independent of this Weave, so
-        // they are fetched alongside the metadata and a failure only costs the panel its section.
-        const [info, instance, discovery] = await Promise.all([
-          reader.getWeave(id),
-          client.getInstanceGuidelines().catch(() => ""),
-          discoverLobby(),
-        ]);
-        if (stale()) return;
-        // Only the Lobby's own page has requests, and they are read with this browser's Lobby
-        // credential — the same secret the rest of the page is read with. A failure here (or of the
-        // discovery above) costs the panel its section and nothing else, but it is remembered
-        // rather than shown as an empty board, and retried below once this load has published.
-        let requests: LoomRequest[] = [];
-        let requestsError = discovery.error;
-        if (discovery.settled && discovery.lobby?.weaveId === id) {
-          try { requests = await readRequests(); } catch (e) { requestsError = messageOf(e); }
-        }
-        if (stale()) return;
-        weaveId = id;
-        lobbyKnown = discovery.settled;
-        guidelinesSeq = info.weave.lastSeq;
-        let me: SessionState["me"];
-        const stored = storage.get(key);
-        if (stored) {
-          try {
-            const { token, participantId } = JSON.parse(stored) as { token: string; participantId: string };
-            const p = info.participants.find((x) => x.id === participantId);
-            if (p && token) me = { token, participant: p };
-          } catch { storage.remove(key); }
-        }
-        // The thread this load lands on is on screen, so an invite to it is not an unopened one.
-        const first = info.threads.find((t) => t.isGeneral)?.id ?? info.threads[0]?.id;
-        if (first) seenUpTo.set(first, maxSeq(events));
-        let held: Requests = {};
-        for (const snap of requests) held = applySnapshot(held, snap);
-        set({ status: "ready", weave: info.weave, threads: info.threads, participants: info.participants, events, me,
-          instanceGuidelines: instance, currentThreadId: first, lobby: discovery.lobby, requests: held,
-          // An unsettled pointer is not an empty board: until it is known whether this page even has
-          // one, the panel has nothing to render and nothing may claim the requests are loaded.
-          requestsLoaded: lobbyKnown && requestsError === undefined, requestsError,
-          ...deriveInvites(events, me?.participant.id, seenUpTo) });
-        // After readiness, never before it: the page is usable while the pointer and the board catch
-        // up. The opening event of a request read here is already in history, so nothing would ever
-        // replay it — only this retry can bring the row in, and only it can settle the pointer.
-        if (!lobbyKnown || requestsError !== undefined) retryLobbyData(myGeneration);
-        let sawOpen = false;
-        const opened = reader.stream(id, {
-          since: events.at(-1)?.seq ?? 0,
-          onEvent: (e) => { if (stale()) return; onEvent(e); },
-          onStatus: (st) => {
-            if (stale()) return;
-            set({ connection: st });
-            // A reconnect's "open" (as opposed to the first "open" after this load()) means the
-            // stream was down for a while; refresh derived state in case a qualifying event was
-            // missed while disconnected.
-            if (st === "open") {
-              if (sawOpen) scheduleRefresh(); else sawOpen = true;
-            }
-          },
-        });
-        // stream() is synchronous, but the state it was built from is not: if this load lost the
-        // race while it was being constructed, close the socket instead of leaking it.
-        if (stale()) { opened.close(); return; }
-        stream = opened;
-      } catch (e) {
-        if (stale()) return;
-        const msg = e instanceof LoomClientError && e.code === "weave_not_found" ? "Weave not found: the link may be wrong" : (e as Error).message;
-        set({ status: "error", error: msg });
-      }
-    },
+    load: doLoad,
 
     async join(name) {
+      // The secret target's own, or — on the §2.6 fallback path — the one the entry still holds.
+      if (!secret) throw new LoomClientError("validation", "This session has no way to join");
       const j = await client.joinWeave(secret, { name, kind: "human" });
-      // The write happens whether or not anyone is listening: `onWrite?.(storage.set(…))` would
-      // skip the argument entirely when no `onWrite` was passed, and the credential with it.
-      const wrote = storage.set(key, JSON.stringify({ token: j.token, participantId: j.participant.id }));
-      onWrite?.(wrote);
+      // A join before the first load still knows where to store what it just received.
+      weaveId ??= j.weaveId;
+      // The write happens whether or not anyone is listening: `onWrite?.(setIdentity(…))` would
+      // skip the argument entirely when no `onWrite` was passed, and the credential with it. One
+      // write, identity and secret together, so no verdict stands for a larger write than it made.
+      const wrote = setIdentity(storage, weaveId, { token: j.token, participantId: j.participant.id },
+        { secret, title: j.weave.title, lastOpenedAt: new Date().toISOString() });
+      onWrite(wrote);
       // The join is already committed server-side: reflect it locally right away and let a failing
       // refresh retry in the background rather than surface as a rejection of an action that in fact
       // succeeded (which would make the caller retry join() and hit name_taken).
@@ -447,6 +528,7 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
         : [...state.participants, j.participant];
       // Invites are "for me" only once there is a me: recompute now that this session has an identity.
       set({ me: { token: j.token, participant: j.participant }, needsName: false, participants,
+        readOnlyReason: undefined,     // a join is the way out of the §2.6 read-only fallback
         ...deriveInvites(state.events, j.participant.id, seenUpTo) });
       scheduleRefresh();
     },
@@ -538,14 +620,15 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
     async targets() {
       const out: TargetWeave[] = [];
       for (const w of storedWeaves(storage)) {
-        // Only the legacy shape today; Task 4 gives id-keyed entries a target of their own.
-        if (w.kind !== "legacy") continue;
-        const { secret, token } = w;
+        // A target credential must pass `assertIsKeeperOf` in the target Weave, which a secret does
+        // not: an entry with no usable identity is not a target this browser can offer.
+        const token = w.kind === "legacy" ? w.token : (hasIdentity(w) && w.identity !== "invalid" ? w.token : undefined);
+        if (!token) continue;
         // One Weave this browser can no longer reach (revoked token, deleted Weave) must not cost
         // the picker the others, so each is resolved on its own and a failure simply omits it.
         try {
           const c = client.withToken(token);
-          const id = await c.lookupWeave(secret);
+          const id = w.kind === "legacy" ? await c.lookupWeave(w.secret) : w.weaveId;   // id entries skip the lookup
           // A request cannot target the Lobby (core refuses it), so it is not offered.
           if (id === state.lobby?.weaveId) continue;
           const info = await c.getWeave(id);

@@ -39,7 +39,7 @@ export function App(deps: AppDeps) {
 }
 
 function Weave({ secret, client, storage }: { secret: string; client: LoomClient; storage: KeyValueStorage }) {
-  const { session, state } = useSession(secret, { client, storage });
+  const { session, state } = useSession({ kind: "secret", secret }, { client, storage });
   const [pending, setPending] = useState<string | null>(null);   // message waiting for a name
   const [draft, setDraft] = useState<string | undefined>();      // text handed back to the composer
   const [error, setError] = useState<string | undefined>();

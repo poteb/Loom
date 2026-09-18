@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "preact/hooks";
 import type { LoomClient } from "@loom/client";
-import { createSession, type Session, type SessionState } from "./session.js";
+import { createSession, type Session, type SessionState, type SessionTarget } from "./session.js";
 import type { KeyValueStorage, WriteResult } from "./storage.js";
 
 /**
@@ -9,11 +9,15 @@ import type { KeyValueStorage, WriteResult } from "./storage.js";
  * is what lets a credential written to memory survive the rebuild.
  */
 export function useSession(
-  secret: string,
+  target: SessionTarget,
   deps: { client: LoomClient; storage: KeyValueStorage; onWrite?: (r: WriteResult) => void },
 ): { session: Session; state: SessionState } {
   const { client, storage, onWrite } = deps;
-  const session = useMemo(() => createSession({ client, secret, storage, onWrite }), [secret, client, storage]);
+  // A string key, not the target itself: an object literal is a new reference on every render, and
+  // a session rebuilt per render would reload the Weave per render. `onWrite` is deliberately not a
+  // dependency — the only value ever passed is the stable `notice.note`.
+  const key = target.kind === "secret" ? `s:${target.secret}` : `i:${target.weaveId}`;
+  const session = useMemo(() => createSession({ client, target, storage, onWrite }), [key, client, storage]);
   const [state, setState] = useState<SessionState>(session.getState());
   useEffect(() => {
     const off = session.subscribe(() => setState(session.getState()));
