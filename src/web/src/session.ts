@@ -1,6 +1,6 @@
 import { LoomClient, LoomClientError, type Lobby, type LoomEvent, type LoomRequest, type OpenRequestInput,
   type Participant, type StreamHandle, type Thread, type Weave } from "@loom/client";
-import { storedWeaves, type KeyValueStorage } from "./storage.js";
+import { storedWeaves, type KeyValueStorage, type WriteResult } from "./storage.js";
 import { applyEvent, applySnapshot, isRequestEvent, type Requests } from "./requests-state.js";
 
 export type Connection = "connecting" | "open" | "reconnecting" | "closed";
@@ -76,9 +76,12 @@ export type RetryOptions = { delaysMs: number[]; slowMs: number };
 const DEFAULT_RETRY: RetryOptions = { delaysMs: [250, 500, 1000, 2000, 4000], slowMs: 10_000 };
 
 export function createSession(opts: { client: LoomClient; secret: string; storage: KeyValueStorage; retry?: RetryOptions;
+  /** Told the verdict of every entry write this session makes, so the page can raise the one-time
+   *  "storage is not persisting" notice of §6 for a credential that only reached memory. */
+  onWrite?: (r: WriteResult) => void;
   /** Override for `CLOSED_REQUESTS_PAGE`; a knob, and the seam a test uses to fill the page cheaply. */
   closedRequestsPage?: number }): Session {
-  const { client, secret, storage } = opts;
+  const { client, secret, storage, onWrite } = opts;
   const retry = opts.retry ?? DEFAULT_RETRY;
   const closedPage = opts.closedRequestsPage ?? CLOSED_REQUESTS_PAGE;
   const key = `loom:${secret}`;
@@ -431,7 +434,10 @@ export function createSession(opts: { client: LoomClient; secret: string; storag
 
     async join(name) {
       const j = await client.joinWeave(secret, { name, kind: "human" });
-      storage.set(key, JSON.stringify({ token: j.token, participantId: j.participant.id }));
+      // The write happens whether or not anyone is listening: `onWrite?.(storage.set(…))` would
+      // skip the argument entirely when no `onWrite` was passed, and the credential with it.
+      const wrote = storage.set(key, JSON.stringify({ token: j.token, participantId: j.participant.id }));
+      onWrite?.(wrote);
       // The join is already committed server-side: reflect it locally right away and let a failing
       // refresh retry in the background rather than surface as a rejection of an action that in fact
       // succeeded (which would make the caller retry join() and hit name_taken).

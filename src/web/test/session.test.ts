@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { startTestServer, keeperToken, type TestServer } from "../../server/test/helpers.js";
 import { LoomClient } from "@loom/client";
 import { createSession, type Session } from "../src/session.js";
-import { memoryStorage } from "../src/storage.js";
+import { memoryStorage, type WriteResult } from "../src/storage.js";
 import { DEFAULT_INSTANCE_GUIDELINES } from "@loom/core";
 
 let s: TestServer;
@@ -71,6 +71,17 @@ describe("session", () => {
     const b = await makeSession(r.secret, storage);
     expect(b.getState().me?.participant.name).toBe("Paw");
     b.dispose();
+  });
+
+  it("join hands the verdict of its credential write to onWrite", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const verdicts: WriteResult[] = [];
+    const a = createSession({ client: anon, secret: r.secret, storage: memoryStorage({ durable: false }),
+      onWrite: (v) => verdicts.push(v) });
+    await a.load();
+    await a.join("Paw");
+    expect(verdicts).toEqual(["memory"]);
+    a.dispose();
   });
 
   it("visiting a thread does not acknowledge invites that arrive later", async () => {

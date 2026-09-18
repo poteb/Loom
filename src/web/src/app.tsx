@@ -1,6 +1,9 @@
 import { useState } from "preact/hooks";
-import { LoomClientError } from "@loom/client";
+import { LoomClientError, type LoomClient } from "@loom/client";
 import { useSession } from "./useSession.js";
+import type { KeyValueStorage } from "./storage.js";
+import type { PersistenceNotice } from "./persistence.js";
+import type { WeavesSignal } from "./weaves-signal.js";
 import { Header } from "./components/Header.js";
 import { ThreadList } from "./components/ThreadList.js";
 import { MessageList } from "./components/MessageList.js";
@@ -16,14 +19,27 @@ function secretFromPath(): string | null {
   return m ? m[1]! : null;
 }
 
-export function App() {
+/**
+ * Everything the page is given once, at the root (`main.tsx`), and hands down: the client, the one
+ * storage instance (§2.4a) and the two page-scoped companions of that instance — the persistence
+ * notice (§6) and the "stored Weaves changed" signal (§4.2).
+ */
+export type AppDeps = {
+  client: LoomClient; storage: KeyValueStorage; notice: PersistenceNotice; weaves: WeavesSignal;
+};
+
+export function App(deps: AppDeps) {
+  // `notice` and `weaves` are accepted here and passed to nothing yet: they are page-scoped, so they
+  // must be created once at the root and owned here rather than by whichever view happens to be
+  // mounted. The main page and My Weaves consume them.
+  const { client, storage } = deps;
   const secret = secretFromPath();
   if (!secret) return <div class="center"><h1>Loom</h1><p>Open a Weave link: <code>/w/&lt;secret&gt;</code></p></div>;
-  return <Weave secret={secret} />;
+  return <Weave secret={secret} client={client} storage={storage} />;
 }
 
-function Weave({ secret }: { secret: string }) {
-  const { session, state } = useSession(secret);
+function Weave({ secret, client, storage }: { secret: string; client: LoomClient; storage: KeyValueStorage }) {
+  const { session, state } = useSession(secret, { client, storage });
   const [pending, setPending] = useState<string | null>(null);   // message waiting for a name
   const [draft, setDraft] = useState<string | undefined>();      // text handed back to the composer
   const [error, setError] = useState<string | undefined>();

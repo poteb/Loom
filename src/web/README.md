@@ -73,12 +73,15 @@ that participant is still in the Weave.
 
 ## Internal layout
 
-- [index.html](index.html) / [src/main.tsx](src/main.tsx) — the shell and the `render(<App/>)` call
+- [index.html](index.html) / [src/main.tsx](src/main.tsx) — the shell and the `render(<App/>)` call: the one place
+  the client, the **one** `browserStorage()` instance, the persistence notice and the Weaves signal are constructed
 - [src/app.tsx](src/app.tsx) — route the `/w/<secret>` path, compose the screen, funnel errors
 - [src/useSession.ts](src/useSession.ts) — the Preact hook owning one session's lifetime
 - [src/session.ts](src/session.ts) — the session store (above)
 - [src/requests-state.ts](src/requests-state.ts) — the versioned request reducer: `applySnapshot`, `applyEvent`, `displayStatus`
 - [src/storage.ts](src/storage.ts) — `KeyValueStorage`, `browserStorage`, `memoryStorage`
+- [src/persistence.ts](src/persistence.ts) — `PersistenceNotice`: the page-scoped latch for "this browser is not saving anything"
+- [src/weaves-signal.ts](src/weaves-signal.ts) — `WeavesSignal`: "the stored Weaves changed", one per page, beside the storage instance
 - [src/markdown.ts](src/markdown.ts) — `renderMarkdown`: escaping, safe hrefs, mention spans
 - [src/styles.css](src/styles.css) — the stylesheet
 - [src/components/Header.tsx](src/components/Header.tsx) — title, identity, connection state, archive button
