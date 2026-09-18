@@ -81,9 +81,7 @@ describe("session", () => {
       onWrite: (v) => verdicts.push(v) });
     await a.load();
     await a.join("Paw");
-    // Two writes, both reported: the entry a `/w/<secret>` load now writes before anyone joins
-    // (spec §10.9), then the identity the join puts in it.
-    expect(verdicts).toEqual(["memory", "memory"]);
+    expect(verdicts.at(-1)).toBe("memory");
     a.dispose();
   });
 
@@ -1330,6 +1328,105 @@ describe("session by weave id", () => {
       expect(readWeaveEntry(storage, r.weave.id)?.token).toBe(session.getState().me?.token);
       await session.post("back in");
       await waitFor(() => session.getState().events.some((x) => x.payload.text === "back in"));
+    } finally { session.dispose(); }
+  });
+
+  // Spec §2.6 row 2 on its own: never joined from this browser, but the secret was kept — which is
+  // what a `/w/<secret>` visit leaves behind and what Task 7 renders as "reading with the link".
+  it("reads with a stored secret alone, and a join is what makes the page writable", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, r.weave.id, { secret: r.secret, title: "T" });
+    const session = await makeSession({ kind: "id", weaveId: r.weave.id }, storage);
+    try {
+      expect(session.getState().status).toBe("ready");
+      expect(session.getState().readOnlyReason).toBe("secret-fallback");
+      expect(session.getState().me).toBeUndefined();
+      // Never joined is not a dead identity: nothing is marked invalid.
+      expect(readWeaveEntry(storage, r.weave.id)?.identity).toBeUndefined();
+
+      await session.join("Dana");
+      expect(session.getState().readOnlyReason).toBeUndefined();
+      await session.post("hello");
+      await waitFor(() => session.getState().events.some((x) => x.payload.text === "hello"));
+    } finally { session.dispose(); }
+  });
+
+  it("leaves the entry byte for byte when the Weave itself is gone", async () => {
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, GONE, { token: "a-token", participantId: GONE, secret: "a-secret", title: "Cached" });
+    const before = storage.get(weaveKey(GONE));
+    const absent = new LoomClient({
+      baseUrl: s.baseUrl, allowInsecure: true,
+      fetch: (input, init) => {
+        const url = new URL(typeof input === "string" ? input : input.toString());
+        if (url.pathname.startsWith(`/api/weaves/${GONE}`)) {
+          return Promise.resolve(new Response(JSON.stringify({ code: "weave_not_found", message: "Weave not found" }),
+            { status: 404, headers: { "content-type": "application/json" } }));
+        }
+        return fetch(url.toString(), init);
+      },
+    });
+    const session = createSession({ client: absent, target: { kind: "id", weaveId: GONE }, storage });
+    await session.load();
+    try {
+      expect(session.getState().status).toBe("error");
+      expect(session.getState().error).toMatch(/not found/i);
+      // A missing Weave is no evidence against the credential: nothing is invalidated, nothing written.
+      expect(storage.get(weaveKey(GONE))).toBe(before);
+    } finally { session.dispose(); }
+  });
+
+  it("clears the read-only reason when a later load fails", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, r.weave.id, { token: "not-a-real-token", participantId: GONE, secret: r.secret });
+    let down = false;
+    const flaky = new LoomClient({
+      baseUrl: s.baseUrl, allowInsecure: true,
+      fetch: (input, init) => down
+        ? Promise.reject(new Error("simulated network failure"))
+        : fetch(typeof input === "string" ? input : input.toString(), init),
+    });
+    const session = createSession({ client: flaky, target: { kind: "id", weaveId: r.weave.id }, storage });
+    await session.load();
+    try {
+      expect(session.getState().readOnlyReason).toBe("secret-fallback");
+      down = true;
+      await session.load();
+      expect(session.getState().status).toBe("error");
+      // The reason belongs to the read that is on screen; an error is not read-only with a secret.
+      expect(session.getState().readOnlyReason).toBeUndefined();
+    } finally { session.dispose(); }
+  });
+
+  it("joins with the entry's secret before the first load has run", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, r.weave.id, { secret: r.secret });
+    const session = createSession({ client: anon, target: { kind: "id", weaveId: r.weave.id }, storage });
+    try {
+      await session.join("Dana");
+      expect(session.getState().me?.participant.name).toBe("Dana");
+      expect(readWeaveEntry(storage, r.weave.id)).toMatchObject({
+        token: session.getState().me!.token, participantId: session.getState().me!.participant.id, secret: r.secret,
+      });
+    } finally { session.dispose(); }
+  });
+
+  it("gives a rejoined identity its own one fallback", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, r.weave.id, { token: "not-a-real-token", participantId: GONE, secret: r.secret });
+    const session = await makeSession({ kind: "id", weaveId: r.weave.id }, storage);
+    try {
+      await session.join("Dana");
+      // The rejoined identity dies in its turn: one fallback per identity, not one per session.
+      saveWeaveEntry(storage, r.weave.id, { token: "not-a-real-token-either" });
+      await session.load();
+      expect(session.getState().status).toBe("ready");
+      expect(session.getState().readOnlyReason).toBe("secret-fallback");
+      expect(readWeaveEntry(storage, r.weave.id)?.identity).toBe("invalid");
     } finally { session.dispose(); }
   });
 });

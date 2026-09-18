@@ -117,7 +117,12 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
   let guidelinesSeq = 0;
   let stream: StreamHandle | undefined;
   let generation = 0;
-  /** Whether this session has already spent its one re-entry of load() on the stored secret. */
+  /**
+   * Whether the identity in hand has already spent its one re-entry of load() on the stored secret.
+   * One fallback per identity: cleared by a load that read with a token and by a join, so a
+   * credential that is proven good — or freshly issued — gets its own fallback when it dies in turn,
+   * while a single dead one can never loop the load.
+   */
   let retriedWithSecret = false;
 
   const entry = (): WeaveEntry | undefined => (weaveId ? readWeaveEntry(storage, weaveId) : undefined);
@@ -379,7 +384,10 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
     // must not publish state and must clean up anything it managed to open. Checked after every
     // await, since each one is a chance for a newer load to have taken over.
     const stale = () => disposed || myGeneration !== generation;
-    set({ status: "loading", error: undefined, refreshError: undefined });
+    // `readOnlyReason` describes the read that is on screen, so it goes with the rest of the stale
+    // state: the ready patch below sets it again, and a load that fails is not "read-only with a
+    // secret", it is an error.
+    set({ status: "loading", error: undefined, refreshError: undefined, readOnlyReason: undefined });
     try {
       const picked = pickReader();
       if (!picked) { set({ status: "no-credential", readOnlyReason: undefined }); return; }
@@ -419,8 +427,8 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
         discoverLobby(),
       ]);
       if (stale()) return;
-      // The credential in hand has just been proven usable, so the one re-entry below is available
-      // again — a token that works today and fails tomorrow gets its own fallback.
+      // This token has just been proven usable, so its own fallback is available: a token that works
+      // today and fails tomorrow is a new failure, not the one this session already survived.
       if (readingWithToken) retriedWithSecret = false;
       // Only the Lobby's own page has requests, and they are read with this browser's Lobby
       // credential — the same one the rest of the page is read with. A failure here (or of the
@@ -436,7 +444,7 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       guidelinesSeq = info.weave.lastSeq;
       const e = entry();
       let me: SessionState["me"];
-      if (hasIdentity(e) && e.identity !== "invalid") {
+      if (hasIdentity(e)) {                              // `hasIdentity` already excludes `identity: "invalid"`
         const p = info.participants.find((x) => x.id === e.participantId);
         // A token that reads but names nobody is a corrupt identity, and on a token load it is
         // also the credential in hand — treated exactly like a 401 (spec §2.6).
@@ -509,17 +517,22 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
     load: doLoad,
 
     async join(name) {
-      // The secret target's own, or — on the §2.6 fallback path — the one the entry still holds.
-      if (!secret) throw new LoomClientError("validation", "This session has no way to join");
-      const j = await client.joinWeave(secret, { name, kind: "human" });
+      // The secret target's own, or the one the entry holds — read here rather than trusted from a
+      // load, so a join offered before the first load (§3.3) still has the credential it needs.
+      const sec = secret ?? entry()?.secret;
+      if (!sec) throw new LoomClientError("validation", "This session has no way to join");
+      const j = await client.joinWeave(sec, { name, kind: "human" });
       // A join before the first load still knows where to store what it just received.
       weaveId ??= j.weaveId;
+      secret ??= sec;
       // The write happens whether or not anyone is listening: `onWrite?.(setIdentity(…))` would
       // skip the argument entirely when no `onWrite` was passed, and the credential with it. One
       // write, identity and secret together, so no verdict stands for a larger write than it made.
       const wrote = setIdentity(storage, weaveId, { token: j.token, participantId: j.participant.id },
-        { secret, title: j.weave.title, lastOpenedAt: new Date().toISOString() });
+        { secret: sec, title: j.weave.title, lastOpenedAt: new Date().toISOString() });
       onWrite(wrote);
+      // A brand-new identity has its own fallback to spend if it ever dies (see `retriedWithSecret`).
+      retriedWithSecret = false;
       // The join is already committed server-side: reflect it locally right away and let a failing
       // refresh retry in the background rather than surface as a rejection of an action that in fact
       // succeeded (which would make the caller retry join() and hit name_taken).
@@ -622,7 +635,7 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       for (const w of storedWeaves(storage)) {
         // A target credential must pass `assertIsKeeperOf` in the target Weave, which a secret does
         // not: an entry with no usable identity is not a target this browser can offer.
-        const token = w.kind === "legacy" ? w.token : (hasIdentity(w) && w.identity !== "invalid" ? w.token : undefined);
+        const token = w.kind === "legacy" ? w.token : (hasIdentity(w) ? w.token : undefined);
         if (!token) continue;
         // One Weave this browser can no longer reach (revoked token, deleted Weave) must not cost
         // the picker the others, so each is resolved on its own and a failure simply omits it.

@@ -160,7 +160,7 @@ export async function migrateLegacy(
 export type ReaderChoice = { reader: LoomClient; withToken: boolean; readOnlyReason?: "secret-fallback" };
 
 export function readerFor(client: LoomClient, entry: WeaveEntry | undefined): ReaderChoice | undefined {
-  if (hasIdentity(entry) && entry.identity !== "invalid") return { reader: client.withToken(entry.token), withToken: true };
+  if (hasIdentity(entry)) return { reader: client.withToken(entry.token), withToken: true };
   if (entry?.secret) return { reader: client.withToken(entry.secret), withToken: false, readOnlyReason: "secret-fallback" };
   return undefined;
 }
