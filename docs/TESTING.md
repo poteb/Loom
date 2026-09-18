@@ -118,8 +118,8 @@ guarded by `typeof document !== "undefined"` because the package runs Vitest wit
 
 ## Current totals
 
-As of the web main page on `feat/web-main-page` (last code commit `8943ba8`): **1138 tests in 60
-files** — core 301 in 22, web 419 in 10, server 140 in 9, claude-channel 139 in 9, cli 68 in 5,
+As of the web main page on `feat/web-main-page` (last code commit `ae6c21a`): **1140 tests in 60
+files** — core 301 in 22, web 421 in 10, server 140 in 9, claude-channel 139 in 9, cli 68 in 5,
 client 37 in 4, mcp-tools 34 in 1 — from `pnpm -r build` then
 `pnpm --workspace-concurrency=1 -r test`, with `pnpm -r typecheck` clean.
 Counts change with every feature; run the suites to see current numbers.
