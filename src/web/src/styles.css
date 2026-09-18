@@ -116,3 +116,23 @@ select { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid 
 .weave-row-link { flex: 1; font-size: 12px; }
 .weave-row-hide { font-size: 12px; }
 .weave-more { margin-top: 8px; }
+/* --- Main page: create a Weave (§4.5) --------------------------------------- */
+.create-weave form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.create-weave label { display: flex; gap: 6px; align-items: center; }
+.create-weave .create-opener, .create-weave .create-guidelines { flex: 1 1 100%; align-items: flex-start; }
+.create-weave textarea { flex: 1; font: inherit; min-height: 44px; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+.create-weave .hint, .create-weave .error { flex: 1 1 100%; margin: 0; }
+.create-weave .hint { color: var(--muted); font-size: 12px; }
+.create-more { font-size: 12px; }
+.create-closed { margin: 0 0 8px; }
+/* The save-this-link panel: the only place a freshly created secret is on screen (§5), and — when
+   the entry that carries it reached only this tab's memory — the recovery panel that says so. */
+.create-saved { border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+.create-saved-hardened { border-color: var(--warn); }
+.create-saved-title { margin: 0 0 8px; color: var(--muted); }
+.create-saved-link { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; }
+.create-link { flex: 1 1 240px; font-size: 12px; }
+.create-copied { color: var(--muted); font-size: 12px; }
+.create-warning { margin: 0 0 8px; font-size: 13px; }
+.create-warning-hard { color: var(--warn); }
+.create-saved-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }

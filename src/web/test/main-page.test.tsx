@@ -11,10 +11,11 @@ import { createPersistenceNotice } from "../src/persistence.js";
 import { createWeavesSignal, type WeavesSignal } from "../src/weaves-signal.js";
 import { CLOSED_REQUESTS_PAGE } from "../src/session.js";
 import {
-  legacyKey, migrateLegacy, readWeaveEntry, saveWeaveEntry, setIdentity,
+  legacyKey, migrateLegacy, readWeaveEntry, saveWeaveEntry, setIdentity, weaveKey,
   type StoredWeave, type WeaveEntry,
 } from "../src/weaves-store.js";
 import { MyWeaves, foldRows, rowKey } from "../src/components/main/MyWeaves.js";
+import { CreateWeaveForm } from "../src/components/main/CreateWeaveForm.js";
 import { PersistenceBar } from "../src/components/PersistenceBar.js";
 import { InstanceGuidelines } from "../src/components/main/InstanceGuidelines.js";
 import { LobbySummary } from "../src/components/main/LobbySummary.js";
@@ -57,17 +58,18 @@ function stubFetch(routes: Routes) {
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 /**
- * A localStorage that refuses the writes `refuses` picks out — every key by default — so a
+ * A localStorage that refuses the writes `refuses` picks out — every write by default — so a
  * non-durable write is reachable over a real store. The per-key form exists for My Weaves, where
- * one entry has to fail to persist while the fixture around it was seeded normally.
+ * one entry has to fail to persist while the fixture around it was seeded normally; the value is
+ * passed as well, for the quota-shaped store of §4.5 that keeps small entries and refuses big ones.
  */
 let restoreLocalStorage: (() => void) | undefined;
-function installLocalStorage(refuses: (key: string) => boolean = () => true) {
+function installLocalStorage(refuses: (key: string, value: string) => boolean = () => true) {
   const prior = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
   const raw = new Map<string, string>();
   const api = {
     getItem: (k: string) => raw.get(k) ?? null,
-    setItem: (k: string, v: string) => { if (refuses(k)) throw new Error("QuotaExceededError"); raw.set(k, v); },
+    setItem: (k: string, v: string) => { if (refuses(k, v)) throw new Error("QuotaExceededError"); raw.set(k, v); },
     removeItem: (k: string) => { raw.delete(k); },
     key: (i: number) => [...raw.keys()][i] ?? null,
     get length() { return raw.size; },
@@ -80,6 +82,14 @@ function installLocalStorage(refuses: (key: string) => boolean = () => true) {
   };
 }
 const installThrowingLocalStorage = () => installLocalStorage();
+/**
+ * What a store near its quota actually looks like: a small value still fits, a larger one does not.
+ * It is the store that tells a one-write creation from a two-write one — a bare identity persists
+ * under it while the identity *and the secret* together do not, so a creation that branched on the
+ * small write's verdict would relax exactly where the secret was lost (spec §4.5).
+ */
+const installSizeLimitedLocalStorage = (limit: number) =>
+  installLocalStorage((_k, v) => v.length > limit);
 
 /**
  * A `navigator.clipboard` for one test, or — with `writeText` omitted — none at all, which is what
@@ -1607,5 +1617,349 @@ describe("My Weaves reports its writes (spec §4.2, §6)", () => {
     const v = mountWithBar({ storage, routes: { [weaveUrl(OTHER)]: () => json(weaveAnswer(OTHER, "New")) } });
     await settleRows();
     expect([v.notice.degraded(), v.bars()]).toEqual([false, 0]);
+  });
+});
+
+// --- Create a Weave (spec §4.5) ---------------------------------------------
+
+const CREATE_URL = `${BASE}/api/weaves`;
+const CREATED = "33333333-3333-4333-8333-333333333333";
+/** The secret the creation answers with — the one credential that lets anyone else in (§5). */
+const NEW_SECRET = "c".repeat(43);
+/** How long a stored entry may be under the quota-shaped store below: comfortably above a bare
+ *  identity (~65 characters) and comfortably below the whole creation entry (~180). */
+const ENTRY_LIMIT = 120;
+
+/** The `CreateWeaveResult` a successful `POST /api/weaves` answers with. */
+const CREATED_RESULT = {
+  weave: { id: CREATED, title: "Test Weave", createdAt: "", archivedAt: null, lastSeq: 3, guidelines: "" },
+  secret: NEW_SECRET,
+  participant: { id: "p-creator", weaveId: CREATED, name: "dana", kind: "human", role: "keeper", joinedAt: "", agentId: null, capabilities: null },
+  token: "keeper-token",
+  generalThread: { id: "g-new", weaveId: CREATED, name: "General", isGeneral: true, createdBy: "p-creator", createdAt: "", closedAt: null, url: null },
+  guidelines: "",
+};
+const CREATE_OK: Routes = {
+  [CREATE_URL]: () => json(CREATED_RESULT, 201),
+  [weaveUrl(CREATED)]: () => json(weaveAnswer(CREATED, "Test Weave")),
+};
+const CREATE_CLOSED: Routes = {
+  [CREATE_URL]: () => json({ code: "forbidden", message: "Weave creation is restricted to keepers" }, 403),
+};
+
+function mountCreate(opts: {
+  routes?: Routes; storage?: KeyValueStorage; weaves?: WeavesSignal; defaultName?: string; withList?: boolean;
+} = {}) {
+  const fetchStub = stubFetch({ ...CREATE_OK, ...opts.routes });
+  const client = new LoomClient({ baseUrl: BASE, allowInsecure: true, fetch: fetchStub as unknown as typeof fetch });
+  const storage = opts.storage ?? memoryStorage();
+  const notice = createPersistenceNotice();
+  const weaves = opts.weaves ?? createWeavesSignal();
+  const openInPlace = vi.fn();
+  const navigate = vi.fn();
+  const view = render(
+    <>
+      <CreateWeaveForm client={client} storage={storage} notice={notice} weaves={weaves}
+        defaultName={opts.defaultName} openInPlace={openInPlace} navigate={navigate} />
+      {opts.withList && <MyWeaves client={client} storage={storage} weaves={weaves} onWrite={notice.note} />}
+    </>,
+  );
+  const titleField = () => screen.getByLabelText("Title") as HTMLInputElement;
+  const nameField = () => screen.getByLabelText("Your name") as HTMLInputElement;
+  const button = (name: string) => screen.getByRole("button", { name }) as HTMLButtonElement;
+  const fill = (title: string, name: string) => {
+    fireEvent.input(titleField(), { target: { value: title } });
+    fireEvent.input(nameField(), { target: { value: name } });
+  };
+  const send = () => fireEvent.submit(titleField().closest("form")!);
+  return {
+    ...view, fetchStub, storage, notice, weaves, openInPlace, navigate, titleField, nameField, button, fill, send,
+    createButton: () => button("Create"),
+    panel: () => view.container.querySelector(".create-saved"),
+    link: () => view.container.querySelector(".create-link") as HTMLInputElement | null,
+    bodyOf: (i: number) => JSON.parse(String(fetchStub.mock.calls[i]![1]!.body)) as unknown,
+    create: async (title = "Test Weave", name = "dana") => { fill(title, name); send(); await settle(); },
+  };
+}
+
+describe("the create form (spec §4.5)", () => {
+  it("sends the typed fields as a human — `kind` is not a field on the form", async () => {
+    const v = mountCreate();
+    await v.create();
+    expect(v.bodyOf(0)).toEqual({ title: "Test Weave", opener: "", creator: { name: "dana", kind: "human" } });
+  });
+
+  it("carries the first message the form offers beside the title", async () => {
+    const v = mountCreate();
+    v.fill("Test Weave", "dana");
+    fireEvent.input(screen.getByLabelText("First message"), { target: { value: "hello" } });
+    v.send();
+    await settle();
+    expect((v.bodyOf(0) as { opener: string }).opener).toBe("hello");
+  });
+
+  it("keeps the Weave guidelines behind a disclosure, and sends what is typed there", async () => {
+    const v = mountCreate();
+    const hidden = screen.queryByLabelText("Weave guidelines");
+    fireEvent.click(v.button("More options"));
+    v.fill("Test Weave", "dana");
+    fireEvent.input(screen.getByLabelText("Weave guidelines"), { target: { value: "be kind" } });
+    v.send();
+    await settle();
+    expect([hidden, (v.bodyOf(0) as { guidelines?: string }).guidelines]).toEqual([null, "be kind"]);
+  });
+
+  it("prefills the name from the Lobby identity this browser already has", () => {
+    expect(mountCreate({ defaultName: "dana" }).nameField().value).toBe("dana");
+  });
+
+  it("refuses an empty title", () => {
+    const v = mountCreate();
+    v.fill("", "dana");
+    expect(v.createButton().disabled).toBe(true);
+  });
+
+  it("refuses a title past 200 characters", () => {
+    const v = mountCreate();
+    v.fill("t".repeat(201), "dana");
+    expect(v.createButton().disabled).toBe(true);
+  });
+
+  it("refuses a name the shared rule refuses", () => {
+    const v = mountCreate();
+    v.fill("Test Weave", "no spaces here");
+    expect(v.createButton().disabled).toBe(true);
+  });
+
+  it("disables Create while the creation is in flight, so one form cannot become two Weaves", async () => {
+    let release = () => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    const v = mountCreate({ routes: { [CREATE_URL]: async () => { await gate; return json(CREATED_RESULT, 201); } } });
+    v.fill("Test Weave", "dana");
+    v.send();
+    await flush();
+    const during = v.createButton().disabled;
+    release();
+    await settle();
+    expect(during).toBe(true);
+  });
+
+  it("says so in place when this instance only lets keepers create Weaves", async () => {
+    const v = mountCreate({ routes: CREATE_CLOSED });
+    await v.create();
+    expect(!!screen.queryByText("This instance only lets keepers create Weaves.")).toBe(true);
+  });
+
+  it("keeps the typed title after that refusal", async () => {
+    const v = mountCreate({ routes: CREATE_CLOSED });
+    await v.create();
+    expect(v.titleField().value).toBe("Test Weave");
+  });
+
+  it("shows the server's own words for a validation failure", async () => {
+    const message = "Title must be 1-200 characters";
+    const v = mountCreate({ routes: { [CREATE_URL]: () => json({ code: "validation", message }, 400) } });
+    await v.create();
+    expect(!!screen.queryByText(message)).toBe(true);
+  });
+});
+
+describe("the save-this-link panel (spec §4.5, §5)", () => {
+  it("shows the whole link, with a way to copy it", async () => {
+    const v = mountCreate();
+    await v.create();
+    expect([v.link()?.value, !!screen.queryByRole("button", { name: "Copy" })])
+      .toEqual([`${location.origin}/w/${NEW_SECRET}`, true]);
+  });
+
+  it("says what the link is, in the words that say it cannot be taken back", async () => {
+    const v = mountCreate();
+    await v.create();
+    expect(v.panel()!.textContent).toContain(
+      "Anyone with this link can read the whole Weave and join it. It cannot be rotated or revoked — "
+      + "archiving the Weave is the only way to contain it.");
+  });
+
+  it("has already written the entry by the time it is on screen", async () => {
+    // Asserted in the same breath as the panel: "the secret is stored" and "the panel is up" are one
+    // fact, and a panel that appeared first would be a panel that could be dismissed first.
+    const v = mountCreate();
+    await v.create();
+    const e = readWeaveEntry(v.storage, CREATED);
+    expect([!!v.panel(), e?.token, e?.participantId, e?.secret, e?.title])
+      .toEqual([true, "keeper-token", "p-creator", NEW_SECRET, "Test Weave"]);
+  });
+
+  it("writes that whole entry in one `set`, secret included", async () => {
+    // The one-write rule of §4.5: a second, smaller write would persist where the whole entry does
+    // not, and the panel would then relax on a verdict that never covered the secret.
+    const inner = memoryStorage();
+    const writes: string[] = [];
+    const storage: KeyValueStorage = { ...inner, set: (k, val) => { writes.push(k); return inner.set(k, val); } };
+    const v = mountCreate({ storage });
+    await v.create();
+    const stored = JSON.parse(storage.get(weaveKey(CREATED))!) as WeaveEntry;
+    expect([writes.filter((k) => k === weaveKey(CREATED)).length,
+      [stored.token, stored.participantId, stored.secret, stored.title, typeof stored.lastOpenedAt]])
+      .toEqual([1, ["keeper-token", "p-creator", NEW_SECRET, "Test Weave", "string"]]);
+  });
+
+  it("names this browser in that entry, so the row reads `joined as dana`", async () => {
+    const v = mountCreate();
+    await v.create();
+    expect(readWeaveEntry(v.storage, CREATED)?.name).toBe("dana");
+  });
+
+  it("opens the Weave at its id, never at the link that carries the secret", async () => {
+    const v = mountCreate();
+    await v.create();
+    fireEvent.click(v.button("Open the Weave"));
+    expect([v.navigate.mock.calls, v.openInPlace.mock.calls]).toEqual([[[`/weave/${CREATED}`]], []]);
+  });
+
+  it("puts the secret nowhere but that one field", async () => {
+    const v = mountCreate();
+    await v.create();
+    const hrefs = [...v.container.querySelectorAll("a")].map((a) => a.getAttribute("href") ?? "");
+    expect([v.container.innerHTML.includes(NEW_SECRET), hrefs.some((h) => h.includes(NEW_SECRET)),
+      location.pathname.includes(NEW_SECRET)]).toEqual([false, false, false]);
+  });
+
+  it("lets a durable creation be dismissed, and puts the form back", async () => {
+    const v = mountCreate();
+    await v.create();
+    const enabled = !v.button("Done").disabled;
+    fireEvent.click(v.button("Done"));
+    await flush();
+    expect([enabled, v.panel(), v.titleField().value]).toEqual([true, null, ""]);
+  });
+
+  it("shows the new Weave in My Weaves with nothing clicked and no reload", async () => {
+    // The page stays on screen after a creation (§4.5), so the bump is the only thing that can put
+    // the new row in the list beside the panel.
+    const v = mountCreate({ withList: true });
+    await v.create();
+    expect([...v.container.querySelectorAll(".weave-row-title")].map((e) => e.textContent))
+      .toEqual(["Test Weave"]);
+  });
+});
+
+describe("the save-this-link panel hardens when nothing was saved (spec §3.1, §4.5)", () => {
+  /** A store that keeps a bare identity and refuses the whole entry — the case a two-write creation
+   *  gets wrong, by branching on the verdict of the write that was never at risk. */
+  const sized = () => { installSizeLimitedLocalStorage(ENTRY_LIMIT); return browserStorage(); };
+
+  it("keeps a bare identity under that store, which is what makes the case a real one", () => {
+    const storage = sized();
+    expect(setIdentity(storage, CREATED, { token: "keeper-token", participantId: "p-creator", name: "dana" }))
+      .toBe("durable");
+  });
+
+  it("hardens the panel when the whole entry would not fit", async () => {
+    const v = mountCreate({ storage: sized() });
+    await v.create();
+    expect([!!v.container.querySelector(".create-saved-hardened"), v.button("Done").disabled])
+      .toEqual([true, true]);
+  });
+
+  it("renders that Weave here rather than navigating to it", async () => {
+    const v = mountCreate({ storage: sized() });
+    await v.create();
+    fireEvent.click(v.button("Open the Weave"));
+    expect([v.openInPlace.mock.calls, v.navigate.mock.calls]).toEqual([[[CREATED]], []]);
+  });
+
+  it("hardens the same way when the store keeps nothing at all", async () => {
+    installThrowingLocalStorage();
+    const v = mountCreate({ storage: browserStorage() });
+    await v.create();
+    expect([!!v.container.querySelector(".create-saved-hardened"), v.button("Done").disabled])
+      .toEqual([true, true]);
+  });
+
+  it("says why this link is the only copy there is", async () => {
+    installThrowingLocalStorage();
+    const v = mountCreate({ storage: browserStorage() });
+    await v.create();
+    expect(v.panel()!.textContent).toContain(
+      "This browser is not saving anything for this site, so this link is the only copy of it "
+      + "anywhere. Close this tab without saving it and this Weave is gone for good: Loom has no "
+      + "recovery, no rotation and no deletion.");
+  });
+
+  it("lets it be dismissed once the link has been acknowledged", async () => {
+    installThrowingLocalStorage();
+    const v = mountCreate({ storage: browserStorage() });
+    await v.create();
+    fireEvent.click(v.button("I have saved this link"));
+    await flush();
+    fireEvent.click(v.button("Done"));
+    await flush();
+    expect(v.panel()).toBeNull();
+  });
+
+  it("takes a successful copy as that acknowledgement", async () => {
+    installClipboard(async () => {});
+    installThrowingLocalStorage();
+    const v = mountCreate({ storage: browserStorage() });
+    await v.create();
+    fireEvent.click(v.button("Copy"));
+    await flush();
+    expect(v.button("Done").disabled).toBe(false);
+  });
+
+  it("does not take a refused copy as one", async () => {
+    installClipboard(undefined);
+    installThrowingLocalStorage();
+    const v = mountCreate({ storage: browserStorage() });
+    await v.create();
+    fireEvent.click(v.button("Copy"));
+    await flush();
+    expect(v.button("Done").disabled).toBe(true);
+  });
+
+  it("reports that verdict to the one notice this page has", async () => {
+    installThrowingLocalStorage();
+    const v = mountCreate({ storage: browserStorage() });
+    await v.create();
+    expect(v.notice.degraded()).toBe(true);
+  });
+});
+
+describe("a creation on the main page (spec §3.1, §4.5)", () => {
+  /** What the created Weave answers when its own page loads: the creator is in it, as its keeper. */
+  const createdRoutes: Routes = {
+    ...CREATE_OK,
+    ...weaveRoutes(CREATED, "Test Weave"),
+    [weaveUrl(CREATED)]: () => json({ ...weaveAnswer(CREATED, "Test Weave"), participants: [CREATED_RESULT.participant] }),
+  };
+  const createOnPage = async () => {
+    fireEvent.input(screen.getByLabelText("Title"), { target: { value: "Test Weave" } });
+    fireEvent.input(screen.getByLabelText("Your name"), { target: { value: "dana" } });
+    fireEvent.submit((screen.getByLabelText("Title") as HTMLInputElement).closest("form")!);
+    await settle();
+  };
+
+  it("leaves a creation whose entry did not persist in a Weave this browser keeps", async () => {
+    installThrowingLocalStorage();
+    const v = mountApp({ path: "/", storage: browserStorage(), routes: createdRoutes });
+    await settle();
+    await createOnPage();
+    fireEvent.click(screen.getByRole("button", { name: "Open the Weave" }));
+    await settle();
+    expect([v.iAm(), v.container.querySelector(".header-right")?.textContent?.includes("(keeper)"), v.writable()])
+      .toEqual(["dana", true, true]);
+  });
+
+  it("leaves the URL alone doing it", async () => {
+    installThrowingLocalStorage();
+    const v = mountApp({ path: "/", storage: browserStorage(), routes: createdRoutes });
+    const pushed = vi.spyOn(history, "pushState");
+    await settle();
+    await createOnPage();
+    fireEvent.click(screen.getByRole("button", { name: "Open the Weave" }));
+    await settle();
+    expect([location.pathname, pushed.mock.calls.length, v.container.innerHTML.includes(NEW_SECRET)])
+      .toEqual(["/", 0, false]);
   });
 });

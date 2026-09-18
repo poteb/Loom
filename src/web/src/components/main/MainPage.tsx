@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import { LoomClientError, type Lobby, type LoomClient } from "@loom/client";
+import { LoomClientError, type Lobby } from "@loom/client";
 import type { RouteDeps } from "../../app.js";
-import type { KeyValueStorage } from "../../storage.js";
-import type { PersistenceNotice } from "../../persistence.js";
 import type { WeavesSignal } from "../../weaves-signal.js";
 import { hasIdentity, migrateLegacy, readWeaveEntry } from "../../weaves-store.js";
 import { PersistenceBar } from "../PersistenceBar.js";
@@ -10,6 +8,7 @@ import { InstanceGuidelines } from "./InstanceGuidelines.js";
 import { LobbySummary } from "./LobbySummary.js";
 import { JoinLobbyForm } from "./JoinLobbyForm.js";
 import { MyWeaves } from "./MyWeaves.js";
+import { CreateWeaveForm } from "./CreateWeaveForm.js";
 
 /**
  * The Lobby pointer: one of the page's four independent cells (spec §6). `none` is the instance's
@@ -106,17 +105,4 @@ export function MainPage({ client, storage, notice, weaves, openInPlace }: Route
                        defaultName={joinedAs} openInPlace={openInPlace} navigate={navigate} />
     </div>
   );
-}
-
-/**
- * Task 10 (§4.5) replaces this with the real form. It is a heading here so this page is complete on
- * its own — and, more to the point, so the props that task consumes are already declared and handed
- * down from the one place that owns them: the same `weaves` object My Weaves writes through, and
- * `notice.note` as the only `onWrite` there is.
- */
-function CreateWeaveForm(_props: {
-  client: LoomClient; storage: KeyValueStorage; notice: PersistenceNotice; weaves: WeavesSignal;
-  defaultName?: string; openInPlace: (weaveId: string) => void; navigate: (path: string) => void;
-}) {
-  return <section class="create-weave"><h2>Create a Weave</h2></section>;
 }
