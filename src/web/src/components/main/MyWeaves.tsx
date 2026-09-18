@@ -123,12 +123,16 @@ export function MyWeaves({ client, storage, weaves, onWrite, lobbyWeaveId }: {
   // row, so a re-derive after a bump does not lose them and does not mix them up.
   const [notes, setNotes] = useState<Record<string, string>>({});
   /**
-   * What the last Copy link on a row came to: `"done"` when the clipboard took it, `"manual"` when
-   * there was no clipboard to take it (an insecure origin has none) or it refused. No timer clears
-   * these — a timer would have to be cancelled on unmount and is not worth owning; they are cleared
-   * by the next filter keystroke or "Show more", and otherwise simply stay.
+   * What the last Copy link came to, for the **one** row it was clicked on: `"done"` when the
+   * clipboard took the link, `"manual"` when there was no clipboard to take it (an insecure origin
+   * has none) or it refused. One row rather than a map, because the manual fallback puts a secret on
+   * screen: opening a second row's closes the first, so at most one link is ever legible.
+   *
+   * No timer clears it — a timer would have to be cancelled on unmount and is not worth owning.
+   * Its exits are the row's own **Hide**, the next filter keystroke, "Show more", a Forget of that
+   * row, and unmount.
    */
-  const [copied, setCopied] = useState<Record<string, "done" | "manual">>({});
+  const [copied, setCopied] = useState<{ key: string; mark: "done" | "manual" } | undefined>();
   const [filter, setFilter] = useState("");
   const [limit, setLimit] = useState(PAGE);
 
@@ -240,23 +244,32 @@ export function MyWeaves({ client, storage, weaves, onWrite, lobbyWeaveId }: {
     const key = rowKey(row);
     fetched.current.delete(key);
     setNotes(({ [key]: _note, ...rest }) => rest);
-    setCopied(({ [key]: _mark, ...rest }) => rest);
+    setCopied((c) => (c?.key === key ? undefined : c));
     weaves.bump();
   };
 
+  /** Which Copy link click the answer on screen belongs to. A second click closes the first row's
+   *  fallback at once, so a slower answer from that first click must not reopen it. */
+  const copyClick = useRef(0);
+
   /** Copy link, which must always answer: an insecure origin has no `navigator.clipboard` at all,
-   *  and a clipboard that exists can still refuse. Both land in the manual fallback, which is the
-   *  one place the secret reaches the DOM — and only after an explicit click on that row (§5). */
+   *  and a clipboard that exists can refuse — by rejecting, or, in some implementations, by
+   *  throwing outright when the document is unfocused or the permission is denied. All three land
+   *  in the manual fallback, which is the one place the secret reaches the DOM, and only after an
+   *  explicit click on that row (§5). */
   const copyLink = (row: WeaveRow, link: string) => {
     const key = rowKey(row);
-    const written = navigator.clipboard?.writeText(link);
-    if (written === undefined) { setCopied((c) => ({ ...c, [key]: "manual" })); return; }
+    const ticket = ++copyClick.current;
+    setCopied(undefined);                    // whatever was open closes now, not when this answers
+    const answer = (mark: "done" | "manual") => {
+      if (alive.current && copyClick.current === ticket) setCopied({ key, mark });
+    };
+    let written: Promise<void> | undefined;
+    try { written = navigator.clipboard?.writeText(link); } catch { answer("manual"); return; }
+    if (written === undefined) { answer("manual"); return; }
     // Handled, not `void`ed: a refused write is an ordinary outcome of this button, and leaving it
     // to surface as an unhandled rejection would tell the human nothing and the console too much.
-    written.then(
-      () => { if (alive.current) setCopied((c) => ({ ...c, [key]: "done" })); },
-      () => { if (alive.current) setCopied((c) => ({ ...c, [key]: "manual" })); },
-    );
+    written.then(() => answer("done"), () => answer("manual"));
   };
 
   return (
@@ -266,10 +279,12 @@ export function MyWeaves({ client, storage, weaves, onWrite, lobbyWeaveId }: {
         ? <p class="muted">This browser holds no Weaves yet.</p>
         : (
           <>
-            {rows.length > FILTER_FROM && (
+            {/* A typed filter keeps its box however short the list gets: Forgetting down to eight
+                rows would otherwise take the control away while the filter was still in force. */}
+            {(rows.length > FILTER_FROM || filter !== "") && (
               <label class="weave-filter">Filter
                 <input value={filter}
-                  onInput={(e) => { setFilter((e.target as HTMLInputElement).value); setCopied({}); }} />
+                  onInput={(e) => { setFilter((e.target as HTMLInputElement).value); setCopied(undefined); }} />
               </label>
             )}
             {matching.length === 0 && <p class="muted">No Weave matches.</p>}
@@ -297,11 +312,13 @@ export function MyWeaves({ client, storage, weaves, onWrite, lobbyWeaveId }: {
                       <button type="button" class="weave-row-copy" aria-label={`Copy link to ${row.title}`}
                         onClick={() => copyLink(row, link)}>Copy link</button>
                     )}
-                    {copied[key] === "done" && <span class="weave-row-copied">Copied</span>}
-                    {copied[key] === "manual" && link !== undefined && (
+                    {copied?.key === key && copied.mark === "done" && <span class="weave-row-copied">Copied</span>}
+                    {copied?.key === key && copied.mark === "manual" && link !== undefined && (
                       <span class="weave-row-copy-manual">
                         Could not copy it for you — here it is:
                         <input class="weave-row-link" readOnly value={link} aria-label={`Link to ${row.title}`} />
+                        <button type="button" class="weave-row-hide" aria-label={`Hide the link to ${row.title}`}
+                          onClick={() => setCopied(undefined)}>Hide</button>
                       </span>
                     )}
                     {dead && row.weaveId !== undefined && (
@@ -314,7 +331,7 @@ export function MyWeaves({ client, storage, weaves, onWrite, lobbyWeaveId }: {
             </ul>
             {matching.length > limit && (
               <button type="button" class="weave-more"
-                onClick={() => { setLimit((n) => n + PAGE); setCopied({}); }}>Show more</button>
+                onClick={() => { setLimit((n) => n + PAGE); setCopied(undefined); }}>Show more</button>
             )}
           </>
         )}

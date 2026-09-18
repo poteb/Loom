@@ -114,4 +114,5 @@ select { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid 
    was missing or refused, so the link is offered to be selected and copied by hand. */
 .weave-row-copy-manual { flex: 1 1 100%; display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); }
 .weave-row-link { flex: 1; font-size: 12px; }
+.weave-row-hide { font-size: 12px; }
 .weave-more { margin-top: 8px; }

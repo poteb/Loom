@@ -87,7 +87,7 @@ const installThrowingLocalStorage = () => installLocalStorage();
  * clipboard API, and My Weaves must answer the click there too.
  */
 let restoreClipboard: (() => void) | undefined;
-function installClipboard(writeText?: () => Promise<void>) {
+function installClipboard(writeText?: () => unknown) {
   const prior = Object.getOwnPropertyDescriptor(navigator, "clipboard");
   Object.defineProperty(navigator, "clipboard", {
     value: writeText === undefined ? undefined : { writeText: vi.fn(writeText) },
@@ -1093,12 +1093,23 @@ describe("Copy link always answers (spec §4.2, §5)", () => {
 
   it("keeps the secret out of the markup on that path", async () => {
     // §5 still holds where the copy worked: only the fallback below may show it, and only after a
-    // click on that row.
+    // click on that row. The field is asserted absent as well as the markup checked — Preact sets
+    // an input's `value` as a property, so `innerHTML` alone would not see it.
     installClipboard(async () => {});
     const v = mountWithSecret();
     clickCopy();
     await flush();
-    expect(v.container.innerHTML.includes(SECRET)).toBe(false);
+    expect([v.container.innerHTML.includes(SECRET), field(v)]).toEqual([false, null]);
+  });
+
+  it("shows the same fallback when the clipboard throws instead of rejecting", async () => {
+    // Some implementations throw synchronously — an unfocused document, a denied permission —
+    // rather than answering with a rejected promise.
+    installClipboard(() => { throw new Error("document is not focused"); });
+    const v = mountWithSecret();
+    clickCopy();
+    await flush();
+    expect(field(v)?.value).toBe(LINK());
   });
 
   it("shows the link to copy by hand where the browser has no clipboard at all", async () => {
@@ -1118,7 +1129,38 @@ describe("Copy link always answers (spec §4.2, §5)", () => {
     expect([field(v)?.value, rejected]).toEqual([LINK(), []]);
   });
 
-  it("clears the marker on the next interaction with the list, and leaves no timer behind", async () => {
+  it("hides the fallback, and the secret with it, when Hide is clicked", async () => {
+    // The field's only other exits are a filter keystroke, "Show more", Forget and unmount — and a
+    // list of eight rows or fewer has no filter box at all, so without this the link stays legible
+    // until the page is left.
+    installClipboard(undefined);
+    const v = mountWithSecret();
+    clickCopy();
+    await flush();
+    const shown = field(v)?.value;
+    fireEvent.click(screen.getByRole("button", { name: /^Hide/ }));
+    await flush();
+    expect([shown, field(v), v.container.innerHTML.includes(SECRET)]).toEqual([LINK(), null, false]);
+  });
+
+  it("closes one row's fallback when another row's is opened", async () => {
+    const OTHER_SECRET = "z".repeat(43);
+    installClipboard(undefined);
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, OTHER, { secret: SECRET, title: "Alpha" });
+    saveWeaveEntry(storage, "w-beta", { secret: OTHER_SECRET, title: "Beta" });
+    const v = mountWeaves({ storage, routes: {
+      [weaveUrl(OTHER)]: () => json(weaveAnswer(OTHER, "Alpha")),
+      [weaveUrl("w-beta")]: () => json(weaveAnswer("w-beta", "Beta")) } });
+    fireEvent.click(screen.getByRole("button", { name: "Copy link to Alpha" }));
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: "Copy link to Beta" }));
+    await flush();
+    expect([v.container.querySelectorAll(".weave-row-link").length, field(v)?.value])
+      .toEqual([1, `${location.origin}/w/${OTHER_SECRET}`]);
+  });
+
+  it("clears the marker on the next interaction with the list", async () => {
     installClipboard(async () => {});
     const storage = memoryStorage();
     // Nine rows, so the filter box is on screen; only the first carries a secret, so only that one
@@ -1222,6 +1264,19 @@ describe("the My Weaves filter box (spec §4.2)", () => {
     fireEvent.input(screen.getByLabelText("Filter"), { target: { value: "nothing like this" } });
     await flush();
     expect([v.rows().length, !!screen.queryByText("No Weave matches.")]).toEqual([0, true]);
+  });
+
+  it("keeps the box while a filter is typed, however short the list gets", async () => {
+    // Forgetting down to eight rows would otherwise take the box away with the filter still in
+    // force, leaving "No Weave matches." and no control to clear it.
+    const storage = titlesOnly(many(9));
+    for (let i = 0; i < 9; i++) saveWeaveEntry(storage, `w-${pad(i)}`, { identity: "invalid" });
+    mountWeaves({ storage });
+    fireEvent.input(screen.getByLabelText("Filter"), { target: { value: "Weave" } });
+    await flush();
+    fireEvent.click(screen.getAllByRole("button", { name: /^Forget/ })[0]!);
+    await flush();
+    expect([!!screen.queryByLabelText("Filter"), screen.getAllByRole("listitem").length]).toEqual([true, 8]);
   });
 });
 
