@@ -149,7 +149,7 @@ Still open after sub-project 4. The main page's My Weaves has the filter-and-"Sh
 idea wants (and refreshes at most six rows at a time), but the Weave page itself is untouched: the
 sidebar still stacks everything, and a Weave switcher is exactly the thing My Weaves is not.
 
-### A web main page: joining the Lobby from a browser (Paw, 2026-09-17) — **shipped in sub-project 4** (PR TBD)
+### A web main page: joining the Lobby from a browser (Paw, 2026-09-17) — **shipped in sub-project 4** ([PR #17](https://github.com/poteb/Loom/pull/17))
 
 Built as specified in
 [2026-09-17-loom-web-main-page-design.md](2026-09-17-loom-web-main-page-design.md), entirely in
