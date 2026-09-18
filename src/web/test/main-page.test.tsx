@@ -80,6 +80,25 @@ function installLocalStorage(refuses: (key: string) => boolean = () => true) {
   };
 }
 const installThrowingLocalStorage = () => installLocalStorage();
+
+/**
+ * A `navigator.clipboard` for one test, or — with `writeText` omitted — none at all, which is what
+ * an insecure origin looks like: a self-hosted Loom reached over plain http on a LAN has no
+ * clipboard API, and My Weaves must answer the click there too.
+ */
+let restoreClipboard: (() => void) | undefined;
+function installClipboard(writeText?: () => Promise<void>) {
+  const prior = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+  Object.defineProperty(navigator, "clipboard", {
+    value: writeText === undefined ? undefined : { writeText: vi.fn(writeText) },
+    configurable: true, writable: true,
+  });
+  restoreClipboard = () => {
+    if (prior) Object.defineProperty(navigator, "clipboard", prior);
+    else Reflect.deleteProperty(navigator as object, "clipboard");
+  };
+}
+afterEach(() => { restoreClipboard?.(); restoreClipboard = undefined; });
 afterEach(() => { restoreLocalStorage?.(); restoreLocalStorage = undefined; });
 
 function mount(opts: { routes?: Routes; storage?: KeyValueStorage;
@@ -930,6 +949,10 @@ describe("folding a legacy entry into an id entry (spec §2.4, §4.2)", () => {
     expect([row!.weaveId, row!.secret]).toEqual([undefined, SECRET]);
   });
 
+  it("gives that row a state of its own rather than borrowing one that renders nothing", () => {
+    expect(foldRows([legacyEntry()])[0]!.state).toBe("unresolved");
+  });
+
   it("identifies a row by its Weave id, or by its secret while it has none", () => {
     const [resolved] = foldRows([idEntry()]);
     const [unresolved] = foldRows([legacyEntry()]);
@@ -964,15 +987,22 @@ describe("My Weaves row states (spec §4.2)", () => {
 
   it("greys a row with no credential left, offering only Forget", () => {
     const v = mountWeaves({ storage: held({ identity: "invalid" }) });
-    expect([v.dead(0), v.href(0), !!screen.queryByRole("button", { name: "Forget" })]).toEqual([true, null, true]);
+    expect([v.dead(0), v.href(0), !!screen.queryByRole("button", { name: /^Forget/ })]).toEqual([true, null, true]);
   });
 
   it("says a Weave the server no longer has is gone, and offers to forget it", async () => {
     const v = mountWeaves({ storage: held(HELD),
       routes: { [weaveUrl(OTHER)]: () => json({ code: "weave_not_found", message: "gone" }, 404) } });
     await settleRows();
-    expect([!!screen.queryByText("this Weave is gone"), v.dead(0), !!screen.queryByRole("button", { name: "Forget" })])
+    expect([!!screen.queryByText("this Weave is gone"), v.dead(0), !!screen.queryByRole("button", { name: /^Forget/ })])
       .toEqual([true, true, true]);
+  });
+
+  it("offers no Copy link on a Weave that is gone, whose link leads nowhere either", async () => {
+    mountWeaves({ storage: held({ ...HELD, secret: SECRET }),
+      routes: { [weaveUrl(OTHER)]: () => json({ code: "weave_not_found", message: "gone" }, 404) } });
+    await settleRows();
+    expect(screen.queryByRole("button", { name: /^Copy link/ })).toBeNull();
   });
 
   it("keeps the cached title and the link when a refresh fails on the network", async () => {
@@ -989,23 +1019,34 @@ describe("My Weaves row actions (spec §4.2, §5)", () => {
     const storage = memoryStorage();
     saveWeaveEntry(storage, OTHER, { identity: "invalid", title: "Test Weave" });
     const v = mountWeaves({ storage });
-    fireEvent.click(screen.getByRole("button", { name: "Forget" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Forget/ }));
     await flush();
     expect([v.rows().length, readWeaveEntry(storage, OTHER)]).toEqual([0, undefined]);
+  });
+
+  it("names each row's buttons after the row they belong to", () => {
+    // A list of 25 rows is 25 identically named buttons otherwise, which is no help to anyone
+    // reaching them by name — a screen reader, or a test.
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, OTHER, { secret: SECRET, title: "Test Weave" });
+    saveWeaveEntry(storage, "w-dead", { identity: "invalid", title: "Dead Weave" });
+    mountWeaves({ storage, routes: { [weaveUrl(OTHER)]: () => json(weaveAnswer(OTHER, "Test Weave")) } });
+    expect([!!screen.queryByRole("button", { name: "Copy link to Test Weave" }),
+      !!screen.queryByRole("button", { name: "Forget Dead Weave" })]).toEqual([true, true]);
   });
 
   it("offers Copy link where the entry carries a secret", () => {
     const storage = memoryStorage();
     saveWeaveEntry(storage, OTHER, { secret: SECRET, title: "Test Weave" });
     mountWeaves({ storage, routes: { [weaveUrl(OTHER)]: () => json(weaveAnswer(OTHER, "Test Weave")) } });
-    expect(!!screen.queryByRole("button", { name: "Copy link" })).toBe(true);
+    expect(!!screen.queryByRole("button", { name: /^Copy link/ })).toBe(true);
   });
 
   it("offers none where it does not", () => {
     const storage = memoryStorage();
     saveWeaveEntry(storage, OTHER, { ...HELD, title: "Test Weave" });
     mountWeaves({ storage, routes: { [weaveUrl(OTHER)]: () => json(weaveAnswer(OTHER, "Test Weave")) } });
-    expect(screen.queryByRole("button", { name: "Copy link" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Copy link/ })).toBeNull();
   });
 
   it("links the row to the Weave id and never puts the secret in the markup", () => {
@@ -1029,6 +1070,68 @@ describe("My Weaves row actions (spec §4.2, §5)", () => {
     saveWeaveEntry(storage, OTHER, { title: "Test Weave", archived: true });
     mountWeaves({ storage });
     expect(!!screen.queryByText("Archived")).toBe(true);
+  });
+});
+
+describe("Copy link always answers (spec §4.2, §5)", () => {
+  const LINK = () => `${location.origin}/w/${SECRET}`;
+  function mountWithSecret() {
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, OTHER, { secret: SECRET, title: "Test Weave" });
+    return mountWeaves({ storage, routes: { [weaveUrl(OTHER)]: () => json(weaveAnswer(OTHER, "Test Weave")) } });
+  }
+  const clickCopy = () => fireEvent.click(screen.getByRole("button", { name: /^Copy link/ }));
+  const field = (v: { container: Element }) => v.container.querySelector(".weave-row-link") as HTMLInputElement | null;
+
+  it("says so when the clipboard took the link", async () => {
+    installClipboard(async () => {});
+    const v = mountWithSecret();
+    clickCopy();
+    await flush();
+    expect([!!screen.queryByText("Copied"), field(v)]).toEqual([true, null]);
+  });
+
+  it("keeps the secret out of the markup on that path", async () => {
+    // §5 still holds where the copy worked: only the fallback below may show it, and only after a
+    // click on that row.
+    installClipboard(async () => {});
+    const v = mountWithSecret();
+    clickCopy();
+    await flush();
+    expect(v.container.innerHTML.includes(SECRET)).toBe(false);
+  });
+
+  it("shows the link to copy by hand where the browser has no clipboard at all", async () => {
+    // A self-hosted Loom reached over plain http on a LAN is an insecure origin, where
+    // `navigator.clipboard` does not exist: the button must not be a silent no-op there.
+    installClipboard(undefined);
+    const v = mountWithSecret();
+    clickCopy();
+    await flush();
+    expect(field(v)?.value).toBe(LINK());
+  });
+
+  it("shows the same fallback when the clipboard refuses", async () => {
+    installClipboard(async () => { throw new Error("denied"); });
+    const v = mountWithSecret();
+    const rejected = await whileIgnoringRejections(async () => { clickCopy(); await settle(); });
+    expect([field(v)?.value, rejected]).toEqual([LINK(), []]);
+  });
+
+  it("clears the marker on the next interaction with the list, and leaves no timer behind", async () => {
+    installClipboard(async () => {});
+    const storage = memoryStorage();
+    // Nine rows, so the filter box is on screen; only the first carries a secret, so only that one
+    // row asks the server anything.
+    for (let i = 0; i < 9; i++) saveWeaveEntry(storage, `w-${pad(i)}`, { title: `Weave ${pad(i)}` });
+    saveWeaveEntry(storage, "w-00", { secret: SECRET });
+    const v = mountWeaves({ storage, routes: { [weaveUrl("w-00")]: () => json(weaveAnswer("w-00", "Weave 00")) } });
+    fireEvent.click(screen.getByRole("button", { name: /^Copy link/ }));
+    await flush();
+    const copied = !!screen.queryByText("Copied");
+    fireEvent.input(screen.getByLabelText("Filter"), { target: { value: "Weave 0" } });
+    await flush();
+    expect([copied, !!screen.queryByText("Copied"), v.rows().length > 0]).toEqual([true, false, true]);
   });
 });
 
@@ -1112,6 +1215,13 @@ describe("the My Weaves filter box (spec §4.2)", () => {
     fireEvent.input(screen.getByLabelText("Filter"), { target: { value: "ALPHA" } });
     await flush();
     expect(v.titles()).toEqual(["Alpha"]);
+  });
+
+  it("says so rather than showing an empty list when nothing matches", async () => {
+    const v = mountWeaves({ storage: titlesOnly(many(9)) });
+    fireEvent.input(screen.getByLabelText("Filter"), { target: { value: "nothing like this" } });
+    await flush();
+    expect([v.rows().length, !!screen.queryByText("No Weave matches.")]).toEqual([0, true]);
   });
 });
 
@@ -1239,7 +1349,18 @@ describe("My Weaves refreshes one row (spec §4.2, §2.6)", () => {
     setIdentity(storage, OTHER, { token: "dead", participantId: "p" }, { title: "Old" });
     const v = mountWeaves({ storage, fetchStub: tokenIsDead(OTHER, "New") });
     await settleRows();
-    expect([v.dead(0), !!screen.queryByRole("button", { name: "Forget" })]).toEqual([true, true]);
+    expect([v.dead(0), !!screen.queryByRole("button", { name: /^Forget/ })]).toEqual([true, true]);
+  });
+
+  it("explains that row by what the entry now says, not as something that might work next time", async () => {
+    // The 401 ended the row: the entry itself explains it. Falling through to the refresh's own
+    // "could not refresh" would mask that sentence with a transient-sounding one.
+    const storage = memoryStorage();
+    setIdentity(storage, OTHER, { token: "dead", participantId: "p" }, { title: "Old" });
+    mountWeaves({ storage, fetchStub: tokenIsDead(OTHER, "New") });
+    await settleRows();
+    expect([!!screen.queryByText("your identity here stopped working, and this browser has no link for it"),
+      !!screen.queryByText("could not refresh")]).toEqual([true, false]);
   });
 
   it("asks for nothing at all for a row with neither an identity nor a secret", async () => {
@@ -1292,6 +1413,28 @@ describe("My Weaves follows storage (spec §4.2)", () => {
     await act(() => { weaves.bump(); });
     await settleRows();
     expect([once, v.fetchStub.mock.calls.length]).toEqual([3, 3]);
+  });
+
+  it("does not let a forgotten Weave come back born dead", async () => {
+    // The refresh markers are not in storage, so Forget has to drop them itself: a Weave forgotten
+    // after a 404 and re-acquired in the same page (a creation, or a join) is a new row, and must
+    // be read once more rather than inherit "this Weave is gone".
+    const storage = memoryStorage();
+    const weaves = createWeavesSignal();
+    let gone = true;
+    const v = mountWeaves({ storage, weaves, routes: { [weaveUrl(OTHER)]: () =>
+      gone ? json({ code: "weave_not_found", message: "gone" }, 404) : json(weaveAnswer(OTHER, "Back")) } });
+    saveWeaveEntry(storage, OTHER, { ...HELD, title: "Test Weave" });
+    await act(() => { weaves.bump(); });
+    await settleRows();
+    const wasGone = !!screen.queryByText("this Weave is gone");
+    fireEvent.click(screen.getByRole("button", { name: /^Forget/ }));
+    await flush();
+    gone = false;
+    saveWeaveEntry(storage, OTHER, { ...HELD, title: "Test Weave" });
+    await act(() => { weaves.bump(); });
+    await settleRows();
+    expect([wasGone, screen.queryByText("this Weave is gone"), v.titles()]).toEqual([true, null, ["Back"]]);
   });
 
   it("does not start a second read for a row still in flight", async () => {

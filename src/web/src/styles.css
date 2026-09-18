@@ -109,4 +109,9 @@ select { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid 
 .weave-row-copy, .weave-row-forget { font-size: 12px; }
 .weave-row-copy { margin-left: auto; }
 .weave-row-dead .weave-row-forget { margin-left: auto; }
+.weave-row-copied { color: var(--muted); font-size: 12px; }
+/* The one place a secret reaches the DOM (§5), and only after a click on that row: the clipboard
+   was missing or refused, so the link is offered to be selected and copied by hand. */
+.weave-row-copy-manual { flex: 1 1 100%; display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); }
+.weave-row-link { flex: 1; font-size: 12px; }
 .weave-more { margin-top: 8px; }

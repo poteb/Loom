@@ -21,7 +21,9 @@ const FAILED = "could not refresh";
 
 export type WeaveRow = {
   weaveId?: string; secret?: string; title: string;
-  state: "joined" | "read-only" | "identity-invalid" | "unavailable";
+  /** `"unresolved"` is a legacy row nothing has turned into a Weave id yet: it has no `weaveId`, so
+   *  it cannot be linked to and cannot be Forgotten either — `forget()` needs one. */
+  state: "joined" | "read-only" | "identity-invalid" | "unavailable" | "unresolved";
   joinedAs?: string; isLobby: boolean; archived: boolean; lastOpenedAt?: string;
   /** What the stored entry alone already says (e.g. an unresolved legacy row's unknown title). The
    *  refresh's own markers live in component state keyed by `rowKey`, because they are not in
@@ -75,14 +77,15 @@ export function foldRows(stored: StoredWeave[], lobbyWeaveId?: string): WeaveRow
     // Nothing has resolved this link into a Weave id yet (spec §4.2): its title is unknown, it
     // cannot be linked to — `/weave/<id>` is the only row link there is — and Copy link still works.
     rows.push({
-      secret: s.secret, title: UNKNOWN_TITLE, state: "joined",
+      secret: s.secret, title: UNKNOWN_TITLE, state: "unresolved",
       isLobby: false, archived: false, note: "not resolved yet",
     });
   }
   return rows;
 }
 
-/** The one line §4.2 gives each row state. `undefined` where the row's own `note` says it instead. */
+/** The one line §4.2 gives each row state. `undefined` where the row's own `note` says it instead —
+ *  which is both dead ends and the unresolved legacy row. */
 function stateText(row: WeaveRow): string | undefined {
   if (row.state === "joined") return row.joinedAs === undefined ? undefined : `joined as ${row.joinedAs}`;
   if (row.state === "read-only") return "read-only — not joined";
@@ -119,6 +122,13 @@ export function MyWeaves({ client, storage, weaves, onWrite, lobbyWeaveId }: {
   // Per-row facts that are *not* in storage: "could not refresh", "this Weave is gone". Keyed by the
   // row, so a re-derive after a bump does not lose them and does not mix them up.
   const [notes, setNotes] = useState<Record<string, string>>({});
+  /**
+   * What the last Copy link on a row came to: `"done"` when the clipboard took it, `"manual"` when
+   * there was no clipboard to take it (an insecure origin has none) or it refused. No timer clears
+   * these — a timer would have to be cancelled on unmount and is not worth owning; they are cleared
+   * by the next filter keystroke or "Show more", and otherwise simply stay.
+   */
+  const [copied, setCopied] = useState<Record<string, "done" | "manual">>({});
   const [filter, setFilter] = useState("");
   const [limit, setLimit] = useState(PAGE);
 
@@ -172,6 +182,12 @@ export function MyWeaves({ client, storage, weaves, onWrite, lobbyWeaveId }: {
         // request at a time, never two, and never jumps the FIFO ahead of rows that have waited.
         const again = readerFor(client, readWeaveEntry(storage, weaveId));
         if (again) return await refreshRow(row);
+        // Nothing left to read with, so this row is over, not merely unlucky. The entry the
+        // invalidation just wrote explains it in its own words ("your identity here stopped
+        // working, and this browser has no link for it"), and the bump above has already re-derived
+        // the row from it — `markRow`'s transient-sounding marker would be rendered *instead* of
+        // that sentence and would be the wrong thing to tell the human.
+        return;
       }
       markRow(row, e);                                     // 404 → "this Weave is gone"; else the quiet marker
     }
@@ -208,7 +224,7 @@ export function MyWeaves({ client, storage, weaves, onWrite, lobbyWeaveId }: {
     if (pending.length === 0) return;
     for (const r of pending) fetched.current.add(rowKey(r));   // claimed *before* enqueueing, so a
     queueRef.current!.enqueue(pending);                        // bump mid-flight cannot queue it twice
-  }, [visible]);
+  });                                                          // no dep array: every render, by design
 
   const forget = (row: WeaveRow) => {
     if (!row.weaveId) return;
@@ -217,7 +233,30 @@ export function MyWeaves({ client, storage, weaves, onWrite, lobbyWeaveId }: {
     // absent for the rest of this page anyway — the row goes and stays gone. The whole cost of a
     // failed removal is that the entry is back after a reload, and no credential was lost.
     forgetWeave(storage, row.weaveId);
+    // Everything this page remembers *about the row* rather than about the entry goes with it.
+    // None of it is in storage, so nothing else would ever drop it: a Weave forgotten after a 404
+    // and re-acquired in the same page (a creation, or a join) would otherwise be born carrying
+    // "this Weave is gone" and never be read again, because its key is still claimed.
+    const key = rowKey(row);
+    fetched.current.delete(key);
+    setNotes(({ [key]: _note, ...rest }) => rest);
+    setCopied(({ [key]: _mark, ...rest }) => rest);
     weaves.bump();
+  };
+
+  /** Copy link, which must always answer: an insecure origin has no `navigator.clipboard` at all,
+   *  and a clipboard that exists can still refuse. Both land in the manual fallback, which is the
+   *  one place the secret reaches the DOM — and only after an explicit click on that row (§5). */
+  const copyLink = (row: WeaveRow, link: string) => {
+    const key = rowKey(row);
+    const written = navigator.clipboard?.writeText(link);
+    if (written === undefined) { setCopied((c) => ({ ...c, [key]: "manual" })); return; }
+    // Handled, not `void`ed: a refused write is an ordinary outcome of this button, and leaving it
+    // to surface as an unhandled rejection would tell the human nothing and the console too much.
+    written.then(
+      () => { if (alive.current) setCopied((c) => ({ ...c, [key]: "done" })); },
+      () => { if (alive.current) setCopied((c) => ({ ...c, [key]: "manual" })); },
+    );
   };
 
   return (
@@ -229,16 +268,20 @@ export function MyWeaves({ client, storage, weaves, onWrite, lobbyWeaveId }: {
           <>
             {rows.length > FILTER_FROM && (
               <label class="weave-filter">Filter
-                <input value={filter} onInput={(e) => setFilter((e.target as HTMLInputElement).value)} />
+                <input value={filter}
+                  onInput={(e) => { setFilter((e.target as HTMLInputElement).value); setCopied({}); }} />
               </label>
             )}
+            {matching.length === 0 && <p class="muted">No Weave matches.</p>}
             <ul class="weave-list">
               {visible.map((row) => {
                 const key = rowKey(row);
                 const note = notes[key] ?? row.note;
                 // "Nothing here can be opened": either the entry has no credential left, or the
-                // server has answered that the Weave is gone. Both offer Forget and nothing else.
+                // server has answered that the Weave is gone. Both offer Forget and nothing else —
+                // a gone Weave's link leads nowhere either, so Copy link goes with the row link.
                 const dead = row.state === "unavailable" || note === GONE;
+                const link = row.secret === undefined ? undefined : `${location.origin}/w/${row.secret}`;
                 return (
                   <li key={key} class={`weave-row${dead ? " weave-row-dead" : ""}`}>
                     {!dead && row.weaveId !== undefined
@@ -248,21 +291,30 @@ export function MyWeaves({ client, storage, weaves, onWrite, lobbyWeaveId }: {
                     {row.archived && <span class="badge">Archived</span>}
                     {stateText(row) !== undefined && <span class="weave-row-state">{stateText(row)}</span>}
                     {note !== undefined && <span class="weave-row-note">{note}</span>}
-                    {row.secret !== undefined && (
-                      <button type="button" class="weave-row-copy"
-                        onClick={() => { void navigator.clipboard?.writeText(`${location.origin}/w/${row.secret}`); }}>
-                        Copy link
-                      </button>
+                    {!dead && link !== undefined && (
+                      // Named after the row: twenty-five rows are otherwise twenty-five buttons
+                      // called "Copy link", which is no help to anyone reaching them by name.
+                      <button type="button" class="weave-row-copy" aria-label={`Copy link to ${row.title}`}
+                        onClick={() => copyLink(row, link)}>Copy link</button>
+                    )}
+                    {copied[key] === "done" && <span class="weave-row-copied">Copied</span>}
+                    {copied[key] === "manual" && link !== undefined && (
+                      <span class="weave-row-copy-manual">
+                        Could not copy it for you — here it is:
+                        <input class="weave-row-link" readOnly value={link} aria-label={`Link to ${row.title}`} />
+                      </span>
                     )}
                     {dead && row.weaveId !== undefined && (
-                      <button type="button" class="weave-row-forget" onClick={() => forget(row)}>Forget</button>
+                      <button type="button" class="weave-row-forget" aria-label={`Forget ${row.title}`}
+                        onClick={() => forget(row)}>Forget</button>
                     )}
                   </li>
                 );
               })}
             </ul>
             {matching.length > limit && (
-              <button type="button" class="weave-more" onClick={() => setLimit((n) => n + PAGE)}>Show more</button>
+              <button type="button" class="weave-more"
+                onClick={() => { setLimit((n) => n + PAGE); setCopied({}); }}>Show more</button>
             )}
           </>
         )}
