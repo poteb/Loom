@@ -1149,22 +1149,42 @@ function storedIdentity(weaveId: string, j: { token: string; participant: { id: 
  * what a keeper removing this participant looks like from a tab that is already open. The refusals
  * are counted, so "one fallback, and then nothing" is observed rather than hoped for.
  */
-function revocableClient(token: string): { client: LoomClient; revoke: () => void; denied: () => number } {
+function revocableClient(token: string, opts: { refusalMs?: number } = {}): {
+  client: LoomClient; revoke: () => void; denied: () => number;
+  loadsWith: (credential: string) => number; metadataReadsWith: (credential: string) => number;
+} {
   let revoked = false;
   let denied = 0;
+  const seen: { path: string; auth: string | undefined }[] = [];
   const client = new LoomClient({
     baseUrl: s.baseUrl, allowInsecure: true,
     fetch: (input, init) => {
       const url = typeof input === "string" ? input : input.toString();
-      if (revoked && (init?.headers as Record<string, string> | undefined)?.["authorization"] === `Bearer ${token}`) {
+      const auth = (init?.headers as Record<string, string> | undefined)?.["authorization"];
+      seen.push({ path: new URL(url).pathname, auth });
+      if (revoked && auth === `Bearer ${token}`) {
         denied++;
-        return Promise.resolve(new Response(JSON.stringify({ code: "invalid_token", message: "Credential is not valid" }),
-          { status: 401, headers: { "content-type": "application/json" } }));
+        const refusal = () => new Response(JSON.stringify({ code: "invalid_token", message: "Credential is not valid" }),
+          { status: 401, headers: { "content-type": "application/json" } });
+        // Answered slowly when a test asks for it: a second event has to arrive while the failing
+        // refresh is still in flight for `refreshDirty` to be set at all.
+        return opts.refusalMs
+          ? new Promise<Response>((done) => setTimeout(() => done(refusal()), opts.refusalMs))
+          : Promise.resolve(refusal());
       }
       return fetch(url, init);
     },
   });
-  return { client, revoke: () => { revoked = true; }, denied: () => denied };
+  return {
+    client, revoke: () => { revoked = true; }, denied: () => denied,
+    // A load backfills history exactly once (the page loop stops short of `PAGE`), so this counts
+    // the loads made with that credential — "the fallback happened once" rather than "at all".
+    loadsWith: (credential) => seen.filter((c) => c.path.endsWith("/events") && c.auth === `Bearer ${credential}`).length,
+    // Weave metadata reads with that credential. A load makes exactly one — and so would a refresh
+    // that restarted behind it, which is how a queued refresh racing the fallback is seen at all.
+    metadataReadsWith: (credential: string) =>
+      seen.filter((c) => /^\/api\/weaves\/[^/]+$/.test(c.path) && c.auth === `Bearer ${credential}`).length,
+  };
 }
 
 /** Short enough that an endless retry shows up inside a test, rather than being waited out. */
@@ -1517,10 +1537,58 @@ describe("session by weave id", () => {
       await waitFor(() => session.getState().status === "no-credential");
       expect(session.getState().error).toMatch(/no longer valid/i);
       expect(session.getState().refreshError).toBeUndefined();
+      // The identity the page reports goes with the identity it just deleted: a session that says
+      // it holds no credential must not still be naming the participant the dead token was.
+      expect([session.getState().me, session.getState().readOnlyReason]).toEqual([undefined, undefined]);
       expect(readWeaveEntry(storage, r.weave.id)).toMatchObject({ identity: "invalid" });
       const atSettle = c.denied();
       await new Promise((done) => setTimeout(done, 200));
       expect([atSettle, c.denied()]).toEqual([1, 1]);
+    } finally { session.dispose(); }
+  });
+
+  // A refresh that arrives while the failing one is in flight is only marked dirty, and the
+  // `.finally` that drains that mark runs *after* the recovery has retired the loop. Without a
+  // generation guard it starts a fresh loop on the credential the recovery just retired — which is
+  // the endless retry all over again, now behind a page that says `no-credential`.
+  it("drops a refresh queued behind the one that died, instead of restarting the retired loop", async () => {
+    const { r, j } = await joinedWeave("Paw");
+    const storage = storedIdentity(r.weave.id, j);
+    const c = revocableClient(j.token, { refusalMs: 60 });
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: r.weave.id }, storage, retry: QUICK_RETRY });
+    await session.load();
+    try {
+      await waitFor(() => session.getState().connection === "open");
+      c.revoke();
+      // Two events back to back: the first starts the refresh, the second lands while it is in
+      // flight and is the one that sets `refreshDirty`.
+      const keeper = anon.withToken(r.token);
+      await Promise.all([keeper.createThread(r.weave.id, "A"), keeper.createThread(r.weave.id, "B")]);
+      await waitFor(() => session.getState().status === "no-credential");
+      const atSettle = c.denied();
+      await new Promise((done) => setTimeout(done, 200));
+      expect([atSettle, c.denied(), session.getState().refreshError]).toEqual([1, 1, undefined]);
+    } finally { session.dispose(); }
+  });
+
+  it("drops that queued refresh when a fallback load is what replaces the loop, and falls back once", async () => {
+    const { r, j } = await joinedWeave("Paw");
+    const storage = storedIdentity(r.weave.id, j, { secret: r.secret });
+    const c = revocableClient(j.token, { refusalMs: 60 });
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: r.weave.id }, storage, retry: QUICK_RETRY });
+    await session.load();
+    try {
+      await waitFor(() => session.getState().connection === "open");
+      c.revoke();
+      const keeper = anon.withToken(r.token);
+      await Promise.all([keeper.createThread(r.weave.id, "A"), keeper.createThread(r.weave.id, "B")]);
+      await waitFor(() => session.getState().readOnlyReason === "secret-fallback");
+      const atFallback = c.denied();
+      await new Promise((done) => setTimeout(done, 200));
+      // One refusal, one fallback load, and one metadata read behind it: the queued refresh must be
+      // dropped, not run against the load that replaced the loop it was queued on.
+      expect([atFallback, c.denied(), c.loadsWith(r.secret), c.metadataReadsWith(r.secret)])
+        .toEqual([1, 1, 1, 1]);
     } finally { session.dispose(); }
   });
 

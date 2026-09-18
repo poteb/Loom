@@ -150,11 +150,14 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
     retriedWithSecret = true;
     if (readWeaveEntry(storage, weaveId)?.secret) return { reload: true };
     // Nothing left to read with. Retire the stream and the generation that owns this session's
-    // loops, so nothing keeps asking with a credential that is gone, and say what happened.
+    // loops, so nothing keeps asking with a credential that is gone, and say what happened. `me`
+    // goes with the identity just deleted — a session reporting `no-credential` must not still name
+    // the participant that dead token was — and the read-only reason describes a read that is over.
     stream?.close();
     stream = undefined;
     generation++;
-    set({ status: "no-credential", error: "Your identity in this Weave is no longer valid" });
+    set({ status: "no-credential", error: "Your identity in this Weave is no longer valid",
+      me: undefined, readOnlyReason: undefined });
     return { reload: false };
   };
 
@@ -296,20 +299,35 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
   // test run) alive past the session it belongs to.
   const lifetime = new AbortController();
 
-  const runRefreshWithRetry = async () => {
+  /**
+   * One refresh loop, and it belongs to the generation that started it — the same discipline
+   * `retryLobbyData` and `doLoad` are under. A §2.6 recovery (or any other load) replaces this
+   * loop, and a loop that kept running past that would go on asking with the credential the
+   * recovery has just retired, then publish what it got over the state the new one owns.
+   */
+  const runRefreshWithRetry = async (myGeneration: number) => {
+    const retired = () => disposed || myGeneration !== generation;
     for (let attempt = 0; ; attempt++) {
-      if (disposed) return;
+      if (retired()) return;
       try {
         await refreshInfo();
+        if (retired()) return;
         if (state.refreshError !== undefined) set({ refreshError: undefined });
         return;
       } catch (e) {
-        if (disposed) return;
+        if (retired()) return;
         // A credential this read has just proven dead is not something to retry: §2.6 takes over,
-        // and the load it re-enters (or the `no-credential` it settles at) replaces this loop —
-        // which retires with the generation that started it.
+        // and the load it re-enters (or the `no-credential` it settles at) replaces this loop.
         const recovered = recoverFromCredentialFailure(e);
-        if (recovered) { if (recovered.reload) void doLoad(); return; }
+        if (recovered) {
+          // The refresh queued behind this one was queued against the credential that has just been
+          // retired. Dropping the mark here is what stops `scheduleRefresh`'s `.finally` from
+          // starting a fresh loop on it — which, with no secret to fall back to, is the endless
+          // retry all over again behind a page that says it holds no credential.
+          refreshDirty = false;
+          if (recovered.reload) void doLoad();
+          return;
+        }
         set({ refreshError: e instanceof Error ? e.message : String(e) });
         const delay = attempt < retry.delaysMs.length ? retry.delaysMs[attempt]! : retry.slowMs;
         await sleep(delay, lifetime.signal);
@@ -374,9 +392,15 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
   const scheduleRefresh = () => {
     if (disposed) return;
     if (refreshInFlight) { refreshDirty = true; return; }
-    refreshInFlight = runRefreshWithRetry().finally(() => {
+    const myGeneration = generation;
+    refreshInFlight = runRefreshWithRetry(myGeneration).finally(() => {
       refreshInFlight = undefined;
-      if (refreshDirty && !disposed) { refreshDirty = false; scheduleRefresh(); }
+      const queued = refreshDirty;
+      refreshDirty = false;
+      // Only for the generation that queued it. If that one has been retired since — by a §2.6
+      // recovery, or by an ordinary re-load — the page has already been re-read or has settled, and
+      // this restart would run a refresh the retired loop was told to stop making.
+      if (queued && !disposed && myGeneration === generation) scheduleRefresh();
     });
   };
 

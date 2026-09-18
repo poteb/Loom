@@ -234,8 +234,13 @@ describe("browserStorage under a hostile localStorage", () => {
 
   it("keeps a write durable when only enumeration throws: the listing is what is lost, not the value", () => {
     const ls = installHostileLocalStorage("enumeration");
+    // A key an earlier page load left behind: `getItem` still finds it, and enumeration — the only
+    // thing that could have *discovered* it — is what throws. That is the loss, and it is why a
+    // key this page wrote is no evidence either way: the in-memory fallback lists that one anyway.
+    ls.raw.set("old", "x");
     const s = browserStorage();
-    expect([s.set("k", "v"), s.get("k"), ls.raw.get("k")]).toEqual(["durable", "v", "v"]);
+    expect([s.set("k", "v"), s.get("k"), ls.raw.get("k"), s.get("old"), s.keys().includes("old")])
+      .toEqual(["durable", "v", "v", "x", false]);
   });
 
   for (const how of MODES) {
