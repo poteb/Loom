@@ -44,6 +44,15 @@ Found by the Lobby manual smoke test of 2026-09-17 (`v2-notes.md`, "Lobby smoke 
 > 8. **Creation persists one complete entry**, and the save-this-link panel branches on that one
 >    verdict (§4.5). My Weaves refreshes a row with the same credential the session would pick
 >    (§4.2).
+>
+> **Second planning review (2026-09-18).** Two more, both about My Weaves:
+>
+> 9. **What the list shows follows what storage holds.** One page-scoped change signal, bumped by
+>    every writer that can change a row, is what makes a finished migration, a refreshed title, an
+>    invalidated identity, a **Forget** or a creation appear without the human doing anything (§4.2).
+> 10. **My Weaves reports its own failed writes.** A refresh's title write and its identity
+>     invalidation each carry a `WriteResult` to the one-time notice; without it a row can show an
+>     invalid identity while durable storage still holds the old token, and say nothing (§4.2, §6).
 
 ## 1. Purpose
 
@@ -701,6 +710,26 @@ Per Paw's scale note, this has to survive hundreds of rows:
   | refresh answered 404 | greyed, "this Weave is gone", **Forget** |
   | refresh failed on the network | cached title, a quiet "could not refresh" marker, still clickable |
 
+- **The list follows storage, and updates itself.** Rows are derived from the stored entries on every
+  change, not captured once at mount. The page keeps **one change signal** beside the storage
+  instance of §2.4a, and every writer that can change what this list shows bumps it: a legacy entry
+  finishing migration, a refresh that writes a new `title`/`archived`, an identity invalidation, a
+  **Forget**, and a creation that completes while this page stays on screen (§4.5 does not navigate).
+  The list re-derives from storage on each bump. Nothing polls; `KeyValueStorage` itself does **not**
+  become observable — the session and every test inject it, and that blast radius buys nothing here;
+  and a bump must never restart a refresh already in flight or re-read a row already refreshed, so
+  the rendered-slice rule and the bounded pool above still hold. Without this, a migration that
+  finishes a moment after the first paint leaves a legacy row unresolved on screen until the human
+  reloads, and a refreshed title never appears at all.
+- **Every write this list makes reports whether it persisted.** The refresh's `title`/`archived`
+  write and its identity invalidation both hand their `WriteResult` to the one-time notice of §6,
+  exactly as a join or a creation does. The invalidation is the case that must not be silent: the row
+  says the identity is dead, §2.4b's override keeps that true for the page, and durable storage still
+  holds the old token — the human is told once, rather than being left with a page and a browser that
+  disagree. **Forget** is the deliberate exception and reports nothing: it is a `remove`, which
+  returns no verdict, and §2.4b's tombstone rule makes it read as absent for the rest of the page
+  whether or not it reached `localStorage`. The row goes and stays gone; a removal that did not stick
+  costs one reappearance after a reload and no credential, which is not worth a warning.
 - Nothing is removed automatically. The 401/403 rule of §2.6 clears an **identity**, never a row,
   and `Forget` is the only thing that deletes an entry. A row nobody clicked should not disappear on
   its own — the user's list is theirs.
@@ -899,7 +928,8 @@ displays (§4.5) is displayed to the person who just created it, which is the sa
   §2.6 from oscillating, and it is the property the tests assert rather than the layering that
   produces it.
 - **The "storage is not persisting" notice.** Raised the first time any write in a page load returns
-  `"memory"` — a join, a creation, or a migration — and shown once, at the top of the page, until
+  `"memory"` — a join, a creation, a migration, or a My Weaves refresh writing a title or
+  invalidating an identity (§4.2) — and shown once, at the top of the page, until
   dismissed. It does not reappear on later writes in the same page load (the page-scoped
   `storageNotPersisting` flag of §2.4 is also what suppresses the repeat). Wording intent: say what
   is happening in the user's terms and what to do about it, never in the browser's. Not "quota
@@ -1015,6 +1045,13 @@ happy-dom DOM tests selected by the `// @vitest-environment happy-dom` docblock)
 - My Weaves renders from storage **with no fetch**; ordering; the archived and Lobby badges; each
   row state of §4.2 including the read-only and "identity stopped working" rows; Forget only on the
   unavailable ones; Copy link only where a secret is held.
+- My Weaves **follows storage without a user action**: a migration that resolves after the first
+  paint turns a legacy row into an id row; a refresh result (new title, archived flag) appears; a
+  401 invalidation changes the row state; Forget removes the row; and a change signal bump does
+  **not** re-fetch a row already refreshed (counted on the stub).
+- My Weaves **reports its failed writes**: an invalidation that cannot persist still shows the
+  invalid-identity row *and* raises the notice bar once; a title write that cannot persist raises the
+  same one notice and still updates the title on screen; with durable writes the notice stays quiet.
 - Lobby summary shows title only without an identity and counts with one.
 - Create form: 403 renders the keepers-only message; a 201 renders the save-this-link panel, the
   entry is written **before** the panel appears, and **Open the Weave** points at `/weave/<id>`.
@@ -1084,7 +1121,8 @@ Task-sized steps; each ends green, and each is a plausible subagent task.
    error map, the `name_taken` two-case message with its suffix suggestion, the durable/in-place
    branch, the already-joined and invalid-identity branches. DOM tests.
 9. **My Weaves.** Render-from-cache, duplicate folding, lazy bounded refresh, ordering, filter, the
-   row states, Copy link, Forget. DOM tests.
+   row states, Copy link, Forget, the change signal that keeps the list in step with storage, and
+   the write verdicts reported to the notice. DOM tests.
 10. **Create a Weave.** Form, 403 branch, the save-this-link panel, entry written before the panel,
     and the hardened non-durable variant. DOM tests.
 11. **Docs** (§8) in one commit.
