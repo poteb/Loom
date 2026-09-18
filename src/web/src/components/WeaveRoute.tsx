@@ -13,7 +13,10 @@ import { JoinLobbyForm } from "./main/JoinLobbyForm.js";
 export function WeaveRoute(props: RouteDeps & (
   | { lobbyRoute: true; target?: never }
   | { lobbyRoute?: false; target: SessionTarget })) {
-  const deps: RouteDeps = props;
+  // Explicitly, not `{...props}`: the two route props below are this component's own business, and
+  // spreading them onto children that ignore or overwrite them would say otherwise.
+  const { client, storage, notice, openInPlace } = props;
+  const deps: RouteDeps = { client, storage, notice, openInPlace };
   if (props.lobbyRoute) return <LobbyRoute {...deps} />;
   return <WeaveSession {...deps} target={props.target} />;
 }
@@ -82,32 +85,39 @@ function WeaveMount({ client, storage, notice, target, lobby, onJoined }:
   RouteDeps & { target: SessionTarget; lobby?: Lobby; onJoined: () => void }) {
   const { session, state } = useSession(target, { client, storage, onWrite: notice.note });
   const [discovered, setDiscovered] = useState<Lobby | undefined>();
+  const [askFailed, setAskFailed] = useState(false);
   // The fork (spec §3.3). Joining the Lobby needs no secret and joining anything else does, so a
   // page with no credential has to know which one it is looking at. A direct `/weave/<id>` link
   // carries no discovery of its own, so it resolves the public pointer itself — on this branch
   // only: a page that loaded fine never makes the call, and `/lobby` already knows the answer.
-  const mustAsk = state.status === "no-credential" && target.kind === "id" && !lobby;
+  //
+  // "Not answered yet" is part of the condition rather than a fact about the dep array: the one call
+  // this branch makes is one because `asking` goes false the moment an answer (or a failure) lands.
+  const asking = state.status === "no-credential" && target.kind === "id" && !lobby
+    && discovered === undefined && !askFailed;
   useEffect(() => {
-    if (!mustAsk) return;
+    if (!asking) return;
     let live = true;
     // A failure needs no message of its own: what this page says without the answer is the
     // explanation of §3.3, which is also what it says when the ids do not match.
-    client.getLobby().then((l) => { if (live) setDiscovered(l); }, () => {});
+    client.getLobby().then((l) => { if (live) setDiscovered(l); }, () => { if (live) setAskFailed(true); });
     return () => { live = false; };
-  }, [client, mustAsk]);
+  }, [client, asking]);
 
   const here = lobby ?? discovered;
   const isLobby = !!here && target.kind === "id" && here.weaveId === target.weaveId;
-  return (
-    <WeaveView session={session} state={state}
-      noCredential={here && isLobby
-        ? (
-          <div class="page-join">
-            <JoinLobbyForm client={client} storage={storage} notice={notice}
-              lobby={{ weaveId: here.weaveId, title: here.title }}
-              onJoined={onJoined} onJoinedInPlace={onJoined} />
-          </div>
-        )
-        : undefined} />
-  );
+  // While the question is open the page has no honest card to show: the explanation is the wrong one
+  // for the one Weave that can be joined from here, and a request is long enough to read.
+  const noCredential = asking
+    ? <div class="center">Loading…</div>
+    : here && isLobby
+      ? (
+        <div class="page-join">
+          <JoinLobbyForm client={client} storage={storage} notice={notice}
+            lobby={{ weaveId: here.weaveId, title: here.title }}
+            onJoined={onJoined} onJoinedInPlace={onJoined} />
+        </div>
+      )
+      : undefined;
+  return <WeaveView session={session} state={state} noCredential={noCredential} />;
 }

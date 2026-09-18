@@ -203,9 +203,14 @@ describe("JoinLobbyForm persistence branch (spec §3.1, §4.1)", () => {
  * point of that test is that the form neither catches it nor dresses it up as a failed join — so the
  * rejection has to land somewhere, and "somewhere" must not be the run's error list. Node crashes
  * the worker when no `unhandledRejection` listener is registered at all, hence a replacement one.
+ *
+ * `rawListeners`, not `listeners`: it answers with the wrappers, so a `once` listener put back below
+ * is still a `once` listener (the wrapper removes itself when it fires) rather than a permanent one.
+ * The reporter is detached process-wide while `fn` runs, so this assumes nothing else in this file
+ * runs concurrently with it — which is this suite's setup (no `describe.concurrent`).
  */
 async function whileIgnoringRejections(fn: () => Promise<void>): Promise<string[]> {
-  const prior = process.listeners("unhandledRejection");
+  const prior = process.rawListeners("unhandledRejection");
   process.removeAllListeners("unhandledRejection");
   const seen: string[] = [];
   process.on("unhandledRejection", (e) => seen.push(e instanceof Error ? e.message : String(e)));
@@ -370,6 +375,36 @@ describe("the unjoined Lobby (spec §3.3)", () => {
     await settle();
     expect([!!screen.queryByText("This browser holds no key for this Weave."),
       !!screen.queryByRole("heading", { name: "Join the Lobby" })]).toEqual([true, false]);
+  });
+
+  it("says so while it is still asking whether a credential-less link is the Lobby", async () => {
+    // The whole duration of that request is a page with no card of its own: the generic explanation
+    // would be the wrong one for the single Weave that needs no credential to join (spec §3.3).
+    let release = () => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    mountApp({ path: `/weave/${LOBBY.weaveId}`, routes: { [LOBBY_URL]: async () => { await gate; return json(LOBBY); } } });
+    await flush();
+    const seen = [!!screen.queryByText("Loading…"), !!screen.queryByText("This browser holds no key for this Weave.")];
+    release();
+    await settle();
+    expect(seen).toEqual([true, false]);
+  });
+
+  it("offers the join form as soon as that answer arrives", async () => {
+    let release = () => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    mountApp({ path: `/weave/${LOBBY.weaveId}`, routes: { [LOBBY_URL]: async () => { await gate; return json(LOBBY); } } });
+    await flush();
+    release();
+    await settle();
+    expect(!!screen.queryByRole("heading", { name: "Join the Lobby" })).toBe(true);
+  });
+
+  it("falls through to the explanation when where the Lobby is cannot be read at all", async () => {
+    mountApp({ path: `/weave/${LOBBY.weaveId}`, routes: { [LOBBY_URL]: () => json({ code: "internal", message: "boom" }, 500) } });
+    await settle();
+    expect([!!screen.queryByText("This browser holds no key for this Weave."), !!screen.queryByText("Loading…")])
+      .toEqual([true, false]);
   });
 
   it("asked where the Lobby is before saying so, and was answered", async () => {
