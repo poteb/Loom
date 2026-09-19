@@ -30,10 +30,27 @@ export const WEAVE_PREFIX = "loom:weave:";
 export function weaveKey(weaveId: string): string { return `${WEAVE_PREFIX}${weaveId}`; }
 export function legacyKey(secret: string): string { return `${KEY_PREFIX}${secret}`; }
 
+/**
+ * The one way stored JSON becomes an entry. A value is an entry only when it is a plain object:
+ * `null`, a string, a number and an array all parse cleanly and then throw on a property access or
+ * spread into something that is not an entry at all — and a corrupt cached identity must never cost
+ * a caller more than itself. Unparseable and absent answer the same way, for the same reason.
+ */
+function parseEntry(raw: string | null): WeaveEntry | undefined {
+  if (raw === null || raw === "") return undefined;
+  let v: unknown;
+  try { v = JSON.parse(raw); } catch { return undefined; }
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return undefined;
+  return v as WeaveEntry;
+}
+
+/** A stored `token` is a credential only when it is a non-empty string. */
+function storedToken(e: WeaveEntry): string | undefined {
+  return typeof e.token === "string" && e.token !== "" ? e.token : undefined;
+}
+
 export function readWeaveEntry(storage: KeyValueStorage, weaveId: string): WeaveEntry | undefined {
-  const raw = storage.get(weaveKey(weaveId));
-  if (!raw) return undefined;
-  try { return JSON.parse(raw) as WeaveEntry; } catch { return undefined; }
+  return parseEntry(storage.get(weaveKey(weaveId)));
 }
 
 /** Merges the defined keys of `patch` over what is stored. Never deletes a key. */
@@ -87,23 +104,21 @@ export function storedWeaves(storage: KeyValueStorage): StoredWeave[] {
   for (const key of storage.keys()) {
     if (!key.startsWith(KEY_PREFIX)) continue;
     const rest = key.slice(KEY_PREFIX.length);
-    const raw = storage.get(key);
-    if (!raw) continue;
-    try {
-      const v = JSON.parse(raw) as WeaveEntry;
-      // An entry is an object or it is not an entry. A string, a number, `null` or an array parses
-      // fine and spreads into something that is not one — `{...("12")}` is `{0:"1",1:"2"}` — so the
-      // shape is checked before anything is built from it.
-      if (typeof v !== "object" || v === null || Array.isArray(v)) continue;
-      if (rest.startsWith("weave:")) {
-        const weaveId = rest.slice("weave:".length);
-        // The parsed value first, the key's own facts last: the **key** says this is an id entry and
-        // which Weave it is for, and a stored `kind`/`weaveId` must not be able to contradict it.
-        if (weaveId) out.push({ ...v, kind: "id" as const, weaveId });
-      } else if (!rest.includes(":") && v.token) {
-        out.push({ kind: "legacy", secret: rest, token: v.token, participantId: v.participantId });
-      }
-    } catch { /* a corrupt entry is simply not a Weave this browser can offer */ }
+    // An entry is a plain object or it is not an entry — `parseEntry` is the one place that rule
+    // lives, and it covers the unparseable case too.
+    const v = parseEntry(storage.get(key));
+    if (!v) continue;
+    if (rest.startsWith("weave:")) {
+      const weaveId = rest.slice("weave:".length);
+      // The parsed value first, the key's own facts last: the **key** says this is an id entry and
+      // which Weave it is for, and a stored `kind`/`weaveId` must not be able to contradict it.
+      if (weaveId) out.push({ ...v, kind: "id" as const, weaveId });
+    } else if (!rest.includes(":")) {
+      // A legacy row is only offered for a credential that *is* one: a `token` of the wrong type is
+      // no more usable than a missing one.
+      const token = storedToken(v);
+      if (token) out.push({ kind: "legacy", secret: rest, token, participantId: v.participantId });
+    }
   }
   return out;
 }
@@ -130,14 +145,20 @@ export function mergeLegacy(
   return next;
 }
 
-/** Migrates one known legacy key; `undefined` when there was nothing to migrate. */
+/**
+ * Migrates one known legacy key; `undefined` when there was nothing to migrate.
+ *
+ * "Nothing to migrate" covers every way the stored value can fail to be a usable identity — absent,
+ * unparseable, not an object, or carrying no `token` that is a string. The session calls this on
+ * every `/w/<secret>` load, so a corrupt cached identity must cost that browser nothing but itself:
+ * it must never stop a perfectly valid secret from opening its Weave.
+ */
 export function migrateLegacyOne(storage: KeyValueStorage, weaveId: string, secret: string): WriteResult | undefined {
-  const raw = storage.get(legacyKey(secret));
-  if (!raw) return undefined;
-  let legacy: WeaveEntry;
-  try { legacy = JSON.parse(raw) as WeaveEntry; } catch { return undefined; }
-  if (!legacy.token) return undefined;
-  const merged = mergeLegacy(readWeaveEntry(storage, weaveId), { secret, token: legacy.token, participantId: legacy.participantId });
+  const legacy = parseEntry(storage.get(legacyKey(secret)));
+  if (!legacy) return undefined;
+  const token = storedToken(legacy);
+  if (!token) return undefined;
+  const merged = mergeLegacy(readWeaveEntry(storage, weaveId), { secret, token, participantId: legacy.participantId });
   // Written even when the merge changed nothing: it is the only way to learn whether the id entry
   // is durable, and the legacy key may not be dropped on anything less than that answer.
   const result = storage.set(weaveKey(weaveId), JSON.stringify(merged));

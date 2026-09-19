@@ -14,6 +14,12 @@ const ID2 = "22222222-2222-4222-8222-222222222222";
 const SECRET = "A".repeat(43);
 const SECRET2 = "B".repeat(43);
 
+/** Stored JSON that parses cleanly and is not an entry: every one of these reaches a property
+ *  access or a spread somewhere, and none of them may take a caller down with it. */
+const NOT_AN_ENTRY = [
+  ["null", "null"], ["a string", "\"x\""], ["a number", "123"], ["an array", "[]"],
+] as const;
+
 type Mode = "ok" | "throw" | "silent";
 
 /** A localStorage that can refuse writes (blocked site data) or accept them and keep nothing. */
@@ -266,6 +272,26 @@ describe("forgetWeave", () => {
   });
 });
 
+// A corrupt cached identity must never cost a browser the Weave it holds a valid secret for: the
+// session calls this on every `/w/<secret>` load, so a `null` under `loom:<secret>` used to take
+// the whole load down with a TypeError at `legacy.token`.
+describe("migrateLegacyOne with a legacy value that is not an entry", () => {
+  const MALFORMED = [
+    ...NOT_AN_ENTRY,
+    ["an object with no token", "{}"],
+    ["a token that is not a string", "{\"token\":5}"],
+  ] as const;
+
+  for (const [label, raw] of MALFORMED) {
+    it(`skips ${label}: nothing migrated, nothing thrown, the legacy key left alone`, () => {
+      const storage = memoryStorage();
+      storage.set(legacyKey(SECRET), raw);
+      expect(migrateLegacyOne(storage, ID, SECRET)).toBeUndefined();
+      expect([storage.get(legacyKey(SECRET)), readWeaveEntry(storage, ID)]).toEqual([raw, undefined]);
+    });
+  }
+});
+
 describe("migrateLegacy", () => {
   const lookupOf = (map: Record<string, string>) => async (secret: string) => {
     const id = map[secret];
@@ -370,6 +396,14 @@ describe("readWeaveEntry", () => {
     storage.set(weaveKey(ID), "{not json");
     expect(readWeaveEntry(storage, ID)).toBeUndefined();
   });
+
+  for (const [label, raw] of NOT_AN_ENTRY) {
+    it(`answers undefined for ${label}, which parses but is not an entry`, () => {
+      const storage = memoryStorage();
+      storage.set(weaveKey(ID), raw);
+      expect(readWeaveEntry(storage, ID)).toBeUndefined();
+    });
+  }
 });
 
 describe("keys", () => {

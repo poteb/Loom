@@ -1750,6 +1750,20 @@ describe("session legacy identities", () => {
     } finally { session.dispose(); }
   });
 
+  it("reads through a valid secret even when the legacy entry beside it is corrupt", async () => {
+    // The migration runs on every `/w/<secret>` load, so a cached identity that is not an entry at
+    // all must cost nothing but itself — never the Weave the secret still opens.
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const storage = memoryStorage();
+    storage.set(legacyKey(r.secret), "null");
+    const session = await makeSession({ kind: "secret", secret: r.secret }, storage);
+    try {
+      expect([session.getState().status, session.getState().me, session.getState().weave?.title])
+        .toEqual(["ready", undefined, "T"]);
+      expect(storage.get(legacyKey(r.secret))).toBe("null");      // left exactly as it was
+    } finally { session.dispose(); }
+  });
+
   it("prefers the id entry's identity over a leftover legacy one", async () => {
     const { r, j } = await joinedWeave("Old");
     const newer = await anon.joinWeave(r.secret, { name: "New", kind: "human" });
