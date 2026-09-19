@@ -260,6 +260,12 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       client.getInstanceGuidelines().catch(() => state.instanceGuidelines),
       onLobby() ? readRequests().then((rs) => ({ rs }), (e: unknown) => ({ error: messageOf(e) })) : null,
     ]);
+    // Before anything is published or watermarked. A refresh carries a whole snapshot — weave,
+    // threads, participants — so one that settles after its generation was retired does not add a
+    // stale row, it replaces what the generation that replaced it published with the world as it
+    // was. The caller's own check runs only once this function returns, which is too late: by then
+    // `guidelinesSeq` has moved and `set` has landed.
+    if (disposed || myGeneration !== generation) return;
     // A snapshot that predates the last applied guidelines change keeps the text that change
     // delivered; one that is at least as new is authoritative and moves the watermark up.
     const accept = info.weave.lastSeq >= guidelinesSeq;

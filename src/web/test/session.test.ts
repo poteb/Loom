@@ -1592,6 +1592,45 @@ describe("session by weave id", () => {
     } finally { session.dispose(); }
   });
 
+  // A refresh publishes a whole snapshot — weave, threads, participants — so one that settles after
+  // its generation was retired does not merely add a stale row, it replaces the state the new
+  // generation published with the world as it was before.
+  it("publishes nothing from a refresh whose generation was retired while it was in flight", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const j = await anon.joinWeave(r.secret, { name: "Paw", kind: "human" });
+    const storage = memoryStorage();
+    setIdentity(storage, r.weave.id, { token: j.token, participantId: j.participant.id }, { secret: r.secret });
+    const gate = makeGate();
+    const session = createSession({ client: staleSnapshotClient(s.baseUrl, gate), target: { kind: "id", weaveId: r.weave.id }, storage });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().connection === "open");
+      // A participant joining starts a metadata refresh, which parks holding the metadata of now.
+      await anon.joinWeave(r.secret, { name: "Other", kind: "human" });
+      await gate.entered;
+
+      // The Weave moves on while that refresh is parked…
+      const keeper = await s.core.resolveCredential(r.token);
+      const fresh = await s.core.createThread(keeper, r.weave.id, "NEW");
+      await s.core.setWeaveGuidelines(keeper, r.weave.id, "new rules");
+
+      // …and the §2.6 recovery retires that refresh's generation: the stored token is swapped for a
+      // dead one, so the reload invalidates it and falls back to the secret, reading the Weave as
+      // it is now.
+      saveWeaveEntry(storage, r.weave.id, { token: "not-a-real-token" });
+      await session.load();
+      expect(session.getState().readOnlyReason).toBe("secret-fallback");
+      expect(session.getState().threads.some((t) => t.id === fresh.id)).toBe(true);
+      const seq = session.getState().weave!.lastSeq;
+
+      gate.release();
+      await new Promise((done) => setTimeout(done, 150));     // long enough for the stale answer to land
+      expect([session.getState().threads.some((t) => t.id === fresh.id),
+        session.getState().weave?.guidelines,
+        session.getState().weave!.lastSeq >= seq]).toEqual([true, "new rules", true]);
+    } finally { gate.release(); session.dispose(); }
+  });
+
   it("still retries a refresh that failed for a transient reason, and leaves the entry alone", async () => {
     const { r, j } = await joinedWeave("Paw");
     const storage = storedIdentity(r.weave.id, j, { secret: r.secret });
