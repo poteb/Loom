@@ -1,11 +1,10 @@
 import { useState } from "preact/hooks";
-
-const NAME_RE = /^[A-Za-z0-9_.-]{1,32}$/;
+import { isValidName } from "../name.js";
 
 export function NamePrompt({ onSubmit, onCancel, error }: { onSubmit: (name: string) => Promise<void>; onCancel: () => void; error?: string }) {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
-  const valid = NAME_RE.test(name);
+  const valid = isValidName(name);
   const submit = async (e: Event) => {
     e.preventDefault();
     if (!valid) return;

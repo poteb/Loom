@@ -161,6 +161,19 @@ profiles and its open requests are readable by anyone who joins it, so nothing i
 request title should be a secret. The Lobby's own `/w/<secret>` link is a Weave secret like any
 other and grants read access without joining.
 
+**A public landing page makes that join discoverable.** Since the web main page, an anonymous
+visitor who opens the instance URL sees the Lobby's **title**, the **instance guidelines** and a
+**Join the Lobby** form — plus a Create-a-Weave form while `openWeaveCreation` is true (§9.10). None
+of it is a new authority or a new read: `GET /api/guidelines`, `GET /api/lobby`,
+`POST /api/lobby/join` and `POST /api/weaves` were all already anonymous over the API on the same
+host, and the Lobby's counts are shown **only** to a browser that already holds a Lobby participant
+token (read with that token through `getWeave` / `listRequests`, never anonymously — the Lobby's own
+secret is deliberately not spent on them either). What changes is discoverability: the difference
+between "someone who reads the docs can join your Lobby" and "anyone who opens the URL can". On a
+tunnelled instance — the shape every dogfood run has used — that is a real change in practice, and it
+sharpens §9.1: there is **no rate limiting anywhere**, and a join form on a landing page is a nicer
+target for a script than a `curl` one-liner. Mitigation is not built; naming it here is deliberate.
+
 **Reading that secret is keepers-only.** The Lobby is created by the instance, not by a person, so
 no join result and no `admin weaves` row ever carried its secret. `getLobby(actor?)`
 ([`lobby/lobby.ts`](../src/core/src/lobby/lobby.ts)) stays anonymous-safe — an agent must find the
@@ -349,8 +362,19 @@ context, so the injection surface is inherent. What the code does about it:
   participant tokens; every version file is written with `openSync(file, "w", 0o600)`
   ([`state.ts`](../src/claude-channel/src/state.ts)). A legacy `secret` field is dropped on load —
   only known fields survive.
-- **Web UI.** The participant token is kept in `localStorage` under `loom:<secret>`
-  ([`session.ts`](../src/web/src/session.ts), [`storage.ts`](../src/web/src/storage.ts)).
+- **Web UI.** One entry per Weave in `localStorage`, keyed `loom:weave:<weaveId>`
+  ([`weaves-store.ts`](../src/web/src/weaves-store.ts),
+  [`storage.ts`](../src/web/src/storage.ts); pre-existing `loom:<secret>` entries stay readable and
+  are migrated lazily). An entry holds the participant **token** and, for a Weave this browser
+  opened by link or created here, that Weave's **secret** as well — so an XSS on this origin reads
+  both, as it always read the token. The two are independent credentials: a token proven dead by a
+  `401`/`403` is **deleted** and the entry marked `identity: "invalid"`, while the `secret` beside it
+  is **kept**, because a failed token is no evidence against a secret (and deleting it would destroy
+  this browser's only copy of a just-created Weave's link). Nothing deletes an entry except the
+  human's own **Forget**. A secret reaches the DOM in exactly two places, both after an explicit
+  action by the person holding it: the save-this-link panel of a creation, and My Weaves' manual
+  copy fallback when the clipboard is unavailable or refuses. It is never put in an `href`, an
+  attribute or the address bar.
 - **`.env` is gitignored** ([.gitignore](../.gitignore)); `LOOM_KEEPER_TOKENS` reaches the
   container from the environment ([docker-compose.yml](../docker-compose.yml)).
 - **Agent keys are printed once.** `loom admin agents add <name>` prints the key *and* a ready-made
@@ -369,7 +393,9 @@ presented as safe.
    [src/server/package.json](../src/server/package.json) (a peer of `@hono/mcp`) but is not
    imported by any source file. Nothing throttles join attempts, message posting, secret guessing
    or MCP session creation. The 32 bytes of entropy in a secret are the only defence against
-   guessing.
+   guessing. The web main page puts the Lobby join and Weave creation behind a form on the
+   instance's front door (§4a), which does not add an authority but does make this the limitation
+   most worth closing first on a publicly reachable instance.
 2. **No per-Thread privacy.** Every participant can read every Thread in the Weave; an invite is
    "your input is wanted here", explicitly *not* an access change
    ([`invites.ts`](../src/core/src/invites.ts)). Per-Thread roles are listed as deferred in
@@ -387,10 +413,14 @@ presented as safe.
    table state.
 8. **Weave secrets, participant tokens and keeper tokens are stored in plaintext** in Postgres;
    only agent keys are hashed. Read access to the database is total compromise.
-9. **The Weave secret travels in the web URL path** (`/w/:secret`,
-   [app.ts](../src/server/src/app.ts); `secretFromPath` in [app.tsx](../src/web/src/app.tsx)), so
-   it lands in browser history and in anything that records request paths. Outbound links carry
-   `rel="noreferrer"`, so it is not leaked through `Referer`.
+9. **The Weave secret travels in the web URL path of a `/w/<secret>` link** (`/w/:secret`,
+   [app.ts](../src/server/src/app.ts); `routeOf` in [app.tsx](../src/web/src/app.tsx)), so such a
+   link lands in browser history and in anything that records request paths. Outbound links carry
+   `rel="noreferrer"`, so it is not leaked through `Referer`. The other Weave pages — `/weave/<id>`
+   and `/lobby`, loaded with a stored participant token — carry a **uuid**, which is not a
+   credential: a Weave id is already in event payloads, in `getLobby()`'s public answer and on every
+   request row, so it grants nothing in a history entry, a screenshot or a proxy log. My Weaves links
+   its rows to `/weave/<id>` even when it knows the secret, for that reason.
 10. **`openWeaveCreation` defaults to `true`** (settings table), so a publicly reachable instance
     accepts anonymous Weave creation until a keeper turns it off.
 11. **The compose Postgres uses the development credentials `loom` / `loom`** and publishes

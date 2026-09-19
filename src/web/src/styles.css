@@ -74,3 +74,71 @@ input { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid v
 .profile-card dl { display: grid; grid-template-columns: auto 1fr; gap: 0 8px; margin: 4px 0 0; }
 .profile-card dt { color: var(--muted); } .profile-card dd { margin: 0; overflow-wrap: anywhere; }
 select { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+/* --- Main page: join the Lobby --------------------------------------------- */
+.join-lobby { padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.join-lobby h2 { font-size: 16px; margin: 0; }
+.join-lobby-title { margin: 2px 0 8px; color: var(--muted); }
+.join-lobby form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.join-lobby label { display: flex; gap: 6px; align-items: center; }
+.join-lobby .hint, .join-lobby .error, .join-taken { flex: 1 1 100%; margin: 0; }
+.join-lobby .hint { color: var(--muted); font-size: 12px; }
+.join-taken p { margin: 0 0 6px; }
+/* The same form as the whole page, when a Weave route turns out to be the unjoined Lobby (§3.3). */
+.page-join { max-width: 560px; margin: 48px auto; }
+.page-join .join-lobby { border: 1px solid var(--line); border-radius: 10px; }
+/* --- Main page: the shell, the notice, the guidelines and the Lobby summary --- */
+.main-page { max-width: 680px; margin: 0 auto; padding: 24px 16px 48px; }
+.main-page > h1 { font-size: 22px; margin: 0 0 12px; }
+.main-page > section { margin-bottom: 16px; }
+.main-page h2 { font-size: 16px; margin: 0 0 6px; }
+.persistence-bar { display: flex; gap: 8px; align-items: baseline; padding: 8px 12px; margin-bottom: 16px; border: 1px solid var(--warn); border-radius: 8px; color: var(--warn); }
+.persistence-bar p { margin: 0; flex: 1; font-size: 13px; }
+.main-guidelines-body { font-size: 13px; } .main-guidelines-body > :first-child { margin-top: 0; }
+.lobby-summary-title { margin: 0 0 4px; font-weight: 600; }
+.lobby-counts { display: flex; flex-wrap: wrap; gap: 4px 12px; list-style: none; margin: 0; padding: 0; color: var(--muted); font-size: 13px; }
+.lobby-open { margin: 0 0 16px; }
+.muted { color: var(--muted); }
+/* My Weaves (§4.2): a list rather than cards, because this has to survive hundreds of rows. */
+.weave-filter { display: flex; gap: 6px; align-items: center; margin: 0 0 8px; color: var(--muted); font-size: 13px; }
+.weave-list { list-style: none; margin: 0; padding: 0; }
+.weave-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.weave-row-title { font-weight: 600; }
+/* A row whose credentials live only in this page's memory opens in place, so its title is a button
+   rather than a link (§3.1). It has to read as the same title: only the element differs. */
+.weave-row-title-inplace, .lobby-open-inplace {
+  padding: 0; border: 0; background: none; font: inherit; color: var(--accent); text-decoration: underline; cursor: pointer;
+}
+.lobby-open-inplace { font-weight: inherit; }
+.weave-row-state, .weave-row-note { color: var(--muted); font-size: 12px; }
+/* Nothing left to open it with, or gone from the server: greyed, unlinked, and only Forget. */
+.weave-row-dead .weave-row-title { font-weight: 400; color: var(--muted); }
+.weave-row-copy, .weave-row-forget { font-size: 12px; }
+.weave-row-copy { margin-left: auto; }
+.weave-row-dead .weave-row-forget { margin-left: auto; }
+.weave-row-copied { color: var(--muted); font-size: 12px; }
+/* The one place a secret reaches the DOM (§5), and only after a click on that row: the clipboard
+   was missing or refused, so the link is offered to be selected and copied by hand. */
+.weave-row-copy-manual { flex: 1 1 100%; display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); }
+.weave-row-link { flex: 1; font-size: 12px; }
+.weave-row-hide { font-size: 12px; }
+.weave-more { margin-top: 8px; }
+/* --- Main page: create a Weave (§4.5) --------------------------------------- */
+.create-weave form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.create-weave label { display: flex; gap: 6px; align-items: center; }
+.create-weave .create-opener, .create-weave .create-guidelines { flex: 1 1 100%; align-items: flex-start; }
+.create-weave textarea { flex: 1; font: inherit; min-height: 44px; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+.create-weave .hint, .create-weave .error { flex: 1 1 100%; margin: 0; }
+.create-weave .hint { color: var(--muted); font-size: 12px; }
+.create-more { font-size: 12px; }
+.create-closed { margin: 0 0 8px; }
+/* The save-this-link panel: the only place a freshly created secret is on screen (§5), and — when
+   the entry that carries it reached only this tab's memory — the recovery panel that says so. */
+.create-saved { border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+.create-saved-hardened { border-color: var(--warn); }
+.create-saved-title { margin: 0 0 8px; color: var(--muted); }
+.create-saved-link { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; }
+.create-link { flex: 1 1 240px; font-size: 12px; }
+.create-copied { color: var(--muted); font-size: 12px; }
+.create-warning { margin: 0 0 8px; font-size: 13px; }
+.create-warning-hard { color: var(--warn); }
+.create-saved-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }

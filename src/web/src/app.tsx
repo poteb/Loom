@@ -1,100 +1,64 @@
 import { useState } from "preact/hooks";
-import { LoomClientError } from "@loom/client";
-import { useSession } from "./useSession.js";
-import { Header } from "./components/Header.js";
-import { ThreadList } from "./components/ThreadList.js";
-import { MessageList } from "./components/MessageList.js";
-import { Composer } from "./components/Composer.js";
-import { NamePrompt } from "./components/NamePrompt.js";
-import { InviteBanner } from "./components/InviteBanner.js";
-import { GuidelinesPanel } from "./components/GuidelinesPanel.js";
-import { RequestsPanel } from "./components/RequestsPanel.js";
-import { ProfileCards } from "./components/ProfileCard.js";
+import type { LoomClient } from "@loom/client";
+import type { KeyValueStorage } from "./storage.js";
+import type { PersistenceNotice } from "./persistence.js";
+import type { WeavesSignal } from "./weaves-signal.js";
+import { MainPage } from "./components/main/MainPage.js";
+import { WeaveRoute } from "./components/WeaveRoute.js";
 
-function secretFromPath(): string | null {
-  const m = /^\/w\/([A-Za-z0-9_-]{43})\/?$/.exec(location.pathname);
-  return m ? m[1]! : null;
+export type Route =
+  | { kind: "main" } | { kind: "lobby" }
+  | { kind: "weave"; weaveId: string } | { kind: "secret"; secret: string } | { kind: "unknown" };
+
+const SECRET_RE = /^\/w\/([A-Za-z0-9_-]{43})\/?$/;
+const WEAVE_RE = /^\/weave\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i;
+
+/**
+ * Hand-rolled matching, as ARCHITECTURE §9 asks for ("Preact, no router"): these are exactly the
+ * paths the server serves `index.html` for (spec §3.2), so anything else reaching this function is
+ * a path this app was never asked to render.
+ */
+export function routeOf(pathname: string): Route {
+  if (pathname === "/") return { kind: "main" };
+  if (pathname === "/lobby" || pathname === "/lobby/") return { kind: "lobby" };
+  const w = WEAVE_RE.exec(pathname);
+  if (w) return { kind: "weave", weaveId: w[1]! };
+  const s = SECRET_RE.exec(pathname);
+  if (s) return { kind: "secret", secret: s[1]! };
+  return { kind: "unknown" };
 }
 
-export function App() {
-  const secret = secretFromPath();
-  if (!secret) return <div class="center"><h1>Loom</h1><p>Open a Weave link: <code>/w/&lt;secret&gt;</code></p></div>;
-  return <Weave secret={secret} />;
-}
+/**
+ * Everything the page is given once, at the root (`main.tsx`), and hands down: the client, the one
+ * storage instance (§2.4a) and the two page-scoped companions of that instance — the persistence
+ * notice (§6) and the "stored Weaves changed" signal (§4.2).
+ */
+export type AppDeps = {
+  client: LoomClient; storage: KeyValueStorage; notice: PersistenceNotice; weaves: WeavesSignal;
+};
 
-function Weave({ secret }: { secret: string }) {
-  const { session, state } = useSession(secret);
-  const [pending, setPending] = useState<string | null>(null);   // message waiting for a name
-  const [draft, setDraft] = useState<string | undefined>();      // text handed back to the composer
-  const [error, setError] = useState<string | undefined>();
-  const [joinError, setJoinError] = useState<string | undefined>();
+/** What every route is handed: the app-owned trio, plus the one way to change the view in place. */
+export type RouteDeps = {
+  client: LoomClient; storage: KeyValueStorage; notice: PersistenceNotice;
+  /** Renders a Weave here, in this JS context, without touching the URL (spec §3.1). */
+  openInPlace: (weaveId: string) => void;
+};
 
-  if (state.status === "loading") return <div class="center">Loading…</div>;
-  if (state.status === "error") return <div class="center error"><h1>Loom</h1><p>{state.error}</p></div>;
-
-  const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
-  // Every mutation funnels through here so none of them can swallow a failure or leave an unhandled
-  // rejection behind: "no_identity" is not an error to display — the session has already raised
-  // needsName, which opens the name prompt exactly as a blocked send does.
-  const reportError = (e: unknown) => {
-    if (e instanceof LoomClientError && e.code === "no_identity") return;
-    setError(message(e));
-  };
-
-  const send = async (text: string) => {
-    setError(undefined);
-    try { await session.post(text); setDraft(undefined); }
-    catch (e) {
-      if (e instanceof LoomClientError && e.code === "no_identity") { setPending(text); return; }
-      setError(message(e));
-      throw e;
-    }
-  };
-  const join = async (name: string) => {
-    setJoinError(undefined);
-    try { await session.join(name); }
-    catch (e) { setJoinError(message(e)); return; }   // joinError is for join failures only
-    const text = pending;
-    if (text) {
-      try { await session.post(text); }
-      catch (e) {
-        // Joined, but the message did not land: close the prompt (the name is settled) and hand the
-        // text back to the composer rather than dropping what the user wrote.
-        setPending(null);
-        setDraft(text);
-        setError(message(e));
-        return;
-      }
-    }
-    setPending(null);
-    setDraft(undefined);
-  };
-  const dismissPrompt = () => { setPending(null); session.dismissNamePrompt(); };
-  const archived = !!state.weave?.archivedAt;
-
-  return (
-    <div class="layout">
-      <Header state={state} session={session} onError={reportError} />
-      <div class="body">
-        <aside class="sidebar">
-          <ThreadList state={state} session={session} onError={reportError} />
-          <GuidelinesPanel state={state} session={session} onError={reportError} />
-          {/* Both render nothing away from the Lobby, so every other Weave's sidebar is unchanged. */}
-          <RequestsPanel state={state} session={session} onError={reportError} />
-          <ProfileCards state={state} />
-        </aside>
-        <div class="main">
-          {archived && <div class="banner">This Weave is archived and read-only.</div>}
-          {state.refreshError && <div class="warn-bar">Having trouble syncing: {state.refreshError}</div>}
-          <InviteBanner state={state} session={session} />
-          <MessageList state={state} />
-          {error && <div class="error-bar">{error}</div>}
-          {!archived && <Composer state={state} onSend={send} draft={draft} />}
-        </div>
-      </div>
-      {(pending !== null || (state.needsName && !state.me)) && (
-        <NamePrompt onSubmit={join} onCancel={dismissPrompt} error={joinError} />
-      )}
-    </div>
-  );
+export function App({ client, storage, notice, weaves }: AppDeps) {
+  // The route is state, not just a parsed path: a join or a creation whose credential could not be
+  // persisted switches the view here, in this JS context, rather than navigating away from the only
+  // copy of that credential (spec §3.1). The URL is deliberately left alone — a pushed /lobby would
+  // be an address this browser cannot honour after a reload.
+  const [route, setRoute] = useState<Route>(() => routeOf(location.pathname));
+  const openInPlace = (weaveId: string) => setRoute({ kind: "weave", weaveId });
+  const deps: RouteDeps = { client, storage, notice, openInPlace };
+  switch (route.kind) {
+    // `weaves` goes to the main page only: it is the one place a list of stored Weaves stays on
+    // screen while something writes to storage. A Weave page never renders one.
+    case "main":   return <MainPage {...deps} weaves={weaves} />;
+    case "lobby":  return <WeaveRoute {...deps} lobbyRoute />;
+    case "weave":  return <WeaveRoute {...deps} target={{ kind: "id", weaveId: route.weaveId }} />;
+    case "secret": return <WeaveRoute {...deps} target={{ kind: "secret", secret: route.secret }} />;
+    default:       return <div class="center"><h1>Loom</h1><p>No such page. <a href="/">Go to the main page</a>.</p></div>;
+  }
 }

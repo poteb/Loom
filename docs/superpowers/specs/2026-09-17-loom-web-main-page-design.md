@@ -62,6 +62,22 @@ Found by the Lobby manual smoke test of 2026-09-17 (`v2-notes.md`, "Lobby smoke 
 >     still running. The bound now belongs to **one scheduler per mounted list** that outlives every
 >     render, rows that become visible later queue behind rows already waiting, and the secret retry
 >     of §2.6 reuses its row's slot (§4.2, §7).
+>
+> **Corrected during implementation (2026-09-18).** This document stays the record of what was
+> built, so four things the tasks settled are folded into the text rather than appended:
+>
+> 12. **The entry gained a `name`** — the name this browser joined under, a display cache written
+>     with the identity and deleted with it. §4.1's "You are in the Lobby as `dana`" and §4.2's
+>     "joined as `dana`" both claim to render from storage with no network, and nothing in the entry
+>     carried a name (§2.4, §2.6).
+> 13. **The one-time notice renders on Weave pages as well as on `/`.** The in-place transition of
+>     §3.1 replaces the main page — and its bar — with a Weave page in the same render, so a bar that
+>     lived only in the main page's layout was invisible in exactly the case it exists for (§6).
+> 14. **My Weaves has a fifth row state and a manual copy fallback**: `"unresolved"` for a legacy
+>     entry no lookup has turned into a Weave id yet, and — when the clipboard is missing or refuses —
+>     one selectable link field with a **Hide** button, at most one open at a time (§4.2).
+> 15. **An unknown path says "No such page."** rather than reusing the old "Open a Weave link" card,
+>     which stopped existing when `/` became a real page (§3.1).
 
 ## 1. Purpose
 
@@ -237,8 +253,19 @@ export type KeyValueStorage = {
   set(key: string, value: string): WriteResult;   // was void
   remove(key: string): void;
   keys(): string[];
+  isPending(key: string): boolean;                // the value here is memory-only
 };
 ```
+
+- **`isPending(k)`** answers whether the value a `get` would return exists **only in this page's
+  memory**. It is deliberately not the same question as a past `WriteResult`: a verdict describes one
+  write at one moment, while what a navigation needs is whether the key *as it stands now* would
+  survive leaving this JS context. `browserStorage` answers from the pending-override map (a value
+  override → `true`; a tombstone or no override → `false`, because a removal that did not persist
+  leaves no value to carry), `memoryStorage({ durable: false })` answers `true` for every key it
+  holds, a durable one always `false`. It never writes. It is what lets §4.2's rows and §4.4's
+  "Open the Lobby" decide, per entry and on every render, between an ordinary link and opening in
+  place (§3.1).
 
 - **`browserStorage().set`** attempts `localStorage.setItem`, then **verifies by reading back from
   `localStorage` itself** (never through `get`, for the reason above): `"durable"` when
@@ -366,7 +393,7 @@ to choose between a readable copy and a durable one.
 #### The entry
 
 ```
-loom:weave:<weaveId>  →  { token?, participantId?, identity?: "invalid",
+loom:weave:<weaveId>  →  { token?, participantId?, name?, identity?: "invalid",
                            secret?, title?, archived?, lastOpenedAt? }
 ```
 
@@ -377,10 +404,19 @@ loom:weave:<weaveId>  →  { token?, participantId?, identity?: "invalid",
   because an entry can exist without one: a `/w/<secret>` visit writes (or updates) an entry with
   its `secret` and display cache **before** anyone joins, so a Weave this browser can read but has
   not joined still appears in My Weaves. `join()` fills the two fields in.
+- `name` is the name this browser is joined under in that Weave — a display cache like `title`,
+  never a credential and never sent anywhere. It is what lets "You are in the Lobby as `dana`"
+  (§4.1) and a row's "joined as `dana`" (§4.2) be rendered from storage alone, with no request. It
+  belongs to the identity, so it is written with it and deleted with it: `setIdentity` carries it
+  beside `token`/`participantId` in the one write (join, create and rejoin all go through that), a
+  successful load caches it in the existing ready-path save once `me` resolves — which is how an
+  entry written before this field existed, or adopted from a legacy key, acquires one — and
+  `invalidateIdentity` deletes it alongside them, so an invalidated row never claims a name.
 - `identity: "invalid"` marks an identity that was there and stopped working (§2.6). It is what
   distinguishes "never joined from this browser" (no identity fields, no marker) from "joined, then
-  the credential failed" — the UI says different things about the two. When it is set, `token` and
-  `participantId` are **deleted**: a credential known to be dead is not worth keeping in storage.
+  the credential failed" — the UI says different things about the two. When it is set, `token`,
+  `participantId` and `name` are **deleted**: a credential known to be dead is not worth keeping in
+  storage, and a name is a fact about that identity rather than about the Weave.
 - `secret` is present only when this browser knows it (opened via `/w/<secret>`, or created the
   Weave here). It is an **independent credential**: it keeps the shareable link retrievable after
   the creation panel is gone (§4.5), it is the read fallback of §2.6, and **no identity failure ever
@@ -454,7 +490,7 @@ working says nothing about a secret, so nothing here ever deletes one.
 | --- | --- | --- | --- | --- |
 | No storage entry for this id | — (no call made) | — | `no-credential` | §3.3: the Lobby offers the join form; any other Weave explains how to get in |
 | Entry has no identity but holds a `secret` | reads succeed **with the secret** | untouched | `ready`, read-only until joined | the Weave, plus "you are reading with the Weave link" and a Join button |
-| Token no longer resolves | `401 invalid_token` on the first `getWeave` | `token`/`participantId` **deleted**, `identity: "invalid"` set; `secret`, `title`, `archived`, `lastOpenedAt` **kept** | retry with `entry.secret` if there is one → `ready` read-only; otherwise `no-credential` | "Your identity in this Weave is no longer valid." Then either the Weave read-only with a Join button, or a link back to `/` |
+| Token no longer resolves | `401 invalid_token` on the first `getWeave` | `token`/`participantId`/`name` **deleted**, `identity: "invalid"` set; `secret`, `title`, `archived`, `lastOpenedAt` **kept** | retry with `entry.secret` if there is one → `ready` read-only; otherwise `no-credential` | "Your identity in this Weave is no longer valid." Then either the Weave read-only with a Join button, or a link back to `/` |
 | Token belongs to another Weave | `403 forbidden` | same | same | same |
 | Entry's `participantId` is not in `participants` | reads succeed | same | same — the reads already succeeded, so a secret fallback is not even needed unless the token was the reader | "Your identity in this Weave is no longer valid", read-only, Join offered |
 | Weave id unknown / malformed | `404 weave_not_found` | untouched (shown as unavailable in My Weaves) | `error` | "Weave not found" (as `/w/<secret>` says today) |
@@ -462,7 +498,7 @@ working says nothing about a secret, so nothing here ever deletes one.
 
 **Rejoining self-heals.** A read-only page reached this way offers the ordinary name prompt; the
 secret path already supports `join()` ([`session.ts`](../../../src/web/src/session.ts)), and a
-successful join writes fresh `token`/`participantId` into the **same** entry and clears
+successful join writes fresh `token`/`participantId`/`name` into the **same** entry and clears
 `identity: "invalid"`. So the degraded state is a step on the way back, not a dead end.
 
 **Both of those writes are updates to a key that already exists**, which is exactly the case §2.4b
@@ -521,7 +557,7 @@ prompt, so every existing link keeps working and no existing test's premise move
 | `/lobby` | the Lobby's Weave page | `{ kind: "id" }` after a public `getLobby()` |
 | `/weave/<uuid>` | any Weave this browser holds a credential for | `{ kind: "id", weaveId }` |
 | `/w/<43-char secret>` | unchanged | `{ kind: "secret", secret }` |
-| anything else | the existing "Open a Weave link" card, now with a link to `/` | — |
+| anything else | a card saying "No such page." with a link to `/` | — |
 
 `app.tsx` keeps its hand-rolled matching (ARCHITECTURE §9: "Preact, no router"); it gains a `uuid`
 pattern beside the existing 43-character one. **Navigation is ordinary `<a href>` full page loads**,
@@ -679,7 +715,10 @@ complete recovery.
 link to `/lobby`, with the name this browser joined as ("You are in the Lobby as `dana`"). No second
 join is offered: core would answer `name_taken` on the same name and would silently create a
 *second* identity on a different one, which is worse. An entry whose identity is `"invalid"` is not
-"already joined" — it shows the form, with a line saying the previous identity stopped working.
+"already joined" — it shows the form, with a line saying the previous identity stopped working. When
+that Lobby entry is memory-only (`isPending`, §2.4) the link becomes a button that opens the Lobby
+in place, for the reason §4.2 gives its rows: following a link would be the full page load that
+loses the identity.
 
 ### 4.2 My Weaves
 
@@ -709,10 +748,22 @@ Per Paw's scale note, this has to survive hundreds of rows:
 - Sorted by `lastOpenedAt` descending, ties by title. A filter box appears once there are more than
   ~8 rows. Rows past ~25 are behind "Show more" — cheap now, and the shape the layout overhaul can
   replace wholesale.
-- Each row: title, a badge for the Lobby, a badge for archived, the name this browser is joined as,
-  and — when the entry carries a `secret` — a **Copy link** action for `/w/<secret>`. The row links
-  to `/weave/<id>`; it does **not** link to `/w/<secret>` even when the secret is known, so the
-  address bar never gains a secret it did not already have (§5).
+- Each row: title, a badge for the Lobby, a badge for archived, the name this browser is joined as
+  (from the entry's `name`, §2.4), and — when the entry carries a `secret` — a **Copy link** action
+  for `/w/<secret>`. The row links to `/weave/<id>`; it does **not** link to `/w/<secret>` even when
+  the secret is known, so the address bar never gains a secret it did not already have (§5).
+- **A row whose entry is memory-only is not a link at all.** When `storage.isPending(weaveKey(id))`
+  (§2.4), the title is a **button** that opens the Weave in place (§3.1) — not an anchor with a
+  click handler, because an anchor can be middle-clicked or opened in a new tab, and either one is
+  the full page load that loses the only copy of that Weave's credentials. Durable rows stay ordinary
+  anchors: a full page load remains the rule. The question is asked on every render, so a later
+  write that does persist turns the row back into a link with nothing clicked.
+- **Copy link must always answer.** An insecure origin has no `navigator.clipboard` at all, and a
+  clipboard that exists can refuse — by rejecting, or by throwing outright. All three fall back to
+  showing the link in one selectable read-only field with a **Hide** button beside it. That field is
+  the one place a stored secret reaches the DOM in this list, it appears only after an explicit click
+  on that row, and **only one is ever open**: clicking Copy on a second row, typing in the filter,
+  pressing "Show more" or Forgetting the row closes it (§5).
 - **Duplicates are folded** (§2.4): a legacy entry and an id entry that share a `secret`, or failing
   that a `token`, are one row, and the id entry wins. The degraded, non-durable migration path
   therefore still shows one row per Weave.
@@ -724,8 +775,14 @@ Per Paw's scale note, this has to survive hundreds of rows:
   | `secret`, no identity (never joined, or joined via a link only) | normal, clickable, "read-only — not joined" |
   | `identity: "invalid"`, `secret` present | normal, clickable, "your identity here stopped working — open to rejoin" |
   | `identity: "invalid"`, no `secret` | greyed, not clickable, the reason, and a **Forget** button |
+  | no identity and no `secret` at all | greyed, "this browser holds no key for this Weave", **Forget** |
+  | a legacy entry nothing has resolved into an id yet | `"unresolved"`: the title is unknown and the row cannot be linked to — `/weave/<id>` is the only row link there is — but **Copy link** still works, and it has no **Forget** either, because `forgetWeave` needs an id |
   | refresh answered 404 | greyed, "this Weave is gone", **Forget** |
   | refresh failed on the network | cached title, a quiet "could not refresh" marker, still clickable |
+
+  The two greyed dead ends say *why* in their own words rather than sharing one, because "the
+  identity died and there was no link" and "this browser never held a credential" are different
+  sentences to be told.
 
 - **The list follows storage, and updates itself.** Rows are derived from the stored entries on every
   change, not captured once at mount. The page keeps **one change signal** beside the storage
@@ -792,7 +849,10 @@ So the section renders:
 - **Lobby token held** → title, participant count, how many of those carry a profile ("listeners"),
   and the number of open requests, read with the stored token via `getWeave(lobbyId)` and
   `listRequests("open", { limit: PAGE })` — the same two reads the Lobby page itself makes.
-- `weave_not_found` from `getLobby()` → "This instance has no Lobby yet", and §4.1 is hidden.
+- `weave_not_found` from `getLobby()` → "This instance has no Lobby yet", and §4.1 is hidden. That
+  is the instance's own **answer**, not a failed read, so the summary takes it as a separate input
+  (a `noLobby` flag beside `lobby` and `error`) and words and colours it as ordinary text; a failed
+  read of the pointer is what gets the error treatment.
 
 One honest cost of option 1: counting open requests currently means fetching a page of them
 (`listRequests` has no count and no cursor — the KNOWN-ISSUES row). At `limit: PAGE` (1000, the
@@ -948,7 +1008,13 @@ displays (§4.5) is displayed to the person who just created it, which is the sa
 - **The "storage is not persisting" notice.** Raised the first time any write in a page load returns
   `"memory"` — a join, a creation, a migration, or a My Weaves refresh writing a title or
   invalidating an identity (§4.2) — and shown once, at the top of the page, until
-  dismissed. It does not reappear on later writes in the same page load (the page-scoped
+  dismissed. **It belongs to the page, not to the main page's layout**, so it renders on `/` *and* on
+  every Weave page: a join from `/` whose credential did not persist replaces the main page with the
+  Weave in the very same render (§3.1), and a `/w/<secret>` load writes an entry of its own (§10.9) —
+  without a seam on the Weave page the one warning the human needs would be latched and never drawn.
+  The notice object is one per page load and is handed to whichever route is mounted, so it stays
+  **at most one bar, and one dismissal, per page**, and a dismissal made before the in-place switch
+  carries across it. It does not reappear on later writes in the same page load (the page-scoped
   `storageNotPersisting` flag of §2.4 is also what suppresses the repeat). Wording intent: say what
   is happening in the user's terms and what to do about it, never in the browser's. Not "quota
   exceeded" or "localStorage unavailable", but: *this browser is not saving anything for this site,
@@ -1025,7 +1091,15 @@ happy-dom DOM tests selected by the `// @vitest-environment happy-dom` docblock)
   gap 2. `localStorage` still holds the old string; `get` answers the new one.
 - A failed `remove` of an existing durable key reads as **absent** (`get` → `null`) and the key is
   **not** in `keys()`.
-- `keys()` includes a key that exists only as an override.
+- `keys()` lists a key whose write never reached `localStorage` — asserted as the pair that matters
+  (the page lists it, the browser does not hold it), since the in-memory fallback alone would
+  satisfy a bare "contains".
+- A store that is **unreadable** rather than merely full — the `localStorage` accessor throwing,
+  `getItem` throwing, `length`/`key` throwing — is exercised one guard at a time: a write reports
+  `"memory"` and still reads back, a removal reads as absent and drops out of `keys()`, enumeration
+  throwing costs the listing and not the value, and nothing throws out of the storage API.
+- `isPending(k)` is `false` for a durable write and for a tombstone, `true` for a write that only
+  reached this page, `false` again once a later write persists, and it never writes.
 - A later **successful** write of the same key clears the override: with `setItem` working again,
   `localStorage` holds the new value **and** `get` still returns it (the assertion has to check both,
   or it cannot tell a cleared override from a lingering one that happens to agree).

@@ -7,6 +7,8 @@ import { InviteBanner } from "../src/components/InviteBanner.js";
 import { GuidelinesPanel, GUIDELINES_MAX } from "../src/components/GuidelinesPanel.js";
 import { RequestsPanel } from "../src/components/RequestsPanel.js";
 import { ProfileCard } from "../src/components/ProfileCard.js";
+import { WeaveView } from "../src/components/WeaveView.js";
+import { routeOf } from "../src/app.js";
 import { MAX_GUIDELINES_LENGTH } from "@loom/core";
 import type { Offer } from "@loom/client";
 import { CLOSED_REQUESTS_PAGE, type Session, type SessionState } from "../src/session.js";
@@ -313,6 +315,115 @@ describe("ProfileCard", () => {
   it("renders nothing for a participant with no profile", () => {
     const { container } = render(<ProfileCard participant={bot} />);
     expect(container.innerHTML).toBe("");
+  });
+});
+
+describe("routeOf (spec §3.1)", () => {
+  const UUID = "11111111-1111-4111-8111-111111111111";
+  const SECRET = "s".repeat(43);
+  for (const [path, route] of [
+    ["/", { kind: "main" }],
+    ["/lobby", { kind: "lobby" }],
+    ["/lobby/", { kind: "lobby" }],
+    [`/weave/${UUID}`, { kind: "weave", weaveId: UUID }],
+    [`/weave/${UUID}/`, { kind: "weave", weaveId: UUID }],
+    [`/w/${SECRET}`, { kind: "secret", secret: SECRET }],
+    [`/w/${SECRET}/`, { kind: "secret", secret: SECRET }],
+    // Near misses: each of these is a path the server does not serve `index.html` for either.
+    ["/weave", { kind: "unknown" }],
+    ["/weave/a/b", { kind: "unknown" }],
+    ["/weave/nope", { kind: "unknown" }],
+    ["/lobbyx", { kind: "unknown" }],
+    [`/w/${"s".repeat(42)}`, { kind: "unknown" }],
+    [`/w/${"s".repeat(44)}`, { kind: "unknown" }],
+    ["/x", { kind: "unknown" }],
+  ] as const) {
+    it(`reads ${path} as ${route.kind}`, () => {
+      expect(routeOf(path)).toEqual(route);
+    });
+  }
+});
+
+describe("WeaveView (spec §2.6, §2.7, §3.3)", () => {
+  const noCredentialState = (over: Partial<SessionState> = {}) =>
+    state({ status: "no-credential", weave: undefined, me: undefined, connection: "closed", ...over });
+  const readOnly = (over: Partial<SessionState> = {}) =>
+    state({ readOnlyReason: "secret-fallback", me: undefined, ...over });
+
+  it("renders the Weave for a ready session with an identity, exactly as the page did before", () => {
+    const { container } = render(<WeaveView session={session()} state={state()} />);
+    expect([container.querySelector(".header-right strong")?.textContent, !!container.querySelector(".composer"),
+      !!container.querySelector(".banner")]).toEqual(["Paw", true, false]);
+  });
+
+  it("renders the banner above the Weave", () => {
+    const { container } = render(<WeaveView session={session()} state={state()} banner={<div class="bar">note</div>} />);
+    expect(container.querySelector(".layout")!.firstElementChild!.className).toBe("bar");
+  });
+
+  it("explains that this browser holds no key for the Weave", () => {
+    render(<WeaveView session={session()} state={noCredentialState()} />);
+    expect(screen.getByText("This browser holds no key for this Weave.")).toBeTruthy();
+  });
+
+  it("offers a way back to the main page from that explanation", () => {
+    render(<WeaveView session={session()} state={noCredentialState()} />);
+    expect(screen.getByRole("link", { name: "Go to the main page" }).getAttribute("href")).toBe("/");
+  });
+
+  it("offers no composer on a page this browser has no credential for", () => {
+    const { container } = render(<WeaveView session={session()} state={noCredentialState()} />);
+    expect(container.querySelector(".composer")).toBeNull();
+  });
+
+  it("says so when the identity that used to work is the reason there is no credential", () => {
+    const st = noCredentialState({ error: "Your identity in this Weave is no longer valid" });
+    render(<WeaveView session={session()} state={st} />);
+    expect(screen.getByText("Your identity in this Weave is no longer valid")).toBeTruthy();
+  });
+
+  it("renders the caller's own element instead of the explanation on that branch", () => {
+    render(<WeaveView session={session()} state={noCredentialState()} noCredential={<p>Join the Lobby here</p>} />);
+    expect([screen.getByText("Join the Lobby here").tagName, screen.queryByText("This browser holds no key for this Weave.")])
+      .toEqual(["P", null]);
+  });
+
+  it("says why a page read with the Weave link is read-only, and offers a Join", () => {
+    const { container } = render(<WeaveView session={session()} state={readOnly()} />);
+    expect(container.querySelector(".banner")!.textContent).toContain(
+      "Your identity in this Weave is no longer valid — you are reading with the Weave link.");
+    expect(screen.getByRole("button", { name: "Join" })).toBeTruthy();
+  });
+
+  it("offers no composer on that page until the join", () => {
+    const { container } = render(<WeaveView session={session()} state={readOnly()} />);
+    expect(container.querySelector(".composer")).toBeNull();
+  });
+
+  it("opens the name prompt from that Join button", () => {
+    render(<WeaveView session={session()} state={readOnly()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Join" }));
+    expect(screen.getByText("Choose a name")).toBeTruthy();
+  });
+
+  // The §6 bar is the caller's banner, and every state this view can return is a state the bar may
+  // have to be seen in — a no-credential page whose invalidation only reached memory most of all.
+  for (const [label, st] of [
+    ["no-credential", noCredentialState()],
+    ["loading", state({ status: "loading", weave: undefined, me: undefined })],
+    ["error", state({ status: "error", error: "boom", weave: undefined, me: undefined })],
+    ["ready", state()],
+  ] as const) {
+    it(`renders the banner on the ${label} page, exactly once`, () => {
+      const { container } = render(<WeaveView session={session()} state={st} banner={<div class="bar">note</div>} />);
+      expect(container.querySelectorAll(".bar").length).toBe(1);
+    });
+  }
+
+  it("renders the banner above the caller's own no-credential element too", () => {
+    const { container } = render(<WeaveView session={session()} state={noCredentialState()}
+      banner={<div class="bar">note</div>} noCredential={<p>Join the Lobby here</p>} />);
+    expect([container.firstElementChild!.className, container.querySelectorAll(".bar").length]).toEqual(["bar", 1]);
   });
 });
 

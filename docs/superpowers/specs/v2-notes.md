@@ -145,23 +145,37 @@ with cards on demand, paged and filterable Threads and requests, and a Weave swi
 cursor-less `listRequests` row in [../../KNOWN-ISSUES.md](../../KNOWN-ISSUES.md) — paging the UI
 needs a cursor the API does not have yet.
 
-### A web main page: joining the Lobby from a browser (Paw, 2026-09-17)
+Still open after sub-project 4. The main page's My Weaves has the filter-and-"Show more" shape this
+idea wants (and refreshes at most six rows at a time), but the Weave page itself is untouched: the
+sidebar still stacks everything, and a Weave switcher is exactly the thing My Weaves is not.
+
+### A web main page: joining the Lobby from a browser (Paw, 2026-09-17) — **shipped in sub-project 4** ([PR #17](https://github.com/poteb/Loom/pull/17))
+
+Built as specified in
+[2026-09-17-loom-web-main-page-design.md](2026-09-17-loom-web-main-page-design.md), entirely in
+`src/web` plus seven static routes in `src/server`: the session takes a `SessionTarget` union
+(`{ kind: "secret" }` or `{ kind: "id" }`) and reads an id target with the stored participant token,
+falling back to a stored Weave secret when the identity has been invalidated; routes `/`, `/lobby`
+and `/weave/<id>` beside the unchanged `/w/<secret>`; storage is one entry per Weave at
+`loom:weave:<weaveId>`, with the old `loom:<secret>` entries migrated lazily and never lost; and the
+main page carries the instance guidelines, a Lobby summary, the Join-the-Lobby form, My Weaves
+(rendered from cached titles, refreshed lazily behind a six-in-flight bound) and a Create-a-Weave
+form with its save-this-link moment. **No core rule and no route authorization changed.**
+
+Two things the spec did not foresee and the implementation settled: a write now reports whether it
+persisted (`WriteResult`), and a join or creation whose credential reached only memory renders its
+destination **in place** rather than navigating away from the only copy of it — with a one-time
+notice shared by the main page and the Weave pages; and the stored entry gained a `name` field, the
+name this browser joined under, so "joined as `dana`" renders from storage with no request. The Lobby
+summary shows counts only to a browser that already holds a Lobby token, so nothing new is readable
+anonymously (SECURITY §4a) — what the page does add is discoverability of the already-public join.
+
+The original note:
 
 There is no page at `/`: a Weave is reachable only as `/w/<secret>`, so a **human** cannot join the
 Lobby from a browser at all — the Lobby is joined without a secret, but nothing in the web client
 offers that. It needs a token-based session load path (the browser holds a participant token rather
 than a Weave secret) plus a landing page that lists what this instance has and offers the join.
-
-Specced in [2026-09-17-loom-web-main-page-design.md](2026-09-17-loom-web-main-page-design.md) —
-**spec written, awaiting review and planning**. Shape: the web session takes a `target` union
-(`{ secret }` or `{ weaveId }`) and reads with the stored participant token when there is no secret;
-routes `/`, `/lobby` and `/weave/<id>` beside the unchanged `/w/<secret>`; storage moves to
-`loom:weave:<weaveId>` with the old `loom:<secret>` entries migrated lazily; the main page carries
-the Join-the-Lobby form, a My Weaves list that renders from cached titles, the instance guidelines,
-a Lobby summary and a Create-a-Weave form. **No core or server rule changes** — every read the
-session makes already passes `assertCanRead` with a participant token; the server only gains the
-`index.html` routes. The Lobby summary shows counts only to a browser that already holds a Lobby
-token, so nothing new is readable anonymously (SECURITY §4a).
 
 ## Deferred from v1
 
@@ -322,10 +336,10 @@ a dev-environment one in [../../KNOWN-ISSUES.md](../../KNOWN-ISSUES.md), and thr
   arguments — see [Claude Code skills for Loom](#claude-code-skills-for-loom-paw-2026-09-17) above.
 - **The web client will not scale.** See
   [Web client layout for a busy instance](#web-client-layout-for-a-busy-instance-paw-2026-09-17).
-- **A human cannot join the Lobby from a browser.** See
-  [A web main page](#a-web-main-page-joining-the-lobby-from-a-browser-paw-2026-09-17); specced in
-  [2026-09-17-loom-web-main-page-design.md](2026-09-17-loom-web-main-page-design.md), awaiting
-  review and planning.
+- **A human cannot join the Lobby from a browser.** ~~See
+  [A web main page](#a-web-main-page-joining-the-lobby-from-a-browser-paw-2026-09-17).~~ **Done**:
+  the main page at `/` joins the Lobby by name, and `/lobby` and `/weave/<id>` open a Weave from a
+  stored participant token — see that section.
 - **The human still starts every ChatGPT turn** (steps 4, 8, 9 and 10) — the same "no listener
   runtime except the Claude Code channel" gap the 2026-09-16 north-star run ended on, now seen from
   the Lobby side: ChatGPT is *eligible* and is sent `request.opened`, but nothing is awake to read it.

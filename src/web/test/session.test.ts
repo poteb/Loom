@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeAll, afterAll, vi } from "vitest";
 import { startTestServer, keeperToken, type TestServer } from "../../server/test/helpers.js";
 import { LoomClient } from "@loom/client";
-import { createSession, type Session } from "../src/session.js";
-import { memoryStorage } from "../src/storage.js";
+import { createSession, type Session, type SessionTarget } from "../src/session.js";
+import { browserStorage, memoryStorage, type KeyValueStorage, type WriteResult } from "../src/storage.js";
+import { legacyKey, readWeaveEntry, saveWeaveEntry, setIdentity, weaveKey } from "../src/weaves-store.js";
 import { DEFAULT_INSTANCE_GUIDELINES } from "@loom/core";
 
 let s: TestServer;
@@ -25,8 +26,8 @@ function waitFor(pred: () => boolean, ms = 5000): Promise<void> {
   });
 }
 
-async function makeSession(secret: string, storage = memoryStorage(), over: { closedRequestsPage?: number } = {}): Promise<Session> {
-  const session = createSession({ client: anon, secret, storage, ...over });
+async function makeSession(target: SessionTarget, storage = memoryStorage(), over: { closedRequestsPage?: number } = {}): Promise<Session> {
+  const session = createSession({ client: anon, target, storage, ...over });
   await session.load();
   return session;
 }
@@ -34,7 +35,7 @@ async function makeSession(secret: string, storage = memoryStorage(), over: { cl
 describe("session", () => {
   it("loads by secret (read-only), streams live events, and requires a name to post", async () => {
     const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
-    const session = await makeSession(r.secret);
+    const session = await makeSession({ kind: "secret", secret: r.secret });
     const st = session.getState();
     expect(st.status).toBe("ready");
     expect(st.weave?.title).toBe("T");
@@ -55,7 +56,7 @@ describe("session", () => {
   it("join stores the identity; a second session with the same storage skips joining; writes work", async () => {
     const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
     const storage = memoryStorage();
-    const a = await makeSession(r.secret, storage);
+    const a = await makeSession({ kind: "secret", secret: r.secret }, storage);
     let changes = 0; a.subscribe(() => changes++);
     await a.join("Paw");
     expect(a.getState().me?.participant.name).toBe("Paw");
@@ -68,16 +69,38 @@ describe("session", () => {
     expect(a.canModerate()).toBe(false);
     a.dispose();
 
-    const b = await makeSession(r.secret, storage);
+    const b = await makeSession({ kind: "secret", secret: r.secret }, storage);
     expect(b.getState().me?.participant.name).toBe("Paw");
     b.dispose();
+  });
+
+  it("join caches the name it joined under, beside the identity it just wrote", async () => {
+    // My Weaves and the main page both say "joined as dana" from storage alone (spec §4.1, §4.2),
+    // and only the join knows that name — nothing reads it back off the network to find out.
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const storage = memoryStorage();
+    const a = await makeSession({ kind: "secret", secret: r.secret }, storage);
+    await a.join("Paw");
+    a.dispose();
+    expect(readWeaveEntry(storage, r.weave.id)?.name).toBe("Paw");
+  });
+
+  it("join hands the verdict of its credential write to onWrite", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const verdicts: WriteResult[] = [];
+    const a = createSession({ client: anon, target: { kind: "secret", secret: r.secret }, storage: memoryStorage({ durable: false }),
+      onWrite: (v) => verdicts.push(v) });
+    await a.load();
+    await a.join("Paw");
+    expect(verdicts.at(-1)).toBe("memory");
+    a.dispose();
   });
 
   it("visiting a thread does not acknowledge invites that arrive later", async () => {
     const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Paw", kind: "human" } });
     const storage = memoryStorage();
     storage.set(`loom:${r.secret}`, JSON.stringify({ token: r.token, participantId: r.participant.id }));
-    const a = await makeSession(r.secret, storage);
+    const a = await makeSession({ kind: "secret", secret: r.secret }, storage);
     await waitFor(() => a.getState().connection === "open");
     await a.createThread("PR 1");
     await waitFor(() => a.getState().threads.some((t) => t.name === "PR 1"));
@@ -111,7 +134,7 @@ describe("session", () => {
     const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
     const storage = memoryStorage();
     storage.set(`loom:${r.secret}`, JSON.stringify({ token: r.token, participantId: r.participant.id }));
-    const k = await makeSession(r.secret, storage);
+    const k = await makeSession({ kind: "secret", secret: r.secret }, storage);
     expect(k.getState().me?.participant.role).toBe("keeper");
     expect(k.canModerate()).toBe(true);
     await k.createThread("Tmp");
@@ -127,7 +150,7 @@ describe("session", () => {
   });
 
   it("reports an error state for an unknown secret", async () => {
-    const session = createSession({ client: anon, secret: "nope", storage: memoryStorage() });
+    const session = createSession({ client: anon, target: { kind: "secret", secret: "nope" }, storage: memoryStorage() });
     await session.load();
     expect(session.getState().status).toBe("error");
     expect(session.getState().error).toMatch(/not found/i);
@@ -136,7 +159,7 @@ describe("session", () => {
   it("anonymous writes always demand a name, whether or not the session has loaded", async () => {
     const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
 
-    const unloaded = createSession({ client: anon, secret: r.secret, storage: memoryStorage() });
+    const unloaded = createSession({ client: anon, target: { kind: "secret", secret: r.secret }, storage: memoryStorage() });
     await expect(unloaded.post("x")).rejects.toMatchObject({ code: "no_identity" });
     expect(unloaded.getState().needsName).toBe(true);
     await expect(unloaded.createThread("Design")).rejects.toMatchObject({ code: "no_identity" });
@@ -146,7 +169,7 @@ describe("session", () => {
     await expect(unloaded.archive()).rejects.toMatchObject({ code: "no_identity" });
     expect(unloaded.getState().needsName).toBe(true);
 
-    const loaded = await makeSession(r.secret);
+    const loaded = await makeSession({ kind: "secret", secret: r.secret });
     await expect(loaded.post("x")).rejects.toMatchObject({ code: "no_identity" });
     expect(loaded.getState().needsName).toBe(true);
     await expect(loaded.createThread("Design")).rejects.toMatchObject({ code: "no_identity" });
@@ -160,7 +183,7 @@ describe("session", () => {
 
   it("load() called twice does not leak the first stream", async () => {
     const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
-    const session = createSession({ client: anon, secret: r.secret, storage: memoryStorage() });
+    const session = createSession({ client: anon, target: { kind: "secret", secret: r.secret }, storage: memoryStorage() });
     const statuses: string[] = [];
     session.subscribe(() => statuses.push(session.getState().connection));
     await session.load();
@@ -190,7 +213,7 @@ describe("session", () => {
         return fetch(url, init);
       },
     });
-    const session = createSession({ client: racing, secret: r.secret, storage: memoryStorage() });
+    const session = createSession({ client: racing, target: { kind: "secret", secret: r.secret }, storage: memoryStorage() });
     await session.load();
     expect(session.getState().threads.some((t) => t.name === "Raced")).toBe(true);
     expect(session.getState().events.some((e) => e.type === "thread.created" && (e.payload as { name?: string }).name === "Raced")).toBe(true);
@@ -215,7 +238,7 @@ describe("session", () => {
         return fetch(url, init);
       },
     });
-    const session = createSession({ client: flaky, secret: r.secret, storage: memoryStorage() });
+    const session = createSession({ client: flaky, target: { kind: "secret", secret: r.secret }, storage: memoryStorage() });
     await session.load();
     expect(getWeaveCalls).toBe(1);
 
@@ -245,7 +268,7 @@ describe("session", () => {
       },
     });
     const session = createSession({
-      client: flaky, secret: r.secret, storage: memoryStorage(),
+      client: flaky, target: { kind: "secret", secret: r.secret }, storage: memoryStorage(),
       retry: { delaysMs: [5, 5, 5, 5, 5], slowMs: 20 },
     });
     await session.load();
@@ -278,7 +301,7 @@ describe("session", () => {
         return fetch(url, init);
       },
     });
-    const session = createSession({ client: flaky, secret: r.secret, storage: memoryStorage() });
+    const session = createSession({ client: flaky, target: { kind: "secret", secret: r.secret }, storage: memoryStorage() });
     await session.load();
     expect(getWeaveCalls).toBe(1);
 
@@ -315,7 +338,7 @@ describe("session", () => {
         return fetch(url, init);
       },
     });
-    const session = createSession({ client: flaky, secret: r.secret, storage });
+    const session = createSession({ client: flaky, target: { kind: "secret", secret: r.secret }, storage });
     await session.load();
     expect(getWeaveCalls).toBe(1);
 
@@ -345,7 +368,7 @@ describe("session", () => {
         return fetch(url, init);
       },
     });
-    const session = createSession({ client: flaky, secret: r.secret, storage });
+    const session = createSession({ client: flaky, target: { kind: "secret", secret: r.secret }, storage });
     await session.load();
     expect(getWeaveCalls).toBe(1);
 
@@ -383,7 +406,7 @@ describe("session", () => {
         return fetch(url, init);
       },
     });
-    const session = createSession({ client: gated, secret: r.secret, storage });
+    const session = createSession({ client: gated, target: { kind: "secret", secret: r.secret }, storage });
     await session.load();
     await waitFor(() => session.getState().connection === "open");
     expect(session.canModerate()).toBe(true);
@@ -456,7 +479,7 @@ describe("session lifecycle", () => {
     const gate = makeGate();
     const sockets = trackSockets();
     try {
-      const session = createSession({ client: gatedClient(s.baseUrl, gate), secret: r.secret, storage: memoryStorage() });
+      const session = createSession({ client: gatedClient(s.baseUrl, gate), target: { kind: "secret", secret: r.secret }, storage: memoryStorage() });
       const first = session.load();
       await gate.entered;
       // The second load() supersedes the first while the first is parked mid-backfill.
@@ -484,7 +507,7 @@ describe("session lifecycle", () => {
     const gate = makeGate();
     const sockets = trackSockets();
     try {
-      const session = createSession({ client: gatedClient(s.baseUrl, gate), secret: r.secret, storage: memoryStorage() });
+      const session = createSession({ client: gatedClient(s.baseUrl, gate), target: { kind: "secret", secret: r.secret }, storage: memoryStorage() });
       const loading = session.load();
       await gate.entered;
       session.dispose();
@@ -505,7 +528,7 @@ describe("session lifecycle", () => {
 
   it("a re-load() announces itself: status goes back to loading and stale errors are cleared", async () => {
     const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
-    const session = createSession({ client: anon, secret: r.secret, storage: memoryStorage() });
+    const session = createSession({ client: anon, target: { kind: "secret", secret: r.secret }, storage: memoryStorage() });
     await session.load();
     expect(session.getState().status).toBe("ready");
     // Read synchronously, before load() has awaited anything: a reload must publish "loading"
@@ -536,7 +559,7 @@ describe("session lifecycle", () => {
     // A retry delay far longer than the test: if dispose() did not cancel it, the timer would
     // outlive the session (and the suite would have to wait it out).
     const session = createSession({
-      client: flaky, secret: r.secret, storage: memoryStorage(),
+      client: flaky, target: { kind: "secret", secret: r.secret }, storage: memoryStorage(),
       retry: { delaysMs: [600_000], slowMs: 600_000 },
     });
     await session.load();
@@ -557,7 +580,7 @@ describe("session lifecycle", () => {
 
   it("dismissNamePrompt() clears the name demand raised by an anonymous write", async () => {
     const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
-    const session = await makeSession(r.secret);
+    const session = await makeSession({ kind: "secret", secret: r.secret });
     await expect(session.post("x")).rejects.toMatchObject({ code: "no_identity" });
     expect(session.getState().needsName).toBe(true);
     session.dismissNamePrompt();
@@ -614,7 +637,7 @@ describe("session guidelines", () => {
     const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Paw", kind: "human" } });
     const storage = memoryStorage();
     storage.set(`loom:${r.secret}`, JSON.stringify({ token: r.token, participantId: r.participant.id }));
-    const session = await makeSession(r.secret, storage);
+    const session = await makeSession({ kind: "secret", secret: r.secret }, storage);
     // The instance layer is the shipped default until a keeper edits it; this Weave has none of its own.
     expect(session.getState().instanceGuidelines).toBe(DEFAULT_INSTANCE_GUIDELINES);
     expect(session.getState().weave?.guidelines).toBe("");
@@ -631,7 +654,7 @@ describe("session guidelines", () => {
     const storage = memoryStorage();
     storage.set(`loom:${r.secret}`, JSON.stringify({ token: r.token, participantId: r.participant.id }));
     const gate = makeGate();
-    const session = createSession({ client: staleSnapshotClient(s.baseUrl, gate), secret: r.secret, storage });
+    const session = createSession({ client: staleSnapshotClient(s.baseUrl, gate), target: { kind: "secret", secret: r.secret }, storage });
     // The request the gate suspends is still parked until release(): without this, a failed
     // assertion below would hang the suite on teardown instead of reporting the failure.
     try {
@@ -662,7 +685,7 @@ describe("session guidelines", () => {
     const storage = memoryStorage();
     storage.set(`loom:${r.secret}`, JSON.stringify({ token: r.token, participantId: r.participant.id }));
     const gate = makeGate();
-    const session = createSession({ client: staleSnapshotClient(s.baseUrl, gate), secret: r.secret, storage });
+    const session = createSession({ client: staleSnapshotClient(s.baseUrl, gate), target: { kind: "secret", secret: r.secret }, storage });
     // The request the gate suspends is still parked until release(): without this, a failed
     // assertion below would hang the suite on teardown instead of reporting the failure.
     try {
@@ -692,7 +715,7 @@ describe("session guidelines", () => {
       await s.core.setWeaveGuidelines(keeper, r.weave.id, "A");   // seq 4
       await s.core.setWeaveGuidelines(keeper, r.weave.id, "B");   // seq 5, the one the snapshot carries
     });
-    const session = createSession({ client, secret: r.secret, storage: memoryStorage() });
+    const session = createSession({ client, target: { kind: "secret", secret: r.secret }, storage: memoryStorage() });
     const panel: string[] = [];
     session.subscribe(() => {
       const st = session.getState();
@@ -718,7 +741,7 @@ describe("session guidelines", () => {
       await s.core.setWeaveGuidelines(keeper, r.weave.id, "A");   // seq 4
       await s.core.setWeaveGuidelines(keeper, r.weave.id, "");    // seq 5: the clear the snapshot sees
     });
-    const session = createSession({ client, secret: r.secret, storage: memoryStorage() });
+    const session = createSession({ client, target: { kind: "secret", secret: r.secret }, storage: memoryStorage() });
     const panel: string[] = [];
     session.subscribe(() => {
       const st = session.getState();
@@ -776,7 +799,7 @@ describe("session requests", () => {
   it("on the Lobby, load() records the pointer and every request at its own version", async () => {
     const f = await lobbyFixture();
     const r = await f.open();
-    const session = await makeSession(f.secret, f.storage);
+    const session = await makeSession({ kind: "secret", secret: f.secret }, f.storage);
     try {
       expect(session.getState().lobby?.weaveId).toBe((await s.core.getLobby()).weaveId);
       expect(session.getState().requests[r.id]?.version).toBe(r.lastEventSeq);
@@ -791,7 +814,7 @@ describe("session requests", () => {
     const older = await f.open();                       // opened first, so the newest page is all closed
     const requester = anon.withToken(f.requester.token);
     for (let i = 0; i < 3; i++) await requester.cancelRequest((await f.open()).id);
-    const session = await makeSession(f.secret, f.storage, { closedRequestsPage: 2 });
+    const session = await makeSession({ kind: "secret", secret: f.secret }, f.storage, { closedRequestsPage: 2 });
     try {
       const held = Object.values(session.getState().requests);
       expect(held.map((r) => r.id)).toContain(older.id);
@@ -803,7 +826,7 @@ describe("session requests", () => {
   it("a live offer event updates the request it names", async () => {
     const f = await lobbyFixture();
     const r = await f.open();
-    const session = await makeSession(f.secret, f.storage);
+    const session = await makeSession({ kind: "secret", secret: f.secret }, f.storage);
     try {
       await waitFor(() => session.getState().connection === "open");
       await anon.withToken(f.helper.token).offer(r.id, { model: MODEL.model, effort: MODEL.effort, note: "ready" });
@@ -818,7 +841,7 @@ describe("session requests", () => {
     const f = await lobbyFixture();
     const r = await f.open();
     await anon.withToken(f.helper.token).offer(r.id, { model: MODEL.model, effort: MODEL.effort });
-    const session = await makeSession(f.secret, f.storage);
+    const session = await makeSession({ kind: "secret", secret: f.secret }, f.storage);
     try {
       await session.accept(r.id, [f.helper.participant.id]);
       const held = session.getState().requests[r.id]!;
@@ -829,7 +852,7 @@ describe("session requests", () => {
 
   it("openRequest() adds the new request, and cancel() closes it", async () => {
     const f = await lobbyFixture();
-    const session = await makeSession(f.secret, f.storage);
+    const session = await makeSession({ kind: "secret", secret: f.secret }, f.storage);
     try {
       const r = await session.openRequest({
         title: "From the browser", requirements: { models: [MODEL] }, wanted: 1, timeoutMs: 3_600_000,
@@ -846,7 +869,7 @@ describe("session requests", () => {
     const r = await f.open();
     const storage = memoryStorage();
     storage.set(`loom:${f.secret}`, JSON.stringify({ token: f.helper.token, participantId: f.helper.participant.id }));
-    const session = await makeSession(f.secret, storage);
+    const session = await makeSession({ kind: "secret", secret: f.secret }, storage);
     try {
       await session.offer(r.id, { model: MODEL.model, effort: MODEL.effort, note: "can start now" });
       const held = session.getState().requests[r.id]!;
@@ -856,7 +879,7 @@ describe("session requests", () => {
 
   it("a profile declared after load lands on the participant it belongs to", async () => {
     const f = await lobbyFixture();
-    const session = await makeSession(f.secret, f.storage);
+    const session = await makeSession({ kind: "secret", secret: f.secret }, f.storage);
     try {
       await waitFor(() => session.getState().connection === "open");
       const late = await anon.joinLobby({ name: `Late-${++fixtureN}`, kind: "agent" });
@@ -891,7 +914,7 @@ describe("session requests", () => {
   it("shows a failed initial request read as an error, then retries it until it lands", async () => {
     const f = await lobbyFixture();
     const r = await f.open();
-    const session = createSession({ client: flakyListing([1]), secret: f.secret, storage: f.storage, retry: FAST_RETRY });
+    const session = createSession({ client: flakyListing([1]), target: { kind: "secret", secret: f.secret }, storage: f.storage, retry: FAST_RETRY });
     await session.load();
     try {
       expect(session.getState().status).toBe("ready");
@@ -911,7 +934,7 @@ describe("session requests", () => {
     const f = await lobbyFixture();
     const r = await f.open();
     // Call 1 is the read inside load(); call 2 is the refresh the join below triggers.
-    const session = createSession({ client: flakyListing([2]), secret: f.secret, storage: f.storage, retry: FAST_RETRY });
+    const session = createSession({ client: flakyListing([2]), target: { kind: "secret", secret: f.secret }, storage: f.storage, retry: FAST_RETRY });
     await session.load();
     try {
       expect(session.getState().requests[r.id]).toBeDefined();
@@ -936,7 +959,7 @@ describe("session requests", () => {
     // Call 1 is the first load's read, call 2 the second load's; the first backoff is long enough
     // that the second load starts while the first retry is still sleeping.
     const session = createSession({
-      client: flakyListing([1, 2]), secret: f.secret, storage: f.storage,
+      client: flakyListing([1, 2]), target: { kind: "secret", secret: f.secret }, storage: f.storage,
       retry: { delaysMs: [800, 5, 5, 5, 5], slowMs: 20 },
     });
     await session.load();
@@ -971,7 +994,7 @@ describe("session requests", () => {
     let lobbyCalls = 0;
     const flaky = clientWith((url) => url.pathname === "/api/lobby" && ++lobbyCalls === 1
       ? Promise.reject(new Error("simulated network failure")) : null);
-    const session = createSession({ client: flaky, secret: f.secret, storage: f.storage, retry: FAST_RETRY });
+    const session = createSession({ client: flaky, target: { kind: "secret", secret: f.secret }, storage: f.storage, retry: FAST_RETRY });
     await session.load();
     try {
       expect(session.getState().status).toBe("ready");
@@ -999,7 +1022,7 @@ describe("session requests", () => {
       return url.pathname === "/api/lobby" && ++lobbyCalls === 1
         ? Promise.reject(new Error("simulated network failure")) : null;
     });
-    const session = createSession({ client: flaky, secret: f.target.secret, storage: f.storage, retry: FAST_RETRY });
+    const session = createSession({ client: flaky, target: { kind: "secret", secret: f.target.secret }, storage: f.storage, retry: FAST_RETRY });
     await session.load();
     try {
       expect(session.getState().lobby).toBeUndefined();
@@ -1021,7 +1044,7 @@ describe("session requests", () => {
       return Promise.resolve(new Response(JSON.stringify({ code: "weave_not_found", message: "No Lobby on this instance" }),
         { status: 404, headers: { "content-type": "application/json" } }));
     });
-    const session = createSession({ client: absent, secret: f.secret, storage: f.storage, retry: FAST_RETRY });
+    const session = createSession({ client: absent, target: { kind: "secret", secret: f.secret }, storage: f.storage, retry: FAST_RETRY });
     await session.load();
     try {
       expect(session.getState().status).toBe("ready");
@@ -1037,7 +1060,7 @@ describe("session requests", () => {
   it("a Weave that is not the Lobby carries no requests", async () => {
     const f = await lobbyFixture();
     await f.open();
-    const session = await makeSession(f.target.secret, f.storage);
+    const session = await makeSession({ kind: "secret", secret: f.target.secret }, f.storage);
     try {
       expect(session.getState().weave?.id).not.toBe(session.getState().lobby?.weaveId);
       expect(session.getState().requests).toEqual({});
@@ -1046,12 +1069,823 @@ describe("session requests", () => {
 
   it("targets() offers the Weaves this browser holds a token for, never the Lobby", async () => {
     const f = await lobbyFixture();
-    const session = await makeSession(f.secret, f.storage);
+    const session = await makeSession({ kind: "secret", secret: f.secret }, f.storage);
     try {
       const targets = await session.targets();
       expect(targets.map((t) => t.weaveId)).toEqual([f.target.weave.id]);
       expect(targets[0]!.threads.map((t) => t.id)).toEqual([f.target.generalThread.id]);
       expect(targets[0]!.token).toBe(f.target.token);
+    } finally { session.dispose(); }
+  });
+
+  it("targets() offers id entries and legacy entries alike, and skips an entry with no usable identity", async () => {
+    const f = await lobbyFixture();
+    const byId = await anon.createWeave({ title: "By id", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    setIdentity(f.storage, byId.weave.id, { token: byId.token, participantId: byId.participant.id });
+    // A secret is not a target credential (`assertIsKeeperOf` refuses it), so an entry whose
+    // identity died is not something this browser can offer — with or without a secret beside it.
+    const dead = await anon.createWeave({ title: "Dead", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    saveWeaveEntry(f.storage, dead.weave.id, { identity: "invalid", secret: dead.secret, title: "Dead" });
+    const session = await makeSession({ kind: "secret", secret: f.secret }, f.storage);
+    try {
+      const targets = await session.targets();
+      expect(targets.map((t) => t.weaveId).sort()).toEqual([f.target.weave.id, byId.weave.id].sort());
+    } finally { session.dispose(); }
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// A session whose target is a Weave id: the credential comes from storage, and a dead identity
+// falls back to a stored secret (spec §2.3, §2.6).
+
+/** A participant id that is in no Weave: a stored identity that names nobody. */
+const GONE = "00000000-0000-4000-8000-000000000000";
+
+type Mode = "ok" | "silent";
+
+/** A localStorage that can accept every write and keep nothing, so a failed write is observable. */
+function installLocalStorage() {
+  const raw = new Map<string, string>();
+  let mode: Mode = "ok";
+  const api = {
+    getItem: (k: string) => raw.get(k) ?? null,
+    setItem: (k: string, v: string) => { if (mode === "ok") raw.set(k, v); },
+    removeItem: (k: string) => { if (mode === "ok") raw.delete(k); },
+    key: (i: number) => [...raw.keys()][i] ?? null,
+    get length() { return raw.size; },
+    clear: () => raw.clear(),
+  };
+  Object.defineProperty(globalThis, "localStorage", { value: api, configurable: true, writable: true });
+  return { raw, setMode: (m: Mode) => { mode = m; } };
+}
+afterEach(() => { Reflect.deleteProperty(globalThis as object, "localStorage"); });
+
+/** A client that counts every HTTP call, so "no request was made" is observable rather than hoped for. */
+function countingClient(): { client: LoomClient; calls: () => number } {
+  let calls = 0;
+  const client = new LoomClient({
+    baseUrl: s.baseUrl, allowInsecure: true,
+    fetch: (input, init) => { calls++; return fetch(typeof input === "string" ? input : input.toString(), init); },
+  });
+  return { client, calls: () => calls };
+}
+
+/** A Weave plus a second participant's identity: what a browser that has joined actually holds. */
+async function joinedWeave(name: string) {
+  const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+  const j = await anon.joinWeave(r.secret, { name, kind: "human" });
+  return { r, j };
+}
+
+/** An entry whose identity is stored by Weave id, with no secret anywhere near it. */
+function storedIdentity(weaveId: string, j: { token: string; participant: { id: string } }, extra: { secret?: string } = {}) {
+  const storage = memoryStorage();
+  setIdentity(storage, weaveId, { token: j.token, participantId: j.participant.id }, extra);
+  return storage;
+}
+
+/**
+ * A client whose reads with `token` are refused with `invalid_token` once `revoke()` is called —
+ * what a keeper removing this participant looks like from a tab that is already open. The refusals
+ * are counted, so "one fallback, and then nothing" is observed rather than hoped for.
+ */
+function revocableClient(token: string, opts: { refusalMs?: number } = {}): {
+  client: LoomClient; revoke: () => void; denied: () => number;
+  loadsWith: (credential: string) => number; metadataReadsWith: (credential: string) => number;
+} {
+  let revoked = false;
+  let denied = 0;
+  const seen: { path: string; auth: string | undefined }[] = [];
+  const client = new LoomClient({
+    baseUrl: s.baseUrl, allowInsecure: true,
+    fetch: (input, init) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const auth = (init?.headers as Record<string, string> | undefined)?.["authorization"];
+      seen.push({ path: new URL(url).pathname, auth });
+      if (revoked && auth === `Bearer ${token}`) {
+        denied++;
+        const refusal = () => new Response(JSON.stringify({ code: "invalid_token", message: "Credential is not valid" }),
+          { status: 401, headers: { "content-type": "application/json" } });
+        // Answered slowly when a test asks for it: a second event has to arrive while the failing
+        // refresh is still in flight for `refreshDirty` to be set at all.
+        return opts.refusalMs
+          ? new Promise<Response>((done) => setTimeout(() => done(refusal()), opts.refusalMs))
+          : Promise.resolve(refusal());
+      }
+      return fetch(url, init);
+    },
+  });
+  return {
+    client, revoke: () => { revoked = true; }, denied: () => denied,
+    // A load backfills history exactly once (the page loop stops short of `PAGE`), so this counts
+    // the loads made with that credential — "the fallback happened once" rather than "at all".
+    loadsWith: (credential) => seen.filter((c) => c.path.endsWith("/events") && c.auth === `Bearer ${credential}`).length,
+    // Weave metadata reads with that credential. A load makes exactly one — and so would a refresh
+    // that restarted behind it, which is how a queued refresh racing the fallback is seen at all.
+    metadataReadsWith: (credential: string) =>
+      seen.filter((c) => /^\/api\/weaves\/[^/]+$/.test(c.path) && c.auth === `Bearer ${credential}`).length,
+  };
+}
+
+/** Short enough that an endless retry shows up inside a test, rather than being waited out. */
+const QUICK_RETRY = { delaysMs: [5, 5, 5, 5, 5], slowMs: 20 };
+
+/**
+ * A client that parks the `parkCall`-th Weave metadata read on `gate` — answered by the server
+ * first, so what it delivers on release is genuinely the world as it was — and records the
+ * credential of every such read, so "which generation made this one" is observable.
+ */
+function gatedMetadataClient(baseUrl: string, gate: ReturnType<typeof makeGate>, parkCall: number): {
+  client: LoomClient; readsWith: (credential: string) => number;
+} {
+  const reads: (string | undefined)[] = [];
+  const client = new LoomClient({
+    baseUrl, allowInsecure: true,
+    fetch: async (input, init) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (/^\/api\/weaves\/[^/]+$/.test(new URL(url).pathname)) {
+        reads.push((init?.headers as Record<string, string> | undefined)?.["authorization"]);
+        if (reads.length === parkCall) {
+          const captured = await fetch(url, init);
+          gate.markEntered();
+          await gate.released;
+          return captured;
+        }
+      }
+      return fetch(url, init);
+    },
+  });
+  return { client, readsWith: (credential) => reads.filter((a) => a === `Bearer ${credential}`).length };
+}
+
+describe("session by weave id", () => {
+  it("loads a Weave from a stored participant token, with no secret in play", async () => {
+    const { r, j } = await joinedWeave("Paw");
+    const session = await makeSession({ kind: "id", weaveId: r.weave.id }, storedIdentity(r.weave.id, j));
+    try {
+      const st = session.getState();
+      expect(st.status).toBe("ready");
+      expect(st.weave?.title).toBe("T");
+      expect(st.threads.map((t) => t.id)).toEqual([r.generalThread.id]);
+      expect(st.participants.map((p) => p.name)).toContain("Paw");
+      expect(st.events.map((e) => e.seq)).toEqual([1, 2, 3, 4]);
+      expect(st.me?.participant.id).toBe(j.participant.id);
+
+      await waitFor(() => session.getState().connection === "open");
+      await anon.withToken(r.token).postMessage(r.generalThread.id, "from claude");
+      await waitFor(() => session.getState().events.some((e) => e.payload.text === "from claude"));
+    } finally { session.dispose(); }
+  });
+
+  it("caches the name of the identity a load resolved, for a browser that joined before it was kept", async () => {
+    // The display cache is written on every successful load anyway (spec §2.4); carrying the name in
+    // that same patch is what gives an entry written by an older build — or adopted from a legacy key
+    // — its "joined as" line, without a write of its own.
+    const { r, j } = await joinedWeave("Paw");
+    const storage = storedIdentity(r.weave.id, j);
+    const session = await makeSession({ kind: "id", weaveId: r.weave.id }, storage);
+    session.dispose();
+    expect(readWeaveEntry(storage, r.weave.id)?.name).toBe("Paw");
+  });
+
+  it("reads the same Weave whether it is opened by secret or by id", async () => {
+    const { r, j } = await joinedWeave("Paw");
+    const byId = await makeSession({ kind: "id", weaveId: r.weave.id }, storedIdentity(r.weave.id, j));
+    const bySecret = await makeSession({ kind: "secret", secret: r.secret });
+    try {
+      expect(byId.getState().weave).toEqual(bySecret.getState().weave);
+      expect(byId.getState().threads).toEqual(bySecret.getState().threads);
+      expect(byId.getState().participants).toEqual(bySecret.getState().participants);
+    } finally { byId.dispose(); bySecret.dispose(); }
+  });
+
+  it("loads the Lobby's requests board with a stored Lobby participant token", async () => {
+    const f = await lobbyFixture();
+    const r = await f.open();
+    const lobbyId = (await s.core.getLobby()).weaveId;
+    const session = await makeSession({ kind: "id", weaveId: lobbyId }, storedIdentity(lobbyId, f.requester));
+    try {
+      expect(session.getState().lobby?.weaveId).toBe(lobbyId);
+      expect(session.getState().requestsLoaded).toBe(true);
+      expect(session.getState().requests[r.id]?.version).toBe(r.lastEventSeq);
+    } finally { session.dispose(); }
+  });
+
+  it("makes no request at all when this browser holds nothing for the Weave", async () => {
+    const c = countingClient();
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: GONE }, storage: memoryStorage() });
+    await session.load();
+    expect(session.getState().status).toBe("no-credential");
+    expect(c.calls()).toBe(0);
+    session.dispose();
+  });
+
+  it("leaves the entry untouched when a token load fails for a transient reason", async () => {
+    const { r, j } = await joinedWeave("Paw");
+    const storage = storedIdentity(r.weave.id, j, { secret: r.secret });
+    const before = storage.get(weaveKey(r.weave.id));
+    const dead = new LoomClient({
+      baseUrl: s.baseUrl, allowInsecure: true,
+      fetch: () => Promise.reject(new Error("simulated network failure")),
+    });
+    const session = createSession({ client: dead, target: { kind: "id", weaveId: r.weave.id }, storage });
+    await session.load();
+    expect(session.getState().status).toBe("error");
+    expect(storage.get(weaveKey(r.weave.id))).toBe(before);
+    session.dispose();
+  });
+
+  it("writes with the stored token: post and createThread succeed", async () => {
+    const { r, j } = await joinedWeave("Paw");
+    const session = await makeSession({ kind: "id", weaveId: r.weave.id }, storedIdentity(r.weave.id, j));
+    try {
+      await session.post("hi @Claude");
+      await waitFor(() => session.getState().events.some((e) => e.payload.text === "hi @Claude"));
+      await session.createThread("Design");
+      await waitFor(() => session.getState().threads.some((t) => t.name === "Design"));
+    } finally { session.dispose(); }
+  });
+
+  it("never asks for a name: a token only exists because this browser already joined", async () => {
+    const { r, j } = await joinedWeave("Paw");
+    const session = await makeSession({ kind: "id", weaveId: r.weave.id }, storedIdentity(r.weave.id, j));
+    try {
+      expect(session.getState().me?.participant.name).toBe("Paw");
+      expect(session.getState().needsName).toBe(false);
+      await session.post("x");
+      expect(session.getState().needsName).toBe(false);
+    } finally { session.dispose(); }
+  });
+
+  it("falls back to the stored secret when the token no longer resolves, and invalidates the identity", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, r.weave.id, { token: "not-a-real-token", participantId: GONE, secret: r.secret, title: "T" });
+    const session = await makeSession({ kind: "id", weaveId: r.weave.id }, storage);
+    try {
+      expect(session.getState().status).toBe("ready");
+      expect(session.getState().readOnlyReason).toBe("secret-fallback");
+      expect(session.getState().me).toBeUndefined();
+      const e = readWeaveEntry(storage, r.weave.id)!;
+      expect(e.identity).toBe("invalid");
+      expect(e.token).toBeUndefined();
+      expect(e.participantId).toBeUndefined();
+      expect(e.secret).toBe(r.secret);
+      expect(e.title).toBe("T");
+      expect(e.lastOpenedAt).toBeDefined();
+    } finally { session.dispose(); }
+  });
+
+  it("a rejoin from the secret fallback writes a fresh identity and restores writing", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, r.weave.id, { token: "not-a-real-token", participantId: GONE, secret: r.secret });
+    const session = await makeSession({ kind: "id", weaveId: r.weave.id }, storage);
+    try {
+      await session.join("Dana");
+      const e = readWeaveEntry(storage, r.weave.id)!;
+      expect(e.token).toBe(session.getState().me?.token);
+      expect(e.participantId).toBe(session.getState().me?.participant.id);
+      expect(e.identity).toBeUndefined();
+      expect(e.secret).toBe(r.secret);
+      expect(session.getState().readOnlyReason).toBeUndefined();
+      await session.post("back in");
+      await waitFor(() => session.getState().events.some((x) => x.payload.text === "back in"));
+    } finally { session.dispose(); }
+  });
+
+  it("treats a stored participant that is in nobody's list as a dead identity", async () => {
+    const { r, j } = await joinedWeave("Paw");
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, r.weave.id, { token: j.token, participantId: GONE, secret: r.secret });
+    const session = await makeSession({ kind: "id", weaveId: r.weave.id }, storage);
+    try {
+      expect(session.getState().status).toBe("ready");
+      expect(session.getState().readOnlyReason).toBe("secret-fallback");
+      expect(readWeaveEntry(storage, r.weave.id)).toMatchObject({ identity: "invalid", secret: r.secret });
+      await session.join("Dana");
+      expect(readWeaveEntry(storage, r.weave.id)?.identity).toBeUndefined();
+      await session.post("back in");
+      await waitFor(() => session.getState().events.some((x) => x.payload.text === "back in"));
+    } finally { session.dispose(); }
+  });
+
+  it("keeps the row, with its cached title, when a dead identity has no secret to fall back to", async () => {
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, GONE, { token: "not-a-real-token", participantId: GONE, title: "Cached" });
+    const session = await makeSession({ kind: "id", weaveId: GONE }, storage);
+    try {
+      expect(session.getState().status).toBe("no-credential");
+      expect(session.getState().error).toMatch(/no longer valid/i);
+      expect(readWeaveEntry(storage, GONE)).toMatchObject({ identity: "invalid", title: "Cached" });
+    } finally { session.dispose(); }
+  });
+
+  it("treats a token that belongs to another Weave exactly like one that no longer resolves", async () => {
+    const mine = await anon.createWeave({ title: "Mine", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const other = await anon.createWeave({ title: "Other", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, mine.weave.id, { token: other.token, participantId: other.participant.id, secret: mine.secret });
+    const session = await makeSession({ kind: "id", weaveId: mine.weave.id }, storage);
+    try {
+      expect(session.getState().status).toBe("ready");
+      expect(session.getState().readOnlyReason).toBe("secret-fallback");
+      expect(readWeaveEntry(storage, mine.weave.id)).toMatchObject({ identity: "invalid", secret: mine.secret });
+    } finally { session.dispose(); }
+  });
+
+  it("falls back to the secret even when the invalidation itself cannot be persisted", async () => {
+    const ls = installLocalStorage();
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const storage = browserStorage();
+    saveWeaveEntry(storage, r.weave.id, { token: "not-a-real-token", participantId: GONE, secret: r.secret });
+    ls.setMode("silent");                                   // accepts every write and keeps nothing
+    const session = await makeSession({ kind: "id", weaveId: r.weave.id }, storage);
+    try {
+      expect(session.getState().status).toBe("ready");
+      expect(session.getState().readOnlyReason).toBe("secret-fallback");
+      // The dead token must not read back for the rest of this page, durable or not (§2.4b).
+      const e = readWeaveEntry(storage, r.weave.id)!;
+      expect(e.identity).toBe("invalid");
+      expect(e.token).toBeUndefined();
+      expect(e.secret).toBe(r.secret);
+    } finally { session.dispose(); }
+  });
+
+  it("reads back a rejoin's fresh token even when that write cannot be persisted", async () => {
+    const ls = installLocalStorage();
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const storage = browserStorage();
+    saveWeaveEntry(storage, r.weave.id, { token: "not-a-real-token", participantId: GONE, secret: r.secret });
+    ls.setMode("silent");
+    const session = await makeSession({ kind: "id", weaveId: r.weave.id }, storage);
+    try {
+      await session.join("Dana");
+      expect(readWeaveEntry(storage, r.weave.id)?.token).toBe(session.getState().me?.token);
+      await session.post("back in");
+      await waitFor(() => session.getState().events.some((x) => x.payload.text === "back in"));
+    } finally { session.dispose(); }
+  });
+
+  // Spec §2.6 row 2 on its own: never joined from this browser, but the secret was kept — which is
+  // what a `/w/<secret>` visit leaves behind and what Task 7 renders as "reading with the link".
+  it("reads with a stored secret alone, and a join is what makes the page writable", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, r.weave.id, { secret: r.secret, title: "T" });
+    const session = await makeSession({ kind: "id", weaveId: r.weave.id }, storage);
+    try {
+      expect(session.getState().status).toBe("ready");
+      expect(session.getState().readOnlyReason).toBe("secret-fallback");
+      expect(session.getState().me).toBeUndefined();
+      // Never joined is not a dead identity: nothing is marked invalid.
+      expect(readWeaveEntry(storage, r.weave.id)?.identity).toBeUndefined();
+
+      await session.join("Dana");
+      expect(session.getState().readOnlyReason).toBeUndefined();
+      await session.post("hello");
+      await waitFor(() => session.getState().events.some((x) => x.payload.text === "hello"));
+    } finally { session.dispose(); }
+  });
+
+  it("leaves the entry byte for byte when the Weave itself is gone", async () => {
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, GONE, { token: "a-token", participantId: GONE, secret: "a-secret", title: "Cached" });
+    const before = storage.get(weaveKey(GONE));
+    const absent = new LoomClient({
+      baseUrl: s.baseUrl, allowInsecure: true,
+      fetch: (input, init) => {
+        const url = new URL(typeof input === "string" ? input : input.toString());
+        if (url.pathname.startsWith(`/api/weaves/${GONE}`)) {
+          return Promise.resolve(new Response(JSON.stringify({ code: "weave_not_found", message: "Weave not found" }),
+            { status: 404, headers: { "content-type": "application/json" } }));
+        }
+        return fetch(url.toString(), init);
+      },
+    });
+    const session = createSession({ client: absent, target: { kind: "id", weaveId: GONE }, storage });
+    await session.load();
+    try {
+      expect(session.getState().status).toBe("error");
+      expect(session.getState().error).toMatch(/not found/i);
+      // A missing Weave is no evidence against the credential: nothing is invalidated, nothing written.
+      expect(storage.get(weaveKey(GONE))).toBe(before);
+    } finally { session.dispose(); }
+  });
+
+  it("clears the read-only reason when a later load fails", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, r.weave.id, { token: "not-a-real-token", participantId: GONE, secret: r.secret });
+    let down = false;
+    const flaky = new LoomClient({
+      baseUrl: s.baseUrl, allowInsecure: true,
+      fetch: (input, init) => down
+        ? Promise.reject(new Error("simulated network failure"))
+        : fetch(typeof input === "string" ? input : input.toString(), init),
+    });
+    const session = createSession({ client: flaky, target: { kind: "id", weaveId: r.weave.id }, storage });
+    await session.load();
+    try {
+      expect(session.getState().readOnlyReason).toBe("secret-fallback");
+      down = true;
+      await session.load();
+      expect(session.getState().status).toBe("error");
+      // The reason belongs to the read that is on screen; an error is not read-only with a secret.
+      expect(session.getState().readOnlyReason).toBeUndefined();
+    } finally { session.dispose(); }
+  });
+
+  it("joins with the entry's secret before the first load has run", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, r.weave.id, { secret: r.secret });
+    const session = createSession({ client: anon, target: { kind: "id", weaveId: r.weave.id }, storage });
+    try {
+      await session.join("Dana");
+      expect(session.getState().me?.participant.name).toBe("Dana");
+      expect(readWeaveEntry(storage, r.weave.id)).toMatchObject({
+        token: session.getState().me!.token, participantId: session.getState().me!.participant.id, secret: r.secret,
+      });
+    } finally { session.dispose(); }
+  });
+
+  it("gives a rejoined identity its own one fallback", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, r.weave.id, { token: "not-a-real-token", participantId: GONE, secret: r.secret });
+    const session = await makeSession({ kind: "id", weaveId: r.weave.id }, storage);
+    try {
+      await session.join("Dana");
+      // The rejoined identity dies in its turn: one fallback per identity, not one per session.
+      saveWeaveEntry(storage, r.weave.id, { token: "not-a-real-token-either" });
+      await session.load();
+      expect(session.getState().status).toBe("ready");
+      expect(session.getState().readOnlyReason).toBe("secret-fallback");
+      expect(readWeaveEntry(storage, r.weave.id)?.identity).toBe("invalid");
+    } finally { session.dispose(); }
+  });
+
+  // The whole §2.6 rule, on the reads a *loaded* session keeps making. Before `/weave/<id>` a
+  // session read with a secret, which cannot be revoked; a stored token can die while the tab is
+  // open, and treating that as a transient failure retries a credential that is provably dead.
+  it("invalidates a token that dies mid-session and falls back to the stored secret, once", async () => {
+    const { r, j } = await joinedWeave("Paw");
+    const storage = storedIdentity(r.weave.id, j, { secret: r.secret });
+    const c = revocableClient(j.token);
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: r.weave.id }, storage, retry: QUICK_RETRY });
+    await session.load();
+    try {
+      expect(session.getState().me?.participant.name).toBe("Paw");
+      await waitFor(() => session.getState().connection === "open");
+      c.revoke();
+      // Someone else's thread is what asks this session for the metadata read that is now refused.
+      await anon.withToken(r.token).createThread(r.weave.id, "Design");
+      await waitFor(() => session.getState().readOnlyReason === "secret-fallback");
+      expect(session.getState().status).toBe("ready");
+      expect(session.getState().me).toBeUndefined();
+      const e = readWeaveEntry(storage, r.weave.id)!;
+      expect([e.identity, e.token, e.participantId, e.secret]).toEqual(["invalid", undefined, undefined, r.secret]);
+      const atFallback = c.denied();
+      await new Promise((done) => setTimeout(done, 200));     // many backoffs of QUICK_RETRY
+      expect([atFallback, c.denied()]).toEqual([1, 1]);       // one refusal, and no loop behind it
+    } finally { session.dispose(); }
+  });
+
+  it("settles at no-credential when that token dies and no secret was stored", async () => {
+    const { r, j } = await joinedWeave("Paw");
+    const storage = storedIdentity(r.weave.id, j);
+    const c = revocableClient(j.token);
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: r.weave.id }, storage, retry: QUICK_RETRY });
+    await session.load();
+    try {
+      await waitFor(() => session.getState().connection === "open");
+      c.revoke();
+      await anon.withToken(r.token).createThread(r.weave.id, "Design");
+      await waitFor(() => session.getState().status === "no-credential");
+      expect(session.getState().error).toMatch(/no longer valid/i);
+      expect(session.getState().refreshError).toBeUndefined();
+      // The identity the page reports goes with the identity it just deleted: a session that says
+      // it holds no credential must not still be naming the participant the dead token was.
+      expect([session.getState().me, session.getState().readOnlyReason]).toEqual([undefined, undefined]);
+      expect(readWeaveEntry(storage, r.weave.id)).toMatchObject({ identity: "invalid" });
+      const atSettle = c.denied();
+      await new Promise((done) => setTimeout(done, 200));
+      expect([atSettle, c.denied()]).toEqual([1, 1]);
+    } finally { session.dispose(); }
+  });
+
+  // A refresh that arrives while the failing one is in flight is only marked dirty, and the
+  // `.finally` that drains that mark runs *after* the recovery has retired the loop. Without a
+  // generation guard it starts a fresh loop on the credential the recovery just retired — which is
+  // the endless retry all over again, now behind a page that says `no-credential`.
+  it("drops a refresh queued behind the one that died, instead of restarting the retired loop", async () => {
+    const { r, j } = await joinedWeave("Paw");
+    const storage = storedIdentity(r.weave.id, j);
+    const c = revocableClient(j.token, { refusalMs: 60 });
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: r.weave.id }, storage, retry: QUICK_RETRY });
+    await session.load();
+    try {
+      await waitFor(() => session.getState().connection === "open");
+      c.revoke();
+      // Two events back to back: the first starts the refresh, the second lands while it is in
+      // flight and is the one that sets `refreshDirty`.
+      const keeper = anon.withToken(r.token);
+      await Promise.all([keeper.createThread(r.weave.id, "A"), keeper.createThread(r.weave.id, "B")]);
+      await waitFor(() => session.getState().status === "no-credential");
+      const atSettle = c.denied();
+      await new Promise((done) => setTimeout(done, 200));
+      expect([atSettle, c.denied(), session.getState().refreshError]).toEqual([1, 1, undefined]);
+    } finally { session.dispose(); }
+  });
+
+  it("drops that queued refresh when a fallback load is what replaces the loop, and falls back once", async () => {
+    const { r, j } = await joinedWeave("Paw");
+    const storage = storedIdentity(r.weave.id, j, { secret: r.secret });
+    const c = revocableClient(j.token, { refusalMs: 60 });
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: r.weave.id }, storage, retry: QUICK_RETRY });
+    await session.load();
+    try {
+      await waitFor(() => session.getState().connection === "open");
+      c.revoke();
+      const keeper = anon.withToken(r.token);
+      await Promise.all([keeper.createThread(r.weave.id, "A"), keeper.createThread(r.weave.id, "B")]);
+      await waitFor(() => session.getState().readOnlyReason === "secret-fallback");
+      const atFallback = c.denied();
+      await new Promise((done) => setTimeout(done, 200));
+      // One refusal, one fallback load, and one metadata read behind it: the queued refresh must be
+      // dropped, not run against the load that replaced the loop it was queued on.
+      expect([atFallback, c.denied(), c.loadsWith(r.secret), c.metadataReadsWith(r.secret)])
+        .toEqual([1, 1, 1, 1]);
+    } finally { session.dispose(); }
+  });
+
+  // A refresh publishes a whole snapshot — weave, threads, participants — so one that settles after
+  // its generation was retired does not merely add a stale row, it replaces the state the new
+  // generation published with the world as it was before.
+  it("publishes nothing from a refresh whose generation was retired while it was in flight", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const j = await anon.joinWeave(r.secret, { name: "Paw", kind: "human" });
+    const storage = memoryStorage();
+    setIdentity(storage, r.weave.id, { token: j.token, participantId: j.participant.id }, { secret: r.secret });
+    const gate = makeGate();
+    const session = createSession({ client: staleSnapshotClient(s.baseUrl, gate), target: { kind: "id", weaveId: r.weave.id }, storage });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().connection === "open");
+      // A participant joining starts a metadata refresh, which parks holding the metadata of now.
+      await anon.joinWeave(r.secret, { name: "Other", kind: "human" });
+      await gate.entered;
+
+      // The Weave moves on while that refresh is parked…
+      const keeper = await s.core.resolveCredential(r.token);
+      const fresh = await s.core.createThread(keeper, r.weave.id, "NEW");
+      await s.core.setWeaveGuidelines(keeper, r.weave.id, "new rules");
+
+      // …and the §2.6 recovery retires that refresh's generation: the stored token is swapped for a
+      // dead one, so the reload invalidates it and falls back to the secret, reading the Weave as
+      // it is now.
+      saveWeaveEntry(storage, r.weave.id, { token: "not-a-real-token" });
+      await session.load();
+      expect(session.getState().readOnlyReason).toBe("secret-fallback");
+      expect(session.getState().threads.some((t) => t.id === fresh.id)).toBe(true);
+      const seq = session.getState().weave!.lastSeq;
+
+      gate.release();
+      await new Promise((done) => setTimeout(done, 150));     // long enough for the stale answer to land
+      expect([session.getState().threads.some((t) => t.id === fresh.id),
+        session.getState().weave?.guidelines,
+        session.getState().weave!.lastSeq >= seq]).toEqual([true, "new rules", true]);
+    } finally { gate.release(); session.dispose(); }
+  });
+
+  // The slot a refresh runs in is one per session, and a retired generation's request does not stop
+  // being in flight just because its generation did: nothing cancels an HTTP request. A recovered
+  // session that had to wait for it would lose the updates that arrive in the meantime.
+  it("refreshes for the recovered generation without waiting on the retired one's request", async () => {
+    const { r, j } = await joinedWeave("Paw");
+    const storage = memoryStorage();
+    setIdentity(storage, r.weave.id, { token: j.token, participantId: j.participant.id }, { secret: r.secret });
+    const gate = makeGate();
+    const c = gatedMetadataClient(s.baseUrl, gate, 2);       // read 1 is the load's; park read 2
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: r.weave.id }, storage });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().connection === "open");
+      // A participant joining starts a refresh, whose metadata read parks — holding the slot.
+      await anon.joinWeave(r.secret, { name: "Other", kind: "human" });
+      await gate.entered;
+
+      // The §2.6 recovery: the stored token dies, so the reload invalidates it and falls back to
+      // the secret. That is the new generation, with a stream of its own (metadata read 3).
+      saveWeaveEntry(storage, r.weave.id, { token: "not-a-real-token" });
+      await session.load();
+      expect(session.getState().readOnlyReason).toBe("secret-fallback");
+      await waitFor(() => session.getState().connection === "open");
+
+      // An ordinary update arrives on that new stream while the retired request is still parked.
+      const keeper = await s.core.resolveCredential(r.token);
+      await s.core.createThread(keeper, r.weave.id, "LATE");
+      // It must land without the gate being released at all: the new generation owes the old
+      // request nothing, and the Thread is only in the metadata a refresh reads.
+      await waitFor(() => session.getState().threads.some((t) => t.name === "LATE"));
+      expect(c.readsWith(r.secret)).toBe(2);                 // the recovery's, and this refresh's
+
+      gate.release();
+      await new Promise((done) => setTimeout(done, 150));
+      // The retired answer publishes nothing, and its `finally` starts nothing.
+      expect([session.getState().threads.some((t) => t.name === "LATE"),
+        session.getState().readOnlyReason, c.readsWith(r.secret)])
+        .toEqual([true, "secret-fallback", 2]);
+    } finally { gate.release(); session.dispose(); }
+  });
+
+  it("coalesces inside one generation: one refresh in flight, then exactly one more", async () => {
+    const { r, j } = await joinedWeave("Paw");
+    const storage = storedIdentity(r.weave.id, j);
+    const gate = makeGate();
+    const c = gatedMetadataClient(s.baseUrl, gate, 2);
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: r.weave.id }, storage });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().connection === "open");
+      const keeper = await s.core.resolveCredential(r.token);
+      await s.core.createThread(keeper, r.weave.id, "A");    // starts the refresh that parks
+      await gate.entered;
+      // Two more events while it is parked: both mark the slot dirty, and together they are worth
+      // exactly one follow-up refresh — not two.
+      await s.core.createThread(keeper, r.weave.id, "B");
+      await s.core.createThread(keeper, r.weave.id, "C");
+      // Both must have *arrived* before the gate opens, or they would mark the follow-up dirty in
+      // turn and earn a third read honestly — which is not what this test is about.
+      await waitFor(() => session.getState().events.some((e) => e.payload.name === "C"));
+      gate.release();
+      await waitFor(() => session.getState().threads.some((t) => t.name === "C"));
+      await new Promise((done) => setTimeout(done, 150));
+      // The load's read, the parked one, and one follow-up.
+      expect([c.readsWith(j.token), session.getState().threads.some((t) => t.name === "B")])
+        .toEqual([3, true]);
+    } finally { gate.release(); session.dispose(); }
+  });
+
+  it("still retries a refresh that failed for a transient reason, and leaves the entry alone", async () => {
+    const { r, j } = await joinedWeave("Paw");
+    const storage = storedIdentity(r.weave.id, j, { secret: r.secret });
+    let getWeaveCalls = 0;
+    const flaky = new LoomClient({
+      baseUrl: s.baseUrl, allowInsecure: true,
+      fetch: (input, init) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (/^\/api\/weaves\/[^/]+$/.test(new URL(url).pathname)) {
+          getWeaveCalls++;
+          // Call 1 belongs to load(); fail the refresh the thread below triggers.
+          if (getWeaveCalls === 2) return Promise.reject(new Error("simulated network failure"));
+        }
+        return fetch(url, init);
+      },
+    });
+    const session = createSession({ client: flaky, target: { kind: "id", weaveId: r.weave.id }, storage, retry: QUICK_RETRY });
+    await session.load();
+    const after = storage.get(weaveKey(r.weave.id));
+    try {
+      await waitFor(() => session.getState().connection === "open");
+      await anon.withToken(r.token).createThread(r.weave.id, "Design");
+      await waitFor(() => session.getState().threads.some((t) => t.name === "Design"));
+      expect(session.getState().readOnlyReason).toBeUndefined();
+      expect(session.getState().me?.participant.name).toBe("Paw");
+      expect(storage.get(weaveKey(r.weave.id))).toBe(after);
+    } finally { session.dispose(); }
+  });
+});
+
+// Spec §2.6, the row "entry's participantId is not in participants": the same treatment as a dead
+// token, whichever credential the read was made with. On `/w/<secret>` the read has already
+// succeeded, so no fallback is needed — but the identity is gone all the same, and the page has to
+// say so rather than quietly loading as a stranger over a stale stored token.
+describe("session identity a secret-link load cannot find", () => {
+  it("invalidates the stored identity, keeping the secret and the display cache", async () => {
+    const { r, j } = await joinedWeave("Paw");
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, r.weave.id, { token: j.token, participantId: GONE, name: "Paw", secret: r.secret, title: "T" });
+    const session = await makeSession({ kind: "secret", secret: r.secret }, storage);
+    try {
+      const e = readWeaveEntry(storage, r.weave.id)!;
+      expect([e.identity, e.token, e.participantId, e.name, e.secret, e.title])
+        .toEqual(["invalid", undefined, undefined, undefined, r.secret, "T"]);
+    } finally { session.dispose(); }
+  });
+
+  it("comes up ready with no identity, reading with the link", async () => {
+    const { r, j } = await joinedWeave("Paw");
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, r.weave.id, { token: j.token, participantId: GONE, secret: r.secret });
+    const session = await makeSession({ kind: "secret", secret: r.secret }, storage);
+    try {
+      expect([session.getState().status, session.getState().me, session.getState().readOnlyReason])
+        .toEqual(["ready", undefined, "secret-fallback"]);
+    } finally { session.dispose(); }
+  });
+
+  it("makes a join the way back: a fresh identity, and writing works again", async () => {
+    const { r, j } = await joinedWeave("Paw");
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, r.weave.id, { token: j.token, participantId: GONE, secret: r.secret });
+    const session = await makeSession({ kind: "secret", secret: r.secret }, storage);
+    try {
+      await session.join("Dana");
+      const e = readWeaveEntry(storage, r.weave.id)!;
+      expect([e.identity, e.token === session.getState().me?.token, session.getState().readOnlyReason])
+        .toEqual([undefined, true, undefined]);
+      await session.post("back in");
+      await waitFor(() => session.getState().events.some((x) => x.payload.text === "back in"));
+    } finally { session.dispose(); }
+  });
+
+  it("leaves a plain guest visit to /w/<secret> exactly as it was", async () => {
+    // A browser that holds nothing must see no banner at all: there is no identity to have lost.
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const storage = memoryStorage();
+    const session = await makeSession({ kind: "secret", secret: r.secret }, storage);
+    try {
+      expect([session.getState().status, session.getState().me, session.getState().readOnlyReason])
+        .toEqual(["ready", undefined, undefined]);
+      expect(readWeaveEntry(storage, r.weave.id)?.identity).toBeUndefined();
+    } finally { session.dispose(); }
+  });
+});
+
+describe("session legacy identities", () => {
+  it("a bookmarked /w/<secret> keeps an identity that was only ever stored under the legacy key", async () => {
+    const { r, j } = await joinedWeave("Paw");
+    const storage = memoryStorage();
+    storage.set(legacyKey(r.secret), JSON.stringify({ token: j.token, participantId: j.participant.id }));
+    const session = await makeSession({ kind: "secret", secret: r.secret }, storage);
+    try {
+      expect(session.getState().me?.participant.id).toBe(j.participant.id);
+      expect(session.getState().needsName).toBe(false);
+      await session.post("still me");
+      await waitFor(() => session.getState().events.some((x) => x.payload.text === "still me"));
+      expect(readWeaveEntry(storage, r.weave.id)).toMatchObject({
+        token: j.token, participantId: j.participant.id, secret: r.secret,
+      });
+      expect(storage.get(legacyKey(r.secret))).toBeNull();          // durable: the copy is safe to drop
+    } finally { session.dispose(); }
+  });
+
+  it("keeps the legacy key when the migrated entry only reached memory, and is joined all the same", async () => {
+    const ls = installLocalStorage();
+    const { r, j } = await joinedWeave("Paw");
+    const storage = browserStorage();
+    storage.set(legacyKey(r.secret), JSON.stringify({ token: j.token, participantId: j.participant.id }));
+    ls.setMode("silent");
+    const session = await makeSession({ kind: "secret", secret: r.secret }, storage);
+    try {
+      expect(session.getState().me?.participant.id).toBe(j.participant.id);
+      // Nothing was traded away for a copy that would not survive a reload.
+      expect(storage.get(legacyKey(r.secret))).not.toBeNull();
+      expect(ls.raw.has(legacyKey(r.secret))).toBe(true);
+    } finally { session.dispose(); }
+  });
+
+  it("reads through a valid secret even when the legacy entry beside it is corrupt", async () => {
+    // The migration runs on every `/w/<secret>` load, so a cached identity that is not an entry at
+    // all must cost nothing but itself — never the Weave the secret still opens.
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const storage = memoryStorage();
+    storage.set(legacyKey(r.secret), "null");
+    const session = await makeSession({ kind: "secret", secret: r.secret }, storage);
+    try {
+      expect([session.getState().status, session.getState().me, session.getState().weave?.title])
+        .toEqual(["ready", undefined, "T"]);
+      expect(storage.get(legacyKey(r.secret))).toBe("null");      // left exactly as it was
+    } finally { session.dispose(); }
+  });
+
+  it("prefers the id entry's identity over a leftover legacy one", async () => {
+    const { r, j } = await joinedWeave("Old");
+    const newer = await anon.joinWeave(r.secret, { name: "New", kind: "human" });
+    const storage = memoryStorage();
+    storage.set(legacyKey(r.secret), JSON.stringify({ token: j.token, participantId: j.participant.id }));
+    setIdentity(storage, r.weave.id, { token: newer.token, participantId: newer.participant.id });
+    const session = await makeSession({ kind: "secret", secret: r.secret }, storage);
+    try {
+      expect(session.getState().me?.participant.name).toBe("New");
+    } finally { session.dispose(); }
+  });
+
+  it("hands the verdict of every entry write it makes to onWrite", async () => {
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const storage = memoryStorage({ durable: false });
+    saveWeaveEntry(storage, r.weave.id, { token: "not-a-real-token", participantId: GONE, secret: r.secret });
+    const verdicts: WriteResult[] = [];
+    const session = createSession({
+      client: anon, target: { kind: "id", weaveId: r.weave.id }, storage, onWrite: (v) => verdicts.push(v),
+    });
+    await session.load();
+    try {
+      await session.join("Dana");
+      // The invalidation, the display cache the successful re-load writes, and the rejoin.
+      expect(verdicts).toEqual(["memory", "memory", "memory"]);
     } finally { session.dispose(); }
   });
 });
