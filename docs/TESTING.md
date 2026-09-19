@@ -379,4 +379,5 @@ without that round trip; the steps above have since been rewritten to include it
 second-profile guest variant of step 8 (the name prompt a browser holding nothing for the Weave
 gets). **Not signed off:** the styling of the persistence bar on a Weave page and of the in-place
 title button — both were on screen during the run and no complaint was raised, but neither was
-looked at deliberately.
+looked at deliberately — and, added after the run and so never on screen at all, the header's
+**Loom** wordmark (`.home-link`) and the in-place "Go to the main page" button (`.home-back`).

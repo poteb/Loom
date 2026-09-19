@@ -3,8 +3,10 @@ import { LoomClientError, type Lobby } from "@loom/client";
 import type { RouteDeps } from "../app.js";
 import type { SessionTarget } from "../session.js";
 import { useSession } from "../useSession.js";
+import { leavingIsSafe } from "../persistence.js";
 import { weaveKey } from "../weaves-store.js";
 import { WeaveView } from "./WeaveView.js";
+import { HomeLink } from "./HomeLink.js";
 import { PersistenceBar } from "./PersistenceBar.js";
 import { JoinLobbyForm } from "./main/JoinLobbyForm.js";
 
@@ -35,8 +37,12 @@ type Found =
  * instance that may well have a perfectly good Lobby.
  */
 export function LobbyRoute(deps: RouteDeps) {
-  const { client } = deps;
+  const { client, storage, notice, openMainInPlace } = deps;
   const [found, setFound] = useState<Found>({ kind: "loading" });
+  // Same reason as `WeaveMount` below: the notice is a plain page-scoped object, and the two cards
+  // this route can render ask it which element their way back should be.
+  const [, setNoticeVersion] = useState(0);
+  useEffect(() => notice.subscribe(() => setNoticeVersion((n) => n + 1)), [notice]);
   useEffect(() => {
     let live = true;
     client.getLobby().then(
@@ -51,14 +57,20 @@ export function LobbyRoute(deps: RouteDeps) {
     return () => { live = false; };
   }, [client]);
 
+  // No entry of its own to ask about — this route has not resolved a Weave — so the page-scoped
+  // half of the rule is the whole of it here.
+  const back = leavingIsSafe(storage, notice) ? undefined : openMainInPlace;
   if (found.kind === "loading") return <div class="center">Loading…</div>;
-  if (found.kind === "error") return <div class="center error"><h1>Loom</h1><p>{found.message}</p></div>;
+  if (found.kind === "error") {
+    return <div class="center error"><h1>Loom</h1><p>{found.message}</p>
+      <p><HomeLink openMainInPlace={back} /></p></div>;
+  }
   if (found.kind === "none") {
     return (
       <div class="center">
         <h1>Loom</h1>
         <p>This instance has no Lobby yet.</p>
-        <p><a href="/">Go to the main page</a></p>
+        <p><HomeLink openMainInPlace={back} /></p>
       </div>
     );
   }
@@ -126,20 +138,21 @@ function WeaveMount({ client, storage, notice, openMainInPlace, target, lobby, o
         </div>
       )
       : undefined;
-  // The way back to `/` (spec §3.1), and whether taking it may leave this JS context. Two reasons
-  // it may not, and either is enough. This Weave's own entry may be a pending override — a
-  // credential `localStorage` refused, which is exactly the question `MainPage` and `MyWeaves` ask
-  // per entry before they link *into* a Weave. And the notice may be degraded: the destination here
-  // is the main page, which lists **every** entry this browser holds, so once any write on this
-  // page has failed the whole in-memory store is what a page load would cost, not just this row.
-  // Read on every render, so a later write that does persist restores the ordinary link.
+  // The way back to `/` (spec §3.1): whether it may be an anchor is the one question
+  // `leavingIsSafe` answers, the same one My Weaves and Open the Lobby ask on the way in. Its two
+  // halves behave differently and both are deliberate. The **pending** half is re-read on every
+  // render, so a later write that does persist turns the control back into an ordinary link with
+  // nothing clicked. The **notice** half latches for the life of the page and never clears: a
+  // browser that has refused one write is not trusted with a full page load again, because what
+  // that load costs is the whole in-memory store — this page may hold a Lobby identity written
+  // before an in-place transition, and the main page lists every entry there is.
   const weaveId = state.weave?.id ?? (target.kind === "id" ? target.weaveId : undefined);
-  const inMemoryOnly = notice.degraded() || (!!weaveId && storage.isPending(weaveKey(weaveId)));
+  const canLeave = leavingIsSafe(storage, notice, weaveId === undefined ? undefined : weaveKey(weaveId));
   // The §6 notice belongs to the page, not to the main page's layout. A join made from `/` whose
   // credential did not persist replaces `MainPage` — and its bar — with this route in the very same
   // render, and a `/w/<secret>` load writes its own entry here (§10.9), so without this seam the one
   // warning the human needs would be latched and never drawn. `App` hands every route the same
   // notice and mounts one route at a time, so it stays one bar, and one dismissal, per page load.
   return <WeaveView session={session} state={state} banner={<PersistenceBar notice={notice} />}
-    noCredential={noCredential} openMainInPlace={inMemoryOnly ? openMainInPlace : undefined} />;
+    noCredential={noCredential} openMainInPlace={canLeave ? undefined : openMainInPlace} />;
 }

@@ -434,6 +434,8 @@ describe("WeaveView (spec §2.6, §2.7, §3.3)", () => {
  * in-place switch down; this view only renders what it was given.
  */
 describe("the way back to the main page from a Weave page (spec §3.1)", () => {
+  const noCredentialState = () => state({ status: "no-credential", weave: undefined, me: undefined, connection: "closed" });
+
   it("is an ordinary link to / when leaving this JS context costs nothing", () => {
     render(<WeaveView session={session()} state={state()} />);
     expect(screen.getByRole("link", { name: "Loom" }).getAttribute("href")).toBe("/");
@@ -450,6 +452,40 @@ describe("the way back to the main page from a Weave page (spec §3.1)", () => {
     render(<WeaveView session={session()} state={state()} openMainInPlace={openMainInPlace} />);
     fireEvent.click(screen.getByRole("button", { name: "Loom" }));
     expect(openMainInPlace.mock.calls).toEqual([[]]);
+  });
+
+  // The header is only on the *loaded* page, and the screens that replace it are exactly the ones a
+  // browser refusing to store anything is most likely to end on: a §2.6 invalidation whose write
+  // reached only memory ends at `no-credential`. Their "Go to the main page" link follows the same
+  // rule as the wordmark, or the exception would have a hole where it matters most.
+  const errorState = () => state({ status: "error", error: "boom", weave: undefined, me: undefined });
+
+  it("offers the way back from the no-credential screen in place too", () => {
+    const openMainInPlace = vi.fn();
+    render(<WeaveView session={session()} state={noCredentialState()} openMainInPlace={openMainInPlace} />);
+    const back = screen.getByRole("button", { name: "Go to the main page" });
+    fireEvent.click(back);
+    expect([back.getAttribute("href"), screen.queryByRole("link", { name: "Go to the main page" }),
+      openMainInPlace.mock.calls]).toEqual([null, null, [[]]]);
+  });
+
+  it("offers a way back from the error card, which had none at all", () => {
+    render(<WeaveView session={session()} state={errorState()} />);
+    expect(screen.getByRole("link", { name: "Go to the main page" }).getAttribute("href")).toBe("/");
+  });
+
+  it("offers that one in place as well when leaving is not safe", () => {
+    render(<WeaveView session={session()} state={errorState()} openMainInPlace={() => {}} />);
+    expect([screen.queryByRole("link", { name: "Go to the main page" }),
+      !!screen.queryByRole("button", { name: "Go to the main page" })]).toEqual([null, true]);
+  });
+
+  // Deliberate, and documented: a page still resolving what it is has nothing to say about itself
+  // yet, and the wait is short. Every other state offers a way back.
+  it("offers no way back while the page is still loading", () => {
+    render(<WeaveView session={session()} state={state({ status: "loading", weave: undefined, me: undefined })}
+      openMainInPlace={() => {}} />);
+    expect(screen.queryByText("Go to the main page")).toBeNull();
   });
 });
 

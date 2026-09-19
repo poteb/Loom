@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { LoomClientError, type LoomClient } from "@loom/client";
 import type { KeyValueStorage, WriteResult } from "../../storage.js";
+import { leavingIsSafe, type PersistenceNotice } from "../../persistence.js";
 import type { WeavesSignal } from "../../weaves-signal.js";
 import {
   forgetWeave, hasIdentity, invalidateIdentity, isCredentialFailure, readerFor, readWeaveEntry,
@@ -107,10 +108,16 @@ function stateText(row: WeaveRow): string | undefined {
  * component owns exactly one `createRefreshQueue(6, …)` for the life of the mount, and the effect
  * below only computes what is newly on screen and hands it over.
  */
-export function MyWeaves({ client, storage, weaves, onWrite, openInPlace, lobbyWeaveId }: {
+export function MyWeaves({ client, storage, weaves, onWrite, notice, openInPlace, lobbyWeaveId }: {
   client: LoomClient; storage: KeyValueStorage; weaves: WeavesSignal;
   /** Every write this list makes reports its verdict here. Always `notice.note`. */
   onWrite: (r: WriteResult) => void;
+  /**
+   * Read, not written, through: `leavingIsSafe` needs the page's latch as well as the row's own
+   * entry, because a row that leaves this JS context takes every *other* memory-only entry with it.
+   * Reporting a verdict stays `onWrite`'s job, and `onWrite` is still only ever `notice.note`.
+   */
+  notice: PersistenceNotice;
   /** How a row opens a Weave whose entry lives only in this page's memory (spec §3.1). */
   openInPlace: (weaveId: string) => void;
   lobbyWeaveId?: string;
@@ -299,10 +306,14 @@ export function MyWeaves({ client, storage, weaves, onWrite, openInPlace, lobbyW
                 // a gone Weave's link leads nowhere either, so Copy link goes with the row link.
                 const dead = row.state === "unavailable" || note === GONE;
                 const link = row.secret === undefined ? undefined : `${location.origin}/w/${row.secret}`;
-                // Whether this row's credentials would survive leaving this JS context, asked of the
-                // entry as it stands — re-read on every render, so a later write that does persist
-                // turns the row back into an ordinary link with nothing clicked (spec §4.2).
-                const inMemoryOnly = row.weaveId !== undefined && storage.isPending(weaveKey(row.weaveId));
+                // Whether following this row may leave this JS context (spec §3.1, §4.2) — the one
+                // question, asked exactly as the way *back* to `/` asks it. Not only this entry's
+                // own verdict: a page load destroys every memory-only entry this browser holds, so
+                // a page that has already failed a write keeps all its rows in place, durable or
+                // not. The entry half is re-read on every render, so a write that does persist
+                // turns the row back into an ordinary link with nothing clicked.
+                const inMemoryOnly = !leavingIsSafe(storage, notice,
+                  row.weaveId === undefined ? undefined : weaveKey(row.weaveId));
                 const open = row.weaveId;
                 return (
                   <li key={key} class={`weave-row${dead ? " weave-row-dead" : ""}`}>

@@ -29,9 +29,24 @@ write returned `"memory"`, `openInPlace(weaveId)` renders the Weave **here**, in
 with the URL untouched — navigating would destroy the only copy of that credential. The exception
 runs both ways: every Weave page's header carries a **Loom** wordmark back to `/`, an ordinary
 `<a href="/">` normally, and `openMainInPlace()` — the mirror, which sets the route to `main` and
-leaves the URL alone — when this page's credentials live only in memory (this Weave's entry is a
-pending override, or the persistence notice is degraded, because the main page lists *every* entry
-this browser holds). Every other navigation is an ordinary `<a href>` full page load. The client is built against `location.origin`,
+leaves the URL alone — when leaving is not safe. The header is only on a loaded page, so the cards
+that replace it carry the same way back through the shared `HomeLink` ("Go to the main page"): the
+no-credential screen, `WeaveView`'s error card, and `LobbyRoute`'s no-Lobby and error cards. The
+`loading` card deliberately has none — a page still resolving what it is has nothing to say about
+itself yet. (The unknown-route card in `app.tsx` stays a plain anchor: it is the initial route, and
+nothing has written anything by then.) Every other navigation is an ordinary `<a href>` full page
+load.
+
+**One question decides all of it.** `leavingIsSafe(storage, notice, key?)`
+([src/persistence.ts](src/persistence.ts)) is asked by the header, those cards, My Weaves' row
+titles and the main page's **Open the Lobby**, in both directions and the same way. It is false when
+either half says so: `storage.isPending(key)` — that entry is a write `localStorage` refused, re-read
+on every render so a later durable write restores the ordinary link — or `notice.degraded()`, the
+page-scoped latch, which never clears because a browser that refused one write is not trusted with a
+page load again. The second half is what makes a *durable* My Weaves row a button on a page that has
+already failed a write: the load would take every **other** memory-only entry with it. `MainPage`
+subscribes to the notice so that latch reaches these links, and `MyWeaves` takes the notice as a
+prop to read it — `notice.note` is still the only `onWrite`. The client is built against `location.origin`,
 so the UI is always same-origin with its API. In development `pnpm dev` serves it on Vite and proxies
 `/api` (WebSocket included) to `http://127.0.0.1:3000`.
 
@@ -119,10 +134,10 @@ says which kind, and offers **Forget**) and `unresolved` (a legacy entry nothing
 Weave id yet: no link, but Copy link still works). It re-derives on every `WeavesSignal` bump, and
 refreshes only the rows on screen through [components/main/refresh-queue.ts](src/components/main/refresh-queue.ts)
 — one FIFO per mounted list, six requests in flight **in total across renders**, with a row's secret
-retry reusing its own slot. Rows link to `/weave/<id>`, never to `/w/<secret>` — except a row whose
-entry is memory-only (`storage.isPending`), whose title is a **button** that opens the Weave in
-place, because an anchor could be middle-clicked or opened in a new tab and a fresh JS context has
-neither the token nor the secret; the main page's **Open the Lobby** behaves the same way. **Copy link** falls
+retry reusing its own slot. Rows link to `/weave/<id>`, never to `/w/<secret>` — except a row that
+cannot safely be followed (`leavingIsSafe` above), whose title is a **button** that opens the Weave
+in place, because an anchor could be middle-clicked or opened in a new tab and a fresh JS context
+has neither the token nor the secret; the main page's **Open the Lobby** behaves the same way. **Copy link** falls
 back, when the clipboard is missing or refuses, to one selectable field with a **Hide** button — the
 only place a stored secret reaches the DOM here, and only after an explicit click on that row.
 
@@ -177,7 +192,7 @@ re-reads storage.
 - [src/storage.ts](src/storage.ts) — `WriteResult`, `KeyValueStorage` (including `isPending`: is this key's value memory-only *now*), `browserStorage` (override/tombstone layer), `memoryStorage`
 - [src/weaves-store.ts](src/weaves-store.ts) — `WeaveEntry`/`StoredWeave`, the key helpers, `saveWeaveEntry`, `setIdentity`, `invalidateIdentity`, `forgetWeave`, `hasIdentity`, `storedWeaves`, `mergeLegacy`, `migrateLegacy[One]`, `readerFor`, `isCredentialFailure`
 - [src/name.ts](src/name.ts) — `NAME_RE`, `isValidName`, `suggestName`: core's name rule, once
-- [src/persistence.ts](src/persistence.ts) — `PersistenceNotice`: the page-scoped latch for "this browser is not saving anything"
+- [src/persistence.ts](src/persistence.ts) — `PersistenceNotice`, the page-scoped latch for "this browser is not saving anything", and `leavingIsSafe`, the one predicate behind every in-place decision
 - [src/weaves-signal.ts](src/weaves-signal.ts) — `WeavesSignal`: "the stored Weaves changed", one per page, beside the storage instance
 - [src/markdown.ts](src/markdown.ts) — `renderMarkdown`: escaping, safe hrefs, mention spans
 - [src/styles.css](src/styles.css) — the stylesheet
@@ -194,6 +209,7 @@ re-reads storage.
 - [src/components/NamePrompt.tsx](src/components/NamePrompt.tsx) — choose a name before taking part
 - [src/components/WeaveRoute.tsx](src/components/WeaveRoute.tsx) — the one place a Weave page is mounted, for all three routes, plus the `/lobby` lookup and the unjoined-Lobby fork
 - [src/components/WeaveView.tsx](src/components/WeaveView.tsx) — one Weave page: the `banner`, the `no-credential` and read-only/rejoin branches, then today's layout
+- [src/components/HomeLink.tsx](src/components/HomeLink.tsx) — "Go to the main page" on the cards that replace a Weave: an anchor, or the in-place button
 - [src/components/PersistenceBar.tsx](src/components/PersistenceBar.tsx) — the one-time "this browser is not saving anything" bar
 - [src/components/main/MainPage.tsx](src/components/main/MainPage.tsx) — the `/` shell: four independent cells, the migration pass, the one bar
 - [src/components/main/InstanceGuidelines.tsx](src/components/main/InstanceGuidelines.tsx) — the public instance text, collapsed past 12 lines

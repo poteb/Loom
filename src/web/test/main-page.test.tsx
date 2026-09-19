@@ -654,6 +654,44 @@ describe("the way back to the main page from a Weave page (spec §3.1)", () => {
     expect([v.iAm(), v.writable()]).toEqual(["dana", true]);
   });
 
+  // The screens that replace the header are where a browser refusing to store anything is most
+  // likely to end up: an identity invalidated on load, whose invalidation itself did not persist,
+  // and no stored secret to fall back to. `/weave/<other>` is not the Lobby, so the fork's answer
+  // leaves the generic explanation on screen — with the way back that matters.
+  const DEAD: Routes = {
+    [`${BASE}/api/weaves/${OTHER}`]: () => json({ code: "invalid_token", message: "gone" }, 401),
+    [`${BASE}/api/weaves/${OTHER}/events?since=0&limit=1000`]: () => json({ code: "invalid_token", message: "gone" }, 401),
+  };
+  const heldNoSecret = (storage: KeyValueStorage) => {
+    setIdentity(storage, OTHER, { token: "dead-token", participantId: "p-gone", name: "dana" }, { title: "Test Weave" });
+    return storage;
+  };
+
+  it("offers an in-place button on the no-credential screen when nothing here persisted", async () => {
+    installThrowingLocalStorage();
+    mountApp({ path: `/weave/${OTHER}`, storage: heldNoSecret(browserStorage()), routes: DEAD });
+    await settle();
+    expect([!!screen.queryByText("This browser holds no key for this Weave."),
+      screen.queryByRole("link", { name: "Go to the main page" }),
+      !!screen.queryByRole("button", { name: "Go to the main page" })]).toEqual([true, null, true]);
+  });
+
+  it("renders the main page in place from there, with the URL unchanged", async () => {
+    installThrowingLocalStorage();
+    const v = mountApp({ path: `/weave/${OTHER}`, storage: heldNoSecret(browserStorage()), routes: DEAD });
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Go to the main page" }));
+    await settle();
+    expect([!!v.container.querySelector(".main-page"), location.pathname]).toEqual([true, `/weave/${OTHER}`]);
+  });
+
+  it("leaves that same screen an ordinary link when this browser does persist", async () => {
+    mountApp({ path: `/weave/${OTHER}`, storage: heldNoSecret(memoryStorage()), routes: DEAD });
+    await settle();
+    expect([!!screen.queryByText("This browser holds no key for this Weave."),
+      screen.getByRole("link", { name: "Go to the main page" }).getAttribute("href")]).toEqual([true, "/"]);
+  });
+
   it("keeps exactly one not-persisting bar across the whole round trip", async () => {
     installThrowingLocalStorage();
     const v = mountApp({ path: "/lobby", storage: browserStorage() });
@@ -1028,21 +1066,22 @@ const settleRows = async (rounds = 6) => { for (let i = 0; i < rounds; i++) awai
 
 function mountWeaves(opts: {
   storage?: KeyValueStorage; weaves?: WeavesSignal; lobbyWeaveId?: string;
-  routes?: Routes; fetchStub?: FetchStub; onWrite?: (r: WriteResult) => void;
+  routes?: Routes; fetchStub?: FetchStub; onWrite?: (r: WriteResult) => void; notice?: PersistenceNotice;
 } = {}) {
   const fetchStub = opts.fetchStub ?? stubFetch(opts.routes ?? {});
   const client = new LoomClient({ baseUrl: BASE, allowInsecure: true, fetch: fetchStub as unknown as typeof fetch });
   const storage = opts.storage ?? memoryStorage();
   const weaves = opts.weaves ?? createWeavesSignal();
+  const notice = opts.notice ?? createPersistenceNotice();
   const onWrite = vi.fn(opts.onWrite ?? ((_r: WriteResult) => {}));
   const openInPlace = vi.fn();
   const view = render(
-    <MyWeaves client={client} storage={storage} weaves={weaves} onWrite={onWrite}
+    <MyWeaves client={client} storage={storage} weaves={weaves} onWrite={onWrite} notice={notice}
       openInPlace={openInPlace} lobbyWeaveId={opts.lobbyWeaveId} />,
   );
   const rows = () => [...view.container.querySelectorAll(".weave-row")];
   return {
-    ...view, fetchStub, storage, weaves, onWrite, openInPlace, rows,
+    ...view, fetchStub, storage, weaves, notice, onWrite, openInPlace, rows,
     titles: () => rows().map((r) => r.querySelector(".weave-row-title")!.textContent),
     dead: (i: number) => rows()[i]!.classList.contains("weave-row-dead"),
     href: (i: number) => rows()[i]!.querySelector("a")?.getAttribute("href") ?? null,
@@ -1061,7 +1100,7 @@ describe("My Weaves renders from storage (spec §4.2)", () => {
     const host = document.createElement("div");
     document.body.appendChild(host);
     paint(<MyWeaves client={client} storage={storage} weaves={createWeavesSignal()} onWrite={() => {}}
-      openInPlace={() => {}} />, host);
+      notice={createPersistenceNotice()} openInPlace={() => {}} />, host);
     const painted = [host.textContent?.includes("Cached Weave"), fetchStub.mock.calls.length];
     paint(null, host);      // unmounted before the effect could be flushed: nothing is left behind
     host.remove();
@@ -1167,6 +1206,44 @@ describe("My Weaves row states (spec §4.2)", () => {
     await settleRows();
     expect([v.titles(), !!screen.queryByText("could not refresh"), v.href(0)])
       .toEqual([["Test Weave"], true, `/weave/${OTHER}`]);
+  });
+});
+
+/**
+ * One rule, both directions (spec §3.1, §4.2). A row asked only about **its own** entry, so on a
+ * page that has already failed a write, a durable row's `<a>` was a full page load that would have
+ * destroyed every *other* memory-only entry this browser holds — the very loss the header's own
+ * link refuses to risk. `leavingIsSafe` is now the one question, asked the same way on both sides.
+ */
+describe("My Weaves and the one rule for leaving (spec §3.1, §4.2)", () => {
+  const durableRow = () => {
+    const storage = memoryStorage();
+    setIdentity(storage, OTHER, { ...HELD, name: "dana" }, { title: "Test Weave" });
+    return storage;
+  };
+  const routes: Routes = { [weaveUrl(OTHER)]: () => json(weaveAnswer(OTHER, "Test Weave")) };
+
+  it("leaves a durable row an ordinary link while every write on this page has persisted", () => {
+    const v = mountWeaves({ storage: durableRow(), routes });
+    expect([v.container.querySelector(".weave-row-title")!.tagName, v.href(0)]).toEqual(["A", `/weave/${OTHER}`]);
+  });
+
+  it("opens even a durable row in place once some write on this page has not", () => {
+    const notice = createPersistenceNotice();
+    notice.note("memory");
+    const v = mountWeaves({ storage: durableRow(), routes, notice });
+    const title = v.container.querySelector(".weave-row-title")!;
+    fireEvent.click(title);
+    expect([title.tagName, title.getAttribute("href"), v.openInPlace.mock.calls])
+      .toEqual(["BUTTON", null, [[OTHER]]]);
+  });
+
+  it("still opens a memory-only row in place on a page whose other writes were fine", () => {
+    installLocalStorage((k) => k === weaveKey(OTHER));
+    const storage = browserStorage();
+    setIdentity(storage, OTHER, { ...HELD, name: "dana" }, { title: "Test Weave" });
+    const v = mountWeaves({ storage, routes });
+    expect(v.container.querySelector(".weave-row-title")!.tagName).toBe("BUTTON");
   });
 });
 
@@ -1722,7 +1799,7 @@ describe("My Weaves reports its writes (spec §4.2, §6)", () => {
       <>
         <PersistenceBar notice={notice} />
         <MyWeaves client={client} storage={opts.storage} weaves={createWeavesSignal()} onWrite={notice.note}
-          openInPlace={() => {}} />
+          notice={notice} openInPlace={() => {}} />
       </>,
     );
     return {
@@ -1809,7 +1886,7 @@ function mountCreate(opts: {
       <CreateWeaveForm client={client} storage={storage} notice={notice} weaves={weaves}
         defaultName={opts.defaultName} openInPlace={openInPlace} navigate={navigate} />
       {opts.withList && <MyWeaves client={client} storage={storage} weaves={weaves} onWrite={notice.note}
-        openInPlace={openInPlace} />}
+        notice={notice} openInPlace={openInPlace} />}
     </>,
   );
   const titleField = () => screen.getByLabelText("Title") as HTMLInputElement;
@@ -2201,6 +2278,20 @@ describe("a creation on the main page (spec §3.1, §4.5)", () => {
     await settle();
     await createOnPage();
     expect(v.container.querySelector(".weave-row-title")!.tagName).toBe("BUTTON");
+  });
+
+  // The same rule on the main page's own onward link: the Lobby entry here is perfectly durable,
+  // and it is the *creation* that did not persist — leaving would lose that, so nothing on this
+  // page may be an anchor.
+  it("opens the Lobby in place too once some write on this page has not persisted", async () => {
+    const notice = createPersistenceNotice();
+    notice.note("memory");
+    const storage = memoryStorage();
+    setIdentity(storage, LOBBY.weaveId, { token: "participant-token", participantId: "p-dana", name: "dana" });
+    const v = mountApp({ path: "/", storage, notice });
+    await settle();
+    const open = v.container.querySelector(".lobby-open button, .lobby-open a")!;
+    expect([open.tagName, open.getAttribute("href")]).toEqual(["BUTTON", null]);
   });
 
   it("opens the Lobby in place too when the identity for it lives only in memory", async () => {

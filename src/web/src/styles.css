@@ -11,6 +11,9 @@ body { margin: 0; font: 14px/1.45 system-ui, sans-serif; background: var(--bg); 
 .header .home-link { margin-right: 10px; color: var(--muted); font-size: 13px; text-decoration: none; }
 .header .home-link:hover { text-decoration: underline; }
 .header button.home-link { padding: 0; border: 0; background: none; font: inherit; font-size: 13px; cursor: pointer; }
+/* "Go to the main page" on the cards that replace a Weave. Same rule, same shape: when leaving is
+   not safe it is a button, and it must read as the link it stands in for. */
+.home-back { padding: 0; border: 0; background: none; font: inherit; color: var(--accent); text-decoration: underline; cursor: pointer; }
 .header-right { display: flex; gap: 12px; align-items: center; color: var(--muted); }
 .conn { font-size: 12px; } .conn-open { color: #16a34a; } .conn-reconnecting, .conn-connecting { color: #d97706; } .conn-closed { color: var(--danger); }
 .body { display: flex; flex: 1; min-height: 0; }

@@ -73,6 +73,12 @@ export async function createWeave(db: Db, bus: EventBus, input: CreateWeaveInput
   // `--opener` defaults to `""`, the web form makes the first message optional), so a Weave created
   // without one is born with two events and `lastSeq` 2. A non-blank opener is stored as given,
   // untrimmed, exactly as `postMessage` stores a message that passes the same check.
+  //
+  // One deliberate asymmetry with `postMessage`: it *rejects* `"   "` as `validation`, while here a
+  // whitespace-only opener is dropped silently. A creation is not a post — every adapter defaults
+  // the field, so the caller usually did not write anything at all, and failing a Weave's creation
+  // over the blank it was handed would be a worse answer than making the Weave without a first
+  // message.
   const hasOpener = opener.trim().length > 0;
   // Creation is the event: the Weave is born with these rules, so no weave.guidelines_changed.
   const guidelines = validateGuidelines(input.guidelines ?? "");

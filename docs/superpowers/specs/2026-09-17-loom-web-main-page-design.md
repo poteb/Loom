@@ -39,7 +39,12 @@ Found by the Lobby manual smoke test of 2026-09-17 (`v2-notes.md`, "Lobby smoke 
 > and with storage blocked that full page load dropped the in-memory identity. The header now
 > carries a **Loom** wordmark home, an ordinary `<a href="/">` normally and an in-place route switch
 > (`openMainInPlace`, the mirror of `openInPlace`) when this page's credentials would not survive
-> leaving the JS context (§3.1).
+> leaving the JS context (§3.1). **Review of that fix (2026-09-19):** the way back belongs on the
+> cards that replace the header too (the no-credential screen, the error cards, the no-Lobby card —
+> `loading` excepted), and the decision is now **one** predicate, `leavingIsSafe`, asked identically
+> on the way in (§4.1, §4.2) and on the way out (§3.1). Asking per entry alone had been wrong
+> inbound: on a degraded page a durable row's anchor would take every *other* memory-only entry
+> with it.
 >
 > **Planning review (2026-09-18).** Four points the plan needed and this text did not settle:
 >
@@ -592,10 +597,31 @@ and a **button** calling `openMainInPlace()` — which sets the route to `{ kind
 without touching the URL — when this page's credentials live only in this JS context. A button and
 not an anchor, for the same reason My Weaves' memory-only rows are buttons: an anchor can be
 middle-clicked or opened in a new tab, which is the full page load the exception exists to avoid.
-The condition is broader than the one the *inbound* links use, deliberately: they ask
-`storage.isPending` of the **one** entry they are about to open, while the destination here is the
-main page, which lists every entry this browser holds — so a degraded `PersistenceNotice` (any
-failed write on this page) counts as well as this Weave's own pending entry.
+
+The header is only on a **loaded** page, so the three cards that replace it carry the way back
+themselves, under the same rule: the no-credential screen of §3.3 (which is exactly where a §2.6
+invalidation whose write reached only memory ends up), `WeaveView`'s error card, and the
+instance-has-no-Lobby card. Their "Go to the main page" link is the shared `HomeLink`: an anchor, or
+a button calling `openMainInPlace`. The `loading` card deliberately carries none — a page still
+resolving what it is has nothing to say about itself yet, and the wait is short.
+
+#### One question, both directions
+
+`leavingIsSafe(storage, notice, key?)` ([`persistence.ts`](../../../src/web/src/persistence.ts)) is
+the single place the decision is made, and every in-place control in the app asks it: the header's
+wordmark, the three cards above, My Weaves' row titles (§4.2) and the main page's **Open the
+Lobby** (§4.1). It is `false` when either half says so.
+
+- **The entry**, when the caller has one destination in mind: `storage.isPending(key)`, a value
+  `localStorage` refused and this JS context is the only holder of. Re-read on every render, so a
+  later write that does persist turns the control back into an ordinary link with nothing clicked.
+- **The page**: `notice.degraded()`. This half **latches and never clears**, deliberately — a
+  browser that has already refused one write is not trusted with a full page load again. What such
+  a load costs is never only the one entry the control was pointing at: the main page lists every
+  entry this browser holds, and a Weave page may hold a Lobby identity written before an in-place
+  transition. Asking per entry alone was the earlier rule and it was wrong in one direction — on a
+  degraded page, a *durable* My Weaves row's `<a>` was a page load that destroyed every other
+  memory-only entry.
 
 `App` keeps the current target in `useState`, seeded from `location.pathname`; the in-place switch
 sets that state to `{ kind: "id", weaveId }` and `useSession` rebuilds the session on the new target,
@@ -734,9 +760,10 @@ link to `/lobby`, with the name this browser joined as ("You are in the Lobby as
 join is offered: core would answer `name_taken` on the same name and would silently create a
 *second* identity on a different one, which is worse. An entry whose identity is `"invalid"` is not
 "already joined" — it shows the form, with a line saying the previous identity stopped working. When
-that Lobby entry is memory-only (`isPending`, §2.4) the link becomes a button that opens the Lobby
-in place, for the reason §4.2 gives its rows: following a link would be the full page load that
-loses the identity.
+that leaving this page is not safe — `leavingIsSafe` (§3.1): the Lobby entry is memory-only, **or**
+any write on this page has failed — the link becomes a button that opens the Lobby in place, for
+the reason §4.2 gives its rows: following a link would be the full page load that loses the
+identity.
 
 ### 4.2 My Weaves
 
@@ -770,12 +797,16 @@ Per Paw's scale note, this has to survive hundreds of rows:
   (from the entry's `name`, §2.4), and — when the entry carries a `secret` — a **Copy link** action
   for `/w/<secret>`. The row links to `/weave/<id>`; it does **not** link to `/w/<secret>` even when
   the secret is known, so the address bar never gains a secret it did not already have (§5).
-- **A row whose entry is memory-only is not a link at all.** When `storage.isPending(weaveKey(id))`
-  (§2.4), the title is a **button** that opens the Weave in place (§3.1) — not an anchor with a
-  click handler, because an anchor can be middle-clicked or opened in a new tab, and either one is
-  the full page load that loses the only copy of that Weave's credentials. Durable rows stay ordinary
-  anchors: a full page load remains the rule. The question is asked on every render, so a later
-  write that does persist turns the row back into a link with nothing clicked.
+- **A row that cannot safely be followed is not a link at all.** When
+  `leavingIsSafe(storage, notice, weaveKey(id))` is false (§3.1) — this row's entry is memory-only,
+  **or** any write on this page has failed — the title is a **button** that opens the Weave in
+  place, not an anchor with a click handler, because an anchor can be middle-clicked or opened in a
+  new tab, and either one is the full page load that loses credentials this JS context is the only
+  holder of. The page half matters as much as the row's own: a *durable* row on a degraded page
+  would otherwise be a page load that destroys every **other** memory-only entry beside it. Rows on
+  a quiet page stay ordinary anchors — a full page load remains the rule — and the entry half is
+  asked on every render, so a later write that does persist turns a row back into a link with
+  nothing clicked.
 - **Copy link must always answer.** An insecure origin has no `navigator.clipboard` at all, and a
   clipboard that exists can refuse — by rejecting, or by throwing outright. All three fall back to
   showing the link in one selectable read-only field with a **Hide** button beside it. That field is

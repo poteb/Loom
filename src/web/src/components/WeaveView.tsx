@@ -3,6 +3,7 @@ import type { JSX } from "preact";
 import { LoomClientError } from "@loom/client";
 import type { Session, SessionState } from "../session.js";
 import { Header } from "./Header.js";
+import { HomeLink } from "./HomeLink.js";
 import { ThreadList } from "./ThreadList.js";
 import { MessageList } from "./MessageList.js";
 import { Composer } from "./Composer.js";
@@ -31,9 +32,11 @@ export function WeaveView({ session, state, banner, noCredential, openMainInPlac
   /** Rendered instead of the generic explanation when `status` is `"no-credential"`. */
   noCredential?: JSX.Element | null;
   /**
-   * Given only when leaving this JS context would lose what this page holds (spec §3.1): the
-   * header's way back to `/` then switches the route in place instead of being an `<a href>`. The
-   * route decides; this view renders what it was handed, and an ordinary link without it.
+   * Given only when leaving this JS context would lose what this page holds (spec §3.1): every way
+   * back to `/` this view renders — the header's wordmark on a loaded page, and the "Go to the main
+   * page" link on the two cards that replace it — then switches the route in place instead of being
+   * an `<a href>`. The route decides (`leavingIsSafe`); this view renders what it was handed, and
+   * ordinary links without it.
    */
   openMainInPlace?: () => void;
 }) {
@@ -49,9 +52,17 @@ export function WeaveView({ session, state, banner, noCredential, openMainInPlac
   // forces it: a §2.6 invalidation whose write reached only memory, on an entry with no secret,
   // ends here at `no-credential` — and without the bar the page says the identity is dead and never
   // says the browser is keeping nothing, which is the one thing the human can act on (§6).
-  if (state.status === "no-credential") return <>{banner}{noCredential ?? <NoCredential state={state} />}</>;
+  // The header, and with it the wordmark home, belongs to the loaded page — so these three cards
+  // carry the way back themselves, under the same rule (§3.1). `loading` deliberately carries none:
+  // a page still resolving what it is has nothing to say about itself yet, and the wait is short.
+  if (state.status === "no-credential") {
+    return <>{banner}{noCredential ?? <NoCredential state={state} openMainInPlace={openMainInPlace} />}</>;
+  }
   if (state.status === "loading") return <>{banner}<div class="center">Loading…</div></>;
-  if (state.status === "error") return <>{banner}<div class="center error"><h1>Loom</h1><p>{state.error}</p></div></>;
+  if (state.status === "error") {
+    return <>{banner}<div class="center error"><h1>Loom</h1><p>{state.error}</p>
+      <p><HomeLink openMainInPlace={openMainInPlace} /></p></div></>;
+  }
 
   const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
   // Every mutation funnels through here so none of them can swallow a failure or leave an unhandled
@@ -136,7 +147,7 @@ export function WeaveView({ session, state, banner, noCredential, openMainInPlac
  * field (§10.8): the two ways in are a link someone sends and an invitation that follows a Lobby
  * request, and both of them arrive from outside this page.
  */
-function NoCredential({ state }: { state: SessionState }) {
+function NoCredential({ state, openMainInPlace }: { state: SessionState; openMainInPlace?: () => void }) {
   return (
     <div class="center">
       <h1>Loom</h1>
@@ -147,7 +158,9 @@ function NoCredential({ state }: { state: SessionState }) {
         Two ways in: the <code>/w/&lt;secret&gt;</code> link its keeper can send you, or a request in
         the Lobby that ends in an invitation.
       </p>
-      <p><a href="/">Go to the main page</a></p>
+      {/* The screen a §2.6 invalidation whose write reached only memory ends on — so this link, of
+          all of them, is the one that must not be a full page load. */}
+      <p><HomeLink openMainInPlace={openMainInPlace} /></p>
     </div>
   );
 }
