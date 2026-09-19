@@ -29,6 +29,13 @@
       "when": 1789592632978,
       "tag": "0003_steep_dracula",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1789860034572,
+      "tag": "0004_furry_captain_stacy",
+      "breakpoints": true
     }
   ]
 }

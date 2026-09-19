@@ -25,4 +25,18 @@ describe("migrations", () => {
     const pcol = await db.execute(sql`select column_name from information_schema.columns where table_name = 'participants' and column_name = 'agent_id'`);
     expect(pcol.length).toBe(1);
   });
+
+  // Existence alone would pass just as happily on the wrong operator class or a full index: the
+  // listeners query is planned against `capabilities @> …`, which only `jsonb_path_ops` serves, and
+  // the partial predicate is what keeps the index to the listeners.
+  it("indexes participants.capabilities with a partial jsonb_path_ops GIN index", async () => {
+    const db = await freshDb();
+    const rows = await db.execute<{ indexdef: string }>(
+      sql`select indexdef from pg_indexes where tablename = 'participants' and indexname = 'participants_capabilities_idx'`,
+    );
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.indexdef).toContain("USING gin");
+    expect(rows[0]!.indexdef).toContain("jsonb_path_ops");
+    expect(rows[0]!.indexdef).toContain("WHERE (capabilities IS NOT NULL)");
+  });
 });

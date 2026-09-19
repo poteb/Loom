@@ -51,6 +51,11 @@ export const participants = pgTable("participants", {
 }, (t) => [
   uniqueIndex("participants_weave_name_idx").on(t.weaveId, sql`lower(${t.name})`),
   uniqueIndex("participants_weave_agent_idx").on(t.weaveId, t.agentId),
+  // `@>` over the whole profile document is what every listener filter is built from; partial
+  // because listeners are a minority of participants, and `capabilities IS NOT NULL` is a constant
+  // predicate. `jsonb_path_ops` indexes `@>` at about half the size of the default class.
+  index("participants_capabilities_idx").using("gin", sql`${t.capabilities} jsonb_path_ops`)
+    .where(sql`${t.capabilities} IS NOT NULL`),
 ]);
 
 export const keepers = pgTable("keepers", {
