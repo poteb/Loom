@@ -7,9 +7,12 @@ Sub-project: the first slice of "Web client layout for a busy instance" in the v
 (`2026-09-17-loom-web-main-page-design.md`); everything not mentioned here is unchanged.
 Design brainstormed with and approved by Paw on 2026-09-19 (`.superpowers/listeners-page-brainstorm.md`).
 
-Depends on the smoke-test-5 fix branch (`fix/blank-opener-and-home-link`), which adds
-`openMainInPlace` to `RouteDeps` and the header's way home. This spec's in-place rules are written
-against that shape and **land with PR for smoke-test-5 fixes**.
+**Builds on PR #18** (the smoke-test-5 fixes) and on `main` after it. That work adds
+`openMainInPlace` to `RouteDeps`, the header's way home, the shared
+[`HomeLink`](../../../src/web/src/components/HomeLink.tsx) and the single
+[`leavingIsSafe(storage, notice, key?)`](../../../src/web/src/persistence.ts) rule that this spec's
+in-place decisions are expressed in. `src/web/src/session.ts` is **not** touched by that PR, so
+every `session.ts` line cited here is equally true before and after it.
 
 > **Revised after spec review (2026-09-19).** Seven findings, all verified against the code, are
 > folded into the text rather than appended:
@@ -20,8 +23,8 @@ against that shape and **land with PR for smoke-test-5 fixes**.
 >    ([`session.ts:173, 542-546`](../../../src/web/src/session.ts)) — the Offer form would have
 >    vanished for an eligible, joined listener. `getWeave` now blanks **every** Lobby profile with no
 >    exception, and a new `GET /api/lobby/participants/me` answers "my own profile" for all three
->    routes (§3.1, §3.3, §4.1, §5.1). This **changes assumption §12.3 after Paw confirmed it** and is
->    listed there for re-confirmation.
+>    routes (§3.1, §3.3, §4.1, §5.1). This replaced the shape of assumption §12.3 that Paw had
+>    already confirmed; **he confirmed the new one on 2026-09-19** ("I accept 12.3").
 > 2. **The listener count is read on four triggers, not one.** `doLoad` does not call `refreshInfo`
 >    ([`session.ts:469-584`](../../../src/web/src/session.ts)), so a count added only to the refresh
 >    would never appear on a quiet Lobby (§5.1).
@@ -39,6 +42,32 @@ against that shape and **land with PR for smoke-test-5 fixes**.
 >    over the event log. This change removes the repeated snapshot, not the transport (§1, §5.1, §11).
 > 7. **A listener always has an owner**, so owner paging has no null tail (§2.5). The invariant is
 >    stated, cited and tested rather than defended with cursor logic for an unreachable state.
+>
+> **Second review round (2026-09-19).** Five more, again folded in:
+>
+> 8. **A generation guard is not an ordering guard.** Both side reads are started from several call
+>    sites and can overlap *within* one generation, so an older answer could restore a profile that a
+>    newer one cleared. Each now carries a **request number** and is applied only if it is newer than
+>    the last applied one, and the profile cache is **owned by an identity** — keyed to the
+>    participant id and token it was read for, so a join or an invalidation retires it (§3.3, §5.1,
+>    §7).
+> 9. **A rejected own-profile read invalidates the identity.** It is made with `me.token`, which on a
+>    secret-link visit is *not* the credential the page reads with, so
+>    `recoverFromCredentialFailure` returns early for it
+>    ([`session.ts:145`](../../../src/web/src/session.ts)) and a dead token would have been left in
+>    state and in storage. The helper now names **which** credential failed, and the identity-only
+>    case invalidates without reloading a page that is reading perfectly well (§3.3, §7).
+> 10. **The `joined` cursor is lossless.** `toPublicParticipant` renders `joined_at` through a JS
+>     `Date` ([`actors.ts:11-15`](../../../src/core/src/actors.ts)), which keeps milliseconds, while
+>     the column is `timestamptz` — microseconds
+>     ([`db/schema.ts:50`](../../../src/core/src/db/schema.ts)). The cursor key is now selected as
+>     **text in SQL** and compared as `timestamptz`, never round-tripped through a `Date` (§2.5).
+> 11. **Facets include the selection even at zero.** A ranked top-N cannot contain a value whose
+>     count under the other filters is zero, because the aggregate has no row for it. Every facet now
+>     `LEFT JOIN`s the selected values onto its aggregate with `coalesce(count, 0)` (§2.7, §2.8).
+> 12. **Models are ranked one row per model.** Ranking over a grouping-set result ranked *effort*
+>     rows too, so a model with many efforts pushed others out of the top 20. The query is now two
+>     stages, models then efforts within the kept models (§2.8).
 
 ## 1. Purpose and scope
 
@@ -388,12 +417,58 @@ and the next page is, written out for both directions:
 (joined_at, id) > ($k::timestamptz, $i)       (joined_at, id) < ($k::timestamptz, $i)
 ```
 
-`k` is the lowered name, the lowered owner, or the `joined_at` as an ISO-8601 string cast back to
-`timestamptz` — never a locale-formatted one, so the comparison is on the value and not on its
-rendering. Text comparisons use the database's collation, which is also what the `ORDER BY` uses:
-the two must be the same expression or the page can skip or repeat a row. The tuple form is
-deliberate — `k > $k OR (k = $k AND id > $i)` is the same thing written so that a future edit can
-get it wrong — and it is total because every key is non-null (above) and `id` is a primary key.
+`k` is the lowered name, the lowered owner, or the `joined_at` **as the database rendered it**.
+Text comparisons use the database's collation, which is also what the `ORDER BY` uses: the two must
+be the same expression or the page can skip or repeat a row. The tuple form is deliberate —
+`k > $k OR (k = $k AND id > $i)` is the same thing written so that a future edit can get it wrong —
+and it is total because every key is non-null (above) and `id` is a primary key.
+
+#### The `joined` key must not lose precision
+
+`participants.joined_at` is `timestamp("joined_at", { withTimeZone: true })`
+([`db/schema.ts:50`](../../../src/core/src/db/schema.ts)) — Postgres `timestamptz`, **microsecond**
+resolution. Every existing mapper renders a timestamp through a JS `Date`:
+`toPublicParticipant` does `p.joinedAt.toISOString()`
+([`actors.ts:11-15`](../../../src/core/src/actors.ts)), as do `toPublicWeave` and `toPublicThread`
+([`weaves.ts:29-38`](../../../src/core/src/weaves.ts)). A JS `Date` holds **milliseconds**.
+
+Taking the cursor key from that value would be a real paging bug, not a rounding curiosity. A row at
+`…:00.123456Z` encoded as `…:00.123Z` is **less than** its own row's true value, so:
+
+- **ascending**, `(joined_at, id) > ('…123Z', $i)` is true for that same row again — it appears on
+  the next page too, a **duplicate**;
+- **descending**, `(joined_at, id) < ('…123Z', $i)` is false for every row between `.123000` and
+  `.123456` — they are **skipped**, silently.
+
+So the rule:
+
+> **The `joined` cursor key is produced by the database, as text, and handed back to the database as
+> text.** The page query selects it beside the row:
+>
+> ```sql
+> to_char(p.joined_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_key
+> ```
+>
+> that exact string goes into the cursor's `k` verbatim, and the next page compares
+> `(p.joined_at, p.id) > ($k::timestamptz, $i)`. **No JS `Date` is constructed anywhere on that
+> path.**
+
+- **`to_char` rather than `joined_at::text`** because `::text` renders in the session's `TimeZone`
+  and `DateStyle`, so the same instant could produce different strings on two connections — and a
+  cursor is compared, stored in a URL, and handed back later. `AT TIME ZONE 'UTC'` plus an explicit
+  format is stable under any session settings. `.US` is microseconds, which is the column's full
+  resolution.
+- **The driver returns it as a string by construction.** `to_char` produces `text`, and
+  postgres-js parses by the result's own type OID — there is no column type for it to consult and no
+  `Date` to build ([`db/index.ts:17-19`](../../../src/core/src/db/index.ts): a plain
+  `drizzle(postgres(url), …)` with no custom type parsers registered). This is why the key is
+  computed in SQL rather than formatted in TypeScript from a value the driver already truncated:
+  by the time a `Date` exists, the microseconds are gone.
+- **The displayed `joinedAt` stays exactly as it is** — millisecond ISO through
+  `toPublicParticipant`. Nothing in the UI needs microseconds, `PublicParticipant` does not change,
+  and the cursor key is a separate, internal value that never appears on the participant.
+- **`name` and `owner` need no equivalent**, being `text` already: they are selected as
+  `lower(name)` / `lower(capabilities->>'owner')` and compared against the same expression.
 
 - **A malformed cursor** — not base64url, not JSON, missing a field, or an `i` that is not a uuid —
   is `validation`, never a silently-ignored first page. A caller that pages with rubbish should hear
@@ -456,10 +531,26 @@ re-run with the same data gives the same twenty. Beyond twenty the facet reports
 `more: true` and no bucket: an "other" count would be a number the UI can do nothing with, since
 there is no chip to click. The page says "20 most common — narrow the search to see the rest".
 
-**A selected value is always present.** If the caller filtered on a model that is not in its facet's
-top twenty, that model's row is appended to the facet's values (with its own count, computed by the
-same rule). Without this the UI would drop the chip the human just clicked, which is unarguably
-worse than a facet of 21 rows. The same holds for tools and runtime.
+**A selected value is always present — including at zero.** If the caller filtered on a model that
+is not in its facet's top twenty, that model's row is appended, with its own count computed by the
+same rule. Without this the UI would drop the chip the human just clicked, which is unarguably worse
+than a facet of 21 rows. The same holds for tools, runtimes and the efforts inside a model.
+
+The part that needs saying out loud, because the obvious SQL cannot do it: **a selected value whose
+count under the *other* filters is zero has no aggregate row at all**, so no amount of "or it is
+selected" ranking can recover it — there is nothing to rank. It is also not a hypothetical: pick
+`shell` under tools and `python` under runtime, and a runtime facet computed over the tools filter
+may legitimately have no `python` row left. So every facet **left-joins its selected values onto its
+aggregate** and reports `coalesce(count, 0)` (§2.8).
+
+> **The response rule.** Every value the caller selected appears in its facet's list, with its true
+> count under the other filters — **which may be `0`**. Selected values that fall outside the ranked
+> top-N are appended after it, ordered among themselves by the same `count desc, value asc`.
+
+The UI renders a zero-count selected chip as **selected and empty** — visibly chosen, visibly
+matching nobody — rather than hiding it, because a chip the human cannot see is a filter they cannot
+remove. That is the difference between "no listener matches these filters" with a way out and the
+same message with none.
 
 **The models facet is keyed by model, with efforts nested — and the efforts are bounded too.** That
 is what the two-step control of §5.3 needs: pick `opus-5` (count across all its efforts), then
@@ -574,31 +665,99 @@ The queries per call:
 | 1 | `count(*)` over the base predicate | `total` |
 | 2 | `count(*)` over base + `q` + all filters | `matched` |
 | 3 | the page: base + `q` + all filters + cursor comparison, `ORDER BY <key>, id`, `LIMIT limit + 1` | the rows, and whether there is a next page |
-| 4 | the models facet, bounded in SQL — one CTE of `(model, effort, count(DISTINCT p.id))` over `jsonb_array_elements(p.capabilities->'models')` with `<base + q + tools + runtime + serves>`, `GROUP BY GROUPING SETS ((model), (model, effort))`, then `rank() OVER (ORDER BY model count DESC, model)` ≤ 21 **or** the model is selected, and within each kept model `rank() OVER (PARTITION BY model ORDER BY effort count DESC, effort)` ≤ 11 **or** the pair is selected | the models facet |
-| 5 | `SELECT t.value, count(DISTINCT p.id) FROM participants p, jsonb_array_elements_text(p.capabilities->'tools') t WHERE <base + q + models + runtime + serves> GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 21` | the tools facet |
-| 6 | `SELECT p.capabilities->>'runtime' AS v, count(DISTINCT p.id) … GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 21` | the runtimes facet |
+| 4 | the models facet — two ranking stages plus the selection, written out below | the models facet |
+| 5 | the tools facet — ranked top 21 `UNION` the selected tools left-joined onto the aggregate | the tools facet |
+| 6 | the runtimes facet — the same shape as 5 | the runtimes facet |
 | 7 | three `count(*) FILTER (WHERE …)` in one row | the serves facet |
 
-Notes on that table, each of them a decision:
+**Query 4, in full**, because two things about it are easy to get wrong and both were:
 
-- **`LIMIT 21`, not 20** (queries 5 and 6), is how `more` is answered without a second
-  `count(distinct …)`. The same trick as `LIMIT limit + 1` on the page. Query 7 is three rows by
-  construction and needs neither.
-- **Query 4 counts listeners, not entries.** A listener that offers `opus-5/high` and `opus-5/low`
-  must count **once** for `opus-5`, and a profile with a duplicated entry (nothing forbids
-  `[{model:"m",effort:"high"},{model:"m",effort:"high"}]`) must not count twice — so every count is
-  `count(DISTINCT p.id)`, and the per-model total is its own grouping set rather than a sum of the
-  per-effort ones.
-- **Query 4 is bounded in SQL, in both dimensions.** The ranks above keep at most 21 models and at
-  most 11 efforts per kept model, so **at most ~231 rows plus the selected ones** cross the
-  boundary, whatever the instance looks like. Doing it in TypeScript instead would mean shipping one
-  row per distinct (model, effort) pair in use — which §2.7 shows is unbounded, since `effort` is
-  free text and 10,000 listeners can declare 10,000 of them. The 21st and 11th rows exist for the
-  same reason `LIMIT 21` does below: they answer `more` and `moreEfforts` without a second count.
-  The fold in TypeScript is then pure shaping: drop the overflow row, set the flags, nest.
-- **Queries 5 and 6 likewise count `DISTINCT p.id`**: `jsonb_array_elements_text` over a profile
-  that lists a tool twice would otherwise count that listener twice. Runtime is scalar and needs no
-  `DISTINCT`, but carries it for symmetry and costs nothing.
+```sql
+WITH base AS (                                    -- the population this facet is computed over
+  SELECT p.id, p.capabilities FROM participants p
+  WHERE p.weave_id = $1 AND p.capabilities IS NOT NULL
+    AND <q> AND <tools> AND <runtime> AND <serves>          -- every filter but this facet's own
+), pairs AS (                                     -- one row per (listener, model, effort)
+  SELECT DISTINCT b.id, m->>'model' AS model, m->>'effort' AS effort
+  FROM base b, jsonb_array_elements(b.capabilities->'models') m
+), model_counts AS (                              -- ONE row per model
+  SELECT model, count(DISTINCT id) AS listeners FROM pairs GROUP BY model
+), ranked_models AS (
+  SELECT model, listeners,
+         row_number() OVER (ORDER BY listeners DESC, model) AS rn
+  FROM model_counts
+), kept_models AS (
+  SELECT model, listeners FROM ranked_models WHERE rn <= 21
+  UNION                                           -- the selection, even at zero
+  SELECT s.model, coalesce(mc.listeners, 0)
+  FROM unnest($selectedModels::text[]) AS s(model)
+  LEFT JOIN model_counts mc ON mc.model = s.model
+), effort_counts AS (                             -- only for the models that survived
+  SELECT p.model, p.effort, count(DISTINCT p.id) AS listeners
+  FROM pairs p JOIN kept_models k ON k.model = p.model
+  GROUP BY p.model, p.effort
+), ranked_efforts AS (
+  SELECT model, effort, listeners,
+         row_number() OVER (PARTITION BY model ORDER BY listeners DESC, effort) AS rn
+  FROM effort_counts
+), kept_efforts AS (
+  SELECT model, effort, listeners FROM ranked_efforts WHERE rn <= 11
+  UNION
+  SELECT s.model, s.effort, coalesce(ec.listeners, 0)
+  FROM unnest($selModels::text[], $selEfforts::text[]) AS s(model, effort)
+  LEFT JOIN effort_counts ec ON ec.model = s.model AND ec.effort = s.effort
+)
+SELECT k.model, k.listeners, e.effort, e.listeners AS effort_listeners
+FROM kept_models k LEFT JOIN kept_efforts e ON e.model = k.model;
+```
+
+and queries 5 and 6 are the same shape with one stage:
+
+```sql
+WITH base AS ( … every filter but this facet's own … ),
+tool_counts AS (
+  SELECT t.value AS tool, count(DISTINCT b.id) AS listeners
+  FROM base b, jsonb_array_elements_text(b.capabilities->'tools') t GROUP BY 1
+), ranked AS (
+  SELECT tool, listeners, row_number() OVER (ORDER BY listeners DESC, tool) AS rn FROM tool_counts
+)
+SELECT tool, listeners FROM ranked WHERE rn <= 21
+UNION
+SELECT s.tool, coalesce(tc.listeners, 0)
+FROM unnest($selectedTools::text[]) AS s(tool) LEFT JOIN tool_counts tc ON tc.tool = s.tool;
+```
+
+Notes, each of them a decision:
+
+- **Ranking happens on one row per model.** `model_counts` collapses to exactly one row per model
+  *before* `row_number()` runs. An earlier draft ranked a `GROUPING SETS` result, which contains the
+  model's own row **and** one row per effort — so the rank advanced by effort rows and a model with
+  50 efforts pushed twenty perfectly ordinary models past the cut. Two stages, and the second one
+  only sees models the first one kept.
+- **A listener that offers one model at two efforts counts once for that model.** `pairs` is
+  `DISTINCT` on `(id, model, effort)` and `model_counts` is `count(DISTINCT id)`, so neither two
+  efforts nor a duplicated entry (nothing forbids
+  `[{model:"m",effort:"high"},{model:"m",effort:"high"}]`) inflates it. Per-effort counts are
+  `count(DISTINCT id)` for the same reason, and queries 5 and 6 likewise — a profile that lists a
+  tool twice must not count twice.
+- **`row_number()`, not `rank()`.** The `ORDER BY` ends in the value itself, which is unique within
+  the group, so ties are already fully broken; `row_number()` then returns *exactly* 21 rows where
+  `rank()` could return more, and "exactly 21" is what the `more` flag is read from.
+- **The 21st and 11th rows are the `more` and `moreEfforts` flags**, the same trick as
+  `LIMIT limit + 1` on the page: one extra row instead of a second `count(distinct …)`.
+- **`unnest($selected::text[])` with a `LEFT JOIN` is how a selection at zero survives** (§2.7).
+  Ranking "or selected" cannot do it, because a value with no matches has no row in the aggregate to
+  select. `unnest` over two parallel arrays gives the (model, effort) pairs the same treatment. With
+  nothing selected the arrays are empty and the `UNION` adds nothing.
+- **`UNION`, not `UNION ALL`**, so a selected value that *is* in the top N appears once. The rows
+  are identical in that case — same value, same count — so the deduplication is exact rather than
+  approximate.
+- **The `serves` facet needs none of this**: it is three `count(*) FILTER` expressions over a fixed
+  set of kinds, so every kind is always present with its count, zeros included (§2.7).
+- **Bounded, whatever the instance looks like**: at most 21 models × 11 efforts plus the selection
+  crosses the boundary from query 4, and 21 rows plus the selection from each of 5 and 6. The fold
+  in TypeScript is then pure shaping — drop the overflow rows, set `more`/`moreEfforts`, nest the
+  efforts, append the selected extras in `count desc, value asc` order.
 - **The `capabilities->'…'` in queries 4 and 5 is a projection, not a predicate.** `->` there feeds
   `jsonb_array_elements`, which is what is being *selected from*; the index rule above is about the
   left operand of `@>` in a `WHERE` clause, and these queries' `WHERE` is the same
@@ -826,26 +985,136 @@ export async function getMyLobbyParticipant(db: Db, actor: Actor): Promise<Publi
 
 #### How the session uses it
 
-One field and one helper, so no component changes:
+One cache, one helper, one apply rule, so no component changes:
 
-- The session keeps `myLobbyProfile: Profile | null | undefined` (`undefined` = not read yet) and
-  builds `me` through a single `withMyProfile(participant)` that overrides `capabilities` with it.
-  **Every** place that sets `me` goes through that helper — the ready patch in `doLoad`
+```ts
+/** The profile cache is **owned by an identity**: it is only ever applied to the participant and
+ *  token it was read for, and it retires with them. */
+type OwnProfile = { participantId: string; token: string; profile: Profile | null };
+let ownProfile: OwnProfile | undefined;
+let ownProfileSeq = 0;          // incremented when a read STARTS
+let ownProfileApplied = 0;      // the number of the newest read whose answer was applied
+```
+
+- **`withMyProfile(p)` is the single place `me` is built**:
+  `p.id === ownProfile?.participantId ? { ...p, capabilities: ownProfile.profile } : { ...p, capabilities: null }`.
+  Every site that sets `me` goes through it — the ready patch in `doLoad`
   ([`session.ts:571`](../../../src/web/src/session.ts)), the `me` re-derivation in `refreshInfo`
   ([`session.ts:280-281`](../../../src/web/src/session.ts)) and the post-join patch
   ([`session.ts:652`](../../../src/web/src/session.ts)) — otherwise the next refresh would quietly
-  blank the profile again, which is precisely the class of bug this finding was.
+  blank the profile again. Because the helper compares the id, a cache belonging to a *previous*
+  identity can never be painted onto a new one: identity ownership is enforced where the value is
+  used, not only where it is stored.
 - It is read **only on the Lobby** (`onLobby()`), **only when `me` exists**, and with
   `client.withToken(state.me.token)` rather than with `reader`.
 - Triggers: after the ready patch in `doLoad`; after a late Lobby discovery in `retryLobbyData`;
   and on a `participant.capabilities_changed` whose `payload.participantId === me.id`. The refresh
   that the same event already schedules is the backstop, not the mechanism.
-- Generation-guarded and non-fatal, exactly as the count is (§5.1): a failure keeps the last known
-  value and never fails the load. On the very first load a failure leaves `undefined`, and the
-  Offer form is simply not offered until a later read succeeds — the honest rendering, since the
-  form needs the model list to submit at all.
-- `RequestsPanel` is **unchanged**. It still reads `me.capabilities`; the difference is only where
-  the session got it.
+
+##### The apply rule: a generation guard is not an ordering guard
+
+These reads start from three call sites and can therefore be **in flight at the same time inside one
+generation** — a load's read and the read triggered by a profile change a moment later. Nothing
+about the generation counter orders them, so an older answer landing last would restore a profile
+the newer one had just cleared. Two things are needed, and both are cheap:
+
+> **Sequencing.** Each read takes `const n = ++ownProfileSeq` when it *starts*. Its answer is
+> applied only if `n > ownProfileApplied`, and applying it sets `ownProfileApplied = n`. An older
+> answer that lands late is dropped.
+>
+> **Identity ownership.** The answer is applied only if `state.me` still names the same
+> `participantId` **and** holds the same `token` the read was made with. A join, a rejoin after an
+> invalidation, or any other identity change therefore discards it — even within one generation.
+
+```ts
+// on the answer, in this order
+if (disposed || myGeneration !== generation) return;                       // the generation guard
+if (n <= ownProfileApplied) return;                                        // sequencing
+if (state.me?.participant.id !== forId || state.me.token !== forToken) return;   // identity
+ownProfileApplied = n;
+ownProfile = { participantId: forId, token: forToken, profile: answer.capabilities };
+set({ me: withMyProfile(state.me.participant) });
+```
+
+**Sequencing rather than coalescing**, deliberately. `scheduleRefresh` coalesces because it owns a
+*retry loop* whose slot has to belong to a generation
+([`session.ts:409-431`](../../../src/web/src/session.ts)) — real bookkeeping, justified there. Here
+the concern is purely ordering: two integers, checked where the answer is applied, and the rule is
+visible in one place instead of being distributed across three call sites that would each have to
+consult a slot. Redundancy is not a problem worth the extra machinery either: the only trigger that
+is not already coalesced upstream by `scheduleRefresh` is the event naming **me**, which fires when
+*this* participant's own profile changes — one edit, one event, not a fan-out.
+
+**The cache retires with the identity.** It is cleared by `join()` (a rejoin is a different
+participant, with no profile until it sets one — and `join` deliberately does **not** bump the
+generation, [`session.ts:651-653`](../../../src/web/src/session.ts), which is exactly why the
+identity check above is not redundant), by the invalidation path below, and by a new `doLoad`
+(which bumps the generation, [`session.ts:472`](../../../src/web/src/session.ts), retiring every
+read in flight).
+
+##### When the own-profile read is *rejected*
+
+Not every failure is the same failure, and treating them alike would leave a dead credential in
+state and in storage:
+
+| Failure | Meaning | What happens |
+| --- | --- | --- |
+| network, 5xx, timeout | the server did not answer | keep the last value, retry on the next trigger. Nothing is invalidated |
+| `401 invalid_token` / `403 forbidden` (`isCredentialFailure`, [`weaves-store.ts:208-210`](../../../src/web/src/weaves-store.ts)) | **this identity is provably dead** | invalidate it, below |
+
+This is the case that only exists because the read uses a *different credential from the page*. On
+`/w/<lobby secret>` the metadata read succeeds (it is made with the secret) while the own-profile
+read is rejected — so without a rule the page would go on showing `me`, and the Offer form, for a
+token the server has already refused, and `localStorage` would keep it for the next visit.
+
+The existing [`recoverFromCredentialFailure`](../../../src/web/src/session.ts) cannot be reused
+as-is: its first guard is `if (!readingWithToken || …) return undefined`
+([`session.ts:145`](../../../src/web/src/session.ts)) — it was written for failures of the **page
+reader**, and on a secret target `readingWithToken` is false. So it gains a parameter naming which
+credential failed:
+
+```ts
+const recoverFromCredentialFailure = (e: unknown, failed: "page" | "identity" = "page") => …
+```
+
+- **`failed: "page"`** — unchanged in every respect. Existing callers
+  ([`session.ts:335`](../../../src/web/src/session.ts) in the refresh loop,
+  [`:397`](../../../src/web/src/session.ts) in `retryLobbyData`) pass nothing and behave exactly as
+  today.
+- **`failed: "identity"` while the page **is** reading with that same token** (`readingWithToken` —
+  an id target with a usable identity): it *is* the page credential, so this falls through to the
+  existing behaviour: invalidate, then reload with the stored secret or settle at `no-credential`.
+  One rule, not two, for one dead token.
+- **`failed: "identity"` while the page reads with something else** (a secret target, the only case
+  that can reach here): a **sibling rule**, and the page is never reloaded — it is reading perfectly
+  well:
+  - `invalidateIdentity(storage, weaveId)` and report its `WriteResult` to `onWrite` — the same
+    write the load already performs for the twin case of a stored identity the Weave does not know
+    ([`session.ts:548-555`](../../../src/web/src/session.ts)): `token`, `participantId` and `name`
+    deleted, `identity: "invalid"` set, `secret`, `title`, `archived` and `lastOpenedAt` kept;
+  - `ownProfile = undefined` and `set({ me: undefined, readOnlyReason: "secret-fallback" })`, which
+    is the state `WeaveView` already renders as *"Your identity in this Weave is no longer valid —
+    you are reading with the Weave link"* with a **Join** button
+    ([`WeaveView.tsx:92, 108-113`](../../../src/web/src/components/WeaveView.tsx)). No new UI.
+  - **The stream, the generation and the page read are untouched.** Nothing is retired, because
+    nothing that is reading has failed; a `doLoad()` here would throw away a healthy page and
+    re-fetch its whole history for no reason.
+  - **"One fallback per identity" still holds.** The page path's `retriedWithSecret` latch is not
+    consumed by this branch — it is about the page reader — and this branch cannot loop anyway: it
+    clears `me`, and the own-profile read requires `me`, so it cannot fire again until a join
+    creates a new identity (which resets `retriedWithSecret` itself,
+    [`session.ts:644`](../../../src/web/src/session.ts)).
+- **The listener count needs none of this.** It is read with the **page reader**, so a `401`/`403`
+  from it *is* a page-credential failure and goes through `recoverFromCredentialFailure(e)`
+  unchanged — exactly as the requests board's read already does
+  ([`session.ts:397`](../../../src/web/src/session.ts)).
+
+Otherwise the read is non-fatal: it never fails a load or a refresh. On the very first load a
+transient failure leaves the cache `undefined`, and the Offer form is simply not offered until a
+later read succeeds — the honest rendering, since the form needs the model list to submit at all.
+
+`RequestsPanel` is **unchanged**. It still reads `me.capabilities`; the difference is only where the
+session got it.
 
 The event payload could have been used instead — `participant.capabilities_changed` carries the
 whole profile ([`profile.ts:66-67`](../../../src/core/src/lobby/profile.ts)) — and it is deliberately
@@ -1050,11 +1319,27 @@ Listeners (1,204)          ← a link to /lobby/listeners
   | **every refresh** | `refreshInfo`, when `onLobby()` ([`session.ts:251-262`](../../../src/web/src/session.ts)) | keeps the number honest as people join and leave |
   | **`participant.capabilities_changed`** | already schedules a refresh ([`session.ts:440-445`](../../../src/web/src/session.ts)) — so it is covered by the row above, with no new wiring | the one event that changes the count without changing the participant list |
 
-- **Generation-guarded, like every async write in this module.** The count's `set` happens only
-  after `disposed || myGeneration !== generation` is re-checked, which is the pattern at
+- **Generation-guarded *and* sequenced.** The count's `set` happens only after
+  `disposed || myGeneration !== generation` is re-checked — the pattern at
   [`session.ts:268`](../../../src/web/src/session.ts) (refresh), `:375, :389` (the retry loop) and
-  `:508, :520, :533` (the load's `stale()`). A count that lands after a §2.6 recovery has replaced
-  the session must publish nothing.
+  `:508, :520, :533` (the load's `stale()`) — so a count landing after a §2.6 recovery publishes
+  nothing. But the guard alone is **not enough**, for the same reason it is not enough for the
+  profile (§3.3): three call sites means two count reads can be in flight inside one generation, and
+  an older, larger number landing last would overwrite a newer, smaller one. So the count carries
+  the same two-integer rule:
+
+  ```ts
+  let countSeq = 0, countApplied = 0;                       // beside ownProfileSeq / ownProfileApplied
+  const n = ++countSeq;                                     // when the read starts
+  …
+  if (disposed || myGeneration !== generation) return;      // generation
+  if (n <= countApplied) return;                            // sequencing
+  countApplied = n; set({ listenerCount: page.total });
+  ```
+
+  It needs **no identity check**: the count is a property of the Lobby, not of the caller, so it
+  stays valid across a join or a rejoin. (The profile cache is the opposite, which is why only it is
+  keyed to an identity.)
 - **Non-fatal everywhere.** It never joins a `Promise.all` that can reject the load: it is its own
   call, its rejection is caught, the previous number is kept, and the next refresh retries it. A
   failed count costs neither the load, nor the refresh, nor the requests board. On failure with no
@@ -1064,6 +1349,13 @@ Listeners (1,204)          ← a link to /lobby/listeners
   ([`LobbySummary.tsx:78`](../../../src/web/src/components/main/LobbySummary.tsx)) — and this spec
   makes it a rule rather than a comment: **an error, and a pending answer, never render as a zero or
   as "nobody".**
+- **…with one exception to "non-fatal": a rejected credential.** The count is read with the **page
+  reader**, so a `401`/`403` from it means the credential the whole page is reading with is dead.
+  That goes through the existing `recoverFromCredentialFailure(e)` unchanged — invalidate, fall back
+  to the stored secret, or settle at `no-credential` — exactly as the requests board's read already
+  does ([`session.ts:397`](../../../src/web/src/session.ts)). Everything else (network, 5xx) keeps
+  the last number. The own-profile read is the one that needed a new rule, because it alone uses a
+  credential the page does not (§3.3).
 - **Loading.** Before the first answer the line reads **Listeners** with no number, not
   "Listeners (0)".
 - **The own-profile read rides the same triggers** (§3.3): same three call sites, same generation
@@ -1144,6 +1436,9 @@ API's JSON `{ code: "not_found" }`, which `static.test.ts` asserts.
   - **serves** — a three-way choice: **anyone / serves their owner / a named list**, plus an
     implicit "any", which is the cleared state. Counts beside each.
   - Every control has a **Clear** affordance, and the header has **Clear filters**.
+  - **A selected chip whose count is `0` is rendered selected and empty**, never hidden (§2.7): it
+    is the filter that produced the empty result, so it has to stay on screen to be unclicked.
+    Visually distinct from an unselected chip with a count, and the only chip that can show `0`.
 - **Sort**: a `<select>` for the key and one for the direction. Changing either resets the cursor.
 - **The counts line**: `Showing {listeners.length} of {matched} matches ({total} listeners)`, with
   `matched === total` collapsing to `Showing 50 of 1,204 listeners`. Numbers are locale-formatted
@@ -1272,7 +1567,9 @@ also the cheapest way to make this endpoint expensive, which brings us to:
 
 **Cost, and the absence of rate limiting.** SECURITY §9.1 records that there is no rate limiting
 anywhere. This endpoint is the most expensive read a Lobby participant can issue: seven queries, two
-of them unnesting jsonb arrays (§2.8). It is bounded — `limit <= 1000`, facets `LIMIT 21`, the
+of them unnesting jsonb arrays (§2.8). It is bounded — `limit <= 1000`, every facet ranked to 21
+rows (plus at most one per selected value, which the caller's own filter bounds at 20 models and 50
+tools), the
 predicate is index-backed — and it is only reachable *with* a Lobby credential, which is the same
 bar as `find_agents` (which scans every profile in memory today, and is arguably worse). No new
 mitigation is proposed here; naming it is what this section is for, and it strengthens the existing
@@ -1317,12 +1614,29 @@ path may appear in an access log and carries only the filter.
 - **A storage write that did not persist** reaches the one-time notice through the same
   `PersistenceNotice` every other page uses; the only write this page makes is the identity
   invalidation of §5.5.
-- **The session's two side reads — the listener count and my own profile — are non-fatal and
-  generation-guarded** (§3.3, §5.1). Neither may fail a load or a refresh, neither may publish after
-  its generation has been retired, each keeps its last known value on failure and retries on the
-  next refresh, and a count that has never arrived renders as an absent number rather than as zero.
-  They are the Lobby-page counterparts of the rule above: what used to be one field of a snapshot is
-  now a separate request, and a separate request is a separate failure that must not spread.
+- **The session's two side reads — the listener count and my own profile — are non-fatal,
+  generation-guarded and *sequenced*** (§3.3, §5.1). Neither may fail a load or a refresh, neither
+  may publish after its generation has been retired, each keeps its last known value on a transient
+  failure and retries on the next trigger, and a count that has never arrived renders as an absent
+  number rather than as zero. They are the Lobby-page counterparts of the rule above: what used to
+  be one field of a snapshot is now a separate request, and a separate request is a separate failure
+  that must not spread.
+- **An answer is applied only if it is the newest one asked for.** Both reads start from three call
+  sites and can overlap inside one generation, so each carries a request number and applies its
+  answer only when it is greater than the last applied one. The generation counter answers "is this
+  session still the one that asked?"; it does not answer "is this the newest answer?", and both
+  questions have to be asked.
+- **The profile cache belongs to an identity.** It is keyed to the participant id and token it was
+  read for, applied only while `state.me` still names both, and cleared by a join, by an
+  invalidation and by a new load. The count needs no such key: it describes the Lobby, not the
+  caller.
+- **A rejected credential is not a transient failure.** `401`/`403` from the count (read with the
+  page reader) goes through the existing `recoverFromCredentialFailure`; `401`/`403` from the
+  own-profile read (made with `me`'s token, which on a secret-link visit is *not* the page reader)
+  invalidates the identity in storage, clears `me` and the cache, and leaves the page reading —
+  `readOnlyReason: "secret-fallback"`, which `WeaveView` already renders with a **Join**
+  ([`WeaveView.tsx:92, 108-113`](../../../src/web/src/components/WeaveView.tsx)). A page that is
+  reading successfully is never reloaded to report that a *different* credential died.
 - **Core raises `validation` for a malformed cursor** and the page treats it as a query error, then
   clears its cursor so the next control change works — a cursor the server refuses must not wedge
   the page.
@@ -1374,7 +1688,22 @@ no database mocks. Adapter suites test wiring, not rules.
 - **The effort facet is bounded** (§2.7), against deliberately high-cardinality data: 30 listeners
   declaring 30 distinct efforts for one model → that model carries **10** efforts and
   `moreEfforts: true`; a **selected** effort outside that top 10 is present anyway; and the model's
-  own `count` is the number of listeners, not the number of efforts.
+  own `count` is the number of listeners, not the number of efforts — a listener declaring the same
+  model at two efforts counts **once** for it.
+- **Model ranking depends only on listener counts** (§2.8, the two-stage query): one model with 50
+  distinct efforts and one with 1, plus twenty more models, and the top-20 membership and order are
+  exactly the twenty with the most listeners. The regression test for ranking a grouping-set result,
+  where the many-effort model's rows pushed others past the cut.
+- **A selected value is in its facet even at zero** (§2.7, §2.8), one test per facet: a selected
+  tool ranked outside the top 20 appears with its true count; a selected runtime eliminated by
+  another filter appears with `count: 0`; the same for a selected model and for a selected effort
+  inside a kept model. The zero cases are the ones a ranked query cannot produce at all.
+- **The `joined` cursor is lossless** (§2.5): several listeners whose `joined_at` values differ only
+  *within* one millisecond — set explicitly by SQL, since `now()` will not reliably produce them —
+  paged with `limit: 1` in **both** directions, returning every listener exactly once, with no
+  duplicate and no skip. This is the test that fails if the key is ever taken from
+  `participant.joinedAt` (a JS `Date`, millisecond precision) instead of from the database's own
+  text rendering.
 - The `serves` facet always has three rows, zeros included.
 - Auth: a Lobby participant, the Lobby secret and an instance keeper all succeed; a stranger's
   token is `forbidden`; no credential is `invalid_token`; an agent key that has joined succeeds
@@ -1463,15 +1792,50 @@ session is — against a real server, with no DOM.
   `/w/<lobby secret>` with a stored identity. The secret row is the one that was broken before this
   revision, and it is the reason the read exists.
 - **A participant with no profile** gets `me.participant.capabilities === null` and nothing throws.
-- **A failing own-profile read is not fatal**: the page loads, `me` exists, `capabilities` is
-  `undefined`/`null`, and the next successful read fills it.
+- **A failing own-profile read is not fatal**: on a network failure the page loads, `me` exists,
+  `capabilities` is absent, nothing is invalidated, and the next successful read fills it.
 - **It is re-read when the event names me**, and not when it names someone else.
+
+**`web` — store: ordering, ownership and a rejected identity (§3.3, §5.1)**
+
+Each of these is a race written deterministically, with a client whose two responses the test
+releases by hand.
+
+- **An older profile answer does not resurrect a cleared profile**: read A starts, read B starts and
+  lands with `capabilities: null`, then A lands with the old profile — `me.capabilities` stays
+  `null`. The sequencing rule, stated as the user-visible consequence.
+- **An older, larger count does not overwrite a newer, smaller one**: the same shape for
+  `listenerCount`.
+- **An answer read for a previous identity is discarded**: the read starts, the session joins under
+  a new name (a new `participantId` and token), then the old answer lands — `me.capabilities` is
+  **not** set from it. The guard the generation counter cannot provide, because `join()` does not
+  bump the generation ([`session.ts:651-653`](../../../src/web/src/session.ts)).
+- **A rejoin starts with no profile**: after a join, `me.capabilities` is null until a fresh read
+  answers for the new identity.
+- **A revoked token on a secret-link visit invalidates the identity** — the §3.3 table's whole
+  point: `/w/<lobby secret>` loads, the own-profile read answers `401`, and then the entry has **no**
+  `token`/`participantId`/`name`, still has its `secret` and cached title, `identity` is `"invalid"`,
+  `state.me` is `undefined`, `readOnlyReason` is `"secret-fallback"`, **the page is still `ready`
+  and still reading** (threads and events intact), and no reload was performed.
+- **The same failure on an id target with a stored secret** falls back to the secret through the
+  existing page path: `status: "ready"`, read-only, the secret kept.
+- **…and with no stored secret** settles at `no-credential` with the identity invalidated.
+- **A transient failure invalidates nothing**: the own-profile read answers `500`, and the entry
+  still holds its token and `me` is still set.
+- **A `401` from the count** takes the ordinary page-credential path (it is read with the page
+  reader), invalidating and falling back exactly as a failed requests read does today.
 
 **`web` — DOM (`listeners-page.test.tsx`, happy-dom)**
 
 - **An eligible, joined listener sees the Offer form on the Lobby opened by its secret link** — the
   §3.3 regression test, written as the user-visible rule rather than as "a read happened". The same
   assertion via `/lobby`; and a participant with **no** profile sees no Offer form on either.
+- **A revoked token on that same secret-link page takes the Offer form away and offers a Join**: the
+  read-only banner appears, the composer is gone, and the page still shows the Weave — the DOM half
+  of the invalidation rule above.
+- **A selected chip with no matches renders selected and empty**, not hidden: with a filter
+  combination that leaves a selected runtime at zero, the chip is still present, still marked
+  selected, shows `0`, and clicking it clears that filter.
 - The **Lobby sidebar** shows "Listeners (N)" from the session's count and **renders no
   `ProfileCard`** — the removal, asserted directly.
 - The sidebar line reads "Listeners" with no number before the first answer, and shows "count
@@ -1543,10 +1907,12 @@ triggers — is now its own step rather than a rider on the sidebar, because it 
 regression this revision exists to prevent would happen.)
 
 1. **The core query.** `src/core/src/lobby/listeners.ts` — types, validation and its normalisation
-   rules, the cursor codec, the seven queries with whole-document containment, the bounded facet
-   fold; the GIN index in `schema.ts` and migration `0004`; the facade method.
-   `test/lobby-listeners.test.ts` in full, plus the `db.test.ts` index **and plan** assertions.
-   Nothing else in the repo changes, so this lands on its own and everything after it can rely on it.
+   rules, the cursor codec **with the SQL-rendered `joined` key**, the seven queries with
+   whole-document containment, the **two-stage** models facet and the selection-inclusive
+   `LEFT JOIN`s, the bounded fold; the GIN index in `schema.ts` and migration `0004`; the facade
+   method. `test/lobby-listeners.test.ts` in full, plus the `db.test.ts` index **and plan**
+   assertions. Nothing else in the repo changes, so this lands on its own and everything after it
+   can rely on it.
 2. **`getWeave` stops carrying Lobby profiles, and `getMyLobbyParticipant` replaces the exception.**
    The `getLobbyWeaveId` check with **no** own-row exception; the new core function beside
    `setCapabilities` and its facade method; the doc comments on `PublicParticipant.capabilities` in
@@ -1565,12 +1931,17 @@ regression this revision exists to prevent would happen.)
    filters (models with their bounded effort row), sort, the counts line, the `ProfileCard` grid,
    Show more, the empty/loading/error states, the query-string round trip and the `replaceState`
    rule, the join-form and 401 branches. DOM tests.
-6. **The session: my own profile, and the listener count.** `withMyProfile` and the
-   `myLobbyProfile` read on its three call sites (§3.3); `listenerCount` on its four triggers
-   (§5.1); both generation-guarded and both non-fatal. Store tests against a real server, including
-   the `/w/<lobby secret>` row and the failing-then-recovering count. This step is what keeps the
-   Offer form working, so it lands **with or before** the step that removes the profiles it used to
-   read — in practice immediately after task 2, which is why it is sequenced before the sidebar.
+6. **The session: my own profile, and the listener count.** `withMyProfile`, the identity-owned
+   `ownProfile` cache and the own-profile read on its three call sites (§3.3); `listenerCount` on
+   its four triggers (§5.1); the **request numbers** both apply through; the `failed: "page" |
+   "identity"` parameter on `recoverFromCredentialFailure` and the sibling invalidation rule for a
+   rejected identity while the page reads on. Store tests against a real server, including the
+   ordering and ownership races, the `/w/<lobby secret>` invalidation and the
+   failing-then-recovering count. This step is what keeps the Offer form working, so it lands
+   **with or before** the step that removes the profiles it used to read — in practice immediately
+   after task 2, which is why it is sequenced before the sidebar. It is also the largest of the
+   seven, and the one to review hardest: every rule in it exists because a race or a credential
+   failure would otherwise be silent.
 7. **The sidebar, the Lobby summary, then docs.** `ProfileCards` → `ListenersLink` rendering the
    count from `state`, `LobbySummary` re-pointed at `listListeners({ limit: 0, facets: false })`,
    their DOM tests including the Offer-form assertions of §8; then §9's docs in one commit.
@@ -1639,10 +2010,12 @@ stays, and it remains a one-line addition later); the `getWeave` own-profile rul
 encoding, including in the page's own URL; and no live updates in the directory beyond the "list
 changed — reload" hint. The rest stand as the spec's own decisions.
 
-> **One of those four has changed since it was confirmed.** The spec review of 2026-09-19 showed
-> that the confirmed §12.3 could not work on `/w/<lobby secret>`, so the rule it names has been
-> replaced (§3.1, §3.3). Item 3 below says exactly what was confirmed, what it is now, and what Paw
-> is being asked to look at again. Items 1, 4 and 6 are unchanged from what was confirmed.
+> **Item 3 changed after its first confirmation and was confirmed again.** The spec review of
+> 2026-09-19 showed that the rule Paw first confirmed could not work on `/w/<lobby secret>`, so it
+> was replaced (§3.1, §3.3) and put back to him: **"I accept 12.3" (Paw, 2026-09-19)**. Item 3 below
+> records both shapes, so the reason the rule looks the way it does is not lost. Items 1, 4 and 6
+> are unchanged from what was confirmed. Items 5 and 7–16 are the spec's own decisions and are
+> **not** confirmed.
 
 1. **The facets are the four in the approved design, and `spawnsSubagents` is not a fifth**
    (§2.3). Assumed: the card's `subagents` badge is enough, and a boolean makes a poor chip row. One
@@ -1651,18 +2024,20 @@ changed — reload" hint. The rest stand as the spec's own decisions.
    use the index that already exists. `joined` inherits the wall-clock caveat KNOWN-ISSUES records,
    and the cursor stays exact because `id` is the tie-break and **every sort key is non-null** — an
    invariant §2.5 establishes from the code and §8 tests, rather than a null branch in the cursor.
-3. **CHANGED SINCE PAW CONFIRMED IT — needs re-confirmation.** What Paw confirmed was *"`getWeave`
-   keeps the caller's own Lobby profile and returns `null` for everyone else's"*. The spec review of
-   2026-09-19 showed that rule cannot hold on `/w/<lobby secret>`, where the metadata read
-   authenticates as the **secret** and owns no participant row
+3. **`getWeave` carries no Lobby profile at all, and the caller's own comes from
+   `GET /api/lobby/participants/me`, read with `me`'s token on all three routes** (§3.1, §3.3,
+   §4.1, §5.1). **Re-confirmed by Paw on 2026-09-19** in this shape.
+
+   Its history is worth keeping, because it is why the rule is shaped this way. What Paw confirmed
+   first was *"`getWeave` keeps the caller's own Lobby profile and returns `null` for everyone
+   else's"*. That cannot hold on `/w/<lobby secret>`, where the metadata read authenticates as the
+   **secret** and owns no participant row
    ([`session.ts:173, 542-546`](../../../src/web/src/session.ts)) — an eligible, joined listener
-   would have lost its Offer form. **The new shape:** `getWeave` blanks **every** Lobby profile with
-   no exception, and a new `GET /api/lobby/participants/me` (core `getMyLobbyParticipant`) answers
-   "my own profile" on one code path for all three routes (§3.1, §3.3, §4.1, §5.1). What Paw is
-   being asked to re-confirm is the **new route and core function**, which the original decision did
-   not contain. Two things improve with it: `null` from `getWeave` now means exactly one thing in
-   the Lobby rather than two, and the answer no longer depends on which credential happened to read
-   it. The cost is one small request per Lobby load, and one more public REST route.
+   would have lost its Offer form. Two things improved with the replacement: `null` from `getWeave`
+   now means exactly one thing in the Lobby rather than two, and the answer no longer depends on
+   which credential happened to read it. The cost is one small request per Lobby load, one more
+   public REST route, and the rules of §3.3 that come with reading a second credential — the
+   sequencing, the identity-owned cache and the invalidation path.
 4. **`filter` travels as JSON, the scalars as plain query params** (§4.1), including in the page's
    own URL. Unambiguous against model names containing any delimiter, consistent with
    `/api/lobby/agents` — and uglier in an address bar than `&model=opus-5&tool=shell`. If Paw
@@ -1703,3 +2078,15 @@ changed — reload" hint. The rest stand as the spec's own decisions.
 14. **This spec promises to remove the profile *snapshot*, not profiles from the wire** (§1, §11).
     Profiles still reach a loading page through the event log, and slimming that payload is a
     wire-format change with four readers and an append-only history behind it.
+15. **The two side reads are ordered by a request number, not by coalescing** (§3.3, §5.1, §7), and
+    the profile cache is owned by the identity it was read for. Sequencing is two integers checked
+    where the answer is applied; coalescing would mean a slot per read kind, owned by a generation,
+    consulted from three call sites — the machinery `scheduleRefresh` needs because it owns a retry
+    loop, and this does not. The trade accepted: a redundant read is possible (the answer is simply
+    dropped), where coalescing would have prevented the request.
+16. **A rejected own-profile read invalidates the identity without reloading the page** (§3.3, §7).
+    On a secret-link visit the page is reading perfectly well with the secret, so it keeps reading:
+    the identity is cleared from state and storage, `me` goes, and the page becomes the read-only
+    "your identity is no longer valid — Join" state `WeaveView` already renders. The alternative —
+    reusing the page path and reloading — would throw away a healthy page and re-fetch its whole
+    history because a *different* credential died.
