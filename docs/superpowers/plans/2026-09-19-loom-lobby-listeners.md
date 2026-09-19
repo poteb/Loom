@@ -174,7 +174,7 @@ export function likePattern(q: string): string;
   - `encodeCursor`/`decodeCursor` round-trip a cursor whose `k` contains `+`, `/` and `=` (base64url must not mangle it) and one whose `k` is `2026-09-19T12:00:00.123456Z`.
   - `decodeCursor("not-base64!", "name", "asc")` → `validation`; a cursor of valid base64url that is not JSON → `validation`; JSON missing `i` → `validation`; `i` that is not a uuid → `validation`; a cursor with `s: "owner"` decoded for `sort: "name"` → `validation`; same for a `d` mismatch.
   - **A `raw` that is not a string is `validation`, not a `TypeError`**: `decodeCursor(42 as unknown as string, "name", "asc")` → `validation`. `Buffer.from(42, "base64url")` throws a `TypeError`, which is a 500.
-  - **A `joined` key that is not the exact string the SQL emits is `validation`, never a 500** — the finding this codec exists to close. One test per shape, all with `sort: "joined"`: `k: "not-a-date"`; `k: "2026-09-19T12:00:00.123Z"` (milliseconds — `.US` is always six digits); `k: "2026-09-19 12:00:00.123456Z"` (a space instead of `T`); `k: "2026-09-19T12:00:00.123456"` (no `Z`); `k: "2026-13-19T12:00:00.123456Z"` (month 13); `k: "2026-09-19T24:00:00.123456Z"` (hour 24); `k: "2026-09-19T12:60:00.123456Z"` (minute 60). Each must reach the caller as `validation`, so that `$k::timestamptz` never sees it.
+  - **A `joined` key that is not the exact string the SQL emits is `validation`, never a 500** — the finding this codec exists to close. One test per shape, all with `sort: "joined"`: `k: "not-a-date"`; `k: "2026-09-19T12:00:00.123Z"` (milliseconds — `.US` is always six digits); `k: "2026-09-19 12:00:00.123456Z"` (a space instead of `T`); `k: "2026-09-19T12:00:00.123456"` (no `Z`); `k: "2026-13-19T12:00:00.123456Z"` (month 13); `k: "2026-09-19T24:00:00.123456Z"` (hour 24); `k: "2026-09-19T12:60:00.123456Z"` (minute 60); `k: "2026-02-31T12:00:00.123456Z"` (no such day); `k: "2025-02-29T12:00:00.123456Z"` (not a leap year — while `2024-02-29T…` **is accepted**); `k: "0000-01-01T00:00:00.000000Z"` (year 0). Each must reach the caller as `validation`, so that `$k::timestamptz` never sees it.
   - **A genuine emitted `joined` key still round-trips**: `k: "2026-09-19T12:00:00.123456Z"` decodes unchanged, **character for character** — the test that would fail if the decoder ever normalised through `Date` and dropped the microseconds.
   - **Text keys are length-bounded**: `sort: "name"` with a `k` of 300 characters → `validation`; a `k` of `""` is legal for neither sort (a lowered `name` and a lowered `owner` are both non-empty) → `validation`. A `k` of 64 characters is accepted for `owner`.
   - There is **no null-key form to decode**: spec §2.5 establishes every sort key as non-null (`name`/`joined_at` are `NOT NULL`, a listener's profile always carries `owner`), so `k: null` is simply "not a string" → `validation`, and no null branch is written.
@@ -259,8 +259,13 @@ export function decodeCursor(raw: string, sort: ListenersSort, dir: "asc" | "des
     if (!m) throw bad();
     // Shape is not sense: `2026-13-19T24:60:00.000000Z` matches the digits and is no instant.
     // Range-checked on the captured fields — still no `Date`, so no microsecond is lost.
-    const [mo, day, hh, mm, ss] = [m[2], m[3], m[4], m[5], m[6]].map((g) => Number(g));
-    if (mo! < 1 || mo! > 12 || day! < 1 || day! > 31 || hh! > 23 || mm! > 59 || ss! > 59) throw bad();
+    const [yr, mo, day, hh, mm, ss] = [m[1], m[2], m[3], m[4], m[5], m[6]].map((g) => Number(g));
+    // The day bound is the **month's own**, leap years included: `2026-02-31` and `2025-02-29` pass
+    // a flat `<= 31` and Postgres answers both with "date/time field value out of range" — the same
+    // 500 by another door. Year `0000` does not exist for `timestamptz` either.
+    const leap = (yr! % 4 === 0 && yr! % 100 !== 0) || yr! % 400 === 0;
+    const daysIn = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    if (yr! < 1 || mo! < 1 || mo! > 12 || day! < 1 || day! > daysIn[mo! - 1]! || hh! > 23 || mm! > 59 || ss! > 59) throw bad();
   } else if (k.length === 0 || k.length > MAX_KEY) {
     // `lower(name)` and `lower(capabilities->>'owner')` are both non-empty by the §2.5 invariant,
     // so an empty key names no row this query could have been at.
