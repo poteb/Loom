@@ -1190,6 +1190,34 @@ function revocableClient(token: string, opts: { refusalMs?: number } = {}): {
 /** Short enough that an endless retry shows up inside a test, rather than being waited out. */
 const QUICK_RETRY = { delaysMs: [5, 5, 5, 5, 5], slowMs: 20 };
 
+/**
+ * A client that parks the `parkCall`-th Weave metadata read on `gate` — answered by the server
+ * first, so what it delivers on release is genuinely the world as it was — and records the
+ * credential of every such read, so "which generation made this one" is observable.
+ */
+function gatedMetadataClient(baseUrl: string, gate: ReturnType<typeof makeGate>, parkCall: number): {
+  client: LoomClient; readsWith: (credential: string) => number;
+} {
+  const reads: (string | undefined)[] = [];
+  const client = new LoomClient({
+    baseUrl, allowInsecure: true,
+    fetch: async (input, init) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (/^\/api\/weaves\/[^/]+$/.test(new URL(url).pathname)) {
+        reads.push((init?.headers as Record<string, string> | undefined)?.["authorization"]);
+        if (reads.length === parkCall) {
+          const captured = await fetch(url, init);
+          gate.markEntered();
+          await gate.released;
+          return captured;
+        }
+      }
+      return fetch(url, init);
+    },
+  });
+  return { client, readsWith: (credential) => reads.filter((a) => a === `Bearer ${credential}`).length };
+}
+
 describe("session by weave id", () => {
   it("loads a Weave from a stored participant token, with no secret in play", async () => {
     const { r, j } = await joinedWeave("Paw");
@@ -1628,6 +1656,75 @@ describe("session by weave id", () => {
       expect([session.getState().threads.some((t) => t.id === fresh.id),
         session.getState().weave?.guidelines,
         session.getState().weave!.lastSeq >= seq]).toEqual([true, "new rules", true]);
+    } finally { gate.release(); session.dispose(); }
+  });
+
+  // The slot a refresh runs in is one per session, and a retired generation's request does not stop
+  // being in flight just because its generation did: nothing cancels an HTTP request. A recovered
+  // session that had to wait for it would lose the updates that arrive in the meantime.
+  it("refreshes for the recovered generation without waiting on the retired one's request", async () => {
+    const { r, j } = await joinedWeave("Paw");
+    const storage = memoryStorage();
+    setIdentity(storage, r.weave.id, { token: j.token, participantId: j.participant.id }, { secret: r.secret });
+    const gate = makeGate();
+    const c = gatedMetadataClient(s.baseUrl, gate, 2);       // read 1 is the load's; park read 2
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: r.weave.id }, storage });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().connection === "open");
+      // A participant joining starts a refresh, whose metadata read parks — holding the slot.
+      await anon.joinWeave(r.secret, { name: "Other", kind: "human" });
+      await gate.entered;
+
+      // The §2.6 recovery: the stored token dies, so the reload invalidates it and falls back to
+      // the secret. That is the new generation, with a stream of its own (metadata read 3).
+      saveWeaveEntry(storage, r.weave.id, { token: "not-a-real-token" });
+      await session.load();
+      expect(session.getState().readOnlyReason).toBe("secret-fallback");
+      await waitFor(() => session.getState().connection === "open");
+
+      // An ordinary update arrives on that new stream while the retired request is still parked.
+      const keeper = await s.core.resolveCredential(r.token);
+      await s.core.createThread(keeper, r.weave.id, "LATE");
+      // It must land without the gate being released at all: the new generation owes the old
+      // request nothing, and the Thread is only in the metadata a refresh reads.
+      await waitFor(() => session.getState().threads.some((t) => t.name === "LATE"));
+      expect(c.readsWith(r.secret)).toBe(2);                 // the recovery's, and this refresh's
+
+      gate.release();
+      await new Promise((done) => setTimeout(done, 150));
+      // The retired answer publishes nothing, and its `finally` starts nothing.
+      expect([session.getState().threads.some((t) => t.name === "LATE"),
+        session.getState().readOnlyReason, c.readsWith(r.secret)])
+        .toEqual([true, "secret-fallback", 2]);
+    } finally { gate.release(); session.dispose(); }
+  });
+
+  it("coalesces inside one generation: one refresh in flight, then exactly one more", async () => {
+    const { r, j } = await joinedWeave("Paw");
+    const storage = storedIdentity(r.weave.id, j);
+    const gate = makeGate();
+    const c = gatedMetadataClient(s.baseUrl, gate, 2);
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: r.weave.id }, storage });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().connection === "open");
+      const keeper = await s.core.resolveCredential(r.token);
+      await s.core.createThread(keeper, r.weave.id, "A");    // starts the refresh that parks
+      await gate.entered;
+      // Two more events while it is parked: both mark the slot dirty, and together they are worth
+      // exactly one follow-up refresh — not two.
+      await s.core.createThread(keeper, r.weave.id, "B");
+      await s.core.createThread(keeper, r.weave.id, "C");
+      // Both must have *arrived* before the gate opens, or they would mark the follow-up dirty in
+      // turn and earn a third read honestly — which is not what this test is about.
+      await waitFor(() => session.getState().events.some((e) => e.payload.name === "C"));
+      gate.release();
+      await waitFor(() => session.getState().threads.some((t) => t.name === "C"));
+      await new Promise((done) => setTimeout(done, 150));
+      // The load's read, the parked one, and one follow-up.
+      expect([c.readsWith(j.token), session.getState().threads.some((t) => t.name === "B")])
+        .toEqual([3, true]);
     } finally { gate.release(); session.dispose(); }
   });
 

@@ -299,8 +299,16 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
   // until it succeeds or the session is disposed. Events that arrive while a refresh is already
   // in flight just mark it dirty so exactly one more refresh runs after the current one settles.
   let disposed = false;
-  let refreshInFlight: Promise<void> | undefined;
-  let refreshDirty = false;
+  /**
+   * The one refresh slot, and **which generation owns it**. A bare "something is in flight" flag
+   * made the slot shared across generations: nothing cancels an HTTP request, so a retired
+   * generation's metadata read is still in flight after a §2.6 recovery has loaded and connected a
+   * new session — and the new session would queue behind a request whose answer it must, by design,
+   * throw away.
+   */
+  let refreshSlot: { generation: number } | undefined;
+  /** The generation a further refresh has been queued **for**, or `undefined` when none is. */
+  let dirtyFor: number | undefined;
   // Aborted by dispose(): cancels the retry sleep so a long backoff never keeps the process (or a
   // test run) alive past the session it belongs to.
   const lifetime = new AbortController();
@@ -326,11 +334,12 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
         // and the load it re-enters (or the `no-credential` it settles at) replaces this loop.
         const recovered = recoverFromCredentialFailure(e);
         if (recovered) {
-          // The refresh queued behind this one was queued against the credential that has just been
-          // retired. Dropping the mark here is what stops `scheduleRefresh`'s `.finally` from
-          // starting a fresh loop on it — which, with no secret to fall back to, is the endless
-          // retry all over again behind a page that says it holds no credential.
-          refreshDirty = false;
+          // A refresh queued *for this generation* was queued against the credential that has just
+          // been retired, and starting it would be the endless retry all over again — with no
+          // secret to fall back to, behind a page that says it holds no credential. So that mark
+          // goes, and only that one: a mark left by a newer generation is work that still has to
+          // happen, which is why this asks whose it is rather than clearing a shared flag.
+          if (dirtyFor === myGeneration) dirtyFor = undefined;
           if (recovered.reload) void doLoad();
           return;
         }
@@ -397,16 +406,28 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
 
   const scheduleRefresh = () => {
     if (disposed) return;
-    if (refreshInFlight) { refreshDirty = true; return; }
+    // A loop is already running for *this* generation: coalesce. However many events arrive while
+    // it is in flight, exactly one more refresh follows it.
+    if (refreshSlot?.generation === generation) { dirtyFor = generation; return; }
+    // The slot is free, or held by a generation that has been retired since. A retired loop is not
+    // waited for: it publishes nothing when its request lands — `runRefreshWithRetry` and
+    // `refreshInfo` are both generation-guarded — so queueing behind it would only lose this
+    // generation's update until something unrelated happened to refresh. Take the slot over; the
+    // retired loop's `finally` checks whether it still owns it before clearing anything.
     const myGeneration = generation;
-    refreshInFlight = runRefreshWithRetry(myGeneration).finally(() => {
-      refreshInFlight = undefined;
-      const queued = refreshDirty;
-      refreshDirty = false;
-      // Only for the generation that queued it. If that one has been retired since — by a §2.6
-      // recovery, or by an ordinary re-load — the page has already been re-read or has settled, and
-      // this restart would run a refresh the retired loop was told to stop making.
-      if (queued && !disposed && myGeneration === generation) scheduleRefresh();
+    refreshSlot = { generation: myGeneration };
+    void runRefreshWithRetry(myGeneration).finally(() => {
+      // Only if nothing has taken the slot over since. Generations never repeat, so identity of the
+      // number is identity of the owner.
+      if (refreshSlot?.generation === myGeneration) refreshSlot = undefined;
+      // Only the mark this loop's own generation queued. One left by a newer generation is work
+      // that still has to happen, and must outlive this `finally` rather than be swallowed by it.
+      if (dirtyFor !== myGeneration) return;
+      dirtyFor = undefined;
+      // And restart only while that generation is still the current one: after a §2.6 recovery or
+      // an ordinary re-load the page has already been re-read, and this would re-run a refresh the
+      // retired loop was told to stop making.
+      if (!disposed && myGeneration === generation) scheduleRefresh();
     });
   };
 
