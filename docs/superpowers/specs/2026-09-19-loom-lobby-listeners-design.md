@@ -68,6 +68,15 @@ every `session.ts` line cited here is equally true before and after it.
 > 12. **Models are ranked one row per model.** Ranking over a grouping-set result ranked *effort*
 >     rows too, so a model with many efforts pushed others out of the top 20. The query is now two
 >     stages, models then efforts within the kept models (§2.8).
+>
+> **Third review round (2026-09-19).** One, and it is the mirror of finding 8:
+>
+> 13. **A rejected own-profile read invalidates only the identity it was made for.** Round 2 gave the
+>     *success* path identity ownership and left the *failure* path with none — so a `401` for a
+>     token that died, landing after the human had rejoined, would have deleted the **new** identity
+>     from storage and shown a read-only banner to someone who had just joined. The rejection handler
+>     now captures the participant id, the token, the generation and the request number when the read
+>     starts, and checks all four **before any side effect** (§3.3, §7, §8).
 
 ## 1. Purpose and scope
 
@@ -1067,6 +1076,50 @@ This is the case that only exists because the read uses a *different credential 
 read is rejected — so without a rule the page would go on showing `me`, and the Offer form, for a
 token the server has already refused, and `localStorage` would keep it for the next visit.
 
+##### First: a failure describes the identity it was made for, and no other
+
+The success path is owned by an identity (above). **The failure path needs the same ownership, and
+needs it more**, because its side effects are destructive: it deletes a token from `localStorage`.
+The race is concrete. A read starts for identity A; A's token dies; the human joins again and gets a
+fresh identity B with a brand-new token; A's `401` lands. Without a guard the handler would delete
+**B's** token — a credential the server issued seconds ago and has never refused — clear `me`, and
+show a read-only "your identity is no longer valid" banner to someone who has just joined.
+
+So every own-profile read **captures, when it starts**, the three things that say whose read it is,
+and the rejection handler checks all three **before any side effect whatsoever**:
+
+```ts
+const started = { id: state.me!.participant.id, token: state.me!.token, generation, n: ++ownProfileSeq };
+…
+// on rejection, before ANYTHING else — no write, no onWrite, no cache clear, no set()
+if (disposed || started.generation !== generation) return;                        // a newer load owns the session
+if (state.me?.participant.id !== started.id || state.me.token !== started.token) return;  // a different identity
+if (started.n <= ownProfileApplied) return;                                       // an older answer than one already acted on
+ownProfileApplied = started.n;
+// …only now: isCredentialFailure(e) ? invalidate : keep the last value
+```
+
+- **Silently discarded, not logged as an error and not retried.** A rejection that fails the guard
+  describes an identity this session no longer has; there is nothing to report and nothing to fix.
+  The same is true of the **transient** branch: a mismatched network failure must not set
+  `refreshError`, must not schedule anything against the new identity, and must not touch the cache.
+  The guard is therefore the first thing in the handler, ahead of the `isCredentialFailure` split,
+  rather than being repeated inside each branch.
+- **Token as well as participant id.** A rejoin under the *same name* is refused (`name_taken`), so
+  in practice a new identity carries a new id — but a token comparison costs one `!==` and is the
+  thing actually being invalidated. Both are captured, both are checked.
+- **The request number applies to failures too**, and that is a deliberate asymmetry worth stating.
+  A `401` is evidence about a token regardless of when it was asked for; but a **newer success with
+  that same token is later, stronger evidence that it works**, and invalidation is destructive and
+  one-way — there is no un-deleting a token from storage. So a rejection that arrives after a newer
+  answer has already been acted on is dropped. The cost of being wrong that way is bounded to a
+  delay: if the token really is dead, the next trigger's read is rejected too, with nothing newer
+  behind it, and the invalidation happens then. The cost of the opposite choice is destroying a
+  credential that has just been proven good.
+- **One shared counter for successes and failures** (`ownProfileApplied` is "the newest answer that
+  was acted on", of either kind), because the two kinds of answer are evidence about the same
+  question and ordering them separately would let a stale failure overtake a fresh success.
+
 The existing [`recoverFromCredentialFailure`](../../../src/web/src/session.ts) cannot be reused
 as-is: its first guard is `if (!readingWithToken || …) return undefined`
 ([`session.ts:145`](../../../src/web/src/session.ts)) — it was written for failures of the **page
@@ -1084,10 +1137,12 @@ const recoverFromCredentialFailure = (e: unknown, failed: "page" | "identity" = 
 - **`failed: "identity"` while the page **is** reading with that same token** (`readingWithToken` —
   an id target with a usable identity): it *is* the page credential, so this falls through to the
   existing behaviour: invalidate, then reload with the stored secret or settle at `no-credential`.
-  One rule, not two, for one dead token.
+  One rule, not two, for one dead token. The ownership guard still runs **first**, in the
+  own-profile handler, before `recoverFromCredentialFailure` is called at all — otherwise a stale
+  rejection could send a freshly rejoined session back through a recovery it has no reason to make.
 - **`failed: "identity"` while the page reads with something else** (a secret target, the only case
   that can reach here): a **sibling rule**, and the page is never reloaded — it is reading perfectly
-  well:
+  well. It runs only once the ownership guard above has passed, and then:
   - `invalidateIdentity(storage, weaveId)` and report its `WriteResult` to `onWrite` — the same
     write the load already performs for the twin case of a stored identity the Weave does not know
     ([`session.ts:548-555`](../../../src/web/src/session.ts)): `token`, `participantId` and `name`
@@ -1637,6 +1692,13 @@ path may appear in an access log and carries only the filter.
   `readOnlyReason: "secret-fallback"`, which `WeaveView` already renders with a **Join**
   ([`WeaveView.tsx:92, 108-113`](../../../src/web/src/components/WeaveView.tsx)). A page that is
   reading successfully is never reloaded to report that a *different* credential died.
+- **A failure is owned by an identity exactly as an answer is, and the guard comes first.** The
+  own-profile rejection handler checks the captured participant id, token, generation and request
+  number **before** it writes to storage, reports a `WriteResult`, clears the cache or patches
+  state; a mismatch is discarded silently, with no error and no retry, because it describes an
+  identity this session no longer has. This is the only place in the design where a stale answer
+  could do damage rather than merely be wrong — everywhere else the worst case is a value that is
+  replaced on the next read, and here it is a deleted credential.
 - **Core raises `validation` for a malformed cursor** and the page treats it as a query error, then
   clears its cursor so the next control change works — a cursor the server refuses must not wedge
   the page.
@@ -1822,6 +1884,24 @@ releases by hand.
 - **…and with no stored secret** settles at `no-credential` with the identity invalidated.
 - **A transient failure invalidates nothing**: the own-profile read answers `500`, and the entry
   still holds its token and `me` is still set.
+- **A delayed `401` for a *previous* identity leaves the new one untouched** — the mirror of the
+  ordering test above, and the one where a stale answer would destroy something. The read starts,
+  its token dies, the session rejoins (a fresh `participantId`, token and `name` are written), then
+  the old `401` lands: the stored entry is **byte-identical** to what the join wrote (token,
+  `participantId`, `name` all present, no `identity: "invalid"`), `state.me` is the new identity,
+  `me.capabilities` is untouched, `readOnlyReason` is undefined, and no `WriteResult` reached the
+  notice. Asserted on the storage value, not only on the rendering.
+- **A delayed `401` arriving after a generation change does nothing** — same assertions, with a new
+  `doLoad()` in place of the rejoin.
+- **A delayed transient failure for a previous identity is equally silent**: no `refreshError`, no
+  retry scheduled against the new identity, cache untouched.
+- **A stale `401` for the *same* identity, after a newer read succeeded, does not invalidate**: read
+  A starts, read B starts and succeeds, then A is rejected — the token is still in storage and `me`
+  is intact. The decision of §3.3: a newer success is later evidence about the same token, and the
+  next trigger's read will be rejected with nothing newer behind it if the token really is dead.
+- **The ordinary case still works**: the *current* identity's read is rejected and the identity is
+  invalidated exactly as the row above describes. The guard must not be so strict that it disarms
+  the rule it protects.
 - **A `401` from the count** takes the ordinary page-credential path (it is read with the page
   reader), invalidating and falling back exactly as a failed requests read does today.
 
@@ -2014,7 +2094,7 @@ changed — reload" hint. The rest stand as the spec's own decisions.
 > 2026-09-19 showed that the rule Paw first confirmed could not work on `/w/<lobby secret>`, so it
 > was replaced (§3.1, §3.3) and put back to him: **"I accept 12.3" (Paw, 2026-09-19)**. Item 3 below
 > records both shapes, so the reason the rule looks the way it does is not lost. Items 1, 4 and 6
-> are unchanged from what was confirmed. Items 5 and 7–16 are the spec's own decisions and are
+> are unchanged from what was confirmed. Items 5 and 7–17 are the spec's own decisions and are
 > **not** confirmed.
 
 1. **The facets are the four in the approved design, and `spawnsSubagents` is not a fifth**
@@ -2084,7 +2164,14 @@ changed — reload" hint. The rest stand as the spec's own decisions.
     consulted from three call sites — the machinery `scheduleRefresh` needs because it owns a retry
     loop, and this does not. The trade accepted: a redundant read is possible (the answer is simply
     dropped), where coalescing would have prevented the request.
-16. **A rejected own-profile read invalidates the identity without reloading the page** (§3.3, §7).
+16. **A stale rejection is dropped, including for the same identity** (§3.3). The own-profile
+    rejection handler checks the captured participant id, token, generation **and request number**
+    before any side effect, so a `401` that lands after a newer answer was acted on invalidates
+    nothing. The asymmetry is deliberate and is the one place this spec prefers a delay to an
+    action: a `401` is evidence about a token whenever it was asked for, but a newer success is
+    *later* evidence about the same token, and deleting a credential from storage cannot be undone.
+    If the token really is dead the next trigger's read is rejected too, and that one invalidates.
+17. **A rejected own-profile read invalidates the identity without reloading the page** (§3.3, §7).
     On a secret-link visit the page is reading perfectly well with the secret, so it keeps reading:
     the identity is cleared from state and storage, `me` goes, and the page becomes the read-only
     "your identity is no longer valid — Join" state `WeaveView` already renders. The alternative —
