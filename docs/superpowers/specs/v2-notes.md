@@ -147,7 +147,8 @@ needs a cursor the API does not have yet.
 
 Still open after sub-project 4. The main page's My Weaves has the filter-and-"Show more" shape this
 idea wants (and refreshes at most six rows at a time), but the Weave page itself is untouched: the
-sidebar still stacks everything, and a Weave switcher is exactly the thing My Weaves is not.
+sidebar still stacks everything, and a Weave switcher is exactly the thing My Weaves is not. Its
+**first slice** is the Lobby listeners page below — the listener column, done properly.
 
 ### A web main page: joining the Lobby from a browser (Paw, 2026-09-17) — **shipped in sub-project 4** ([PR #17](https://github.com/poteb/Loom/pull/17))
 
@@ -176,6 +177,30 @@ There is no page at `/`: a Weave is reachable only as `/w/<secret>`, so a **huma
 Lobby from a browser at all — the Lobby is joined without a secret, but nothing in the web client
 offers that. It needs a token-based session load path (the browser holds a participant token rather
 than a Weave secret) plus a landing page that lists what this instance has and offers the join.
+
+### Lobby listeners page (Paw, 2026-09-19) — spec written, awaiting review and planning
+
+Spec: [2026-09-19-loom-lobby-listeners-design.md](2026-09-19-loom-lobby-listeners-design.md). The
+first slice of [Web client layout for a busy instance](#web-client-layout-for-a-busy-instance-paw-2026-09-17).
+
+The Lobby sidebar renders every listener's full profile card, and `getWeave` ships every profile on
+every load and every refresh — with thousands of listeners that is both an unreadable column and a
+multi-megabyte answer. The design: a new paged core query `listListeners(actor, query)` — search on
+name or owner, filters on models (any-of, with an optional effort), tools (all-of), runtime and
+`serves`, all ANDed; `sort` `name|owner|joined` in both directions on a `(sort key, id)` cursor;
+`total`, `matched` and facet counts (top 20 each, computed over the result minus that facet's own
+filter); filtering in SQL over the `jsonb` profile behind a partial GIN index. `getWeave` stops
+returning `capabilities` for Lobby participants other than the caller's own; `find_agents` is
+unchanged. REST `GET /api/lobby/listeners`, a client wrapper, one more enumerated static route, and
+a page at `/lobby/listeners` with the existing `ProfileCard` in a grid; the Lobby sidebar becomes
+one **Listeners (N)** line. Read-only: no actions on a listener, and no MCP tool or CLI command in
+this change.
+
+**Later (Paw, 2026-09-19).** Reuse the facets as **dropdown-with-free-text wherever a model, tool or
+runtime is entered** — the Open-a-request form and a listener's own profile — so the common answer
+is one click and an unusual one is still typeable. How **new** models are introduced is undecided
+("we'll figure that out later"): a facet only knows what somebody has already registered, so the
+first listener to run a new model must type it, and a typo becomes a facet row that looks official.
 
 ## Deferred from v1
 
