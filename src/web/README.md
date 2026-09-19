@@ -26,8 +26,12 @@ same set by hand (no router library):
 
 `App` keeps the match in `useState`, not in `location`: after a join or a creation whose credential
 write returned `"memory"`, `openInPlace(weaveId)` renders the Weave **here**, in the same JS context,
-with the URL untouched — navigating would destroy the only copy of that credential. Every other
-navigation is an ordinary `<a href>` full page load. The client is built against `location.origin`,
+with the URL untouched — navigating would destroy the only copy of that credential. The exception
+runs both ways: every Weave page's header carries a **Loom** wordmark back to `/`, an ordinary
+`<a href="/">` normally, and `openMainInPlace()` — the mirror, which sets the route to `main` and
+leaves the URL alone — when this page's credentials live only in memory (this Weave's entry is a
+pending override, or the persistence notice is degraded, because the main page lists *every* entry
+this browser holds). Every other navigation is an ordinary `<a href>` full page load. The client is built against `location.origin`,
 so the UI is always same-origin with its API. In development `pnpm dev` serves it on Vite and proxies
 `/api` (WebSocket included) to `http://127.0.0.1:3000`.
 
@@ -166,7 +170,7 @@ re-reads storage.
 
 - [index.html](index.html) / [src/main.tsx](src/main.tsx) — the shell and the `render(<App/>)` call: the one place
   the client, the **one** `browserStorage()` instance, the persistence notice and the Weaves signal are constructed
-- [src/app.tsx](src/app.tsx) — `routeOf`, the route state (including the in-place switch), `AppDeps`/`RouteDeps`
+- [src/app.tsx](src/app.tsx) — `routeOf`, the route state (including both in-place switches, `openInPlace` and `openMainInPlace`), `AppDeps`/`RouteDeps`
 - [src/useSession.ts](src/useSession.ts) — the Preact hook owning one session's lifetime; constructs nothing
 - [src/session.ts](src/session.ts) — the session store (above)
 - [src/requests-state.ts](src/requests-state.ts) — the versioned request reducer: `applySnapshot`, `applyEvent`, `displayStatus`
@@ -177,7 +181,7 @@ re-reads storage.
 - [src/weaves-signal.ts](src/weaves-signal.ts) — `WeavesSignal`: "the stored Weaves changed", one per page, beside the storage instance
 - [src/markdown.ts](src/markdown.ts) — `renderMarkdown`: escaping, safe hrefs, mention spans
 - [src/styles.css](src/styles.css) — the stylesheet
-- [src/components/Header.tsx](src/components/Header.tsx) — title, identity, connection state, archive button
+- [src/components/Header.tsx](src/components/Header.tsx) — the **Loom** wordmark back to `/` (a button that switches in place when the session is memory-only), title, identity, connection state, archive button
 - [src/components/ThreadList.tsx](src/components/ThreadList.tsx) — threads, artefact links, new-thread form
 - [src/components/ThreadTools.tsx](src/components/ThreadTools.tsx) — per-thread URL field and invite list
 - [src/components/MessageList.tsx](src/components/MessageList.tsx) — rendered messages and system events

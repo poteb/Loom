@@ -427,6 +427,32 @@ describe("WeaveView (spec §2.6, §2.7, §3.3)", () => {
   });
 });
 
+/**
+ * The header's own way back to `/` (spec §3.1). Which element it is, is the whole rule: an anchor
+ * can be middle-clicked or opened in a new tab, and both are the full page load that would drop a
+ * session living only in this JS context. The route decides which case this is and hands the
+ * in-place switch down; this view only renders what it was given.
+ */
+describe("the way back to the main page from a Weave page (spec §3.1)", () => {
+  it("is an ordinary link to / when leaving this JS context costs nothing", () => {
+    render(<WeaveView session={session()} state={state()} />);
+    expect(screen.getByRole("link", { name: "Loom" }).getAttribute("href")).toBe("/");
+  });
+
+  it("is a button with no href when the session lives only in this page's memory", () => {
+    render(<WeaveView session={session()} state={state()} openMainInPlace={() => {}} />);
+    expect([screen.queryByRole("link", { name: "Loom" }),
+      screen.getByRole("button", { name: "Loom" }).getAttribute("href")]).toEqual([null, null]);
+  });
+
+  it("switches the view in place from that button instead of navigating", () => {
+    const openMainInPlace = vi.fn();
+    render(<WeaveView session={session()} state={state()} openMainInPlace={openMainInPlace} />);
+    fireEvent.click(screen.getByRole("button", { name: "Loom" }));
+    expect(openMainInPlace.mock.calls).toEqual([[]]);
+  });
+});
+
 describe("GuidelinesPanel", () => {
   const keeperMe = { ...me, role: "keeper" as const };
   const keeperState = (over: Partial<SessionState> = {}) =>

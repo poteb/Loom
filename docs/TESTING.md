@@ -334,16 +334,20 @@ the origin is what storage and the site-data block of step 7 are keyed by.
    `http://127.0.0.1:3000`) → **Block** → *Save Changes*; undo it afterwards with **Remove Website**
    in the same dialog. A private window does **not** block `localStorage`: it gives the window its
    own store that is merely cleared when the window closes, so every write there persists for as
-   long as the session lasts and the bar never appears. One practical note while the block is on: a
-   Weave page has **no link back to `/`**, so getting back to the main page means typing the
-   address, and with storage blocked that full page load drops the in-memory identity — the main
-   page then looks fresh again (join form back, My Weaves empty). That is expected, not a failure;
-   it is a [known issue](KNOWN-ISSUES.md#web). With site data blocked, repeat the journey: open `/`, join the Lobby under a *different*
-   name, and confirm all four: the bar *"This browser is not saving anything for this site…"*
+   long as the session lasts and the bar never appears. The way back to `/` from a Weave page is the
+   **Loom** wordmark left of the title in the header; with the block on it is a *button* rather than
+   a link, and pressing it renders the main page **in place**, address bar unchanged. Typing the
+   address instead is still a full page load, and that one does drop the in-memory identity — the
+   main page then looks fresh again (join form back, My Weaves empty), which is expected, not a
+   failure. With site data blocked, repeat the journey: open `/`, join the Lobby under a *different*
+   name, and confirm all five: the bar *"This browser is not saving anything for this site…"*
    appears; the page does **not** navigate (the Lobby renders in place and the address bar still
-   reads `/`); creating a Weave there gives the **hardened** panel, whose **Done** stays disabled
-   until you press Copy or *I have saved this link*; and the created link is still on screen the
-   whole time. One bar, not several, however many writes fail.
+   reads `/`); the header's **Loom** wordmark takes you back to the main page in place, which still
+   says you are in the Lobby under that name and still offers **Open the Lobby** (the identity
+   survived the round trip, and going back in is still writable); creating a Weave there gives the
+   **hardened** panel, whose **Done** stays disabled until you press Copy or *I have saved this
+   link*; and the created link is still on screen the whole time. One bar, not several, however many
+   writes fail — the round trip to `/` and back included.
 8. **`/w/<secret>` is unchanged.** Back in the normal window, paste the link copied in step 5. The
    route itself is untouched: it looks the Weave up by its secret and then finds the identity the
    id-keyed entry holds. This browser **created** that Weave, so `loom:weave:<id>` already carries
@@ -365,10 +369,13 @@ allowed: `/lobby` and `/weave/<id>` carry **no secret** in the address bar and r
 stored token alone; the Lobby summary showed counts only after the join, none before it; the
 **Copy** button reached the native clipboard and said *Copied*; and the `/w/<secret>` link opened
 **already joined** in the browser that created the Weave, with no name prompt and the route
-unchanged. Two findings: `createWeave` posted the opener even when it was empty, so a Weave created
-from the web form (where the first message is optional) started with an empty message — **fixed on
-this branch**: a blank opener is no longer a message, and such a Weave is born with two events; and
-no Weave page links back to `/`, still a row in [KNOWN-ISSUES.md](KNOWN-ISSUES.md). **Not run:** the
+unchanged. Two findings, both **fixed on this branch** rather than left as rows in
+[KNOWN-ISSUES.md](KNOWN-ISSUES.md): `createWeave` posted the opener even when it was empty, so a
+Weave created from the web form (where the first message is optional) started with an empty message
+— a blank opener is no longer a message, and such a Weave is born with two events; and no Weave page
+linked back to `/` — the header now carries a **Loom** wordmark home, which switches the route in
+place when the session lives only in memory. Note that the step 7 the run followed is the older one
+without that round trip; the steps above have since been rewritten to include it. **Not run:** the
 second-profile guest variant of step 8 (the name prompt a browser holding nothing for the Weave
 gets). **Not signed off:** the styling of the persistence bar on a Weave page and of the in-place
 title button — both were on screen during the run and no complaint was raised, but neither was

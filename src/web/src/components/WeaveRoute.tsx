@@ -3,6 +3,7 @@ import { LoomClientError, type Lobby } from "@loom/client";
 import type { RouteDeps } from "../app.js";
 import type { SessionTarget } from "../session.js";
 import { useSession } from "../useSession.js";
+import { weaveKey } from "../weaves-store.js";
 import { WeaveView } from "./WeaveView.js";
 import { PersistenceBar } from "./PersistenceBar.js";
 import { JoinLobbyForm } from "./main/JoinLobbyForm.js";
@@ -16,8 +17,8 @@ export function WeaveRoute(props: RouteDeps & (
   | { lobbyRoute?: false; target: SessionTarget })) {
   // Explicitly, not `{...props}`: the two route props below are this component's own business, and
   // spreading them onto children that ignore or overwrite them would say otherwise.
-  const { client, storage, notice, openInPlace } = props;
-  const deps: RouteDeps = { client, storage, notice, openInPlace };
+  const { client, storage, notice, openInPlace, openMainInPlace } = props;
+  const deps: RouteDeps = { client, storage, notice, openInPlace, openMainInPlace };
   if (props.lobbyRoute) return <LobbyRoute {...deps} />;
   return <WeaveSession {...deps} target={props.target} />;
 }
@@ -82,9 +83,14 @@ function WeaveSession(props: RouteDeps & { target: SessionTarget; lobby?: Lobby 
   return <WeaveMount key={reloadKey} {...props} onJoined={() => setReloadKey((n) => n + 1)} />;
 }
 
-function WeaveMount({ client, storage, notice, target, lobby, onJoined }:
+function WeaveMount({ client, storage, notice, openMainInPlace, target, lobby, onJoined }:
   RouteDeps & { target: SessionTarget; lobby?: Lobby; onJoined: () => void }) {
   const { session, state } = useSession(target, { client, storage, onWrite: notice.note });
+  // The notice is a plain page-scoped object, so a subscription is what turns a failed write —
+  // raised by this session's own §10.9 entry write, or by the form that rendered this page in
+  // place — into a render. The header's choice of element below is read on every one of them.
+  const [, setNoticeVersion] = useState(0);
+  useEffect(() => notice.subscribe(() => setNoticeVersion((n) => n + 1)), [notice]);
   const [discovered, setDiscovered] = useState<Lobby | undefined>();
   const [askFailed, setAskFailed] = useState(false);
   // The fork (spec §3.3). Joining the Lobby needs no secret and joining anything else does, so a
@@ -120,11 +126,20 @@ function WeaveMount({ client, storage, notice, target, lobby, onJoined }:
         </div>
       )
       : undefined;
+  // The way back to `/` (spec §3.1), and whether taking it may leave this JS context. Two reasons
+  // it may not, and either is enough. This Weave's own entry may be a pending override — a
+  // credential `localStorage` refused, which is exactly the question `MainPage` and `MyWeaves` ask
+  // per entry before they link *into* a Weave. And the notice may be degraded: the destination here
+  // is the main page, which lists **every** entry this browser holds, so once any write on this
+  // page has failed the whole in-memory store is what a page load would cost, not just this row.
+  // Read on every render, so a later write that does persist restores the ordinary link.
+  const weaveId = state.weave?.id ?? (target.kind === "id" ? target.weaveId : undefined);
+  const inMemoryOnly = notice.degraded() || (!!weaveId && storage.isPending(weaveKey(weaveId)));
   // The §6 notice belongs to the page, not to the main page's layout. A join made from `/` whose
   // credential did not persist replaces `MainPage` — and its bar — with this route in the very same
   // render, and a `/w/<secret>` load writes its own entry here (§10.9), so without this seam the one
   // warning the human needs would be latched and never drawn. `App` hands every route the same
   // notice and mounts one route at a time, so it stays one bar, and one dismissal, per page load.
   return <WeaveView session={session} state={state} banner={<PersistenceBar notice={notice} />}
-    noCredential={noCredential} />;
+    noCredential={noCredential} openMainInPlace={inMemoryOnly ? openMainInPlace : undefined} />;
 }

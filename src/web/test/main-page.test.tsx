@@ -7,7 +7,7 @@ import { App } from "../src/app.js";
 import { JoinLobbyForm } from "../src/components/main/JoinLobbyForm.js";
 import { isValidName, suggestName } from "../src/name.js";
 import { browserStorage, memoryStorage, type KeyValueStorage, type WriteResult } from "../src/storage.js";
-import { createPersistenceNotice } from "../src/persistence.js";
+import { createPersistenceNotice, type PersistenceNotice } from "../src/persistence.js";
 import { createWeavesSignal, type WeavesSignal } from "../src/weaves-signal.js";
 import { CLOSED_REQUESTS_PAGE } from "../src/session.js";
 import {
@@ -375,12 +375,15 @@ const INSTANCE: Routes = { ...OK, [LOBBY_URL]: () => json(LOBBY), ...weaveRoutes
 /** Several macrotask turns: a route resolving, a session loading, and a rebuilt one loading again. */
 const settle = async () => { for (let i = 0; i < 12; i++) await new Promise((r) => setTimeout(r, 0)); };
 
-function mountApp(opts: { path: string; routes?: Routes; storage?: KeyValueStorage; weaves?: WeavesSignal }) {
+function mountApp(opts: { path: string; routes?: Routes; storage?: KeyValueStorage; weaves?: WeavesSignal;
+  notice?: PersistenceNotice }) {
   history.replaceState(null, "", opts.path);
   const fetchStub = stubFetch({ ...INSTANCE, ...opts.routes });
   const client = new LoomClient({ baseUrl: BASE, allowInsecure: true, fetch: fetchStub as unknown as typeof fetch });
   const storage = opts.storage ?? memoryStorage();
-  const notice = createPersistenceNotice();
+  // Page-scoped and latching, so a test can hand in one that has already seen a failed write —
+  // which is the state a Weave page reached through an in-place transition is in.
+  const notice = opts.notice ?? createPersistenceNotice();
   const weaves = opts.weaves ?? createWeavesSignal();
   const view = render(<App client={client} storage={storage} notice={notice} weaves={weaves} />);
   const field = () => screen.getByLabelText("Name") as HTMLInputElement;
@@ -560,6 +563,110 @@ describe("the other routes (spec §3.1)", () => {
     await settle();
     expect([v.container.textContent, v.container.querySelector("a")!.getAttribute("href")])
       .toEqual(["LoomNo such page. Go to the main page.", "/"]);
+  });
+});
+
+/**
+ * Every Weave page's way back to `/` (spec §3.1), and the mirror of the in-place exception: when
+ * this session's credentials would not survive leaving the JS context, the header switches the
+ * route here instead of navigating, and is a **button** rather than an anchor — an anchor can be
+ * middle-clicked or opened in a new tab, which is the same full page load.
+ */
+describe("the way back to the main page from a Weave page (spec §3.1)", () => {
+  const OTHER_ROUTES = weaveRoutes(OTHER, "Test Weave");
+  const SECRET_ROUTES: Routes = { [`${BASE}/api/weaves/${SECRET}/lookup`]: () => json({ weaveId: OTHER }), ...OTHER_ROUTES };
+  /** A browser that keeps what it is given, already holding the identity both Weaves need. */
+  const durable = () => {
+    const storage = memoryStorage();
+    const who = { token: "participant-token", participantId: "p-dana", name: "dana" };
+    setIdentity(storage, LOBBY.weaveId, who, { title: "Lobby" });
+    setIdentity(storage, OTHER, who, { title: "Test Weave", secret: SECRET });
+    return storage;
+  };
+  const homeLink = () => screen.queryByRole("link", { name: "Loom" });
+  const homeButton = () => screen.queryByRole("button", { name: "Loom" });
+
+  const paths: [string, string, Routes][] = [
+    ["/lobby", "/lobby", {}],
+    ["/weave/<id>", `/weave/${OTHER}`, OTHER_ROUTES],
+    ["/w/<secret>", `/w/${SECRET}`, SECRET_ROUTES],
+  ];
+  for (const [label, path, routes] of paths) {
+    it(`offers an ordinary link to / on ${label} when this browser persists what it writes`, async () => {
+      const v = mountApp({ path, storage: durable(), routes });
+      await settle();
+      expect([v.iAm(), homeLink()?.getAttribute("href"), homeButton()]).toEqual(["dana", "/", null]);
+    });
+  }
+
+  it("is a button with no href once this Weave's credential has reached only memory", async () => {
+    installThrowingLocalStorage();
+    const v = mountApp({ path: "/lobby", storage: browserStorage() });
+    await settle();
+    await v.joinAs("dana");
+    expect([v.iAm(), homeLink(), !!homeButton()]).toEqual(["dana", null, true]);
+  });
+
+  // The broader half of the rule: the notice latches for the *page*, and the main page this button
+  // leads to lists every entry the page holds — so once any write here has failed, leaving the JS
+  // context is what costs something, whatever this one entry's verdict says.
+  it("is a button too when some other write on this page did not persist", async () => {
+    const notice = createPersistenceNotice();
+    notice.note("memory");
+    const v = mountApp({ path: "/lobby", storage: durable(), notice });
+    await settle();
+    expect([v.iAm(), homeLink(), !!homeButton()]).toEqual(["dana", null, true]);
+  });
+
+  it("renders the main page in place from that button, with the URL unchanged", async () => {
+    installThrowingLocalStorage();
+    const v = mountApp({ path: "/lobby", storage: browserStorage() });
+    const pushed = vi.spyOn(history, "pushState");
+    const replaced = vi.spyOn(history, "replaceState");
+    await settle();
+    await v.joinAs("dana");
+    fireEvent.click(homeButton()!);
+    await settle();
+    expect([!!v.container.querySelector(".main-page"), location.pathname,
+      pushed.mock.calls.length, replaced.mock.calls.length]).toEqual([true, "/lobby", 0, 0]);
+  });
+
+  it("shows that main page this page's own in-memory identity, and offers the Lobby in place", async () => {
+    installThrowingLocalStorage();
+    const v = mountApp({ path: "/lobby", storage: browserStorage() });
+    await settle();
+    await v.joinAs("dana");
+    fireEvent.click(homeButton()!);
+    await settle();
+    expect([v.container.querySelector(".lobby-open")!.textContent,
+      !!v.container.querySelector("button.lobby-open-inplace")]).toEqual(["You are in the Lobby as dana. Open the Lobby", true]);
+  });
+
+  it("goes back into the Lobby from there into the same writable session", async () => {
+    installThrowingLocalStorage();
+    const v = mountApp({ path: "/lobby", storage: browserStorage() });
+    await settle();
+    await v.joinAs("dana");
+    fireEvent.click(homeButton()!);
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Open the Lobby" }));
+    await settle();
+    expect([v.iAm(), v.writable()]).toEqual(["dana", true]);
+  });
+
+  it("keeps exactly one not-persisting bar across the whole round trip", async () => {
+    installThrowingLocalStorage();
+    const v = mountApp({ path: "/lobby", storage: browserStorage() });
+    await settle();
+    await v.joinAs("dana");
+    const bars = [v.container.querySelectorAll(".persistence-bar").length];
+    fireEvent.click(homeButton()!);
+    await settle();
+    bars.push(v.container.querySelectorAll(".persistence-bar").length);
+    fireEvent.click(screen.getByRole("button", { name: "Open the Lobby" }));
+    await settle();
+    bars.push(v.container.querySelectorAll(".persistence-bar").length);
+    expect(bars).toEqual([1, 1, 1]);
   });
 });
 

@@ -34,6 +34,13 @@ Found by the Lobby manual smoke test of 2026-09-17 (`v2-notes.md`, "Lobby smoke 
 >    or hide a fresh rejoin token behind the dead one. §2.4b adds a pending-override layer with a
 >    precise precedence rule (§2.6, §6, §7).
 >
+> **Manual smoke test 5 (2026-09-19).** The in-place exception of §3.1 gained a **second
+> direction**: no Weave page linked back to `/` at all, so the way back was to type the address —
+> and with storage blocked that full page load dropped the in-memory identity. The header now
+> carries a **Loom** wordmark home, an ordinary `<a href="/">` normally and an in-place route switch
+> (`openMainInPlace`, the mirror of `openInPlace`) when this page's credentials would not survive
+> leaving the JS context (§3.1).
+>
 > **Planning review (2026-09-18).** Four points the plan needed and this text did not settle:
 >
 > 5. **Which entry wins when a legacy and an id entry describe the same Weave** — the id entry, and
@@ -578,6 +585,17 @@ whose durable write failed (§2.4). So the rule has a precise exception:
 
 > **After a join or a creation, navigate only if the credential write returned `"durable"`. On
 > `"memory"`, render the destination in place, in the same JS context, and leave the URL alone.**
+
+It runs **both ways** (added 2026-09-19, from manual smoke test 5). Every Weave page's header
+carries a **Loom** wordmark back to `/`: an ordinary `<a href="/">` when a page load costs nothing,
+and a **button** calling `openMainInPlace()` — which sets the route to `{ kind: "main" }`, again
+without touching the URL — when this page's credentials live only in this JS context. A button and
+not an anchor, for the same reason My Weaves' memory-only rows are buttons: an anchor can be
+middle-clicked or opened in a new tab, which is the full page load the exception exists to avoid.
+The condition is broader than the one the *inbound* links use, deliberately: they ask
+`storage.isPending` of the **one** entry they are about to open, while the destination here is the
+main page, which lists every entry this browser holds — so a degraded `PersistenceNotice` (any
+failed write on this page) counts as well as this Weave's own pending entry.
 
 `App` keeps the current target in `useState`, seeded from `location.pathname`; the in-place switch
 sets that state to `{ kind: "id", weaveId }` and `useSession` rebuilds the session on the new target,

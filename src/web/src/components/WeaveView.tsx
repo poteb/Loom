@@ -24,12 +24,18 @@ import { ProfileCards } from "./ProfileCard.js";
  * composer until that join lands (§2.6) — the composer would otherwise promise a write this
  * credential cannot make.
  */
-export function WeaveView({ session, state, banner, noCredential }: {
+export function WeaveView({ session, state, banner, noCredential, openMainInPlace }: {
   session: Session; state: SessionState;
   /** Rendered above the Weave: the persistence bar, and nothing else today. */
   banner?: JSX.Element | null;
   /** Rendered instead of the generic explanation when `status` is `"no-credential"`. */
   noCredential?: JSX.Element | null;
+  /**
+   * Given only when leaving this JS context would lose what this page holds (spec §3.1): the
+   * header's way back to `/` then switches the route in place instead of being an `<a href>`. The
+   * route decides; this view renders what it was handed, and an ordinary link without it.
+   */
+  openMainInPlace?: () => void;
 }) {
   const [pending, setPending] = useState<string | null>(null);   // message waiting for a name
   const [draft, setDraft] = useState<string | undefined>();      // text handed back to the composer
@@ -94,7 +100,7 @@ export function WeaveView({ session, state, banner, noCredential }: {
   return (
     <div class="layout">
       {banner}
-      <Header state={state} session={session} onError={reportError} />
+      <Header state={state} session={session} onError={reportError} openMainInPlace={openMainInPlace} />
       <div class="body">
         <aside class="sidebar">
           <ThreadList state={state} session={session} onError={reportError} />
