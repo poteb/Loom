@@ -39,7 +39,8 @@ load.
 
 **One question decides all of it.** `leavingIsSafe(storage, notice, key?)`
 ([src/persistence.ts](src/persistence.ts)) is asked by the header, those cards, My Weaves' row
-titles and the main page's **Open the Lobby**, in both directions and the same way. It is false when
+titles, the main page's **Open the Lobby** and both **successful form exits** — the Lobby join's
+`onJoined` and the save-this-link panel's **Open the Weave** — in both directions and the same way. It is false when
 either half says so: `storage.isPending(key)` — that entry is a write `localStorage` refused, re-read
 on every render so a later durable write restores the ordinary link — or `notice.degraded()`, the
 page-scoped latch, which never clears because a browser that refused one write is not trusted with a
@@ -121,11 +122,17 @@ entry, which it re-reads on every signal bump.
 
 `JoinLobbyForm` is the one Join-the-Lobby form, rendered both here and by the router's unjoined-Lobby
 fork. It never touches `location`: one write decides everything, and its verdict picks `onJoined`
-(durable — the caller may navigate) or `onJoinedInPlace`. `CreateWeaveForm` does **not** navigate on
-success — the save-this-link panel replaces it while the page, My Weaves included, stays up — and it
-branches on the verdict of the single write that stored identity, secret, title and `lastOpenedAt`
-together: a secret that reached only memory gets the hardened panel, which cannot be dismissed until
-the link is copied or acknowledged and opens the Weave in place.
+(the write persisted, so leaving is *this form's* business no longer) or `onJoinedInPlace`. Where
+`onJoined` actually goes is `MainPage`'s `leaveFor`, which asks `leavingIsSafe` at that moment — so a
+durable join on a page that has already failed a write renders the Lobby in place too. (The router's
+fork passes the same in-place callback for both, because that route *is* the destination.)
+`CreateWeaveForm` does **not** navigate on success — the save-this-link panel replaces it while the
+page, My Weaves included, stays up — and it branches on the verdict of the single write that stored
+identity, secret, title and `lastOpenedAt` together: a secret that reached only memory gets the
+hardened panel, which cannot be dismissed until the link is copied or acknowledged. That verdict
+decides the panel, and nothing else: **Open the Weave** hands the id to a single `open(weaveId)`
+prop, and `leaveFor` decides the route when it is clicked — which can be later than the write, and
+can therefore answer differently.
 
 `MyWeaves` renders every stored Weave **from storage, with no network at all**, sorted by
 `lastOpenedAt`. Row states come straight from the entry: `joined` ("joined as `dana`"), `read-only`
@@ -217,7 +224,7 @@ re-reads storage.
 - [src/components/main/JoinLobbyForm.tsx](src/components/main/JoinLobbyForm.tsx) — join by name, the `name_taken` suggestion, the durable/in-place branch
 - [src/components/main/MyWeaves.tsx](src/components/main/MyWeaves.tsx) — every stored Weave, its row state, Copy link and Forget
 - [src/components/main/refresh-queue.ts](src/components/main/refresh-queue.ts) — `createRefreshQueue(limit, run)`: the FIFO holding the in-flight bound across renders
-- [src/components/main/CreateWeaveForm.tsx](src/components/main/CreateWeaveForm.tsx) — create a Weave, and the save-this-link panel (hardened when the write did not persist)
+- [src/components/main/CreateWeaveForm.tsx](src/components/main/CreateWeaveForm.tsx) — create a Weave, and the save-this-link panel (hardened when the write did not persist); `open(weaveId)` is where it goes, and the page decides the route
 
 ## Testing
 

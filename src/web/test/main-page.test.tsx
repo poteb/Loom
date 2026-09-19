@@ -1880,11 +1880,11 @@ function mountCreate(opts: {
   const notice = createPersistenceNotice();
   const weaves = opts.weaves ?? createWeavesSignal();
   const openInPlace = vi.fn();
-  const navigate = vi.fn();
+  const open = vi.fn();
   const view = render(
     <>
       <CreateWeaveForm client={client} storage={storage} notice={notice} weaves={weaves}
-        defaultName={opts.defaultName} openInPlace={openInPlace} navigate={navigate} />
+        defaultName={opts.defaultName} open={open} />
       {opts.withList && <MyWeaves client={client} storage={storage} weaves={weaves} onWrite={notice.note}
         notice={notice} openInPlace={openInPlace} />}
     </>,
@@ -1898,7 +1898,7 @@ function mountCreate(opts: {
   };
   const send = () => fireEvent.submit(titleField().closest("form")!);
   return {
-    ...view, fetchStub, storage, notice, weaves, openInPlace, navigate, titleField, nameField, button, fill, send,
+    ...view, fetchStub, storage, notice, weaves, openInPlace, open, titleField, nameField, button, fill, send,
     createButton: () => button("Create"),
     panel: () => view.container.querySelector(".create-saved"),
     link: () => view.container.querySelector(".create-link") as HTMLInputElement | null,
@@ -2081,7 +2081,7 @@ describe("the save-this-link panel (spec §4.5, §5)", () => {
     const v = mountCreate();
     await v.create();
     fireEvent.click(v.button("Open the Weave"));
-    expect([v.navigate.mock.calls, v.openInPlace.mock.calls]).toEqual([[[`/weave/${CREATED}`]], []]);
+    expect(v.open.mock.calls).toEqual([[CREATED]]);
   });
 
   it("puts the secret nowhere but that one field", async () => {
@@ -2129,11 +2129,14 @@ describe("the save-this-link panel hardens when nothing was saved (spec §3.1, �
       .toEqual([true, true]);
   });
 
-  it("renders that Weave here rather than navigating to it", async () => {
+  // The hardened panel changes what may be dismissed, not where Open goes: the form hands the id
+  // over exactly as it does from the normal panel, and the page decides (spec §3.1). What actually
+  // happens on a non-durable creation is asserted at the `App` level, where the route really moves.
+  it("hands the id over from the hardened panel exactly as from the normal one", async () => {
     const v = mountCreate({ storage: sized() });
     await v.create();
     fireEvent.click(v.button("Open the Weave"));
-    expect([v.openInPlace.mock.calls, v.navigate.mock.calls]).toEqual([[[CREATED]], []]);
+    expect([!!v.container.querySelector(".create-saved-hardened"), v.open.mock.calls]).toEqual([true, [[CREATED]]]);
   });
 
   it("hardens the same way when the store keeps nothing at all", async () => {
@@ -2292,6 +2295,103 @@ describe("a creation on the main page (spec §3.1, §4.5)", () => {
     await settle();
     const open = v.container.querySelector(".lobby-open button, .lobby-open a")!;
     expect([open.tagName, open.getAttribute("href")]).toEqual(["BUTTON", null]);
+  });
+});
+
+/**
+ * A form's **own** write succeeding says nothing about the page around it (spec §3.1). Both exits
+ * used to navigate on a durable verdict alone, so a join or a creation that happened to persist
+ * would carry the page away from an *earlier* entry that had not — the loss the whole exception
+ * exists to prevent. Where a successful form goes is now the same `leavingIsSafe` question the
+ * links ask, put at the moment the human leaves rather than at the moment the write happened.
+ */
+describe("a successful form on a degraded page (spec §3.1)", () => {
+  const OLDER = "44444444-4444-4444-8444-444444444444";
+  const createdRoutes: Routes = {
+    ...CREATE_OK,
+    ...weaveRoutes(CREATED, "Test Weave"),
+    [weaveUrl(CREATED)]: () => json({ ...weaveAnswer(CREATED, "Test Weave"), participants: [CREATED_RESULT.participant] }),
+    [weaveUrl(OLDER)]: () => json(weaveAnswer(OLDER, "Older Weave")),
+  };
+  /**
+   * A browser that keeps everything **except** one Weave's entry, and a notice that was told so.
+   * That is the state the finding is about: an older row living in this JS context alone, beside a
+   * form whose own write is about to succeed.
+   */
+  function degradedPage() {
+    installLocalStorage((k) => k === weaveKey(OLDER));
+    const storage = browserStorage();
+    const notice = createPersistenceNotice();
+    notice.note(setIdentity(storage, OLDER, { ...HELD, name: "dana" }, { title: "Older Weave" }));
+    return { storage, notice };
+  }
+  const createOnPage = async () => {
+    fireEvent.input(screen.getByLabelText("Title"), { target: { value: "Test Weave" } });
+    fireEvent.input(screen.getByLabelText("Your name"), { target: { value: "dana" } });
+    fireEvent.submit((screen.getByLabelText("Title") as HTMLInputElement).closest("form")!);
+    await settle();
+  };
+
+  it("keeps a durable Lobby join in this JS context, with the URL untouched", async () => {
+    const { storage, notice } = degradedPage();
+    const v = mountApp({ path: "/", storage, notice, routes: createdRoutes });
+    await settle();
+    await v.joinAs("dana");
+    expect([v.iAm(), v.writable(), location.pathname]).toEqual(["dana", true, "/"]);
+  });
+
+  it("and the older memory-only Weave is still there when the page comes back", async () => {
+    const { storage, notice } = degradedPage();
+    const v = mountApp({ path: "/", storage, notice, routes: createdRoutes });
+    await settle();
+    await v.joinAs("dana");
+    fireEvent.click(screen.getByRole("button", { name: "Loom" }));
+    await settle();
+    expect(v.container.textContent).toContain("Older Weave");
+  });
+
+  it("leaves a durable creation's panel normal — the secret did persist — and opens it in place", async () => {
+    const { storage, notice } = degradedPage();
+    const v = mountApp({ path: "/", storage, notice, routes: createdRoutes });
+    await settle();
+    await createOnPage();
+    const hardened = !!v.container.querySelector(".create-saved-hardened");
+    fireEvent.click(screen.getByRole("button", { name: "Open the Weave" }));
+    await settle();
+    expect([hardened, v.container.querySelector(".header h1")?.textContent, location.pathname])
+      .toEqual([false, "Test Weave", "/"]);
+  });
+
+  // The latch is the page's, not the write's, and the panel can sit on screen for a while: a My
+  // Weaves refresh failing beside it is enough to change the answer between the two moments.
+  it("honours a latch that trips after the creation but before Open is clicked", async () => {
+    const v = mountApp({ path: "/", routes: createdRoutes });
+    await settle();
+    await createOnPage();
+    v.notice.note("memory");
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Open the Weave" }));
+    await settle();
+    expect([v.container.querySelector(".header h1")?.textContent, location.pathname])
+      .toEqual(["Test Weave", "/"]);
+  });
+
+  // A quiet page is unchanged: a full page load is still the rule (§3.1), and nothing here relaxes
+  // it — the fix only adds a reason to stay.
+  it("still navigates a durable join away from a quiet page", async () => {
+    const v = mountApp({ path: "/", routes: createdRoutes });
+    await settle();
+    await v.joinAs("dana");
+    expect(location.pathname).toBe("/lobby");
+  });
+
+  it("still navigates a durable creation's Open away from a quiet page", async () => {
+    mountApp({ path: "/", routes: createdRoutes });
+    await settle();
+    await createOnPage();
+    fireEvent.click(screen.getByRole("button", { name: "Open the Weave" }));
+    await settle();
+    expect(location.pathname).toBe(`/weave/${CREATED}`);
   });
 
   it("opens the Lobby in place too when the identity for it lives only in memory", async () => {

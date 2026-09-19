@@ -80,9 +80,21 @@ export function MainPage({ client, storage, notice, weaves, openInPlace }: Route
   // says which of the two this is.
   const wasInvalid = entry?.identity === "invalid";
   // The one full-page-load helper this page owns. Most navigation here is an ordinary `<a href>`;
-  // this one exists because a form has to decide *after* a write whether leaving this JS context is
-  // safe at all (spec §3.1).
+  // this one exists because a form has no destination until it has one, and where it goes is
+  // decided here rather than inside the form (spec §3.1).
   const navigate = (path: string) => { location.href = path; };
+  /**
+   * Where a **successful** form exit goes. The write's own verdict is not the question: a join or a
+   * creation that persisted perfectly well can still be standing on a page holding some *other*
+   * entry that did not, and a full page load takes that one with it. So the destination is chosen
+   * by the same `leavingIsSafe` the links use — and chosen **here, at the moment of leaving**, not
+   * at the moment of the write: the latch can trip in between, while the save-this-link panel is
+   * still on screen and a My Weaves refresh fails behind it.
+   */
+  const leaveFor = (weaveId: string, path: string) => {
+    if (leavingIsSafe(storage, notice, weaveKey(weaveId))) navigate(path);
+    else openInPlace(weaveId);
+  };
   // …and the same question for the Lobby link, asked through the one helper (spec §3.1): an
   // identity that exists only as a pending override is one full page load from gone — and so is
   // every other memory-only entry on this page, which is why a degraded notice keeps this link in
@@ -106,18 +118,18 @@ export function MainPage({ client, storage, notice, weaves, openInPlace }: Route
       ) : (
         <>
           {wasInvalid && <p class="muted">The identity this browser had in the Lobby stopped working — join again.</p>}
-          {/* Both callbacks leave this page, which is why the form takes no `WeavesSignal`: a
-              durable join can safely destroy this JS context, a non-durable one may not, because the
-              credential it just wrote lives only in this page's storage instance (spec §3.1). */}
+          {/* Both callbacks leave this page, which is why the form takes no `WeavesSignal`. The
+              form reports what its own write did; this page decides what that means for the page,
+              so even the durable hand-over goes through `leaveFor` (spec §3.1). */}
           <JoinLobbyForm client={client} storage={storage} notice={notice}
             lobby={{ weaveId: lobby.weaveId, title: lobby.title }}
-            onJoined={() => navigate("/lobby")} onJoinedInPlace={openInPlace} />
+            onJoined={(id) => leaveFor(id, "/lobby")} onJoinedInPlace={openInPlace} />
         </>
       ))}
       <MyWeaves client={client} storage={storage} weaves={weaves} onWrite={notice.note} notice={notice}
                 openInPlace={openInPlace} lobbyWeaveId={lobby?.weaveId} />
       <CreateWeaveForm client={client} storage={storage} notice={notice} weaves={weaves}
-                       defaultName={joinedAs} openInPlace={openInPlace} navigate={navigate} />
+                       defaultName={joinedAs} open={(id) => leaveFor(id, `/weave/${id}`)} />
     </div>
   );
 }
