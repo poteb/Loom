@@ -365,9 +365,10 @@ allowed: `/lobby` and `/weave/<id>` carry **no secret** in the address bar and r
 stored token alone; the Lobby summary showed counts only after the join, none before it; the
 **Copy** button reached the native clipboard and said *Copied*; and the `/w/<secret>` link opened
 **already joined** in the browser that created the Weave, with no name prompt and the route
-unchanged. Two findings, both rows in [KNOWN-ISSUES.md](KNOWN-ISSUES.md): `createWeave` posts the
-opener even when it is empty, so a Weave created from the web form (where the first message is
-optional) starts with an empty message; and no Weave page links back to `/`. **Not run:** the
+unchanged. Two findings: `createWeave` posted the opener even when it was empty, so a Weave created
+from the web form (where the first message is optional) started with an empty message — **fixed on
+this branch**: a blank opener is no longer a message, and such a Weave is born with two events; and
+no Weave page links back to `/`, still a row in [KNOWN-ISSUES.md](KNOWN-ISSUES.md). **Not run:** the
 second-profile guest variant of step 8 (the name prompt a browser holding nothing for the Weave
 gets). **Not signed off:** the styling of the persistence bar on a Weave page and of the in-place
 title button — both were on screen during the run and no complaint was raised, but neither was

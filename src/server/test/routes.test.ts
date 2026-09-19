@@ -60,6 +60,17 @@ describe("weaves", () => {
     expect(js.json.events.at(-1).type).toBe("weave.archived");
   });
 
+  // The route schema still defaults `opener` to `""` (adapters accept a missing first message);
+  // what changed is that core no longer turns that into an event, so nothing downstream of this
+  // route ever sees a message with an empty body.
+  it("an empty opener creates a Weave whose log has no empty message", async () => {
+    const c = await api(s.baseUrl, "POST", "/api/weaves", { title: "No opener", creator: { name: "Paw", kind: "human" } });
+    expect(c.status).toBe(201);
+    expect(c.json.weave.lastSeq).toBe(2);
+    const e = await api(s.baseUrl, "GET", `/api/weaves/${c.json.weave.id}/events`, undefined, c.json.token);
+    expect(e.json.events.map((x: { type: string }) => x.type)).toEqual(["thread.created", "participant.joined"]);
+  });
+
   it("looks up a weave id by secret; unknown secret is 404", async () => {
     const c = await api(s.baseUrl, "POST", "/api/weaves", creator);
     const { weave, secret } = c.json;
