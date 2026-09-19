@@ -178,9 +178,10 @@ Lobby from a browser at all — the Lobby is joined without a secret, but nothin
 offers that. It needs a token-based session load path (the browser holds a participant token rather
 than a Weave secret) plus a landing page that lists what this instance has and offers the join.
 
-### Lobby listeners page (Paw, 2026-09-19) — spec written, awaiting review and planning
+### Lobby listeners page (Paw, 2026-09-19) — spec and plan approved, implementation next
 
-Spec: [2026-09-19-loom-lobby-listeners-design.md](2026-09-19-loom-lobby-listeners-design.md). The
+Spec: [2026-09-19-loom-lobby-listeners-design.md](2026-09-19-loom-lobby-listeners-design.md); plan:
+[2026-09-19-loom-lobby-listeners.md](../plans/2026-09-19-loom-lobby-listeners.md). The
 first slice of [Web client layout for a busy instance](#web-client-layout-for-a-busy-instance-paw-2026-09-17).
 
 The Lobby sidebar renders every listener's full profile card, and `getWeave` ships every profile on
@@ -190,8 +191,8 @@ name or owner, filters on models (any-of, with an optional effort), tools (all-o
 `serves`, all ANDed; `sort` `name|owner|joined` in both directions on a `(sort key, id)` cursor;
 `total`, `matched` and facet counts (top 20 each, computed over the result minus that facet's own
 filter); filtering in SQL over the `jsonb` profile behind a partial GIN index. `getWeave` stops
-returning `capabilities` for Lobby participants other than the caller's own; `find_agents` is
-unchanged. REST `GET /api/lobby/listeners`, a client wrapper, one more enumerated static route, and
+returning `capabilities` for **every** Lobby participant, the caller's own included; a participant
+reads its own profile from the new `GET /api/lobby/participants/me`; `find_agents` is unchanged. REST `GET /api/lobby/listeners`, a client wrapper, one more enumerated static route, and
 a page at `/lobby/listeners` with the existing `ProfileCard` in a grid; the Lobby sidebar becomes
 one **Listeners (N)** line. Read-only: no actions on a listener, and no MCP tool or CLI command in
 this change.
