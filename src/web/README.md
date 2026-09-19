@@ -115,7 +115,10 @@ says which kind, and offers **Forget**) and `unresolved` (a legacy entry nothing
 Weave id yet: no link, but Copy link still works). It re-derives on every `WeavesSignal` bump, and
 refreshes only the rows on screen through [components/main/refresh-queue.ts](src/components/main/refresh-queue.ts)
 — one FIFO per mounted list, six requests in flight **in total across renders**, with a row's secret
-retry reusing its own slot. Rows link to `/weave/<id>`, never to `/w/<secret>`; **Copy link** falls
+retry reusing its own slot. Rows link to `/weave/<id>`, never to `/w/<secret>` — except a row whose
+entry is memory-only (`storage.isPending`), whose title is a **button** that opens the Weave in
+place, because an anchor could be middle-clicked or opened in a new tab and a fresh JS context has
+neither the token nor the secret; the main page's **Open the Lobby** behaves the same way. **Copy link** falls
 back, when the clipboard is missing or refuses, to one selectable field with a **Hide** button — the
 only place a stored secret reaches the DOM here, and only after an explicit click on that row.
 
@@ -167,7 +170,7 @@ re-reads storage.
 - [src/useSession.ts](src/useSession.ts) — the Preact hook owning one session's lifetime; constructs nothing
 - [src/session.ts](src/session.ts) — the session store (above)
 - [src/requests-state.ts](src/requests-state.ts) — the versioned request reducer: `applySnapshot`, `applyEvent`, `displayStatus`
-- [src/storage.ts](src/storage.ts) — `WriteResult`, `KeyValueStorage`, `browserStorage` (override/tombstone layer), `memoryStorage`
+- [src/storage.ts](src/storage.ts) — `WriteResult`, `KeyValueStorage` (including `isPending`: is this key's value memory-only *now*), `browserStorage` (override/tombstone layer), `memoryStorage`
 - [src/weaves-store.ts](src/weaves-store.ts) — `WeaveEntry`/`StoredWeave`, the key helpers, `saveWeaveEntry`, `setIdentity`, `invalidateIdentity`, `forgetWeave`, `hasIdentity`, `storedWeaves`, `mergeLegacy`, `migrateLegacy[One]`, `readerFor`, `isCredentialFailure`
 - [src/name.ts](src/name.ts) — `NAME_RE`, `isValidName`, `suggestName`: core's name rule, once
 - [src/persistence.ts](src/persistence.ts) — `PersistenceNotice`: the page-scoped latch for "this browser is not saving anything"

@@ -253,8 +253,19 @@ export type KeyValueStorage = {
   set(key: string, value: string): WriteResult;   // was void
   remove(key: string): void;
   keys(): string[];
+  isPending(key: string): boolean;                // the value here is memory-only
 };
 ```
+
+- **`isPending(k)`** answers whether the value a `get` would return exists **only in this page's
+  memory**. It is deliberately not the same question as a past `WriteResult`: a verdict describes one
+  write at one moment, while what a navigation needs is whether the key *as it stands now* would
+  survive leaving this JS context. `browserStorage` answers from the pending-override map (a value
+  override → `true`; a tombstone or no override → `false`, because a removal that did not persist
+  leaves no value to carry), `memoryStorage({ durable: false })` answers `true` for every key it
+  holds, a durable one always `false`. It never writes. It is what lets §4.2's rows and §4.4's
+  "Open the Lobby" decide, per entry and on every render, between an ordinary link and opening in
+  place (§3.1).
 
 - **`browserStorage().set`** attempts `localStorage.setItem`, then **verifies by reading back from
   `localStorage` itself** (never through `get`, for the reason above): `"durable"` when
@@ -704,7 +715,10 @@ complete recovery.
 link to `/lobby`, with the name this browser joined as ("You are in the Lobby as `dana`"). No second
 join is offered: core would answer `name_taken` on the same name and would silently create a
 *second* identity on a different one, which is worse. An entry whose identity is `"invalid"` is not
-"already joined" — it shows the form, with a line saying the previous identity stopped working.
+"already joined" — it shows the form, with a line saying the previous identity stopped working. When
+that Lobby entry is memory-only (`isPending`, §2.4) the link becomes a button that opens the Lobby
+in place, for the reason §4.2 gives its rows: following a link would be the full page load that
+loses the identity.
 
 ### 4.2 My Weaves
 
@@ -738,6 +752,12 @@ Per Paw's scale note, this has to survive hundreds of rows:
   (from the entry's `name`, §2.4), and — when the entry carries a `secret` — a **Copy link** action
   for `/w/<secret>`. The row links to `/weave/<id>`; it does **not** link to `/w/<secret>` even when
   the secret is known, so the address bar never gains a secret it did not already have (§5).
+- **A row whose entry is memory-only is not a link at all.** When `storage.isPending(weaveKey(id))`
+  (§2.4), the title is a **button** that opens the Weave in place (§3.1) — not an anchor with a
+  click handler, because an anchor can be middle-clicked or opened in a new tab, and either one is
+  the full page load that loses the only copy of that Weave's credentials. Durable rows stay ordinary
+  anchors: a full page load remains the rule. The question is asked on every render, so a later
+  write that does persist turns the row back into a link with nothing clicked.
 - **Copy link must always answer.** An insecure origin has no `navigator.clipboard` at all, and a
   clipboard that exists can refuse — by rejecting, or by throwing outright. All three fall back to
   showing the link in one selectable read-only field with a **Hide** button beside it. That field is
@@ -1071,7 +1091,15 @@ happy-dom DOM tests selected by the `// @vitest-environment happy-dom` docblock)
   gap 2. `localStorage` still holds the old string; `get` answers the new one.
 - A failed `remove` of an existing durable key reads as **absent** (`get` → `null`) and the key is
   **not** in `keys()`.
-- `keys()` includes a key that exists only as an override.
+- `keys()` lists a key whose write never reached `localStorage` — asserted as the pair that matters
+  (the page lists it, the browser does not hold it), since the in-memory fallback alone would
+  satisfy a bare "contains".
+- A store that is **unreadable** rather than merely full — the `localStorage` accessor throwing,
+  `getItem` throwing, `length`/`key` throwing — is exercised one guard at a time: a write reports
+  `"memory"` and still reads back, a removal reads as absent and drops out of `keys()`, enumeration
+  throwing costs the listing and not the value, and nothing throws out of the storage API.
+- `isPending(k)` is `false` for a durable write and for a tombstone, `true` for a write that only
+  reached this page, `false` again once a later write persists, and it never writes.
 - A later **successful** write of the same key clears the override: with `setItem` working again,
   `localStorage` holds the new value **and** `get` still returns it (the assertion has to check both,
   or it cannot tell a cleared override from a lingering one that happens to agree).
