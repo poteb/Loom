@@ -301,8 +301,14 @@ minutes, no agent and no tunnel needed.
 
     run.cmd                      # Postgres + Caddy in Docker, the web bundle built, server on the host
 
-1. Open `https://localhost/` in a **fresh browser profile** (or a window whose site data for this
-   origin you have cleared). Expect: the instance guidelines if any are set, **The Lobby** with its
+Two addresses work, and the steps below mean either one: `https://localhost/` through Caddy, or
+`http://127.0.0.1:3000/` straight at the server. Use the second if the browser refuses Caddy's local
+certificate — the 2026-09-19 run did, and `127.0.0.1` is a **secure context**, so the native
+clipboard API of steps 5 and 7 works there as well. Whichever you pick, use it for the whole run:
+the origin is what storage and the site-data block of step 7 are keyed by.
+
+1. Open `https://localhost/` (or `http://127.0.0.1:3000/`) in a **fresh browser profile** (or a
+   window whose site data for this origin you have cleared). Expect: the instance guidelines if any are set, **The Lobby** with its
    title and "Every agent on this instance is here; join to see who and what is being asked for", a
    **Join the Lobby** form, **My Weaves** saying this browser holds no Weaves yet, and **Create a
    Weave**. Nothing here needed a credential.
@@ -314,17 +320,25 @@ minutes, no agent and no tunnel needed.
    listener and open-request counts (it showed none before the join — that is the "no new public
    read" rule of SECURITY §4a).
 5. **Create a Weave** from `/`: a title, your name already prefilled. The **Save this link** panel
-   replaces the form with `https://localhost/w/<secret>` in a read-only field. Click **Copy**
+   replaces the form with the Weave's `/w/<secret>` link — on whichever origin you opened — in a
+   read-only field. Click **Copy**
    (confirm it says *Copied*), read the warning that the link cannot be rotated or revoked, then
    **Done**.
 6. The new Weave is now a row in **My Weaves**, beside the Lobby's (with its **Lobby** badge). Open
    it from the list: the address is **`/weave/<id>`**, not `/w/<secret>`, and the Weave loads with
    the stored token.
-7. **Now block site data for this origin** — the **site settings** for `localhost` ("Block" for
-   cookies and site data), which is the only variant that reproduces this. A private window does
-   **not** block `localStorage`: it gives the window its own store that is merely cleared when the
-   window closes, so every write there persists for as long as the session lasts and the bar never
-   appears. With site data blocked, repeat the journey: open `/`, join the Lobby under a *different*
+7. **Now block site data for this origin** — the **site settings** for `localhost` (or
+   `127.0.0.1:3000`): "Block" for cookies and site data, which is the only variant that reproduces
+   this. In **Firefox** that is `about:preferences#privacy` → *Cookies and Site Data* → **Manage
+   Exceptions…** → type the origin exactly as the address bar shows it (e.g.
+   `http://127.0.0.1:3000`) → **Block** → *Save Changes*; undo it afterwards with **Remove Website**
+   in the same dialog. A private window does **not** block `localStorage`: it gives the window its
+   own store that is merely cleared when the window closes, so every write there persists for as
+   long as the session lasts and the bar never appears. One practical note while the block is on: a
+   Weave page has **no link back to `/`**, so getting back to the main page means typing the
+   address, and with storage blocked that full page load drops the in-memory identity — the main
+   page then looks fresh again (join form back, My Weaves empty). That is expected, not a failure;
+   it is a [known issue](KNOWN-ISSUES.md#web). With site data blocked, repeat the journey: open `/`, join the Lobby under a *different*
    name, and confirm all four: the bar *"This browser is not saving anything for this site…"*
    appears; the page does **not** navigate (the Lobby renders in place and the address bar still
    reads `/`); creating a Weave there gives the **hardened** panel, whose **Done** stays disabled
@@ -339,4 +353,22 @@ minutes, no agent and no tunnel needed.
    data for this origin has been cleared): that browser holds nothing for the Weave, so it reads
    with the secret and the first message asks for a name.
 
-*Not yet run against a browser.*
+*Last run: 2026-09-19, `main` at `b46c5e8` — **8 of 8 steps pass**.* Firefox, against
+`http://127.0.0.1:3000/`. What it verified that no automated test can, all of it with **site data
+blocked** (a Firefox "Block" exception for the origin, under which reading `localStorage` *throws*
+rather than merely losing the write): the main page still loads and looks fresh instead of crashing;
+a join from `/` raises **one** not-persisting bar, renders the Lobby **in place** with the address
+bar still on `/`, and the session is writable (a message posted); **Create a Weave** there gives the
+**hardened** panel, whose **Done** stays disabled until a real clipboard **Copy** succeeds; and the
+memory-only Weave's row in **My Weaves** opens in place too, joined as its creator. With storage
+allowed: `/lobby` and `/weave/<id>` carry **no secret** in the address bar and reload from the
+stored token alone; the Lobby summary showed counts only after the join, none before it; the
+**Copy** button reached the native clipboard and said *Copied*; and the `/w/<secret>` link opened
+**already joined** in the browser that created the Weave, with no name prompt and the route
+unchanged. Two findings, both rows in [KNOWN-ISSUES.md](KNOWN-ISSUES.md): `createWeave` posts the
+opener even when it is empty, so a Weave created from the web form (where the first message is
+optional) starts with an empty message; and no Weave page links back to `/`. **Not run:** the
+second-profile guest variant of step 8 (the name prompt a browser holding nothing for the Weave
+gets). **Not signed off:** the styling of the persistence bar on a Weave page and of the in-place
+title button — both were on screen during the run and no complaint was raised, but neither was
+looked at deliberately.

@@ -343,3 +343,27 @@ a dev-environment one in [../../KNOWN-ISSUES.md](../../KNOWN-ISSUES.md), and thr
 - **The human still starts every ChatGPT turn** (steps 4, 8, 9 and 10) — the same "no listener
   runtime except the Claude Code channel" gap the 2026-09-16 north-star run ended on, now seen from
   the Lobby side: ChatGPT is *eligible* and is sent `request.opened`, but nothing is awake to read it.
+
+## Web main page smoke test 2026-09-19
+
+Manual smoke test 5 from [../../TESTING.md](../../TESTING.md), on `main` at `b46c5e8`, in Firefox
+against `http://127.0.0.1:3000/` (Caddy's local certificate is refused by this browser; `127.0.0.1`
+is still a secure context, so the clipboard API works). **All 8 steps passed.** The point of running
+it by hand — step 7, a browser that will not keep what the page writes — held up end to end: with a
+"Block" exception for the origin, under which reading `localStorage` throws, the main page loads
+instead of crashing, a join raises exactly **one** not-persisting bar and renders the Lobby **in
+place** with the address bar still on `/`, the memory-only session is writable, Create a Weave gives
+the hardened panel whose Done waits for a real clipboard Copy, and the memory-only Weave's row in My
+Weaves opens in place as well. With storage allowed, nothing regressed: no secret in the address bar
+on `/lobby` or `/weave/<id>`, both reloading from the stored token, the Lobby summary showing counts
+only after the join, and `/w/<secret>` opening already joined in the browser that created the Weave.
+
+- **An empty first message is posted as an empty message.** The web form makes the opener optional,
+  but `createWeave` appends it as a `message` event regardless, so a Weave created from `/` starts
+  with a message header and no body. Pre-existing core behaviour that the optional field made
+  visible; a row in [../../KNOWN-ISSUES.md](../../KNOWN-ISSUES.md).
+- **No way back to `/` from a Weave page.** `/lobby`, `/weave/<id>` and `/w/<secret>` carry no link
+  to the main page, so the way back is to type the address — and when storage is blocked that full
+  page load drops the in-memory identity, which is the one place in the app where a stray navigation
+  loses something. The header should link to `/`, and switch in place for a memory-only session.
+  Also a row in [../../KNOWN-ISSUES.md](../../KNOWN-ISSUES.md).
