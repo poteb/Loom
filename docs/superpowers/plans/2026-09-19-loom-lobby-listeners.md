@@ -19,11 +19,12 @@
 - **`listListeners(db, actor, query)` input:** `q?`, `models?: { model: string; effort?: string }[]`, `tools?: string[]`, `runtime?: string`, `serves?: "anyone" | "owner" | "list"`, `sort?: "name" | "owner" | "joined"` (default `"name"`), `dir?: "asc" | "desc"` (default `"asc"`), `limit?: number` (default **50**, `0..MAX_PAGE_LIMIT`), `cursor?: string`, `facets?: boolean` (default `true`).
 - **Output:** `{ total, matched, listeners: { participant, capabilities }[], nextCursor?, facets? }`. `total` = every listener in the Lobby ignoring `q` and every filter; `matched` = after `q` and the filters; both `count(*)`, never `listeners.length`. `nextCursor` is absent on the last page and whenever `limit` is 0. `facets` is absent only when the caller passed `facets: false`.
 - **Validation bounds, all in core:** `q` trimmed, ≤ 100 chars; `models` entries `{ model: 1–100, effort?: 1–32 }`, ≤ 20; `tools` each 1–64, ≤ 50; `runtime` 1–64; `serves` one of the three words; `sort`/`dir` closed enums; `limit` an integer `0 <= limit <= 1000` (`MAX_PAGE_LIMIT`, quoted from `paging.ts`, **not** `validatePage`, which rejects 0); `facets` a boolean. Anything else is `errors.validation`.
-- **Empty means absent.** `tools: []`, `models: []` and a blank or whitespace-only `q` are **normalised to absent** before any predicate is built. `matches(profile, { tools: [] })` accepts every profile including one with no `tools` key (`[].every(…)` is `true`, `matching.ts:46`), while `@> '{"tools":[]}'` would exclude it; and `models: []` is rejected outright by `validateRequirements` (`.min(1)`, `matching.ts:29`), which a UI control going from one chip to none must not turn into a 400.
+- **Empty means absent — and empty means an *empty array*, not a falsy `.length`.** `tools: []`, `models: []` and a blank or whitespace-only `q` are **normalised to absent** before any predicate is built. Only `Array.isArray(v) && v.length === 0` normalises: `{}`, `5`, `null` and `""` are **supplied values**, and every one of them travels on to validation and is rejected with `validation`. A truthiness test (`input.models?.length ? … : undefined`) would read all four as "no filter" and answer `filter={"tools":{}}` with the whole Lobby. The same rule for scalars: **absent is `undefined` and nothing else**, so a supplied non-string `q` is `validation`, and `sort`/`dir`/`limit` take their defaults with `=== undefined` rather than `??`, under which a supplied `null` would silently become `"name"`, `"asc"` and 50. `matches(profile, { tools: [] })` accepts every profile including one with no `tools` key (`[].every(…)` is `true`, `matching.ts:46`), while `@> '{"tools":[]}'` would exclude it; and `models: []` is rejected outright by `validateRequirements` (`.min(1)`, `matching.ts:29`), which a UI control going from one chip to none must not turn into a 400.
 - **The SQL must agree with `matches()`/`admits()` for every input both accept.** That is a property test over a table of profiles × filters, not a hope.
 - **Matching semantics:** `q` = case-insensitive substring of the participant `name` **or** the profile `owner`; `models` = any-of, `{ model }` matching any effort and `{ model, effort }` the exact pair; `tools` = all-of; `runtime` = equality; `serves` `anyone` → `serves === "anyone"`, `owner` → `serves === "owner"` **or absent**, `list` → `serves` is an array. All filters ANDed with each other and with `q`.
 - **Ordering:** `name` → `lower(participants.name)`, `owner` → `lower(capabilities->>'owner')`, `joined` → `participants.joined_at`; in every case the tie-break is `participants.id` **in the same direction**. Every sort key is non-null by invariant (`name`/`joined_at` are `NOT NULL`; a listener's profile always carries `owner`), so no `NULLS` clause and no null branch in the cursor.
 - **Cursor** = `base64url(JSON.stringify({ s, d, k, i }))`, compared as a tuple: `(key, id) > ($k, $i)` for `asc`, `<` for `desc`. Malformed, or `s`/`d` disagreeing with the query → `errors.validation`. A **stale** cursor (its row gone or changed) is **not** an error.
+- **The cursor's `k` is validated by the decoder, never by Postgres.** `s` and `d` decide what a legal key looks like, and a key that is not one is `validation` before a statement is issued: for `joined`, exactly the string `to_char(… 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')` emits — a strict regex plus a range check on the captured fields, and **no `Date`**, which would drop the microseconds the format exists to keep; for `name` and `owner`, a non-empty string within a length bound. Anything looser hands `"not-a-date"::timestamptz` to the database, which is a 500 for a value that came out of the address bar.
 - **The `joined` key is lossless.** The page query selects `to_char(p.joined_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_key`, that exact string is the cursor's `k`, and the comparison is `$k::timestamptz`. **No JS `Date` on that path** — `toPublicParticipant` renders `joinedAt` through `Date.toISOString()` (`actors.ts:11-15`, milliseconds) while the column is `timestamptz` (microseconds, `db/schema.ts:50`), which would duplicate rows ascending and skip them descending. The participant's displayed `joinedAt` is unchanged.
 - **Facets:** top **20** values each (`tools`, `runtimes`, `models`), top **10** efforts per model, `more` / `moreEfforts` answered by asking for one row more (21 / 11) rather than a second count; ordered `count desc, value asc`; `serves` always returns its three kinds with counts including zeros.
 - **Each facet is computed over the search-and-filter result MINUS that facet's own filter.**
@@ -34,14 +35,17 @@
 - **`q` is escaped and parameterised**: `\` → `\\`, then `%` → `\%`, `_` → `\_`, applied with `ESCAPE '\'`, the value always a bind parameter.
 - **`getWeave` blanks the `capabilities` of EVERY participant of the Lobby's Weave**, the caller's own included; `capabilities: null`, never absent. `findAgents` is untouched.
 - **`GET /api/lobby/participants/me`** (core `getMyLobbyParticipant`, gated by `assertParticipantOf`) is the one way to read your own profile. The web calls it with **`me.token`**, never with the page reader — on `/w/<lobby secret>` the page reads with the secret, which owns no participant row.
-- **Request-number sequencing.** Each side read takes `n = ++seq` when it **starts**; its answer *or rejection* is acted on only if `n > applied`, which it then sets. The generation counter answers "is this session still the one that asked?", not "is this the newest answer?".
+- **Request-number sequencing.** Each side read takes `n = ++seq` when it **starts**; its answer *or rejection* is acted on only if `n > applied`, which it then sets. The generation counter answers "is this session still the one that asked?", not "is this the newest answer?". **The failure path is not an exception to this** — in either side read, and on the listeners page's own queries: the ordering guard and the watermark come **before** any side effect, because a rejection's side effects (invalidating a credential, painting an error, publishing a "count unavailable") are more destructive than an answer's, not less. A success path that is guarded and a failure path that is not is the bug this sentence names.
+- **A helper's return value is part of its contract.** `recoverFromCredentialFailure` performs the invalidation and then *reports whether the caller must switch readers* — `if (recovered?.reload) void doLoad();` at **every** call site, the two existing ones (`session.ts:335`, `:397`) and every new one. Calling it for its side effect alone leaves the page reading with a credential the helper has just retired.
 - **The profile cache is owned by an identity**: `{ participantId, token, profile }`, applied only while `state.me` names the same id **and** token, cleared by `join()`, by an invalidation and by a new `doLoad`. `withMyProfile` is the single place `me` is built, and it compares the id. The listener count needs no identity key — it describes the Lobby.
 - **The rejection guard comes before any side effect.** A rejected own-profile read is acted on only if the captured `generation`, `id`, `token` and `n` all still hold; otherwise it is discarded **silently** — no error, no retry, no write, no `onWrite`, no cache clear, no `set()`. A stale rejection for the **same** identity (one that lands after a newer answer was acted on) is also dropped: a newer success is later evidence about that token, and deleting a credential cannot be undone.
-- **401/403 on the own-profile read invalidates the identity** through `recoverFromCredentialFailure(e, failed: "page" | "identity")`. With `failed: "identity"` and `readingWithToken`, it is the page credential and takes today's path. With `failed: "identity"` on a secret target, the sibling rule runs: `invalidateIdentity` + `onWrite`, clear the cache, `set({ me: undefined, readOnlyReason: "secret-fallback" })` — and the page is **never reloaded**, the stream and the generation are untouched. Transient failures (network, 5xx) invalidate nothing.
-- **Listener count triggers:** the initial load (once discovery says this Weave is the Lobby), a late discovery recovery in `retryLobbyData`, and every `refreshInfo`. `participant.capabilities_changed` is covered by the refresh it already schedules. Read with the **page reader**, generation-guarded, sequenced, non-fatal; a `401`/`403` from it is a page-credential failure and takes the existing path. It **never renders as "Listeners (0)"** — an absent count is an absent number.
+- **401/403 on the own-profile read invalidates the identity** through `recoverFromCredentialFailure(e, failed: "page" | "identity")`. With `failed: "identity"` and `readingWithToken`, it is the page credential and takes today's path — invalidate, then `{ reload: true }` when a secret remains, **which the own-profile handler acts on** (`if (recovered?.reload) void doLoad();`), because switching readers is the caller's job in every other call site too. With `failed: "identity"` on a secret target, the sibling rule runs: `invalidateIdentity` + `onWrite`, clear the cache, `set({ me: undefined, readOnlyReason: "secret-fallback" })` — and the page is **never reloaded**, the stream and the generation are untouched. Transient failures (network, 5xx) invalidate nothing.
+- **Listener count triggers:** the initial load (once discovery says this Weave is the Lobby), a late discovery recovery in `retryLobbyData`, and every `refreshInfo`. `participant.capabilities_changed` is covered by the refresh it already schedules. Read with the **page reader**, generation-guarded, sequenced (on the answer **and** on the rejection), non-fatal; a `401`/`403` from it is a page-credential failure and takes the existing path, return value acted on. It **never renders as "Listeners (0)"** — an absent count is an absent number. An accepted non-credential failure sets `listenerCountError`, cleared by the next success, so "not answered yet" and "asked and failed" are different states and are worded differently (spec §5.1): plain **Listeners** while pending, **Listeners** plus "count unavailable" after a failure with no number, and the **last known number** kept when there is one.
 - **REST query string:** `?q=&filter=<json>&sort=&dir=&limit=&cursor=&facets=false`, where `filter` carries `{ models?, tools?, runtime?, serves? }`. The page's own URL uses the same encoding.
 - **`history.replaceState` only, and only to rewrite this page's own query string while `location.pathname` is already `/lobby/listeners`.** Never `pushState`; never when the page is rendered in place (`openListenersInPlace`), where the URL is left entirely alone.
 - **Page size 50**, "Show more" sends `nextCursor` and **appends**; a control change drops the cursor and starts a fresh query.
+- **Nothing is dropped silently.** Every value the page takes out of a URL is validated against **core's own bounds** — not merely shape-sniffed — and every supplied value that is discarded sets `partial`, which is what renders the "part of this link was not understood" line (spec §5.4). That includes **individual entries of an array**: a `.filter()` that quietly removes three of four models is a link that lies about what it shows. A value that is simply absent is not a drop and is not reported.
+- **A read whose failure costs only its own line is not folded into a rejecting `Promise.all`.** `Promise.all` says "all of these or none": right for the queries inside one `listListeners` call, wrong for a page cell. The listener count beside two other counts is caught on its own, so its failure removes one line rather than three.
 - **An error never renders as an empty directory.** "No listener matches these filters" appears only after a **successful** read returning zero rows; a rejected read shows the server's message above whatever rows are on screen, and the counts line says nothing rather than zero.
 - **The narrowed promise:** this work removes the repeated profile **snapshot** from metadata. Profiles still travel over the event log (`participant.capabilities_changed` carries the whole profile, `profile.ts:66-67`, and a load backfills the whole history, `session.ts:504-512`). No sentence in code comments, docs or commit messages may claim otherwise.
 - **No MCP tool and no new CLI command.** `loom lobby` gets a compatibility merge with `findAgents` so its output is unchanged; that is the only CLI edit.
@@ -69,7 +73,7 @@
 | `src/client/src/client.ts` (modify, after `findAgents` at line 120) | `listListeners(query)` and `getMyLobbyParticipant()` |
 | `src/cli/src/commands/lobby.ts` (modify, lines 58–70) | `loom lobby` merges `findAgents({})` by participant id so its output is unchanged |
 | `src/web/src/side-reads.ts` (new) | `createCounter()` and `isCurrent(stamp, now)`: the sequencing and identity-ownership rule, pure and unit-testable, so `session.ts` gains wiring rather than policy |
-| `src/web/src/session.ts` (modify) | `listenerCount` in `SessionState`, the identity-owned profile cache and `withMyProfile`, the two side reads on their triggers, `recoverFromCredentialFailure(e, failed)` and the sibling invalidation rule |
+| `src/web/src/session.ts` (modify) | `listenerCount` and `listenerCountError` in `SessionState`, the identity-owned profile cache and `withMyProfile`, the two side reads on their triggers, `recoverFromCredentialFailure(e, failed)` and the sibling invalidation rule |
 | `src/web/src/app.tsx` (modify) | `Route` gains `{ kind: "listeners" }`; `routeOf` matches `/lobby/listeners` and its trailing slash; `RouteDeps` gains `openListenersInPlace` |
 | `src/web/src/components/listeners/ListenersRoute.tsx` (new) | Resolves the Lobby pointer, picks a credential, owns the join form and the 401 rule; renders `ListenersPage` |
 | `src/web/src/components/listeners/ListenersPage.tsx` (new) | Search, controls, sort, counts line, the `ProfileCard` grid, Show more, and every loading/empty/error state |
@@ -159,13 +163,21 @@ export function likePattern(q: string): string;
   - `validateListenersQuery(undefined)` → `{ sort: "name", dir: "asc", limit: 50, facets: true }` and no filter keys.
   - Defaults: an empty object gives the same.
   - `q: "  dana  "` → `q: "dana"`; `q: "   "` → `q` **absent**; `q: "x".repeat(101)` → `validation`.
+  - **A supplied non-string `q` is `validation`, not "absent"**: `q: 42` → `validation`. Absent is `undefined` and nothing else.
   - `tools: []` → `tools` **absent**; `models: []` → `models` **absent**; `tools: [" shell "]` → `["shell"]`.
+  - **Only an actually empty array normalises to absent** — four tests, one rule each: `tools: {}` → `validation`; `models: 5` → `validation`; `models: null` → `validation`; `tools: ""` → `validation`. The regression these exist for: a REST caller sending `filter={"tools":{}}` must not be served **every** listener.
   - `models: [{ model: "m", effort: "high" }]` survives; `models: [{ model: "" }]` → `validation`; 21 entries → `validation`; `tools` of 51 → `validation`.
   - `runtime: ""` → `validation`; `serves: "nobody"` → `validation`; `sort: "age"` → `validation`; `dir: "up"` → `validation`.
   - `limit: 0` → `0` (legal); `limit: 1000` → `1000`; `limit: 1001` → `validation`; `limit: -1` → `validation`; `limit: 1.5` → `validation`; `limit: NaN` → `validation`.
   - `facets: false` → `false`; `facets: "no"` → `validation`.
+  - **A supplied `null` is a value, not an absence** — three tests: `limit: null` → `validation` (not the default 50); `sort: null` → `validation` (not `"name"`); `dir: null` → `validation`. The `??` that would have swallowed all three is the same defect as `?.length` one bullet up.
   - `encodeCursor`/`decodeCursor` round-trip a cursor whose `k` contains `+`, `/` and `=` (base64url must not mangle it) and one whose `k` is `2026-09-19T12:00:00.123456Z`.
   - `decodeCursor("not-base64!", "name", "asc")` → `validation`; a cursor of valid base64url that is not JSON → `validation`; JSON missing `i` → `validation`; `i` that is not a uuid → `validation`; a cursor with `s: "owner"` decoded for `sort: "name"` → `validation`; same for a `d` mismatch.
+  - **A `raw` that is not a string is `validation`, not a `TypeError`**: `decodeCursor(42 as unknown as string, "name", "asc")` → `validation`. `Buffer.from(42, "base64url")` throws a `TypeError`, which is a 500.
+  - **A `joined` key that is not the exact string the SQL emits is `validation`, never a 500** — the finding this codec exists to close. One test per shape, all with `sort: "joined"`: `k: "not-a-date"`; `k: "2026-09-19T12:00:00.123Z"` (milliseconds — `.US` is always six digits); `k: "2026-09-19 12:00:00.123456Z"` (a space instead of `T`); `k: "2026-09-19T12:00:00.123456"` (no `Z`); `k: "2026-13-19T12:00:00.123456Z"` (month 13); `k: "2026-09-19T24:00:00.123456Z"` (hour 24); `k: "2026-09-19T12:60:00.123456Z"` (minute 60). Each must reach the caller as `validation`, so that `$k::timestamptz` never sees it.
+  - **A genuine emitted `joined` key still round-trips**: `k: "2026-09-19T12:00:00.123456Z"` decodes unchanged, **character for character** — the test that would fail if the decoder ever normalised through `Date` and dropped the microseconds.
+  - **Text keys are length-bounded**: `sort: "name"` with a `k` of 300 characters → `validation`; a `k` of `""` is legal for neither sort (a lowered `name` and a lowered `owner` are both non-empty) → `validation`. A `k` of 64 characters is accepted for `owner`.
+  - There is **no null-key form to decode**: spec §2.5 establishes every sort key as non-null (`name`/`joined_at` are `NOT NULL`, a listener's profile always carries `owner`), so `k: null` is simply "not a string" → `validation`, and no null branch is written.
   - `likePattern("100%_a\\b")` → `"%100\\%\\_a\\\\b%"` (escape `\` first, then `%` and `_`).
 - [ ] **Step 2: RED** — `cd src/core && npx vitest run test/lobby-listeners-input.test.ts`.
 - [ ] **Step 3: Implement `listeners-input.ts`.** Bounds through one zod schema that reuses `validateRequirements` for the `{ models, tools, runtime }` third, **after** normalisation has removed the empty arrays:
@@ -173,21 +185,33 @@ export function likePattern(q: string): string;
 const MAX_Q = 100;
 
 export function validateListenersQuery(input: ListenersQuery = {}): CleanQuery {
-  const q = typeof input.q === "string" ? input.q.trim() : undefined;
+  // Absent is `undefined` and nothing else. A supplied `q` that is not a string is a caller error,
+  // not an empty search box — reading it as "absent" would answer a nonsense query with the whole
+  // Lobby instead of a 400.
+  if (input.q !== undefined && typeof input.q !== "string") throw errors.validation("q must be a string");
+  const q = input.q?.trim();
   if (q !== undefined && q.length > MAX_Q) throw errors.validation(`q must be at most ${MAX_Q} characters`);
   // An empty filter is no filter: `matches` accepts every profile for `tools: []`, and a control
-  // that goes from one chip to none must not be a 400 (spec §2.3).
-  const models = input.models?.length ? input.models : undefined;
-  const tools = input.tools?.length ? input.tools : undefined;
+  // that goes from one chip to none must not be a 400 (spec §2.3). **Only an actually empty array**
+  // — `?.length` is a truthiness test, and `{}`, `5` and `null` are all falsy-length: each would be
+  // silently normalised to "no filter", so `filter={"tools":{}}` over REST would return every
+  // listener. Anything that is not an empty array is passed on **unchanged** to `validateRequirements`,
+  // whose schema rejects it with `validation`.
+  const emptyArrayToAbsent = <T>(v: T): T | undefined => (Array.isArray(v) && v.length === 0 ? undefined : v);
+  const models = emptyArrayToAbsent(input.models);
+  const tools = emptyArrayToAbsent(input.tools);
   const req = validateRequirements({ models, tools, runtime: input.runtime });
   if (input.serves !== undefined && !["anyone", "owner", "list"].includes(input.serves)) {
     throw errors.validation("serves must be anyone, owner or list");
   }
-  const sort = input.sort ?? "name";
+  // `=== undefined`, not `??`: a supplied `null` is a value the caller chose and a rejection it has
+  // earned, not an absence that quietly takes the default. (`??` would read `sort: null` as "name"
+  // and `limit: null` as 50.) The checks below then do the rejecting, each with its own message.
+  const sort = input.sort === undefined ? "name" : input.sort;
   if (!["name", "owner", "joined"].includes(sort)) throw errors.validation("sort must be name, owner or joined");
-  const dir = input.dir ?? "asc";
+  const dir = input.dir === undefined ? "asc" : input.dir;
   if (dir !== "asc" && dir !== "desc") throw errors.validation("dir must be asc or desc");
-  const limit = input.limit ?? 50;
+  const limit = input.limit === undefined ? 50 : input.limit;
   if (!Number.isInteger(limit) || limit < 0 || limit > MAX_PAGE_LIMIT) {
     throw errors.validation(`limit must be an integer between 0 and ${MAX_PAGE_LIMIT}`);
   }
@@ -201,8 +225,25 @@ export function validateListenersQuery(input: ListenersQuery = {}): CleanQuery {
 export function encodeCursor(c: Cursor): string {
   return Buffer.from(JSON.stringify(c), "utf8").toString("base64url");
 }
+/**
+ * Exactly what `to_char(joined_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')` emits and
+ * nothing else (spec §2.5): four-digit year, `.US` is always **six** digits, always `T` and `Z`.
+ * The pattern is matched against the string the caller handed back — **never round-tripped through
+ * a JS `Date`**, which holds milliseconds and would quietly turn `.123456Z` into `.123Z`, which is
+ * the paging bug §2.5 exists to prevent.
+ */
+const JOINED_KEY_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.\d{6}Z$/;
+/** A key is a value out of a URL. Bounded so an unbounded string never reaches a query: the longest
+ *  key this query can emit is `lower(capabilities->>'owner')` over an owner of 64 (`profile.ts:27`)
+ *  or `lower(name)` over 32 (`names.ts:3`), and lowercasing can widen a character, so 256 is the
+ *  sanity bound rather than the exact one. */
+const MAX_KEY = 256;
+
 export function decodeCursor(raw: string, sort: ListenersSort, dir: "asc" | "desc"): Cursor {
   const bad = () => errors.validation("cursor is not valid for this query");
+  // Not a string at all: `Buffer.from(42, "base64url")` throws a `TypeError`, which would be a 500
+  // for what is plainly a bad request.
+  if (typeof raw !== "string") throw bad();
   let c: unknown;
   try { c = JSON.parse(Buffer.from(raw, "base64url").toString("utf8")); } catch { throw bad(); }
   // Shape-checked before any property is read: a cursor is user input from a URL.
@@ -210,6 +251,21 @@ export function decodeCursor(raw: string, sort: ListenersSort, dir: "asc" | "des
   const { s, d, k, i } = c as Record<string, unknown>;
   if (typeof k !== "string" || typeof i !== "string" || !isUuid(i)) throw bad();
   if (s !== sort || d !== dir) throw bad();     // a cursor for a different ordering is not this page's
+  // The key is validated **here**, not by Postgres. A well-formed cursor carrying `s: "joined"` and
+  // `k: "not-a-date"` used to pass this decoder and fail at `$k::timestamptz` — a 500 for a value
+  // that came out of the address bar. `sort` decides what a legal key looks like:
+  if (sort === "joined") {
+    const m = JOINED_KEY_RE.exec(k);
+    if (!m) throw bad();
+    // Shape is not sense: `2026-13-19T24:60:00.000000Z` matches the digits and is no instant.
+    // Range-checked on the captured fields — still no `Date`, so no microsecond is lost.
+    const [mo, day, hh, mm, ss] = [m[2], m[3], m[4], m[5], m[6]].map((g) => Number(g));
+    if (mo! < 1 || mo! > 12 || day! < 1 || day! > 31 || hh! > 23 || mm! > 59 || ss! > 59) throw bad();
+  } else if (k.length === 0 || k.length > MAX_KEY) {
+    // `lower(name)` and `lower(capabilities->>'owner')` are both non-empty by the §2.5 invariant,
+    // so an empty key names no row this query could have been at.
+    throw bad();
+  }
   return { s: sort, d: dir, k, i };
 }
 export function likePattern(q: string): string {
@@ -253,6 +309,7 @@ Spec §2.2 (authorisation), §2.4 (matching), §2.5 (ordering and paging), §2.6
   - **Cursor stability when a listener joins mid-paging:** page 1 of `limit: 2` sorted by name, then a new listener whose name sorts **into** page 1, then page 2 by cursor — page 2 is what followed, no duplicate, no row from page 1. Mirror: a listener sorting **after** the cursor does appear.
   - **A stale cursor still works:** the participant the cursor names clears its profile, and the next page is still the rows after that position.
   - **A malformed cursor**, and a cursor whose `sort` disagrees with the query, are both `validation` **through `listListeners`**.
+  - **A well-formed cursor carrying a `joined` key that is not a timestamp is `validation`, not a database error** — `encodeCursor({ s: "joined", d: "asc", k: "not-a-date", i: <a real uuid> })` passed to `listListeners({ sort: "joined", dir: "asc", cursor })` rejects with `validation` and **no statement is issued**. Asserted on the error `code`, because the failure this replaces was a 500 out of `$k::timestamptz`. Its twin: the `nextCursor` this query really emitted is accepted by the very next call, unchanged — the codec must reject rubbish without rejecting its own output.
   - **The `joined` cursor is lossless** — the precision test. Create four listeners, then `UPDATE participants SET joined_at = $2 WHERE id = $1` with four explicit timestamps inside one millisecond (`…T12:00:00.123400Z`, `.123450Z`, `.123456Z`, `.123999Z`). Page with `sort: "joined", limit: 1` through the whole list ascending, then descending: each direction visits all four exactly once, in the right order, with no duplicate and no skip.
   - **The non-null invariant:** every listener's profile carries a non-empty `owner` (`setCapabilities` with a profile that omits it is `validation`), and a **cleared** profile is not a listener (`setCapabilities(null)` drops the participant out of `total`, out of the page and out of every facet).
   - **`limit` bounds through `listListeners`:** `0` returns no rows but real counts and facets; `1001` is `validation`; the default page is 50.
@@ -311,6 +368,9 @@ const cursorKeySql = (sort: ListenersSort) => sort === "joined"
   : keySql(sort);
 const afterCursor = (c: CleanQuery) => {
   if (!c.cursor) return undefined;
+  // `c.cursor` came through `decodeCursor`, which has already checked that `k` is exactly what
+  // `cursorKeySql` emits for this `sort` — so `::timestamptz` here can only ever see a timestamp.
+  // A cast is not a validator: an unchecked `k` makes a hand-edited URL a 500 (Task 1).
   const k = c.sort === "joined" ? sql`${c.cursor.k}::timestamptz` : sql`${c.cursor.k}`;
   const key = keySql(c.sort);
   return c.dir === "asc" ? sql`(${key}, ${participants.id}) > (${k}, ${c.cursor.i})`
@@ -449,6 +509,8 @@ Spec §4.1 (both routes and the encoding argument), §4.2 (the auth matrix), §4
 - [ ] **Step 1: Failing tests** in `src/server/test/lobby-routes.test.ts`:
   - `GET /api/lobby/listeners` round-trips a query: `q`, a `filter` carrying models-with-effort and tools, `sort`, `dir`, `limit`, then the returned `cursor`.
   - `filter` that is not JSON → 400 `validation` with the message `filter must be JSON`.
+  - **`filter` that is JSON but is not an object** → 400 `validation` with the message `filter must be a JSON object` — one test each for `filter=[]`, `filter=null` and `filter=5`. The regression: `{ ...(5 as object) }` and `{ ...null }` both spread **nothing**, so a nonsense filter would silently return every listener; `{ ...[1,2] }` would instead smuggle in `{"0":1,"1":2}`. This is still "parse, hand over, let core decide" — whether the value is a filter-shaped thing at all is the adapter's decision, exactly as "is it JSON" already is; what a legal filter *contains* stays core's.
+  - **A `filter` carrying an empty array still means "no filter"** end to end: `filter={"tools":[]}` → 200 with `matched === total`, while `filter={"tools":{}}` → 400 `validation` (core's rule from Task 1, asserted once through the route so the two cannot drift).
   - A non-numeric `limit` → 400 from **core**'s message (`limit must be an integer between 0 and 1000`); an unknown `sort` → 400.
   - `limit=0` → counts and facets with `listeners: []`; `facets=false` → counts with **no** `facets` key.
   - The `/listeners` auth matrix, row by row: Lobby participant token 200; the Lobby's own Weave secret 200; instance keeper 200; agent key that joined 200; agent key that has not joined 403; a token of another Weave 403; no credential 401; unknown credential 401.
@@ -464,6 +526,13 @@ Spec §4.1 (both routes and the encoding argument), §4.2 (the auth matrix), §4
     if (raw !== undefined && raw !== "") {
       // Only that it is JSON is decided here; what a legal filter contains is core's rule.
       try { filter = JSON.parse(raw); } catch { throw errors.validation("filter must be JSON"); }
+      // …and that it is an *object*, because the line below spreads it. `{ ...5 }` and `{ ...null }`
+      // spread nothing — a nonsense filter would become "no filter" and answer with the whole Lobby
+      // — and `{ ...[1,2] }` would spread `{"0":1,"1":2}`. Nothing is narrowed here; the values
+      // inside are still core's to accept or reject.
+      if (typeof filter !== "object" || filter === null || Array.isArray(filter)) {
+        throw errors.validation("filter must be a JSON object");
+      }
     }
     return c.json(await core.listListeners(actor, {
       ...(filter as object),
@@ -575,8 +644,19 @@ export function queryFromView(view: ListenersView, extra: { limit?: number; curs
   - `searchFromView(EMPTY_VIEW)` is `""` — an untouched page leaves no query string.
   - `?filter=not-json` → `EMPTY_VIEW` with `partial: true` and **no throw**.
   - `?filter={"tools":"shell"}` (wrong shape) → the bad key dropped, `partial: true`; a `filter` that is a JSON **array** or `null` → dropped, `partial: true`.
-  - `?sort=age` → the default sort, `partial: true`; `?q=` 101 characters → `q` dropped, `partial: true`.
-  - `queryFromView` passes `limit: 50` by default and the cursor when given, and omits every absent filter.
+  - `?sort=age` → the default sort, `partial: true`; `?dir=up` → the default `asc`, `partial: true`; `?q=` 101 characters → `q` dropped, `partial: true`.
+  - **Every value the parser validates, one test each — and each one sets `partial`.** The bounds are core's (`matching.ts:26-33`, spec §2.3), and the rule being tested is that a link the page would otherwise send to core renders the directory rather than core's 400:
+    - a model alternative with a **non-string `effort`**: `?filter={"models":[{"model":"opus-5","effort":123}]}` → that alternative **dropped**, `partial: true` (the `{model:"opus-5",effort:123}` the finding names);
+    - an **empty** model name, and one of **101** characters → dropped, `partial: true`;
+    - an `effort` of **33** characters → the alternative dropped whole, never half-kept as `{ model }`;
+    - an entry that is **not an object** (`?filter={"models":[{"model":"a"},"nope",null]}`) → the two bad entries dropped, the good one kept, `partial: true`;
+    - **21** models → 20 kept and `partial: true` (core's `.max(20)`); **51** tools → 50 kept and `partial: true`;
+    - a tool that is **empty**, **65 characters**, or not a string → that entry dropped, the others kept, `partial: true`;
+    - `runtime` **empty**, **65 characters**, or not a string → dropped, `partial: true`;
+    - `serves: "nobody"` and `serves: 5` → dropped, `partial: true`.
+  - **A discarded array entry is never silent.** The rule as its own test: `?filter={"tools":["shell",""]}` keeps `["shell"]` **and** reports `partial: true`, so the "part of this link was not understood" line (spec §5.4) appears. Entries used to be `filter`ed out and vanish.
+  - **No false positives**: the full valid round trip above asserts `partial: false`, and so does a view using every control at its bounds (a 100-character model, a 32-character effort, 20 models, 50 tools, a 64-character runtime, a 100-character `q`).
+  - `queryFromView` passes `limit: 50` by default and the cursor when given, and omits every absent filter, including an empty `q` (`q: ""` is a cleared box, not a search).
 - [ ] **Step 2: Failing tests** in `src/web/test/listeners-page.test.tsx`, using the harness from Task 5. Where an intermediate state is asserted, the route's response is a **gated** promise the test releases by hand:
   - Renders one `ProfileCard` per listener from a single stubbed answer, and the counts line reads `Showing 2 of 2 matches`; with `matched < total` it reads `Showing 50 of 87 matches (1,204 listeners)`.
   - **Debounce:** three `input` events inside 250 ms produce **one** request, carrying the last value (fake timers; advance 250 ms once).
@@ -586,6 +666,7 @@ export function queryFromView(view: ListenersView, extra: { limit?: number; curs
   - **A malformed `filter` in the URL** renders the directory with a one-line note and no filter — not an error page, and nothing thrown.
   - **Show more** sends the `nextCursor`, **appends**, and leaves the first page's cards in place and in order; a failed "Show more" keeps the rows and shows the error beside the button.
   - **A control change starts one query and supersedes the one in flight**: with the first response gated, a second control change is made, then both are released oldest-last — the grid shows the **newer** result, and the older response never paints (the page's own generation counter).
+  - **A superseded query's *rejection* is equally silent**: same setup, but the older query is released as a **401**. The newer rows stay, no error line appears, `invalidateIdentity` is **not** called (the stored entry is byte-identical) and the page does not fall back to the join form. The guard runs before every side effect, on the failure path as well as the success path.
   - **Empty:** filters matching nothing render "No listener matches these filters" plus **Clear filters**, which clears them and re-queries; `total === 0` renders "Nobody has declared a profile yet."
   - **An error never renders as empty:** a rejected query renders the server's message and **no** "No listener matches" line, and keeps the rows that were on screen.
   - **Loading keeps the rows:** during a control-change refresh the previous cards are still in the document.
@@ -594,12 +675,26 @@ export function queryFromView(view: ListenersView, extra: { limit?: number; curs
   - **401 on a listeners query**: the identity is invalidated (the entry keeps its `secret`, loses `token`/`participantId`/`name`, gains `identity: "invalid"`), the page retries with the stored secret and renders; with **no** secret it renders the join form and the invalid-identity line.
   - **Back to the Lobby** is an `<a href="/lobby">` when `leavingIsSafe(storage, notice, weaveKey(lobbyId))`, and a **button** that calls `openInPlace(lobbyId)` when it is not.
 - [ ] **Step 3: RED** — `cd src/web && npx vitest run test/listeners-query.test.ts test/listeners-page.test.tsx`.
-- [ ] **Step 4: Implement `listeners-query.ts`.** Every value out of the URL is shape-checked before a property is read, and nothing throws:
+- [ ] **Step 4: Implement `listeners-query.ts`.** Every value out of the URL is shape-checked before a property is read, nothing throws, and — the rule the whole file turns on — **every value that is supplied and not usable is `drop()`ped, which is what sets `partial`**. A value that merely does not appear is neither dropped nor reported.
+
+  The parser validates **completely**, against core's own bounds, rather than letting "close enough" through: a page that forwards `{ model: "opus-5", effort: 123 }` gets core's 400 back and renders an error page for a hand-edited link, which is precisely what spec §5.4 says must not happen ("ignored with a one-line notice … a hand-edited or truncated link should still show the directory"). The bounds are quoted from `validateRequirements` (`matching.ts:26-33`): **model 1–100, effort 1–32, at most 20 alternatives; tools 1–64 each, at most 50; runtime 1–64**; `q` ≤ 100 and the three closed enums from spec §2.3.
 ```ts
 export function viewFromSearch(search: string): { view: ListenersView; partial: boolean } {
   const p = new URLSearchParams(search);
   let partial = false;
   const drop = () => { partial = true; return undefined; };
+  // Supplied-and-unusable is dropped **and** reported; absent is neither. Every helper below goes
+  // through this, so no branch can forget half of the rule.
+  const given = <T>(raw: unknown, parse: (v: unknown) => T | undefined): T | undefined =>
+    raw === undefined ? undefined : parse(raw);
+  const str = (v: unknown, max: number): string | undefined => {
+    if (typeof v !== "string") return drop();
+    const t = v.trim();                       // core trims, so the page compares what core will store
+    return t.length >= 1 && t.length <= max ? t : drop();
+  };
+  const oneOf = <T extends string>(v: unknown, allowed: readonly T[]): T | undefined =>
+    typeof v === "string" && (allowed as readonly string[]).includes(v) ? (v as T) : drop();
+
   const raw = p.get("filter");
   let filter: Record<string, unknown> = {};
   if (raw) {
@@ -610,17 +705,47 @@ export function viewFromSearch(search: string): { view: ListenersView; partial: 
       else drop();
     } catch { drop(); }
   }
-  const models = Array.isArray(filter.models)
-    ? filter.models.filter((m): m is { model: string; effort?: string } =>
-        !!m && typeof m === "object" && typeof (m as { model?: unknown }).model === "string")
-    : (filter.models === undefined ? [] : (drop(), []));
-  …
+  const models = given(filter.models, (v) => {
+    if (!Array.isArray(v)) return drop();
+    const out: { model: string; effort?: string }[] = [];
+    for (const m of v) {
+      // An entry that is thrown away is thrown away **out loud**: a silent `.filter()` here was the
+      // finding — the link said four models, the page showed three and said nothing.
+      if (!m || typeof m !== "object" || Array.isArray(m)) { drop(); continue; }
+      const { model, effort } = m as { model?: unknown; effort?: unknown };
+      const name = str(model, 100);
+      if (name === undefined) continue;                       // `str` has already dropped it
+      if (effort === undefined) { out.push({ model: name }); continue; }
+      const e = str(effort, 32);
+      // An alternative whose effort is unusable is dropped whole rather than widened to "any
+      // effort": keeping half of it would silently answer a different question.
+      if (e !== undefined) out.push({ model: name, effort: e });
+    }
+    if (out.length > 20) { drop(); return out.slice(0, 20); } // core's `.max(20)`
+    return out;
+  }) ?? [];
+  const tools = given(filter.tools, (v) => {
+    if (!Array.isArray(v)) return drop();
+    const out: string[] = [];
+    for (const t of v) { const s = str(t, 64); if (s !== undefined) out.push(s); }
+    if (out.length > 50) { drop(); return out.slice(0, 50); }
+    return out;
+  }) ?? [];
+  const runtime = given(filter.runtime, (v) => str(v, 64));
+  const serves = given(filter.serves, (v) => oneOf(v, ["anyone", "owner", "list"] as const));
+  // The scalars are `string | null` out of `URLSearchParams`; `null` is "not there".
+  const sort = given(p.get("sort") ?? undefined, (v) => oneOf(v, ["name", "owner", "joined"] as const)) ?? "name";
+  const dir = given(p.get("dir") ?? undefined, (v) => oneOf(v, ["asc", "desc"] as const)) ?? "asc";
+  // `?q=` (empty) is a cleared box, not a rejected value: absent, and not reported.
+  const qRaw = p.get("q");
+  const q = qRaw === null || qRaw.trim() === "" ? "" : (str(qRaw, 100) ?? "");
   return { view: { q, models, tools, runtime, serves, sort, dir }, partial };
 }
 ```
   `searchFromView` is its inverse and writes `filter` only when at least one of the four is set, so an untouched page has an empty query string.
 - [ ] **Step 5: Implement `ListenersPage`.** The rules that are easy to get wrong, each as written:
   - **One query in flight, superseded by generation, never stacked.** The page holds `const gen = useRef(0)`; every query takes `const n = ++gen.current` and applies its answer only if `n === gen.current`. A control change bumps it, which is what makes the older answer harmless. "Show more" is the one query that **appends** rather than replaces, and it too checks `n` before it appends.
+  - **The rejection path carries the same guard, before any side effect.** `n === gen.current` is checked in the `catch`/reject handler too — ahead of `setState`, ahead of the 401 rule, ahead of `invalidateIdentity`. A superseded query's failure must not paint an error over a newer query's rows, and must certainly not delete a credential on the strength of a request nobody is waiting for any more. This is the page's copy of the session's rule (Task 7, spec §3.3): *the guard comes before any side effect, and it applies to rejections as much as to answers.* Its test: with two queries in flight, the **older** one rejecting last leaves the newer rows on screen, shows no error, and writes nothing to storage.
   - **The cursor is dropped on every control change** and kept only by "Show more".
   - **State is `{ status: "loading" | "ready" | "error"; rows; total; matched; facets; nextCursor; error }`** — an error is a state of its own, never an empty `rows`. "No listener matches" is rendered **only** when `status === "ready" && rows.length === 0`.
   - **Debounce** the search box by 250 ms with a `useRef<number>` timer cleared on unmount; the input is never disabled while a request is in flight.
@@ -660,7 +785,7 @@ export function isCurrent(stamp: Stamp, now: Now): boolean;
 export function createCounter(): { next(): number; applied(): number; markApplied(n: number): void };
 export type OwnProfile = { participantId: string; token: string; profile: Profile | null };
 ```
-  and in `session.ts`: `SessionState.listenerCount?: number`; `recoverFromCredentialFailure(e: unknown, failed: "page" | "identity" = "page"): { reload: boolean } | undefined` — the default is what keeps both existing callers (lines 335 and 397) unchanged.
+  and in `session.ts`: `SessionState.listenerCount?: number`; `SessionState.listenerCountError?: boolean` — **true when the newest count read that was acted on failed**, cleared by the next success, so a consumer can tell "not answered yet" from "asked and failed" (spec §5.1 words the two states differently and `listenerCount === undefined` cannot say which); `recoverFromCredentialFailure(e: unknown, failed: "page" | "identity" = "page"): { reload: boolean } | undefined` — the default is what keeps both existing callers (lines 335 and 397) unchanged, and **every** caller acts on the returned `{ reload }`.
 
 - [ ] **Step 1: Failing tests** in `src/web/test/side-reads.test.ts` (pure units):
   - `createCounter()`: `next()` returns 1, 2, 3; `applied()` starts at 0; `markApplied(2)` then `applied()` is 2.
@@ -671,6 +796,11 @@ export type OwnProfile = { participantId: string; token: string; profile: Profil
   - **A late discovery still produces a count**: `getLobby()` fails once and succeeds on the retry; the count arrives with the requests board.
   - **A refresh updates it**, and a `participant.capabilities_changed` from a second client moves it.
   - **A failing count is not fatal**: the load reaches `ready` with threads, participants and events, `listenerCount` is `undefined`, and a later successful refresh fills it in.
+  - **A failing count says it failed**: on a 500 from the count read, `listenerCount` is `undefined` **and** `listenerCountError` is `true` — the state Task 8 renders as "count unavailable" rather than as "still loading".
+  - **A success clears the error flag**: after that failure, the next refresh's count answers and `listenerCountError` is `false` with `listenerCount` set.
+  - **A failure after a success keeps the number**: count answers 7, a later count read fails transiently — `listenerCount` is still 7 and `listenerCountError` is `true`. The number is never replaced by `undefined` and never by 0.
+  - **A count rejection is sequenced exactly as an answer is** — the ordering rule on the failure path: read A starts and is gated, read B starts and succeeds with `total: 4`, then A is released as a **401**. `listenerCount` is still 4, `listenerCountError` is `false` (B's success cleared it and A's rejection did not set it), **no identity was invalidated** (the stored entry is byte-identical), and **no reload happened** (the `getWeave` call count did not rise). Without the `n <= countReads.applied()` guard on that path, a stale rejection tears down a page whose newest read has just succeeded.
+  - **A count rejection after a *newer* rejection is also dropped**: A gated, B fails and sets the flag, then A fails — nothing is written twice and nothing is invalidated.
   - **The count is not read away from the Lobby**: an ordinary Weave's load and refresh make no listeners call (counted on an instrumented client).
   - **My own profile survives a refresh**: after the load `state.me.participant.capabilities` is this browser's profile and it is **still** there after a refresh — the guard for `withMyProfile`, since `refreshInfo` rebuilds `me` from `getWeave`'s list, which now carries no profile.
   - **…on all three routes**: the same assertion for `/lobby` (id target), `/weave/<lobbyId>` and `/w/<lobby secret>` with a stored identity. The secret row is the one that was broken before the spec's second revision.
@@ -682,7 +812,9 @@ export type OwnProfile = { participantId: string; token: string; profile: Profil
   - **An answer read for a previous identity is discarded**: the read starts, the session joins under a new name, then the old answer lands — `me.capabilities` is not set from it.
   - **A rejoin starts with no profile** until a fresh read answers for the new identity.
   - **A revoked token on a secret-link visit invalidates the identity**: `/w/<lobby secret>` loads, the own-profile read answers 401 — the entry has no `token`/`participantId`/`name`, keeps its `secret` and cached title, is marked `identity: "invalid"`; `state.me` is `undefined`; `readOnlyReason` is `"secret-fallback"`; the page is **still `ready` and still reading** (threads and events intact); and **no reload happened** (the `getWeave` call count did not rise).
-  - **The same failure on an id target with a stored secret** falls back to the secret through the existing page path; **with no secret** it settles at `no-credential`, identity invalidated.
+  - **A rejected own-profile read on an id target reloads the page with the secret** — the finding this test exists for. `/lobby` (or `/weave/<lobbyId>`) is loaded **by token**, so `readingWithToken` is true and `failed: "identity"` falls through to the page path (spec §3.3: *"it **is** the page credential, so this falls through to the existing behaviour"*), which returns `{ reload: true }` and leaves the reader switch to its caller. Assert all four: the stored entry lost `token`/`participantId`/`name` and kept its `secret` with `identity: "invalid"`; `doLoad` ran again (the `getWeave` call count **rose**, and the new read carried the **secret**); `state.me` is `undefined`; and `readOnlyReason` is `"secret-fallback"` as the reload's own fallback sets it. Before the fix the returned `{ reload: true }` was discarded, so the page kept reading with the rejected token and kept showing a stale `me`.
+  - **…and with no secret** it settles at `no-credential`, identity invalidated, `me` cleared.
+  - **The secret-target case still does not reload** — the pair to the test above, asserted together with it so the asymmetry is visible: on `/w/<lobby secret>` the sibling branch returns `{ reload: false }` and the `getWeave` call count does **not** rise.
   - **A delayed 401 for a previous identity leaves the new one untouched**: the read starts, the session rejoins, then the 401 lands — the stored entry is **byte-identical** to what the join wrote, `me` is the new identity, `readOnlyReason` is undefined, and no `WriteResult` reached `onWrite` (spy).
   - **A delayed 401 after a generation change does nothing** (a fresh `load()` in place of the rejoin).
   - **A delayed transient failure for a previous identity is equally silent**: no `refreshError`, no retry, cache untouched.
@@ -727,7 +859,14 @@ export function isCurrent(stamp: Stamp, now: Now): boolean {
         if (disposed || !isCurrent(stamp, nowFor(stamp))) return;
         profileReads.markApplied(stamp.n);
         if (!isCredentialFailure(e)) return;                        // transient: keep what we have
-        recoverFromCredentialFailure(e, "identity");
+        // The return value is the caller's job, exactly as at lines 335 and 397. On a **secret**
+        // target the sibling branch answers `{ reload: false }` and there is nothing to do — the
+        // page is reading perfectly well. On an **id** target this token *is* the page credential
+        // (spec §3.3), so the helper invalidates it and answers `{ reload: true }`, meaning "I have
+        // retired the credential; switch readers by loading again". Dropping that answer leaves the
+        // page reading with the token the server has just refused, and `me` stale behind it.
+        const recovered = recoverFromCredentialFailure(e, "identity");
+        if (recovered?.reload) void doLoad();
       },
     );
   };
@@ -753,7 +892,7 @@ export function isCurrent(stamp: Stamp, now: Now): boolean {
     … // unchanged from here: invalidate, retriedWithSecret = true, reload with the secret or no-credential
   };
 ```
-- [ ] **Step 8: Implement the count.** `SessionState.listenerCount?: number`, its own counter, and three call sites:
+- [ ] **Step 8: Implement the count.** `SessionState.listenerCount?: number` and `listenerCountError?: boolean`, its own counter, and three call sites:
 ```ts
   const countReads = createCounter();
   const readListenerCount = (myGeneration: number) => {
@@ -764,14 +903,24 @@ export function isCurrent(stamp: Stamp, now: Now): boolean {
         // Re-checked inside the function, immediately before publishing — not only in the caller.
         if (disposed || myGeneration !== generation || n <= countReads.applied()) return;
         countReads.markApplied(n);
-        set({ listenerCount: page.total });
+        // A success clears the failure flag: the number on screen is answered, not stale.
+        set({ listenerCount: page.total, listenerCountError: false });
       },
       (e: unknown) => {
-        if (disposed || myGeneration !== generation) return;
+        // **The same two guards as the success path, and both before any side effect.** One
+        // watermark for answers and rejections alike (the Global Constraint on request sequencing,
+        // and spec §3.3's argument for it): an older read's rejection must not undo a newer read's
+        // answer, and it must certainly not spend the page's credential recovery — the most
+        // destructive act on this page — on a request nothing is waiting for.
+        if (disposed || myGeneration !== generation || n <= countReads.applied()) return;
+        countReads.markApplied(n);
         // Read with the page reader, so a rejected credential is a page-credential failure.
         const recovered = recoverFromCredentialFailure(e);
-        if (recovered?.reload) void doLoad();
-        // Anything else: keep the last known number and let the next trigger retry it.
+        if (recovered) { if (recovered.reload) void doLoad(); return; }
+        // Anything else: keep the last known number, record that the newest attempt failed, and let
+        // the next trigger retry. The flag is what lets the sidebar say "count unavailable" instead
+        // of going on looking like it is still loading — and it is never a 0 (spec §5.1).
+        set({ listenerCountError: true });
       },
     );
   };
@@ -789,29 +938,52 @@ Spec §5.1.
 **Files:** Create `src/web/src/components/ListenersLink.tsx`; Modify `src/web/src/components/ProfileCard.tsx` (remove `ProfileCards`), `src/web/src/components/WeaveView.tsx` (lines 99–105), `src/web/src/components/main/LobbySummary.tsx` (lines 43–62), `src/web/src/styles.css`; Test `src/web/test/listeners-page.test.tsx` (extend), `src/web/test/main-page.test.tsx` (modify).
 
 **Interfaces:**
-- *Consumes:* `SessionState.listenerCount` (Task 7); `openListenersInPlace` on `RouteDeps` (Task 5); `leavingIsSafe(storage, notice, key?)`, `weaveKey`; `LoomClient.listListeners` (Task 4).
+- *Consumes:* `SessionState.listenerCount` **and `SessionState.listenerCountError`** (Task 7); `openListenersInPlace` on `RouteDeps` (Task 5); `leavingIsSafe(storage, notice, key?)`, `weaveKey`; `LoomClient.listListeners` (Task 4).
 - *Produces:* `ListenersLink({ state, storage, notice, weaveId, openListenersInPlace })` — renders nothing away from the Lobby.
 
 - [ ] **Step 1: Failing tests** in `src/web/test/listeners-page.test.tsx`:
   - The **Lobby sidebar** shows `Listeners (3)` from `state.listenerCount` and renders **no** `.profile-card` — the removal, asserted directly.
-  - Before the first answer the line reads `Listeners` with **no** number; when the count request fails it shows "count unavailable" and **never** `Listeners (0)`.
+  - **The four count states, one test each** — the two middle ones are indistinguishable without `listenerCountError`, which is why Task 7 adds it:
+    - **pending** (`listenerCount` undefined, `listenerCountError` unset): the line reads `Listeners`, with **no** number and **no** "count unavailable" — spec §5.1: *"Before the first answer the line reads **Listeners** with no number"*;
+    - **failed with no count** (`listenerCountError: true`, no number): `Listeners` plus the quiet "count unavailable", word for word as spec §5.1 gives it, and **never** `Listeners (0)` — asserted as the absence of `(0)` in the line's text;
+    - **failed with a previous count** (`listenerCount: 7`, `listenerCountError: true`): still `Listeners (7)` — the known number is kept, and "count unavailable" is **not** shown beside a number that is on screen;
+    - **recovered** (a later success): `Listeners (9)` and no "count unavailable".
   - The line is an `<a href="/lobby/listeners">` when `leavingIsSafe(storage, notice, weaveKey(lobbyId))`, and a **button with no `href`** when it is not; clicking the button renders the directory in place with `location.pathname` unchanged and `pushState`/`replaceState` never called.
   - It renders nothing on a Weave that is not the Lobby.
-  And in `src/web/test/main-page.test.tsx`: the Lobby summary's "N listeners" comes from `GET /api/lobby/listeners?limit=0&facets=false` (asserted on the stub's calls), the other two counts are unchanged, and a failure of that one call leaves the participant and open-request counts rendered with no listener line and no zero.
+  And in `src/web/test/main-page.test.tsx`: the Lobby summary's "N listeners" comes from `GET /api/lobby/listeners?limit=0&facets=false` (asserted on the stub's calls), and the other two counts are unchanged. Then the independence rule, three tests:
+  - **a failure of that one call leaves the participant and open-request counts rendered**, with no listener line, no zero and **no error line** — the regression test against folding it into the rejecting `Promise.all`;
+  - the same when that call answers **401** (the component has no credential rule of its own, so it behaves as for any other failure);
+  - **a failure of `getWeave`** still shows the section's one error line and no counts, unchanged from today — the half that must *not* become independent.
 - [ ] **Step 2: RED** — `cd src/web && npx vitest run test/listeners-page.test.tsx test/main-page.test.tsx`.
-- [ ] **Step 3: Implement `ListenersLink`.** The Lobby gate is the existing one (`state.lobby?.weaveId === state.weave?.id`); the count comes from `state.listenerCount`; the link/button choice is `leavingIsSafe(storage, notice, weaveKey(weaveId))`, asked **on every render** so a later durable write puts the ordinary link back. A button rather than an anchor-with-handler, for the reason PR #18 gives: an anchor can be middle-clicked or opened in a new tab, and either is the full page load that loses an in-memory credential.
+- [ ] **Step 3: Implement `ListenersLink`.** The Lobby gate is the existing one (`state.lobby?.weaveId === state.weave?.id`); the link/button choice is `leavingIsSafe(storage, notice, weaveKey(weaveId))`, asked **on every render** so a later durable write puts the ordinary link back. The label is the three-way read of the two count cells, and nothing in it can produce a zero that nobody counted:
+```tsx
+  // `listenerCount` alone cannot say whether the number is missing because nothing has answered yet
+  // or because the read failed, and spec §5.1 words those two states differently. A known number
+  // always wins: a failed refresh behind a number that is on screen is a stale number, not a
+  // missing one, and saying "count unavailable" beside it would be a worse answer than saying
+  // nothing. And there is no `(0)` branch here at all — an absent count is an absent number.
+  const label = state.listenerCount !== undefined
+    ? `Listeners (${state.listenerCount.toLocaleString()})`
+    : "Listeners";
+  …
+  {state.listenerCount === undefined && state.listenerCountError && <span class="muted">count unavailable</span>}
+``` A button rather than an anchor-with-handler, for the reason PR #18 gives: an anchor can be middle-clicked or opened in a new tab, and either is the full page load that loses an in-memory credential.
 - [ ] **Step 4: Remove `ProfileCards`** from `ProfileCard.tsx` and from `WeaveView`'s sidebar, and put `<ListenersLink …/>` in its place. `ProfileCard` and `modelSpecs` stay exactly as they are — the directory renders them, and `RequestsPanel` imports `modelSpecs`.
-- [ ] **Step 5: Re-point `LobbySummary`.** Fold a third call into its existing `Promise.all`:
+- [ ] **Step 5: Re-point `LobbySummary`.** A third call beside the existing two — but **caught on its own**, not folded into the rejecting `Promise.all`:
 ```ts
     Promise.all([
       reader.getWeave(weaveId),
       reader.listRequests("open", { limit: PAGE }),
       // A "listener" is a participant carrying a capability profile. `getWeave` no longer carries
       // profiles for the Lobby (spec §3.1), so the count comes from the directory query itself.
-      reader.listListeners({ limit: 0, facets: false }),
+      // **Its own failure costs only its own line.** Inside the `Promise.all` it would reject the
+      // whole tuple, and the two counts this section has always shown would disappear behind one
+      // error line — the opposite of the rule next door (`LobbySummary.tsx:78`: a cell with a
+      // credential and no answer yet is loading, not empty) and of this task's own test.
+      reader.listListeners({ limit: 0, facets: false }).then((p) => p.total, () => undefined),
     ])
 ```
-  and take `listeners` from `page.total`. Its "loading, not empty" rule and its single error line are unchanged.
+  `Counts.listeners` becomes `listeners?: number`, and its `<li>` renders only when it is a number — no zero, no empty line. **A credential failure is not swallowed differently from the other two reads**: this component has no 401 handling at all (no `isCredentialFailure`, no `invalidateIdentity` — that is the session's job, and `MyWeaves`'s), and all three calls use the *same* stored token, so a dead token is reported by `getWeave` rejecting, exactly as it is today. Catching this one call therefore hides nothing the component would otherwise have said. Its "loading, not empty" rule and its single error line are unchanged.
 - [ ] **Step 6: Styles.** The sidebar line, the directory grid, the chips (including the selected-and-empty chip) and the counts line in `styles.css`. No test covers appearance — note it in the KNOWN-ISSUES styling row in Task 9.
 - [ ] **Step 7: GREEN** — `cd src/web && npx vitest run`.
 - [ ] **Step 8: Commit** — `feat(web): the Lobby sidebar links to the listeners directory instead of stacking cards`
@@ -839,14 +1011,15 @@ Spec §9.
 ## Self-review against the spec
 
 - **§1** (the problem, the success scenario, the non-goals) → the shape of the whole plan; the narrowed promise is a Global Constraint and a KNOWN-ISSUES row in Task 9. No task pages the participant list, acts on a listener, adds an MCP tool or adds a sort that needs a new column.
-- **§2.1** types → Task 1 (`listeners-input.ts`). **§2.2** authorisation → Task 2. **§2.3** bounds **and** the normalisation rules → Task 1, with the `listListeners`-level assertions in Task 2. **§2.4** matching semantics → Task 2's predicates and its property test. **§2.5** ordering, the cursor, the non-null invariant and the lossless `joined` key → Task 1 (the codec) and Task 2 (the SQL, the paging tests and the microsecond test). **§2.6** `total`/`matched` → Task 2. **§2.7** facets, selection-inclusive at zero, the effort cap → Task 2 (query and fold) and Task 6 (the zero-count chip). **§2.8** predicates, the seven queries, the staged model ranking, the index and the plan test → Tasks 1 (index, migration) and 2 (queries, plan test). **§2.9** file layout → the File structure table.
+- **§2.1** types → Task 1 (`listeners-input.ts`). **§2.2** authorisation → Task 2. **§2.3** bounds **and** the normalisation rules → Task 1 (only an *empty array* normalises; every other supplied value reaches validation, and a supplied non-string `q` is `validation`), with the `listListeners`-level assertions in Task 2 and the route-level ones in Task 4. **§2.4** matching semantics → Task 2's predicates and its property test. **§2.5** ordering, the cursor, the non-null invariant and the lossless `joined` key → Task 1 (the codec, which validates `k` against exactly the format §2.5's `to_char` emits, without a `Date`) and Task 2 (the SQL, the paging tests, the microsecond test, and the well-formed-cursor-with-a-rubbish-`joined`-key test that must be `validation` rather than a 500). §2.5's non-null invariant is why the decoder has no null-key branch and rejects an empty `k`. **§2.6** `total`/`matched` → Task 2. **§2.7** facets, selection-inclusive at zero, the effort cap → Task 2 (query and fold) and Task 6 (the zero-count chip). **§2.8** predicates, the seven queries, the staged model ranking, the index and the plan test → Tasks 1 (index, migration) and 2 (queries, plan test). **§2.9** file layout → the File structure table.
 - **§3.1** `getWeave` blanks every Lobby profile → Task 3. **§3.2** every consumer: `ProfileCards` → Task 8; `RequestsPanel` → Task 7 (unchanged component, session-filled `me`); `LobbySummary` → Task 8; CLI merge → Task 3; channel test move → Task 3; MCP description → Task 3; the JSON export note → Task 3's doc comment and Task 9's ARCHITECTURE §12. **§3.3** the core function, the session cache, `withMyProfile`, sequencing, identity ownership and the rejection guard → Task 3 (core) and Task 7 (session), with the ownership rule unit-tested in `side-reads.test.ts`.
 - **§4.1** both routes and the `filter` encoding, **§4.2** the auth matrix, **§4.3** the client → Task 4.
-- **§5.1** the sidebar line, its states and the in-place rule, plus `LobbySummary` → Task 8; the count's triggers and its non-fatal, sequenced, generation-guarded rules → Task 7. **§5.2** the route → Task 5. **§5.3** the page → Task 6. **§5.4** the query string and the single `replaceState` rule → Task 6. **§5.5** credential resolution, the join form, `weave_not_found`, the 401 rule and the "list changed" hint → Tasks 5 (resolution, join form, pointer failures) and 6 (401, hint).
+- **§5.1** the sidebar line, its **four** states (pending, failed with no number, failed behind a known number, recovered — distinguished by `listenerCountError`, since `listenerCount === undefined` cannot tell the first two apart) and the in-place rule → Task 8, with `LobbySummary`'s third read **caught on its own** so its failure costs one line and not three; the count's triggers and its non-fatal, sequenced (answers **and** rejections), generation-guarded rules → Task 7. **§5.2** the route → Task 5. **§5.3** the page → Task 6. **§5.4** the query string, the single `replaceState` rule, and "anything invalid is ignored with a one-line notice" — which Task 6 implements as **full validation against core's bounds** plus a `drop()` for every discarded value, entries of an array included, so the notice appears whenever the view shown is not the view the link asked for. **§5.5** credential resolution, the join form, `weave_not_found`, the 401 rule and the "list changed" hint → Tasks 5 (resolution, join form, pointer failures) and 6 (401, hint).
 - **§6** security: nothing new is written, so it lands in docs → Task 9 (SECURITY §4a, §9.1). The escaping and parameterisation of `q` are Task 2's predicate and its literal-search test.
-- **§7** state and error handling: no new error code (Task 4 asserts the existing set); the four independent cells and "an error is never an empty state" → Task 6; the superseded-answer rule → Task 6 (page generation) and Task 7 (session sequencing); the identity-owned cache and the guard-before-side-effects → Task 7.
-- **§8 test by test.** Core input units → Task 1. Core `listListeners` — filters, the `serves` default, AND, search and the literal wildcard, the empty-filter trio, six sorts, paging and cursor stability, the stale cursor, the malformed/mismatched cursor, the microsecond `joined` test, the non-null invariant, `limit` bounds, `facets: false`, `total`/`matched`, facets-minus-own-filter (four), counting a listener once, top-20, the bounded effort facet, model ranking by listener count, the four selection-inclusive cases, the three `serves` rows, the auth matrix, the `matches` property test → Task 2. `db.test.ts` index → Task 1; the `EXPLAIN` plan test → Task 2. `getWeave` blanking (three) and `getMyLobbyParticipant` (eight) → Task 3. Server routes and both matrices → Task 4; static paths → Task 5. Client round trips (two) → Task 4. Web store: the count's five cases and the own profile's five → Task 7; the ten ordering/ownership/rejection cases → Task 7. DOM: the Offer form on three routes plus its loss after a 401 → Task 7 (`components.test.tsx`); the sidebar's four → Task 8; the page's sixteen → Task 6; the query-string codec's eight → Task 6. CLI (two) → Task 3; channel (one) → Task 3. Manual smoke → Task 9.
+- **§7** state and error handling: no new error code (Task 4 asserts the existing set); the four independent cells and "an error is never an empty state" → Task 6; the superseded-answer **and superseded-rejection** rule → Task 6 (page generation, both handlers) and Task 7 (session sequencing, both handlers); the identity-owned cache and the guard-before-side-effects → Task 7. "Pending" and "failed" are separate states wherever a consumer words them differently — `status` on the page (Task 6), `listenerCountError` in the session (Task 7).
+- **§8 test by test.** Core input units → Task 1. Core `listListeners` — filters, the `serves` default, AND, search and the literal wildcard, the empty-filter trio, six sorts, paging and cursor stability, the stale cursor, the malformed/mismatched cursor, the well-formed cursor with an unparseable `joined` key (`validation`, not a 500), the microsecond `joined` test, the non-null invariant, `limit` bounds, `facets: false`, `total`/`matched`, facets-minus-own-filter (four), counting a listener once, top-20, the bounded effort facet, model ranking by listener count, the four selection-inclusive cases, the three `serves` rows, the auth matrix, the `matches` property test → Task 2. `db.test.ts` index → Task 1; the `EXPLAIN` plan test → Task 2. `getWeave` blanking (three) and `getMyLobbyParticipant` (eight) → Task 3. Server routes and both matrices → Task 4; static paths → Task 5. Client round trips (two) → Task 4. Web store: the count's cases (its triggers, non-fatal, the error flag and its clearing, the previous number kept) and the own profile's → Task 7; the ordering/ownership/rejection cases, now including a **stale rejection** for each of the two reads and the reload a rejected own-profile read owes an id target → Task 7. DOM: the Offer form on three routes plus its loss after a 401 → Task 7 (`components.test.tsx`); the sidebar's link/button rule and its **four** count states → Task 8, with `LobbySummary`'s three independence cases; the page's cases, including the superseded **rejection** → Task 6; the query-string codec's, including one per validated value and one per silent-drop class → Task 6. CLI (two) → Task 3; channel (one) → Task 3. Manual smoke → Task 9.
 - **§9** docs, item for item → Task 9. **§10** implementation order followed, with the two deviations named under the File structure table (step 1 split at the database seam; docs split out so the totals are real).
 - **§11 / §12**: nothing in "Later" is implemented; §12.3 is built in its re-confirmed shape (no own-row exception in `getWeave`, the dedicated route instead); §12.10's `facets` flag, §12.12's normalisation, §12.13's effort cap, §12.15's sequencing and §12.16's stale-rejection rule are each a Global Constraint and a test.
 - **Lessons carried from the last plan's review rounds**, each an explicit step or note above: never `cb?.(write())` (Task 6 Step 5 and Task 7 Step 7 both write into a variable first); every async function re-checks its generation **inside itself** before publishing (Task 7 Steps 6 and 8, Task 6 Step 5); a re-derive must not restart or duplicate work in flight (Task 6's single-query-with-generation rule, and "Show more" appending under the same check); one limit across renders rather than per render (Task 6 holds its generation in a `useRef`, not in a closure rebuilt per render); per-entry versus page-level "leaving is safe" (Task 8's sidebar line uses `weaveKey(lobbyId)`, Task 6's back-link the same, Task 5's pointer-failure cards the page-level form); an error never renders as an empty list (Task 6 Step 5's status union); JSON from a URL is shape-checked before any property access (Task 6 Step 4); the DOM harness facts — `https://loom.test`, the table-driven `fetch` stub, the fatal-403 `ws-ticket`, gated promises for intermediate states, and `tsconfig.test.json` already globbing `src` and `test` (Tasks 5, 6, 7, 8); and exact seq/event-count expectations under the blank-opener rule (Task 7 Step 2).
-- **Type consistency** (each symbol grepped, one definition, one signature everywhere): `ListenersQuery`, `ListenersPage`, `Listener`, `ListenersSort`, `ServesKind`, `FacetValue`, `ModelFacet`, `ListenersFacets` are defined in Task 1's `listeners-input.ts` and hand-mirrored once in Task 4's `client/src/types.ts`; `CleanQuery` and `Cursor` never leave core; `validateListenersQuery(input)`, `encodeCursor(c)`, `decodeCursor(raw, sort, dir)` and `likePattern(q)` have those exact signatures in Tasks 1 and 2; `listListeners(db, actor, query?)` in core and `core.listListeners(actor, query?)` on the facade, `LoomClient.listListeners(query?)` in the client, in Tasks 2 and 4; `getMyLobbyParticipant(db, actor)`, `core.getMyLobbyParticipant(actor)` and `LoomClient.getMyLobbyParticipant()` in Tasks 3 and 4; `Stamp`, `Now`, `isCurrent(stamp, now)`, `createCounter()` and `OwnProfile` are defined once in Task 7's `side-reads.ts` and used only by `session.ts`; `recoverFromCredentialFailure(e, failed?)` has that one signature in Task 7, and both existing callers keep calling it with one argument; `withMyProfile(p)` is the only builder of `me`; `ListenersView`, `EMPTY_VIEW`, `viewFromSearch`, `searchFromView` and `queryFromView` are defined once in Task 6's `listeners-query.ts`; `openListenersInPlace` is on `RouteDeps` in Task 5 and consumed in Tasks 6 and 8; `ListenersLink` takes the props Task 8 declares and nothing else; `ProfileCards` appears in **no** task except Task 8's removal. Placeholder scan: no "TBD", no "add error handling", no "similar to Task N", no "write tests for the above"; every symbol a task consumes is produced by an earlier task's **Produces** block or by named code from PR #18.
+- **Lessons added by this plan's own review round**, each now a Global Constraint, a named code comment and a RED test: a helper's **return value is acted on** — `recoverFromCredentialFailure` answers `{ reload }` and every caller obeys it (Task 7 Steps 7 and 8, tested by the id-target own-profile 401 that must reload and its secret-target twin that must not); a **failure path carries the same ordering guard as its success path**, before any side effect (Task 7 Step 8's count, Task 6 Step 5's page queries, each with a stale-rejection test); **truthiness is not a shape check** — `?.length` reads `{}`, `5` and `null` as "empty" (Task 1 Step 3, with the `filter={"tools":{}}` regression at both the core and the REST level); **decoded input is validated where it is decoded**, so a cursor key never reaches `::timestamptz` unchecked and a JSON `filter` is confirmed to be an object before it is spread (Tasks 1 and 4); **a discarded value is reported, never dropped in silence**, entries of an array included (Task 6 Step 4); and **`Promise.all` is for "all or none", not for three independent page cells** (Task 8 Step 5).
+- **Type consistency** (each symbol grepped, one definition, one signature everywhere): `ListenersQuery`, `ListenersPage`, `Listener`, `ListenersSort`, `ServesKind`, `FacetValue`, `ModelFacet`, `ListenersFacets` are defined in Task 1's `listeners-input.ts` and hand-mirrored once in Task 4's `client/src/types.ts`; `CleanQuery` and `Cursor` never leave core; `validateListenersQuery(input)`, `encodeCursor(c)`, `decodeCursor(raw, sort, dir)` and `likePattern(q)` have those exact signatures in Tasks 1 and 2; `listListeners(db, actor, query?)` in core and `core.listListeners(actor, query?)` on the facade, `LoomClient.listListeners(query?)` in the client, in Tasks 2 and 4; `getMyLobbyParticipant(db, actor)`, `core.getMyLobbyParticipant(actor)` and `LoomClient.getMyLobbyParticipant()` in Tasks 3 and 4; `Stamp`, `Now`, `isCurrent(stamp, now)`, `createCounter()` and `OwnProfile` are defined once in Task 7's `side-reads.ts` and used only by `session.ts`; `recoverFromCredentialFailure(e, failed?)` has that one signature in Task 7, both existing callers keep calling it with one argument, and all four call sites (the refresh loop, `retryLobbyData`, the count, the own-profile read) act on the `{ reload }` it returns; `withMyProfile(p)` is the only builder of `me`; `ListenersView`, `EMPTY_VIEW`, `viewFromSearch`, `searchFromView` and `queryFromView` are defined once in Task 6's `listeners-query.ts`; `openListenersInPlace` is on `RouteDeps` in Task 5 and consumed in Tasks 6 and 8; `ListenersLink` takes the props Task 8 declares and nothing else; `ProfileCards` appears in **no** task except Task 8's removal. Placeholder scan: no "TBD", no "add error handling", no "similar to Task N", no "write tests for the above"; every symbol a task consumes is produced by an earlier task's **Produces** block or by named code from PR #18.
