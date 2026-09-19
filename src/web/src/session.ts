@@ -514,12 +514,24 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       guidelinesSeq = info.weave.lastSeq;
       const e = entry();
       let me: SessionState["me"];
+      /** Set when this load found a stored identity the Weave does not know while reading with the
+       *  **secret**: the read itself succeeded, so nothing has to be retried, but the identity is
+       *  dead all the same and the page says so rather than loading as a stranger (spec §2.6). */
+      let identityGone = false;
       if (hasIdentity(e)) {                              // `hasIdentity` already excludes `identity: "invalid"`
         const p = info.participants.find((x) => x.id === e.participantId);
         // A token that reads but names nobody is a corrupt identity, and on a token load it is
         // also the credential in hand — treated exactly like a 401 (spec §2.6).
         if (p) me = { token: e.token, participant: p };
         else if (readingWithToken) throw new LoomClientError("invalid_token", "Stored identity is not in this Weave");
+        else {
+          // The same row of the §2.6 table, reached by the other credential: the entry loses
+          // `token`/`participantId`/`name` and keeps its secret and display cache. Into a variable
+          // first — nested in an optional call the write itself would not happen.
+          const wrote = invalidateIdentity(storage, weaveId!);
+          onWrite(wrote);
+          identityGone = true;
+        }
       }
       // The display cache, and — on a `/w/<secret>` visit — the entry itself, written before anyone
       // has joined (spec §10.9) and only after a successful metadata read, so a failed load stores
@@ -537,7 +549,10 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       for (const snap of requests) held = applySnapshot(held, snap);
       set({ status: "ready", weave: info.weave, threads: info.threads, participants: info.participants, events, me,
         instanceGuidelines: instance, currentThreadId: first, lobby: discovery.lobby, requests: held,
-        readOnlyReason: picked.readOnlyReason,
+        // The same reason either way: what `WeaveView` renders for it — "your identity in this
+        // Weave is no longer valid, you are reading with the Weave link", read-only, with a Join —
+        // is exactly the sentence §2.6 gives this row, so it needs no reason of its own.
+        readOnlyReason: identityGone ? "secret-fallback" : picked.readOnlyReason,
         // An unsettled pointer is not an empty board: until it is known whether this page even has
         // one, the panel has nothing to render and nothing may claim the requests are loaded.
         requestsLoaded: lobbyKnown && requestsError === undefined, requestsError,

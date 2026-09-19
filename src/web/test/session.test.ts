@@ -1661,6 +1661,62 @@ describe("session by weave id", () => {
   });
 });
 
+// Spec §2.6, the row "entry's participantId is not in participants": the same treatment as a dead
+// token, whichever credential the read was made with. On `/w/<secret>` the read has already
+// succeeded, so no fallback is needed — but the identity is gone all the same, and the page has to
+// say so rather than quietly loading as a stranger over a stale stored token.
+describe("session identity a secret-link load cannot find", () => {
+  it("invalidates the stored identity, keeping the secret and the display cache", async () => {
+    const { r, j } = await joinedWeave("Paw");
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, r.weave.id, { token: j.token, participantId: GONE, name: "Paw", secret: r.secret, title: "T" });
+    const session = await makeSession({ kind: "secret", secret: r.secret }, storage);
+    try {
+      const e = readWeaveEntry(storage, r.weave.id)!;
+      expect([e.identity, e.token, e.participantId, e.name, e.secret, e.title])
+        .toEqual(["invalid", undefined, undefined, undefined, r.secret, "T"]);
+    } finally { session.dispose(); }
+  });
+
+  it("comes up ready with no identity, reading with the link", async () => {
+    const { r, j } = await joinedWeave("Paw");
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, r.weave.id, { token: j.token, participantId: GONE, secret: r.secret });
+    const session = await makeSession({ kind: "secret", secret: r.secret }, storage);
+    try {
+      expect([session.getState().status, session.getState().me, session.getState().readOnlyReason])
+        .toEqual(["ready", undefined, "secret-fallback"]);
+    } finally { session.dispose(); }
+  });
+
+  it("makes a join the way back: a fresh identity, and writing works again", async () => {
+    const { r, j } = await joinedWeave("Paw");
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, r.weave.id, { token: j.token, participantId: GONE, secret: r.secret });
+    const session = await makeSession({ kind: "secret", secret: r.secret }, storage);
+    try {
+      await session.join("Dana");
+      const e = readWeaveEntry(storage, r.weave.id)!;
+      expect([e.identity, e.token === session.getState().me?.token, session.getState().readOnlyReason])
+        .toEqual([undefined, true, undefined]);
+      await session.post("back in");
+      await waitFor(() => session.getState().events.some((x) => x.payload.text === "back in"));
+    } finally { session.dispose(); }
+  });
+
+  it("leaves a plain guest visit to /w/<secret> exactly as it was", async () => {
+    // A browser that holds nothing must see no banner at all: there is no identity to have lost.
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Claude", kind: "agent" } });
+    const storage = memoryStorage();
+    const session = await makeSession({ kind: "secret", secret: r.secret }, storage);
+    try {
+      expect([session.getState().status, session.getState().me, session.getState().readOnlyReason])
+        .toEqual(["ready", undefined, undefined]);
+      expect(readWeaveEntry(storage, r.weave.id)?.identity).toBeUndefined();
+    } finally { session.dispose(); }
+  });
+});
+
 describe("session legacy identities", () => {
   it("a bookmarked /w/<secret> keeps an identity that was only ever stored under the legacy key", async () => {
     const { r, j } = await joinedWeave("Paw");

@@ -530,6 +530,21 @@ describe("the other routes (spec §3.1)", () => {
     expect([v.container.querySelector(".header h1")!.textContent, v.iAm(), v.writable()]).toEqual(["Test Weave", null, true]);
   });
 
+  it("says so on /w/<secret> when the stored identity is one the Weave no longer knows", async () => {
+    // §2.6: the read succeeds with the link, but the identity behind it is gone — so the page is
+    // read-only, says why, and offers the Join that is the way back.
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, OTHER, { token: "stale-token", participantId: "p-gone", name: "dana", secret: SECRET });
+    const v = mountApp({ path: `/w/${SECRET}`, storage, routes: {
+      [`${BASE}/api/weaves/${SECRET}/lookup`]: () => json({ weaveId: OTHER }),
+      ...weaveRoutes(OTHER, "Test Weave"),
+    } });
+    await settle();
+    expect([v.container.querySelector(".banner")?.textContent?.includes("no longer valid"),
+      !!screen.queryByRole("button", { name: "Join" }), v.writable(), v.iAm()])
+      .toEqual([true, true, false, null]);
+  });
+
   it("mounts no session on the main page", async () => {
     // The main page has two public reads of its own now, so "no request at all" is no longer the
     // rule — but the exact set is, and it still fails the moment a session (or anything else) adds
