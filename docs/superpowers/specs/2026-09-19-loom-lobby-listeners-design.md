@@ -11,6 +11,35 @@ Depends on the smoke-test-5 fix branch (`fix/blank-opener-and-home-link`), which
 `openMainInPlace` to `RouteDeps` and the header's way home. This spec's in-place rules are written
 against that shape and **land with PR for smoke-test-5 fixes**.
 
+> **Revised after spec review (2026-09-19).** Seven findings, all verified against the code, are
+> folded into the text rather than appended:
+>
+> 1. **"My own profile" is now one read, on one code path.** The own-profile exception in `getWeave`
+>    could not work on a `/w/<lobby secret>` page, where the metadata read authenticates as the
+>    **secret** and `me` is reconstructed from the stored identity
+>    ([`session.ts:173, 542-546`](../../../src/web/src/session.ts)) — the Offer form would have
+>    vanished for an eligible, joined listener. `getWeave` now blanks **every** Lobby profile with no
+>    exception, and a new `GET /api/lobby/participants/me` answers "my own profile" for all three
+>    routes (§3.1, §3.3, §4.1, §5.1). This **changes assumption §12.3 after Paw confirmed it** and is
+>    listed there for re-confirmation.
+> 2. **The listener count is read on four triggers, not one.** `doLoad` does not call `refreshInfo`
+>    ([`session.ts:469-584`](../../../src/web/src/session.ts)), so a count added only to the refresh
+>    would never appear on a quiet Lobby (§5.1).
+> 3. **The filter predicates are whole-document containment**, so the one GIN index can serve them:
+>    a GIN index on `capabilities` cannot serve `capabilities->'tools' @> …` (§2.8), and the plan is
+>    now something the tests assert with `EXPLAIN`.
+> 4. **Empty filters mean "no filter", because that is what `matches` means** (§2.3, §2.4, §8): an
+>    empty `tools` array accepts every profile in the matcher and would have excluded profiles with
+>    no `tools` key in SQL.
+> 5. **The effort facet is bounded** — top 10 per model, `more` per model (§2.7). The per-profile cap
+>    of 20 model entries bounds nothing across 10,000 listeners.
+> 6. **The promise is narrowed to the profile *snapshot*.** The session backfills the Lobby's whole
+>    event history on load and `participant.capabilities_changed` carries the full profile in its
+>    payload ([`profile.ts:66-67`](../../../src/core/src/lobby/profile.ts)), so profiles still travel
+>    over the event log. This change removes the repeated snapshot, not the transport (§1, §5.1, §11).
+> 7. **A listener always has an owner**, so owner paging has no null tail (§2.5). The invariant is
+>    stated, cited and tested rather than defended with cursor logic for an unreachable state.
+
 ## 1. Purpose and scope
 
 ### The problem
@@ -23,7 +52,7 @@ Three facts about the Lobby today, each verified:
    runtime, owner, serves — for every one of them, stacked under Threads, Guidelines and Requests
    ([`WeaveView.tsx:99-105`](../../../src/web/src/components/WeaveView.tsx)). With three listeners
    that reads well. With three hundred the sidebar *is* the page.
-2. **Every profile is downloaded on every load and every refresh.**
+2. **A full snapshot of every profile is downloaded on every load and every refresh.**
    [`getWeave`](../../../src/core/src/weaves.ts) selects every participant row of the Weave with no
    limit and maps each through
    [`toPublicParticipant`](../../../src/core/src/actors.ts), which carries
@@ -34,6 +63,14 @@ Three facts about the Lobby today, each verified:
    all three schedule a metadata refresh
    ([`session.ts:442-445`](../../../src/web/src/session.ts)). On a busy instance those events are
    the common case, not the rare one.
+
+   **What this spec does *not* remove, and says so up front:** profiles also travel over the **event
+   log**. `setCapabilities` appends `participant.capabilities_changed` with the whole validated
+   profile in its payload ([`profile.ts:66-67`](../../../src/core/src/lobby/profile.ts)), and a
+   session backfills the Weave's complete history before it reads metadata
+   ([`session.ts:504-512`](../../../src/web/src/session.ts)). So a Lobby load still downloads every
+   historical profile change, and a live change still arrives in full. Removing the repeated
+   snapshot is this sub-project; slimming the payload or windowing the backfill is not (§11).
 3. **There is no way to look for anybody.** The only search over profiles is `find_agents`
    ([`profile.ts:81`](../../../src/core/src/lobby/profile.ts)) — an MCP tool and a CLI command,
    taking a JSON filter shaped like a request's `requirements`. A human in a browser has a list and
@@ -52,8 +89,9 @@ participant and not a listener.
 
 ### Success scenario
 
-1. Paw opens `/lobby` on an instance with 1,204 listeners. The page loads the Weave, its Threads,
-   its requests — and **no profiles at all**. The sidebar says **Listeners (1,204)**.
+1. Paw opens `/lobby` on an instance with 1,204 listeners. The metadata answer carries names, kinds
+   and roles and **not one profile**; the sidebar says **Listeners (1,204)**, from a count. (The
+   history backfill still carries whatever profile changes are in the log — §1, problem 2.)
 2. He clicks it. `/lobby/listeners` loads the first 50, name A–Z, with four filter controls already
    populated: the models people actually run, with counts; the tools; the runtimes; and how many
    serve anyone, their owner only, or a named list.
@@ -63,7 +101,7 @@ participant and not a listener.
    **Showing 50 of 87 matches**; "Show more" brings the next 50 without moving the first.
 5. He copies the address and pastes it to a colleague, who sees the same 87.
 6. Back on `/lobby` the sidebar count ticks to 1,205 when someone registers a profile — and the
-   Lobby page still downloads no profiles.
+   refresh that follows it re-reads names and roles and a number, not 1,205 profiles.
 
 ### Explicitly out of scope
 
@@ -118,7 +156,8 @@ export type ListenersQuery = {
 };
 
 export type FacetValue = { value: string; count: number };
-export type ModelFacet = { model: string; count: number; efforts: FacetValue[] };
+/** `efforts` is the model's top 10; `moreEfforts` says there are others (§2.7). */
+export type ModelFacet = { model: string; count: number; efforts: FacetValue[]; moreEfforts: boolean };
 
 export type ListenersFacets = {
   models: { values: ModelFacet[]; more: boolean };
@@ -187,9 +226,9 @@ in `listeners.ts`; the REST route parses the query string and hands the values o
 
 | Input | Rule | On violation |
 | --- | --- | --- |
-| `q` | trimmed; 1–100 characters after trimming; an empty result is treated as absent | `validation`: `q must be at most 100 characters` |
-| `models` | the **same** zod shape `Requirements.models` already uses: `[{ model: 1–100, effort?: 1–32 }]`, trimmed, strict keys, 1–20 entries | `validation`, message prefixed `listeners.models…` |
-| `tools` | `string[]`, each trimmed 1–64, at most 50 | `validation` |
+| `q` | trimmed; at most 100 characters after trimming; **empty or whitespace-only → absent**, not an error | `validation`: `q must be at most 100 characters` |
+| `models` | the **same** zod shape `Requirements.models` already uses: `[{ model: 1–100, effort?: 1–32 }]`, trimmed, strict keys, at most 20 entries — but **`[]` is normalised to absent** rather than rejected (see below) | `validation`, message prefixed `listeners.models…` |
+| `tools` | `string[]`, each trimmed 1–64, at most 50; **`[]` is normalised to absent** | `validation` |
 | `runtime` | trimmed 1–64 | `validation` |
 | `serves` | one of `anyone` / `owner` / `list` | `validation`: `serves must be anyone, owner or list` |
 | `sort` | one of `name` / `owner` / `joined`; default `name` | `validation` |
@@ -206,6 +245,34 @@ schema is built by reusing `validateRequirements`
 ([`matching.ts:37`](../../../src/core/src/lobby/matching.ts)) over
 `{ models, tools, runtime }` and keeping `q`, `serves`, `sort`, `dir`, `limit`, `cursor` in a schema
 of its own. One shape, one set of messages, no drift.
+
+#### Normalisation: an empty filter is no filter, because that is what the matcher means
+
+This is not tidiness; it is the one place where SQL and `matches` would otherwise disagree.
+
+- **`tools: []`.** `validateRequirements` accepts it (`z.array(...).max(50)`, no `.min`,
+  [`matching.ts:31`](../../../src/core/src/lobby/matching.ts)) and `matches` **accepts every
+  profile** for it — `req.tools` is a truthy empty array, and `[].every(…)` is `true`
+  ([`matching.ts:46`](../../../src/core/src/lobby/matching.ts)) — *including* a profile with no
+  `tools` key at all. The SQL containment `capabilities @> '{"tools":[]}'` would instead exclude
+  every profile that has no `tools` key, because containment against a missing field is not true.
+  So `tools: []` is **normalised to absent** before a predicate is built.
+- **`models: []`.** `validateRequirements` **rejects** it (`.min(1)`,
+  [`matching.ts:29`](../../../src/core/src/lobby/matching.ts)), so `matches` never sees one and has
+  no opinion. `listListeners` is a UI-facing query whose control legitimately goes from "one chip
+  selected" to "none", and a 400 in that moment would be a bug in the page rather than in the
+  request — so it is **normalised to absent** too, and the empty array never reaches
+  `validateRequirements`. Stated rather than inherited, because it is the one place this schema
+  deliberately differs from the one it reuses.
+- **`q: ""` or whitespace** → absent. `ILIKE '%%'` matches everything anyway, but an empty search is
+  a cleared box, not a query, and it must not count as "filtering" for §2.6's `matched === total`
+  short-circuit or for §2.7's facet rules.
+- **`runtime`, `serves`, `sort`, `dir`** have no empty form: a blank string fails the 1–64 bound,
+  and the enums are closed.
+
+> **The general rule, and the one §8 tests as a property**: for every input that both accept, the
+> set `listListeners` returns must equal the set produced by filtering the same rows with `matches`
+> and `admits`. Normalisation is how that is made true at the edges, not an optimisation.
 
 **`spawnsSubagents` is deliberately not a filter.** It is a boolean on two values; as a fifth
 control it earns a row of UI and a facet for a question the card already answers with a badge
@@ -228,7 +295,7 @@ Every filter present must pass. **AND across filters**, and the search is ANDed 
 | --- | --- | --- |
 | `q` | case-insensitive **substring** of the participant's `name` **OR** of the profile's `owner` | nothing today — new |
 | `models` | **any-of**: at least one alternative is satisfied. An alternative `{ model }` is satisfied by any entry with that `model`; `{ model, effort }` needs both to be equal | `matches`, [`matching.ts:45`](../../../src/core/src/lobby/matching.ts) |
-| `tools` | **all-of**: every named tool is in the profile's `tools` | `matches`, [`matching.ts:46`](../../../src/core/src/lobby/matching.ts) |
+| `tools` | **all-of**: every named tool is in the profile's `tools`. An **empty** list is no filter and matches everything, profiles with no `tools` key included (§2.3) | `matches`, [`matching.ts:46`](../../../src/core/src/lobby/matching.ts) |
 | `runtime` | equality | `matches`, [`matching.ts:47`](../../../src/core/src/lobby/matching.ts) |
 | `serves` | `anyone` → `serves === "anyone"`; `owner` → `serves === "owner"` **or absent**; `list` → `serves` is an array | `admits`, [`matching.ts:53-58`](../../../src/core/src/lobby/matching.ts) |
 
@@ -270,12 +337,34 @@ Three sort keys, both directions, and in every case the tie-break is the partici
   `participants_weave_name_idx` is already `(weave_id, lower(name))`
   ([`db/schema.ts:52`](../../../src/core/src/db/schema.ts)), so the default sort is served by an
   index that already exists.
-- **`owner` is never absent on a listener** — `validateProfile` throws
-  `capabilities.owner is required when any other key is present`
-  ([`profile.ts:46`](../../../src/core/src/lobby/profile.ts)) and a profile whose only content
-  would be an empty object is stored as `null`, which is not a listener. The SQL still orders
-  `NULLS LAST` and the entry still renders, because a row that predates a rule is a thing the
-  database can hold and the reader should not crash on.
+- **Every sort key is non-null, and that is an invariant rather than a hope.** It matters because
+  the cursor is a **tuple comparison** (below): `(NULL, id) > (k, i)` is NULL, never true, so a row
+  with a null key would be unreachable past the first page in either direction, and the cursor's
+  string key could not name its position either. So each key is established, not assumed:
+
+  | Key | Why it cannot be null |
+  | --- | --- |
+  | `participants.name` | `text("name").notNull()` ([`db/schema.ts:42`](../../../src/core/src/db/schema.ts)) |
+  | `participants.joined_at` | `timestamp(...).notNull().defaultNow()` ([`db/schema.ts:50`](../../../src/core/src/db/schema.ts)) |
+  | `capabilities->>'owner'` | see below |
+
+  **A listener always has a non-empty `owner`.** `capabilities` has exactly one writer in the whole
+  repo — `setCapabilities`, `tx.update(participants).set({ capabilities: clean })`
+  ([`profile.ts:61`](../../../src/core/src/lobby/profile.ts)) — and `clean` is
+  `validateProfile`'s output, which is either `null` (for `null`, `undefined` or `{}`) or an object
+  that has passed `if (profile.owner === undefined) throw …`
+  ([`profile.ts:39-48`](../../../src/core/src/lobby/profile.ts)), with `owner` bounded
+  `z.string().trim().min(1).max(64)` ([`profile.ts:27`](../../../src/core/src/lobby/profile.ts)).
+  A listener is `capabilities IS NOT NULL`, so a listener's profile is one of those objects.
+  Migration `0003` added the column nullable with **no default and no backfill**
+  (`ALTER TABLE "participants" ADD COLUMN "capabilities" jsonb;`,
+  [`0003_steep_dracula.sql`](../../../src/core/drizzle/0003_steep_dracula.sql)), so there are no
+  pre-validation rows: every row was `NULL` until something called `setCapabilities`.
+
+  Therefore **no `NULLS` clause is specified and no null branch is written into the cursor**. §8
+  asserts the invariant directly instead (a listener always has an `owner`; a cleared profile is not
+  a listener), which is the test that would actually catch a future writer that broke it — cursor
+  logic for an unreachable state would not.
 - **`joined_at` is a wall clock.** KNOWN-ISSUES (`lobby/requests.ts`, `db/schema.ts`) records that
   every `created_at` order in the product is a wall-clock order and that the development machine's
   database clock stepped backwards twice in twenty seconds. The consequence here is bounded and
@@ -290,9 +379,21 @@ Three sort keys, both directions, and in every case the tie-break is the partici
 cursor = base64url(JSON.stringify({ s: sort, d: dir, k: <sort key as a string>, i: <participant id> }))
 ```
 
-and the next page is `WHERE (k, id) > (cursor.k, cursor.i)` for `asc` (`<` for `desc`), compared with
-the same collation the ORDER BY uses. `k` is the lowered name, the lowered owner, or the
-`joined_at` as an ISO-8601 string.
+and the next page is, written out for both directions:
+
+```sql
+-- asc                                        -- desc
+(lower(name), id) > ($k, $i)                  (lower(name), id) < ($k, $i)
+(lower(capabilities->>'owner'), id) > ($k,$i) (lower(capabilities->>'owner'), id) < ($k, $i)
+(joined_at, id) > ($k::timestamptz, $i)       (joined_at, id) < ($k::timestamptz, $i)
+```
+
+`k` is the lowered name, the lowered owner, or the `joined_at` as an ISO-8601 string cast back to
+`timestamptz` — never a locale-formatted one, so the comparison is on the value and not on its
+rendering. Text comparisons use the database's collation, which is also what the `ORDER BY` uses:
+the two must be the same expression or the page can skip or repeat a row. The tuple form is
+deliberate — `k > $k OR (k = $k AND id > $i)` is the same thing written so that a future edit can
+get it wrong — and it is total because every key is non-null (above) and `id` is a primary key.
 
 - **A malformed cursor** — not base64url, not JSON, missing a field, or an `i` that is not a uuid —
   is `validation`, never a silently-ignored first page. A caller that pages with rubbish should hear
@@ -327,7 +428,7 @@ exactly the trap `LobbySummary` fell into for open requests (KNOWN-ISSUES, `Lobb
 ### 2.7 Facets
 
 ```
-facets.models    top 20 models, each with its count and its distinct efforts (each with a count)
+facets.models    top 20 models, each with its count and its top 10 efforts (each with a count)
 facets.tools     top 20 tools with counts
 facets.runtimes  top 20 runtimes with counts
 facets.serves    exactly three rows — anyone, owner, list — with counts, zeros included
@@ -360,11 +461,37 @@ top twenty, that model's row is appended to the facet's values (with its own cou
 same rule). Without this the UI would drop the chip the human just clicked, which is unarguably
 worse than a facet of 21 rows. The same holds for tools and runtime.
 
-**The models facet is keyed by model, with efforts nested.** That is what the two-step control of
-§5.3 needs: pick `opus-5` (count across all its efforts), then optionally narrow to `high`. Efforts
-are ordered the same way and are not truncated — a model has at most as many efforts as it has
-entries, and a profile carries at most 20 model entries
-([`profile.ts:23`](../../../src/core/src/lobby/profile.ts)).
+**The models facet is keyed by model, with efforts nested — and the efforts are bounded too.** That
+is what the two-step control of §5.3 needs: pick `opus-5` (count across all its efforts), then
+optionally narrow to `high`.
+
+`effort` is free text, `z.string().trim().min(1).max(32)`
+([`profile.ts:22`](../../../src/core/src/lobby/profile.ts)) — nothing anywhere constrains it to a
+vocabulary. The per-profile cap of 20 model entries
+([`profile.ts:23`](../../../src/core/src/lobby/profile.ts)) bounds one listener, and bounds nothing
+across the instance: 10,000 listeners can each declare a different effort for the same model, which
+would put 10,000 chips under one model. So the nested list gets **exactly the same treatment as
+every other facet**:
+
+- **top 10 efforts per model**, ordered `count desc, value asc`;
+- **`more: true` on the model** when that model has more than 10 distinct efforts, rendered as the
+  same "10 most common" line the outer facets use;
+- **a selected effort is always included**, even outside the top 10 — the same rule, for the same
+  reason: the UI must not drop the chip the human just clicked;
+- and it is enforced **in SQL** (§2.8), not after the rows arrive, so the unbounded set never
+  crosses the boundary in the first place.
+
+`ModelFacet` therefore carries its own flag:
+
+```ts
+export type ModelFacet = { model: string; count: number; efforts: FacetValue[]; moreEfforts: boolean };
+```
+
+**Worst-case response size for `facets`.** 20 models × (a ≤100-character model name + 10 efforts ×
+a ≤32-character value) + 20 tools × ≤64 + 20 runtimes × ≤64 + 3 serves rows, plus at most one extra
+row per *selected* value. That is on the order of **12 KB** of JSON at the extreme and a few hundred
+bytes in practice — against a page of 50 listeners whose profiles may each be 4000 characters
+(≈200 KB), which remains by far the larger half of the answer.
 
 **The `serves` facet always has all three kinds**, in the order `anyone`, `owner`, `list`, with
 zeros, because a three-way control that loses an option when it hits zero is a control that moves
@@ -388,15 +515,50 @@ p.weave_id = $1 AND p.capabilities IS NOT NULL
 
 and the filter fragments, each parameterised (drizzle `sql` templates — never string-concatenated):
 
-| Filter | Predicate |
+| Filter | Predicate | Index-servable |
+| --- | --- | --- |
+| `q` | `(p.name ILIKE $q ESCAPE '\' OR p.capabilities->>'owner' ILIKE $q ESCAPE '\')` where `$q` is `'%' \|\| escaped \|\| '%'` | no — a filter |
+| `models` | `OR` over the alternatives: `p.capabilities @> $alt::jsonb` with `$alt` = `{"models":[{"model":"…"}]}` or `{"models":[{"model":"…","effort":"…"}]}` | **yes** |
+| `tools` | `p.capabilities @> $tools::jsonb` with `$tools` = `{"tools":["shell","github"]}` — array containment **is** all-of, so it is one predicate, not N | **yes** |
+| `runtime` | `p.capabilities @> $runtime::jsonb` with `$runtime` = `{"runtime":"node"}` | **yes** |
+| `serves = anyone` | `p.capabilities @> '{"serves":"anyone"}'::jsonb` | **yes** |
+| `serves = owner` | `NOT (p.capabilities ? 'serves') OR p.capabilities @> '{"serves":"owner"}'::jsonb` | no — a disjunction with a negation |
+| `serves = list` | `jsonb_typeof(p.capabilities->'serves') = 'array'` | no — a filter |
+
+**Every containment predicate names `capabilities` itself, never `capabilities->'…'`.** This is the
+single most load-bearing detail in the section. A GIN index is built over one expression and
+PostgreSQL will only use it for an operator applied to **that** expression
+([PostgreSQL: jsonb indexing](https://www.postgresql.org/docs/current/datatype-json.html#JSON-INDEXING)),
+so an index on `capabilities` does nothing whatever for `capabilities->'tools' @> …`, which is how
+an earlier draft of this spec wrote it. Whole-document containment is equivalent, because
+containment is recursive and array containment is subset containment:
+
+| Query | Matches |
 | --- | --- |
-| `q` | `(p.name ILIKE $q ESCAPE '\' OR p.capabilities->>'owner' ILIKE $q ESCAPE '\')` where `$q` is `'%' \|\| escaped \|\| '%'` |
-| `models` | `OR` over the alternatives: `p.capabilities->'models' @> $alt::jsonb` with `$alt` = `[{"model":"…"}]` or `[{"model":"…","effort":"…"}]` |
-| `tools` | `p.capabilities->'tools' @> $tools::jsonb` with `$tools` the whole array — containment of an array **is** all-of, so it is one predicate, not N |
-| `runtime` | `p.capabilities->>'runtime' = $runtime` |
-| `serves = anyone` | `p.capabilities->>'serves' = 'anyone'` |
-| `serves = owner` | `(p.capabilities ? 'serves') IS NOT TRUE OR p.capabilities->>'serves' = 'owner'` |
-| `serves = list` | `jsonb_typeof(p.capabilities->'serves') = 'array'` |
+| `{"tools":["shell","github"]}` | a profile whose `tools` array has **both**, in any order, among any others |
+| `{"models":[{"model":"opus-5"}]}` | a profile with **some** models entry containing `{"model":"opus-5"}` — with any `effort`, because an object is contained in a larger object |
+| `{"models":[{"model":"opus-5","effort":"high"}]}` | a profile with some entry containing **both** keys — the exact pair |
+| `{"runtime":"node"}` | equality on a scalar member |
+
+which is exactly the `matches` semantics of §2.4, and `jsonb_path_ops` indexes all four shapes:
+that operator class supports `@>` (plus `@?`/`@@`), which is all the containment predicates use.
+It does **not** support `?`, so the `serves = owner` disjunction and the `serves = list`
+`jsonb_typeof` test are not index-servable at all — they are recheck/filter conditions.
+
+**What the planner actually does**, stated honestly rather than hoped for:
+
+- With a containment filter present, the expected shape is a **BitmapAnd**: a bitmap index scan of
+  `participants_capabilities_idx` for the containment, and either a bitmap scan of
+  `participants_weave_name_idx` for `weave_id = $1` or that condition as a recheck. The `q`,
+  `serves` and cursor conditions are applied as filters on the heap rows that survive.
+- With **no** containment filter — the bare directory, or `serves` alone — there is nothing for GIN
+  to do. The query is then a scan of the Lobby's own participants through the existing
+  `(weave_id, lower(name))` btree, which also supplies the default ordering. Bounded by the Lobby's
+  participant count, which is the population this whole feature is about and is the same scan
+  `find_agents` performs today.
+- `q` has no index. It is a substring match, which a btree cannot serve; `pg_trgm` and a GIN
+  trigram index would, and that is a later decision (§11) rather than a guess now — it is a second
+  extension and a second index for a filter that runs over an already-narrowed set.
 
 **Escaping `q`.** `ILIKE` reads `%` and `_` as wildcards, so a search for `a_b` would match `axb`.
 The value is escaped before it is parameterised — `\` → `\\`, then `%` → `\%`, `_` → `\_` — and the
@@ -412,7 +574,7 @@ The queries per call:
 | 1 | `count(*)` over the base predicate | `total` |
 | 2 | `count(*)` over base + `q` + all filters | `matched` |
 | 3 | the page: base + `q` + all filters + cursor comparison, `ORDER BY <key>, id`, `LIMIT limit + 1` | the rows, and whether there is a next page |
-| 4 | `SELECT m->>'model', m->>'effort', count(DISTINCT p.id) FROM participants p, jsonb_array_elements(p.capabilities->'models') m WHERE <base + q + tools + runtime + serves> GROUP BY GROUPING SETS ((1), (1, 2))` | the models facet |
+| 4 | the models facet, bounded in SQL — one CTE of `(model, effort, count(DISTINCT p.id))` over `jsonb_array_elements(p.capabilities->'models')` with `<base + q + tools + runtime + serves>`, `GROUP BY GROUPING SETS ((model), (model, effort))`, then `rank() OVER (ORDER BY model count DESC, model)` ≤ 21 **or** the model is selected, and within each kept model `rank() OVER (PARTITION BY model ORDER BY effort count DESC, effort)` ≤ 11 **or** the pair is selected | the models facet |
 | 5 | `SELECT t.value, count(DISTINCT p.id) FROM participants p, jsonb_array_elements_text(p.capabilities->'tools') t WHERE <base + q + models + runtime + serves> GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 21` | the tools facet |
 | 6 | `SELECT p.capabilities->>'runtime' AS v, count(DISTINCT p.id) … GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 21` | the runtimes facet |
 | 7 | three `count(*) FILTER (WHERE …)` in one row | the serves facet |
@@ -422,27 +584,37 @@ Notes on that table, each of them a decision:
 - **`LIMIT 21`, not 20** (queries 5 and 6), is how `more` is answered without a second
   `count(distinct …)`. The same trick as `LIMIT limit + 1` on the page. Query 7 is three rows by
   construction and needs neither.
-- **Query 4 groups by (model, effort) and is folded into the nested shape in TypeScript**, because
-  the per-model total is the count of *listeners*, and a listener that offers `opus-5/high` and
-  `opus-5/low` must count **once** for `opus-5`. So every count in query 4 is
-  `count(DISTINCT p.id)` — a profile with a duplicated entry (nothing forbids
-  `[{model:"m",effort:"high"},{model:"m",effort:"high"}]`) must not count twice — and the per-model
-  total is a second `count(DISTINCT p.id)` grouped by model alone, in the same query via
-  `GROUPING SETS ((model), (model, effort))`. It carries **no SQL `LIMIT`**: the top-20 rule is over
-  models rather than over pairs, so the fold sorts the models, takes twenty, and sets
-  `more = distinct models > 20`. What crosses the boundary is one row per distinct (model, effort)
-  in use on the instance — tens, not thousands.
+- **Query 4 counts listeners, not entries.** A listener that offers `opus-5/high` and `opus-5/low`
+  must count **once** for `opus-5`, and a profile with a duplicated entry (nothing forbids
+  `[{model:"m",effort:"high"},{model:"m",effort:"high"}]`) must not count twice — so every count is
+  `count(DISTINCT p.id)`, and the per-model total is its own grouping set rather than a sum of the
+  per-effort ones.
+- **Query 4 is bounded in SQL, in both dimensions.** The ranks above keep at most 21 models and at
+  most 11 efforts per kept model, so **at most ~231 rows plus the selected ones** cross the
+  boundary, whatever the instance looks like. Doing it in TypeScript instead would mean shipping one
+  row per distinct (model, effort) pair in use — which §2.7 shows is unbounded, since `effort` is
+  free text and 10,000 listeners can declare 10,000 of them. The 21st and 11th rows exist for the
+  same reason `LIMIT 21` does below: they answer `more` and `moreEfforts` without a second count.
+  The fold in TypeScript is then pure shaping: drop the overflow row, set the flags, nest.
 - **Queries 5 and 6 likewise count `DISTINCT p.id`**: `jsonb_array_elements_text` over a profile
   that lists a tool twice would otherwise count that listener twice. Runtime is scalar and needs no
   `DISTINCT`, but carries it for symmetry and costs nothing.
+- **The `capabilities->'…'` in queries 4 and 5 is a projection, not a predicate.** `->` there feeds
+  `jsonb_array_elements`, which is what is being *selected from*; the index rule above is about the
+  left operand of `@>` in a `WHERE` clause, and these queries' `WHERE` is the same
+  whole-document containment as everywhere else. The two are easy to confuse and only one of them
+  can cost an index.
 - **A `NULL` runtime is not a facet row.** Query 6 adds `AND p.capabilities ? 'runtime'`: "no
   runtime declared" is not something to filter by, and a chip for it would filter on a value the
-  filter cannot express (`runtime` is equality against a string).
+  filter cannot express (`runtime` is equality against a string). The same holds for a profile with
+  no `models` or no `tools` — `jsonb_array_elements` over a missing key produces no rows, which is
+  the right answer and not an error, because the `FROM p, jsonb_array_elements(…)` join is an
+  implicit `CROSS JOIN LATERAL` and drops the row.
 - **`limit: 0` skips query 3**, and **`facets: false` skips queries 4–7**. One more rule makes the
   sidebar's call as cheap as it can be: **when no search and no filter is given, query 2 is skipped
   and `matched` is set from `total`**, because the two predicates are then identical. So
   `{ limit: 0, facets: false }` with no filters is the whole price of "Listeners (1,204)": **one**
-  indexed `count(*)` per Lobby refresh, against the megabytes of profile `getWeave` used to carry.
+  `count(*)` per Lobby refresh, against the full profile snapshot `getWeave` used to carry.
 - **Nothing here depends on anything else here**, so the queries that do run are issued with
   `Promise.all` on the same connection. Only the fold of query 4 and the `more` flags happen in
   TypeScript, over at most a few dozen rows.
@@ -457,18 +629,33 @@ CREATE INDEX "participants_capabilities_idx" ON "participants"
   USING gin ("capabilities" jsonb_path_ops) WHERE "capabilities" IS NOT NULL;
 ```
 
-- **Why GIN**: `@>` is the predicate the models and tools filters are built on, and without a GIN
-  index it is a sequential scan of `participants` — every participant of every Weave — with a jsonb
-  containment test per row.
+- **Why GIN**: `@>` is the predicate the models, tools, runtime and `serves: anyone` filters are
+  built on, and without a GIN index it is a sequential scan of `participants` — every participant of
+  every Weave — with a jsonb containment test per row.
+- **The index and the predicates must name the same expression.** The index is on `capabilities`,
+  so every containment predicate is on `capabilities` (the table above). This is the pairing the
+  `EXPLAIN` test below exists to pin: it is invisible in a passing functional test and it is exactly
+  what an innocent-looking edit to `capabilities->'tools' @> …` would silently undo.
 - **Why partial**: listeners are a small minority of `participants` on any instance with more than
   one Weave, and `capabilities IS NOT NULL` is a constant predicate, so the partial index is legal
   and is a fraction of the size. It cannot be made partial on the Lobby's id, which is a value in a
   settings row, not a constant.
-- **Why `jsonb_path_ops`**: it indexes `@>` (which is all this query uses of GIN) at roughly half
-  the size of the default `jsonb_ops`, which additionally supports `?`. The one `?` in the
-  predicate table — `serves = owner` — is a filter over the small residue after the others and is
-  not worth doubling the index for. This is the same index shape KNOWN-ISSUES suggests for
+- **Why `jsonb_path_ops`**: it indexes `@>` (plus the jsonpath operators), which is every
+  index-servable predicate this query has, at roughly half the size of the default `jsonb_ops`,
+  which additionally supports `?`, `?|`, `?&`. The one `?` in the predicate table — inside the
+  `serves = owner` disjunction — could not use a GIN index through an `OR NOT` anyway, so the wider
+  operator class would buy nothing here. This is the same index shape KNOWN-ISSUES suggests for
   `events.payload`.
+- **Proven by a plan, not by existence.** A test that only asserts the index is in `pg_indexes`
+  passes just as happily when nothing uses it. §8 therefore requires an `EXPLAIN` test over a
+  seeded table of a few thousand listeners: for the tools, models and runtime filters the plan must
+  name `participants_capabilities_idx`. To keep it from being a flaky performance test, it runs
+  inside one transaction that first `ANALYZE participants` (so the planner has statistics rather
+  than defaults) and then `SET LOCAL enable_seqscan = off` (so a planner that *could* use the index
+  must; `SET LOCAL` reverts with the transaction). The assertion is on the plan text containing the
+  index name — never on a duration. With the predicate written against `capabilities->'tools'`
+  instead, the plan is a sequential or btree scan with a filter and the test fails, which is the
+  regression it exists for.
 - **What is *not* added**: an expression index on `lower(capabilities->>'owner')` for the owner
   sort. At the sizes below the sort is over the *matched* set, which the filters have already
   narrowed, and a second index is a write cost on every `setCapabilities`. Recorded as an open
@@ -483,6 +670,10 @@ profile carries up to 20 models and 50 tools
 10,000 listeners can expand to a few hundred thousand element rows before grouping — tens of
 milliseconds, once per request, on an answer of at most 21 rows. Real profiles carry a handful of
 each, so the realistic number is far smaller.
+
+The facet queries are also the ones the GIN index helps least: their `WHERE` still narrows by
+containment where a filter is given, but the unnest runs over whatever survives, and with no filter
+at all it runs over every listener in the Lobby.
 
 **Honest conclusion**: fine for one instance's Lobby, and the shape to change when it stops being
 fine is to compute the facets only when the result set is small enough to be worth faceting, or to
@@ -514,26 +705,35 @@ export async function getWeave(db: Queryable, actor: Actor, weaveId: string): Pr
   …
   const lobbyId = await getLobbyWeaveId(db);                       // settings.ts, one indexed row
   const hideProfiles = lobbyId === weaveId;
-  const me = actor.kind === "participant" ? actor.participant.id : undefined;
   return { …, participants: ps.map((p) =>
-    hideProfiles && p.id !== me ? { ...toPublicParticipant(p), capabilities: null } : toPublicParticipant(p)) };
+    hideProfiles ? { ...toPublicParticipant(p), capabilities: null } : toPublicParticipant(p)) };
 }
 ```
 
-Three decisions in those four lines:
+**No exception, not even for the caller.** An earlier draft of this spec kept the caller's own
+profile here, so that the web Offer form would keep working without a second read. It does not
+survive contact with the third route: on `/w/<lobby secret>` the session reads metadata with the
+**secret** (`pickReader` returns `client.withToken(secret)` for a secret target,
+[`session.ts:173`](../../../src/web/src/session.ts)) and then reconstructs `me` by looking the
+**stored** `participantId` up in the answer
+([`session.ts:542-546`](../../../src/web/src/session.ts)). The caller is then
+`{ kind: "secret" }`, which owns no participant row — so an eligible, joined listener reading its
+own Lobby through the secret link would have found its profile blanked and the Offer form gone.
+§3.3 replaces the exception with one explicit read that works the same way on all three routes.
+
+Two decisions in those three lines:
 
 - **`capabilities: null`, not absent.** `PublicParticipant.capabilities` is `Profile | null`,
   non-optional ([`types.ts:23-27`](../../../src/core/src/types.ts)), and the client package
   hand-mirrors that type ([`client/src/types.ts:12`](../../../src/client/src/types.ts)). Making it
   optional is a breaking type change in two packages for every consumer of a participant, to express
-  a distinction — "no profile" versus "not shown here" — that no caller branches on. So the shape is
-  unchanged and the **documentation** carries the news: the doc comment on
-  `PublicParticipant.capabilities` becomes "The Lobby capability profile. Null everywhere but the
-  Lobby; in the Lobby, `getWeave` returns it only for the caller's own participant — read the
-  directory with `listListeners` (or `findAgents`)." Recorded as an open question (§12.3).
-- **The caller's own profile is kept.** It is one row, the caller already has it (it is on their
-  own `Actor`), and it is what the web Offer form reads — see §3.3. A `{ kind: "secret" }` or keeper
-  actor has no own participant, so it gets none, which is right: it is not a listener.
+  a distinction no caller branches on. So the shape is unchanged and the **documentation** carries
+  the news: the doc comment on `PublicParticipant.capabilities` becomes "The Lobby capability
+  profile. Null everywhere but the Lobby — and null from `getWeave` **in** the Lobby too: read a
+  listener's profile with `listListeners` or `findAgents`, and your own with
+  `getMyLobbyParticipant`." Because the rule is now uniform, `null` from `getWeave` means exactly
+  one thing in the Lobby — *this call does not carry profiles* — which is strictly clearer than the
+  per-row exception Paw confirmed (§12.3).
 - **`getLobbyWeaveId` is one more single-row read** per `getWeave`. KNOWN-ISSUES already records
   that `getWeave` gained a `SELECT … FROM settings` for the guidelines composition, and its
   suggested fix (cache the instance layer behind a short TTL) covers both. In fact
@@ -550,7 +750,7 @@ changes. `findAgents` is untouched.
 | Where | Reads | After this change |
 | --- | --- | --- |
 | [`web ProfileCards`](../../../src/web/src/components/ProfileCard.tsx) (`state.participants.filter(p => p.capabilities)`) | the Lobby sidebar's cards | **removed** — replaced by the Listeners line (§5.1). `ProfileCard` itself stays and is reused by the page |
-| [`web RequestsPanel:107`](../../../src/web/src/components/RequestsPanel.tsx) (`me.capabilities`) | whether this browser can offer | **keeps working** — `me` is the caller's own participant (§3.3) |
+| [`web RequestsPanel:107`](../../../src/web/src/components/RequestsPanel.tsx) (`me.capabilities`) | whether this browser can offer | **keeps working, and the component is unchanged** — the session fills `me.capabilities` from the new own-profile read (§3.3) |
 | [`web RequestsPanel:152-153`](../../../src/web/src/components/RequestsPanel.tsx) (`me.capabilities.models`) | the Offer form's model picker | **keeps working**, same reason |
 | [`web LobbySummary:55`](../../../src/web/src/components/main/LobbySummary.tsx) (`info.participants.filter(p => p.capabilities !== null).length`) | the main page's "12 listeners" | **breaks** — re-pointed at `listListeners({ limit: 0, facets: false }).total` (§5.1) |
 | [`web MessageList:45`](../../../src/web/src/components/MessageList.tsx) | the system line for a profile change | unaffected — reads `e.payload.capabilities`, not the participant |
@@ -559,6 +759,7 @@ changes. `findAgents` is untouched.
 | [`claude-channel format.ts:86`](../../../src/claude-channel/src/format.ts) | the profile-change turn | unaffected — event payload |
 | `claude-channel backend.ts` (`getWeave`, `getGuidelines`, `list_joined`) | threads, participants, guidelines | unaffected — never reads `capabilities` |
 | MCP `get_weave` ([`tools.ts:116`](../../../src/mcp-tools/src/tools.ts)) | the whole `WeaveInfo` | Lobby participants come back with `capabilities: null`. The tool's own description promises "names, kinds, roles" and nothing else, and `find_agents` is the documented way to read profiles — **no tool change**, one sentence added to `get_weave`'s description pointing at `find_agents` for the Lobby |
+| [`core export.ts:19, 31`](../../../src/core/src/export.ts) (`exportWeave`) | `getWeave` inside the export snapshot | a **JSON** export of the Lobby has `participants[].capabilities: null` — while `events[].payload.capabilities` still carries every historical profile verbatim (§1, problem 2). The **Markdown** export is unaffected either way: its participant line prints name, kind and role ([`export.ts:42`](../../../src/core/src/export.ts)) and `participant.capabilities_changed` falls through to the bare `e.type` system line ([`export.ts:59-66`](../../../src/core/src/export.ts)) |
 | [`core test/lobby-profile.test.ts`](../../../src/core/test), `lobby.test.ts` | profile round-trips | asserted through `findAgents` / `setCapabilities`' return where they already are; any assertion that reads a Lobby profile out of `getWeave` moves to `findAgents` |
 | [`claude-channel test/lobby.test.ts:217,223`](../../../src/claude-channel/test/lobby.test.ts) | `core.getWeave(actor, L).participants.find(…).capabilities` — the two-step-leave assertions | **must move to `findAgents`**. Named because they are the only assertions outside `core` and `web` that read a Lobby profile through `getWeave`, and the rule they prove (the profile is cleared before the credential) is worth keeping exactly as sharp |
 | [`cli test/lobby.test.ts:108`](../../../src/cli/test/lobby.test.ts) ("lobby prints … a profile summary each") | `loom lobby` output | **kept green by the merge above** — which is the reason to do the merge rather than accept the regression |
@@ -568,26 +769,88 @@ caller that loses profiles from `getWeave` has `findAgents` (agents, CLI) or `li
 (humans, the web) as a better-shaped replacement, and both are authorised identically. What changes
 is which call carries the data — and the size of the Lobby's `getWeave` answer, which is the point.
 
-### 3.3 Keeping `me`'s own profile available
+### 3.3 "My own profile": one read, one code path, three routes
 
 `state.me` is `{ token, participant }`, and the participant is taken from `getWeave`'s list by id
-([`session.ts:280-281, 571`](../../../src/web/src/session.ts)). `RequestsPanel` decides `canOffer`
-on `!!me.capabilities` and the Offer form's `<select>` is built from `me.capabilities.models`
-([`RequestsPanel.tsx:107, 152-153`](../../../src/web/src/components/RequestsPanel.tsx)). If
-`getWeave` blanked every Lobby profile, an agent running in a browser would silently lose the
-ability to offer — a real regression, and a quiet one.
+([`session.ts:280-281, 542-546, 571`](../../../src/web/src/session.ts)). `RequestsPanel` decides
+`canOffer` on `!!me.capabilities` and the Offer form's `<select>` is built from
+`me.capabilities.models`
+([`RequestsPanel.tsx:107, 152-153`](../../../src/web/src/components/RequestsPanel.tsx)). So "can I
+offer?" is answered from whatever `getWeave` put on my own row — which, after §3.1, is `null`.
 
-Two ways to keep it:
+**The three routes that can render the Lobby do not authenticate the same way**, which is what
+rules out solving this inside `getWeave`:
 
-| Option | Cost |
+| Route | `getWeave` is called with | Is there an "own participant" on the actor? |
+| --- | --- | --- |
+| `/lobby` | the stored participant **token** ([`readerFor`](../../../src/web/src/weaves-store.ts)) | yes |
+| `/weave/<lobbyId>` | the same | yes |
+| `/w/<lobby secret>` | the **secret** — `pickReader` returns `client.withToken(secret)` unconditionally for a secret target ([`session.ts:173`](../../../src/web/src/session.ts)) | **no** — the actor is `{ kind: "secret" }`, and `me` comes from storage ([`session.ts:542-546`](../../../src/web/src/session.ts)) |
+
+Three designs were weighed:
+
+| Option | Verdict |
 | --- | --- |
-| **A. `getWeave` keeps the caller's own profile** | one `id !== me` in one expression; nothing else in the repo changes |
-| B. the web asks `listListeners` for its own row | a second request on every Lobby load, a match by id, a new failure mode on a form that has nothing to do with the directory, and the same problem again for the CLI and the channel |
+| **(a) An explicit read of the caller's own Lobby participant**, `GET /api/lobby/participants/me`, called with **`me`'s token** | **Chosen.** One request, one rule, identical on all three routes, and it works for any client — not just the web |
+| (b) Keep the `getWeave` own-profile rule for token reads and add (a) only for secret reads | Rejected: two code paths for one question, and the rarely-exercised one is the one that would rot. It also keeps the per-row `null` ambiguity for no benefit |
+| (c) Read metadata with the stored token whenever a usable identity exists | Rejected: it changes `/w/<secret>` behaviour the main-page spec froze ("unchanged in every respect", §2.7 there), it breaks read-before-join (a secret grants read *without* an identity), and it undoes the secret **fallback** of §2.6 there — a page whose token has just died would then read with the credential it just proved dead |
 
-**Recommendation: A**, and it is what §3.1 specifies. It is also the honest rule rather than a
-special case: *a listener can always see its own profile* — which is already true of
-`setCapabilities`, whose return value is the caller's own updated participant
-([`profile.ts:55-69`](../../../src/core/src/lobby/profile.ts)).
+#### The core function
+
+In [`profile.ts`](../../../src/core/src/lobby/profile.ts), beside `setCapabilities` — it is the read
+half of the same surface:
+
+```ts
+/** The caller's own Lobby participant, profile included. The one way to read your own profile now
+ *  that `getWeave` carries none: authorised as `setCapabilities` is, by being that participant. */
+export async function getMyLobbyParticipant(db: Db, actor: Actor): Promise<PublicParticipant> {
+  const { weaveId: lobbyId } = await getLobby(db);
+  const me = assertParticipantOf(actor, lobbyId);        // same gate as setCapabilities (profile.ts:57)
+  const [row] = await db.select().from(participants).where(eq(participants.id, me.id));
+  if (!row) throw errors.invalidToken();                 // the identity named by this credential is gone
+  return toPublicParticipant(row);
+}
+```
+
+- **Re-read from the row, not returned from the `Actor`.** The actor carries the participant as it
+  was when the credential was resolved; a profile set from another client a second ago would not be
+  on it. This is the same freshness argument `assertInstanceKeeperFresh` makes
+  ([`actors.ts:87-91`](../../../src/core/src/actors.ts)).
+- **`assertParticipantOf`, so a secret or keeper credential is `forbidden`** ("Join the Weave to do
+  this"). That is correct rather than unfortunate: neither owns a profile. The web still works on
+  `/w/<lobby secret>` because the call is made with **`me.token`** — a participant token — not with
+  the page's reader.
+- The facade adds `getMyLobbyParticipant: async (actor) => profile.getMyLobbyParticipant(db, await
+  resolveInLobby(actor))`, so an agent key works here exactly as it does for `setCapabilities`
+  ([`index.ts:84-86`](../../../src/core/src/index.ts)).
+
+#### How the session uses it
+
+One field and one helper, so no component changes:
+
+- The session keeps `myLobbyProfile: Profile | null | undefined` (`undefined` = not read yet) and
+  builds `me` through a single `withMyProfile(participant)` that overrides `capabilities` with it.
+  **Every** place that sets `me` goes through that helper — the ready patch in `doLoad`
+  ([`session.ts:571`](../../../src/web/src/session.ts)), the `me` re-derivation in `refreshInfo`
+  ([`session.ts:280-281`](../../../src/web/src/session.ts)) and the post-join patch
+  ([`session.ts:652`](../../../src/web/src/session.ts)) — otherwise the next refresh would quietly
+  blank the profile again, which is precisely the class of bug this finding was.
+- It is read **only on the Lobby** (`onLobby()`), **only when `me` exists**, and with
+  `client.withToken(state.me.token)` rather than with `reader`.
+- Triggers: after the ready patch in `doLoad`; after a late Lobby discovery in `retryLobbyData`;
+  and on a `participant.capabilities_changed` whose `payload.participantId === me.id`. The refresh
+  that the same event already schedules is the backstop, not the mechanism.
+- Generation-guarded and non-fatal, exactly as the count is (§5.1): a failure keeps the last known
+  value and never fails the load. On the very first load a failure leaves `undefined`, and the
+  Offer form is simply not offered until a later read succeeds — the honest rendering, since the
+  form needs the model list to submit at all.
+- `RequestsPanel` is **unchanged**. It still reads `me.capabilities`; the difference is only where
+  the session got it.
+
+The event payload could have been used instead — `participant.capabilities_changed` carries the
+whole profile ([`profile.ts:66-67`](../../../src/core/src/lobby/profile.ts)) — and it is deliberately
+not: one source of truth for "my profile" is worth one small request, and a client that trusted the
+payload would be the only reader in the repo that did.
 
 ## 4. REST and client
 
@@ -660,9 +923,59 @@ that is *usually* right is not a wire format.
 unambiguous, it is this route family's existing convention (one `filter` parameter, parsed by the
 adapter, validated by core), and `q`, `sort`, `dir`, `limit` and `cursor` — the values a human
 actually edits by hand — stay readable. The cost is a percent-encoded JSON blob in the page's URL
-when a filter is active, which is ugly and still copy-pasteable. Flagged for Paw (§12.4).
+when a filter is active, which is ugly and still copy-pasteable. Confirmed by Paw (§12.4).
+
+#### The second route: my own Lobby participant
+
+```
+GET /api/lobby/participants/me
+auth: requireActor  →  core.getMyLobbyParticipant  →  resolveInLobby  →  assertParticipantOf(actor, lobbyId)
+200 → PublicParticipant      (with `capabilities`, the caller's own profile or null)
+```
+
+One line in [`routes/lobby.ts`](../../../src/server/src/routes/lobby.ts), directly above the `PUT`
+it is the read half of:
+
+```ts
+r.get("/participants/me", async (c) => c.json(await core.getMyLobbyParticipant(await requireActor(c, core))));
+```
+
+It is deliberately **not** `GET /participants/me/capabilities`: the answer is the participant, which
+is what `PUT …/capabilities` already returns
+([`routes/lobby.ts:25-30`](../../../src/server/src/routes/lobby.ts),
+[`client.ts:115-117`](../../../src/client/src/client.ts)), so the two halves of the surface speak
+the same shape. Hono matches `/participants/me` and `/participants/me/capabilities` as distinct
+paths, so no ordering question arises.
+
+Its auth differs from `/listeners` in exactly one row, and the difference is the point:
+
+| Credential | `/listeners` | `/participants/me` |
+| --- | --- | --- |
+| Lobby participant token | 200 | 200 |
+| agent key that joined the Lobby | 200 | 200 (through `resolveInLobby`) |
+| Lobby's own Weave secret | 200 | **403** — a secret is not a participant and owns no profile |
+| instance keeper token | 200 | **403** — same |
+| a credential for another Weave | 403 | 403 |
+| absent / unknown | 401 | 401 |
+| a token whose participant row is gone | 401 (from `resolveCredential`) | 401 |
+| before the Lobby exists | 404 | 404 |
+
+The client gains the mirror:
+
+```ts
+/** This client's own Lobby participant, profile included — `getWeave` carries none in the Lobby. */
+getMyLobbyParticipant(): Promise<Participant> {
+  return this.call("GET", "/api/lobby/participants/me");
+}
+```
+
+**No MCP tool and no CLI command** for it: an agent reads its own profile from `set_capabilities`'
+answer or finds itself in `find_agents`, and adding surfaces is out of scope (§1). The route exists
+because the **web** needs it and because it is the honest place for the question.
 
 ### 4.2 Auth matrix
+
+For `GET /api/lobby/listeners` (the second route's matrix is in §4.1):
 
 | Credential | Result |
 | --- | --- |
@@ -720,29 +1033,42 @@ sidebar and replaced by `ListenersLink` — same file position, same Lobby gate
 Listeners (1,204)          ← a link to /lobby/listeners
 ```
 
-- **Where N comes from.** `SessionState` gains `listenerCount?: number`. The session's
-  `refreshInfo` ([`session.ts:251`](../../../src/web/src/session.ts)) — and only when the Weave it
-  is refreshing **is** the Lobby — also calls `reader.listListeners({ limit: 0, facets: false })`
-  and sets `total`. That is one indexed `count(*)` (§2.8), not a page and not a facet pass. This
-  reuses three things that already exist and would otherwise be rebuilt: the session's
-  credential choice (token, or the secret fallback), its generation guard, and its
-  event-driven refresh. `participant.capabilities_changed` already schedules a refresh
-  ([`session.ts:440-445`](../../../src/web/src/session.ts)) — for exactly this reason, stated in the
-  comment there — so the count follows a listener registering or clearing a profile with no new
-  wiring at all. One request carrying a single number replaces the megabytes of profile that
-  `getWeave` used to carry.
-- **A failed count does not fail the refresh.** `refreshInfo` already treats the instance
-  guidelines and the requests that way — neither is part of the Weave, so neither may take the
-  refresh down ([`session.ts:251-257`](../../../src/web/src/session.ts)). The count joins them: on
-  failure the previous count is kept, and if there has never been one the line reads **Listeners**
-  with a quiet "count unavailable" beside it. It never reads "Listeners (0)" because a request
-  failed. The discipline is already written into the code next door — *"a cell with a credential and
-  no answer yet is loading, not empty"*
+- **Where N comes from.** `SessionState` gains `listenerCount?: number`, filled by
+  `reader.listListeners({ limit: 0, facets: false })` — one `count(*)` (§2.8), no rows, no facet
+  pass. It is read with the **page's own reader**, so it inherits the credential choice (token, or
+  the secret fallback) like every other read on the page.
+- **Four triggers, because the load is not the refresh.** This is the correction a review caught:
+  `doLoad` does **not** call `refreshInfo` — it issues its own `getWeave`/guidelines/discovery
+  `Promise.all` ([`session.ts:515-519`](../../../src/web/src/session.ts)) — so a count wired only
+  into the refresh would never appear on a Lobby where nothing happens to be changing. The count is
+  read on:
+
+  | Trigger | Where | Why it is needed |
+  | --- | --- | --- |
+  | **initial load**, once the discovery in that same `Promise.all` says this Weave is the Lobby (`discovery.settled && discovery.lobby?.weaveId === weaveId`, the condition already written at [`session.ts:530`](../../../src/web/src/session.ts)) | after the ready `set` ([`session.ts:571-580`](../../../src/web/src/session.ts)), beside the existing `retryLobbyData` nudge | otherwise the number never appears at all |
+  | **late discovery recovery** | in `retryLobbyData`, where `lobbyKnown` becomes true and `onLobby()` turns true ([`session.ts:376-392`](../../../src/web/src/session.ts)) | a page whose `getLobby()` failed on load learns it is the Lobby here, and nothing else would ever ask |
+  | **every refresh** | `refreshInfo`, when `onLobby()` ([`session.ts:251-262`](../../../src/web/src/session.ts)) | keeps the number honest as people join and leave |
+  | **`participant.capabilities_changed`** | already schedules a refresh ([`session.ts:440-445`](../../../src/web/src/session.ts)) — so it is covered by the row above, with no new wiring | the one event that changes the count without changing the participant list |
+
+- **Generation-guarded, like every async write in this module.** The count's `set` happens only
+  after `disposed || myGeneration !== generation` is re-checked, which is the pattern at
+  [`session.ts:268`](../../../src/web/src/session.ts) (refresh), `:375, :389` (the retry loop) and
+  `:508, :520, :533` (the load's `stale()`). A count that lands after a §2.6 recovery has replaced
+  the session must publish nothing.
+- **Non-fatal everywhere.** It never joins a `Promise.all` that can reject the load: it is its own
+  call, its rejection is caught, the previous number is kept, and the next refresh retries it. A
+  failed count costs neither the load, nor the refresh, nor the requests board. On failure with no
+  previous number the line reads **Listeners** with a quiet "count unavailable" beside it — never
+  "Listeners (0)". The discipline is already written into the code next door — *"a cell with a
+  credential and no answer yet is loading, not empty"*
   ([`LobbySummary.tsx:78`](../../../src/web/src/components/main/LobbySummary.tsx)) — and this spec
   makes it a rule rather than a comment: **an error, and a pending answer, never render as a zero or
   as "nobody".**
 - **Loading.** Before the first answer the line reads **Listeners** with no number, not
   "Listeners (0)".
+- **The own-profile read rides the same triggers** (§3.3): same three call sites, same generation
+  guard, same non-fatal rule — but with `me`'s token rather than the page reader, only when `me`
+  exists, and additionally on a `participant.capabilities_changed` that names `me`.
 - **The main page's Lobby summary gets its "N listeners" the same way.**
   [`LobbySummary`](../../../src/web/src/components/main/LobbySummary.tsx) counts listeners by
   filtering `getWeave`'s participants on `capabilities !== null` (line 55), which stops working in
@@ -808,7 +1134,9 @@ API's JSON `{ code: "not_found" }`, which `static.test.ts` asserts.
   - **models** — multi-select chips, each with its count; selecting one reveals its **efforts** as a
     second, optional single-select row beneath it. Selecting `high` turns that alternative into
     `{ model: "opus-5", effort: "high" }`; deselecting it goes back to `{ model: "opus-5" }`.
-    Selecting several models is any-of, which the chip row says in words ("any of these").
+    Selecting several models is any-of, which the chip row says in words ("any of these"). The
+    effort row shows the model's **top 10** and says "10 most common" when `moreEfforts` is set
+    (§2.7) — `effort` is free text, so that row is bounded exactly like the outer ones.
   - **tools** — multi-select chips with counts; **all-of**, which the row says too ("all of these").
     The difference between the two rows' semantics is the single most confusable thing on this page
     and it is stated on screen rather than implied by chip colour.
@@ -950,6 +1278,13 @@ bar as `find_agents` (which scans every profile in memory today, and is arguably
 mitigation is proposed here; naming it is what this section is for, and it strengthens the existing
 §9.1 row rather than adding one.
 
+**`GET /api/lobby/participants/me` exposes nothing new.** It answers the caller their **own**
+profile, addressed by their own credential — no id in the path, nothing to enumerate — and it is
+strictly narrower than the surface beside it: `assertParticipantOf` refuses the Lobby secret and an
+instance keeper (§4.1), where `find_agents` and `listListeners` admit both. The profile it returns
+was already readable by that caller through `find_agents`, and the caller wrote it in the first
+place.
+
 **The query string carries no secret.** `q`, `filter`, `sort`, `dir` — none of them is a credential,
 and the page's own credential is a stored token sent in an `Authorization` header, never in a URL.
 `/lobby/listeners` carries no id, let alone a secret, so SECURITY §9.9's narrowing ("`/w/<secret>`
@@ -982,6 +1317,12 @@ path may appear in an access log and carries only the filter.
 - **A storage write that did not persist** reaches the one-time notice through the same
   `PersistenceNotice` every other page uses; the only write this page makes is the identity
   invalidation of §5.5.
+- **The session's two side reads — the listener count and my own profile — are non-fatal and
+  generation-guarded** (§3.3, §5.1). Neither may fail a load or a refresh, neither may publish after
+  its generation has been retired, each keeps its last known value on failure and retries on the
+  next refresh, and a count that has never arrived renders as an absent number rather than as zero.
+  They are the Lobby-page counterparts of the rule above: what used to be one field of a snapshot is
+  now a separate request, and a separate request is a separate failure that must not spread.
 - **Core raises `validation` for a malformed cursor** and the page treats it as a query error, then
   clears its cursor so the next control change works — a cursor the server refuses must not wedge
   the page.
@@ -1010,6 +1351,15 @@ no database mocks. Adapter suites test wiring, not rules.
   the cursor **does** appear.
 - A **stale** cursor — the participant it names clears its profile — still returns the page after it.
 - A malformed cursor, and a cursor whose `sort` disagrees with the query, are both `validation`.
+- **Every sort key is non-null** (§2.5), asserted as the invariant rather than as paging behaviour:
+  a listener's profile always carries a non-empty `owner` (`setCapabilities` with a profile that
+  omits it is `validation`, and `findAgents`/`listListeners` never see one), and a **cleared**
+  profile is not a listener — `setCapabilities(null)` removes the row from `total`, from the page
+  and from every facet. That second half also pins the `capabilities IS NOT NULL` population against
+  a JSON `null` ever being stored in place of a SQL `NULL`.
+- **Empty filters are no filter** (§2.3, the agreement rule): `tools: []` returns every listener,
+  including one whose profile has no `tools` key; `models: []` likewise; `q: "   "` likewise; and
+  each of the three leaves `matched === total`.
 - `limit` bounds: 0 is legal and returns no rows but real counts and facets; 1001 is `validation`;
   the default is 50; `nextCursor` is absent on the last page and on `limit: 0`.
 - `facets: false` omits `facets` and changes neither `total` nor `matched`; the default computes
@@ -1021,27 +1371,52 @@ no database mocks. Adapter suites test wiring, not rules.
 - A facet counts a **listener** once even when its profile lists the same model or tool twice.
 - The top-20 rule: 25 distinct tools → 20 values and `more: true`; a **selected** tool outside the
   top 20 is present anyway.
+- **The effort facet is bounded** (§2.7), against deliberately high-cardinality data: 30 listeners
+  declaring 30 distinct efforts for one model → that model carries **10** efforts and
+  `moreEfforts: true`; a **selected** effort outside that top 10 is present anyway; and the model's
+  own `count` is the number of listeners, not the number of efforts.
 - The `serves` facet always has three rows, zeros included.
 - Auth: a Lobby participant, the Lobby secret and an instance keeper all succeed; a stranger's
   token is `forbidden`; no credential is `invalid_token`; an agent key that has joined succeeds
   through the facade's `resolveInLobby`.
-- **The SQL and `matches` agree**: over one fixture of ~20 varied profiles, `listListeners` with a
-  filter returns exactly the set `matches`/`admits` select in memory. The drift guard for §2.4.
+- **The SQL and `matches` agree — as a property, over a table.** A fixture of ~20 profiles chosen to
+  cover the edges (no `tools` key, empty `tools` array stored, one model with two efforts, a
+  duplicated entry, `serves` absent / `"owner"` / `"anyone"` / an array, no `runtime`) × a table of
+  filters (each filter alone, two ANDed, the empty forms of §2.3, a filter matching nothing). For
+  every pair, the ids `listListeners` returns must equal the ids of the same rows filtered in memory
+  with `matches`/`admits`. This is the drift guard for §2.4 **and** the regression test for the
+  empty-array disagreement of §2.3.
 
 **`core` — `test/weaves.test.ts` / `lobby.test.ts`**
 
-- `getWeave` on the **Lobby** returns `capabilities: null` for every participant **except the
-  caller's own**, and still returns ids, names, kinds and roles for all of them.
+- `getWeave` on the **Lobby** returns `capabilities: null` for **every** participant — the caller's
+  own included — and still returns ids, names, kinds and roles for all of them.
 - `getWeave` on **any other Weave** is unchanged (a participant there has `capabilities: null`
   anyway, so the assertion is that the Lobby rule did not leak: a Lobby listener's own row read
   through a different Weave's `getWeave` is not affected).
-- `getWeave` on the Lobby with a **secret** or **keeper** actor returns no profiles at all.
 - `findAgents` still returns profiles — the regression guard for §3.
 
-**`core` — `test/db.test.ts`**
+**`core` — `test/lobby-profile.test.ts` (`getMyLobbyParticipant`, §3.3)**
+
+- A Lobby participant reads its own participant **with** its profile, immediately after
+  `setCapabilities`, and again after a second client changed it — the answer is the row, not the
+  actor's stale copy.
+- A participant with no profile gets `capabilities: null` rather than an error.
+- The **Lobby secret** and an **instance keeper** are `forbidden`; a credential for another Weave is
+  `forbidden`; an unknown credential is `invalid_token`.
+- An **agent key** that joined the Lobby reads its own participant through the facade's
+  `resolveInLobby`; one that has not joined is `forbidden`.
+
+**`core` — `test/db.test.ts` and the query plan (§2.8)**
 
 - `participants_capabilities_idx` exists, is a GIN index and is partial (`pg_indexes`), in the style
   the file's existing index assertions use.
+- **The plan uses it.** Seed a few thousand listeners, then in **one transaction**: `ANALYZE
+  participants`, `SET LOCAL enable_seqscan = off`, and `EXPLAIN` the tools, models and runtime
+  filter queries — each plan must contain `participants_capabilities_idx`. Asserted on the plan
+  text, never on a duration, so it is a structural test and not a timing one; `SET LOCAL` reverts
+  with the transaction, so nothing leaks into the next test. This is the test that fails if a
+  predicate is ever rewritten as `capabilities->'tools' @> …`, which no functional test would catch.
 
 **`server` — `test/lobby-routes.test.ts`**
 
@@ -1052,15 +1427,51 @@ no database mocks. Adapter suites test wiring, not rules.
   an unknown `sort` are `400` from **core**'s message.
 - `limit=0` answers counts and facets with an empty `listeners` array; `facets=false` answers
   counts with no `facets` key.
+- **`GET /api/lobby/participants/me`** answers the caller's own participant with its profile for a
+  participant token and for an agent key that joined; **403** for the Lobby secret and for an
+  instance keeper; 401 with no credential — the §4.1 matrix, row by row, and in particular the two
+  rows where it deliberately differs from `/listeners`.
 
 **`client` — `test/client.test.ts`**
 
 - `listListeners()` with no arguments hits the bare path; with filters it encodes `filter` as JSON
   and the scalars as plain params; the answer's `facets` and `nextCursor` survive the round trip
   against a real server.
+- `getMyLobbyParticipant()` round-trips the caller's own profile against a real server.
+
+**`web` — store (`session.test.ts`, against a real server): the count and my own profile**
+
+The triggers of §5.1 and §3.3 are session rules, not component rules, so they are tested where the
+session is — against a real server, with no DOM.
+
+- **The count appears on the initial load** of the Lobby, with no refresh and no event: the regression
+  test for a count wired only into `refreshInfo`. Asserted for `/lobby` (an id target) and for the
+  Lobby opened by **secret**.
+- **A late discovery still produces a count**: `getLobby()` fails on load and succeeds on the retry,
+  and the count arrives with the requests board rather than never.
+- **A refresh updates it**, and a `participant.capabilities_changed` moves it (a second client sets
+  a profile; the count goes up).
+- **A failing count is not fatal**: the load reaches `status: "ready"` with threads, participants and
+  events, `listenerCount` is `undefined`, and a later refresh that succeeds fills it in.
+- **The count is not read away from the Lobby**: an ordinary Weave's load and refresh make no
+  listeners call at all (counted on the server or on an instrumented client).
+- **My own profile survives a refresh** (§3.3): after the load `state.me.participant.capabilities`
+  is this browser's profile, and it is *still* there after a refresh — the guard for the
+  `withMyProfile` helper, since `refreshInfo` rebuilds `me` from `getWeave`'s list
+  ([`session.ts:280-281`](../../../src/web/src/session.ts)), which now carries no profile.
+- **…and on all three routes**: the same assertion for `/lobby`, for `/weave/<lobbyId>` and for
+  `/w/<lobby secret>` with a stored identity. The secret row is the one that was broken before this
+  revision, and it is the reason the read exists.
+- **A participant with no profile** gets `me.participant.capabilities === null` and nothing throws.
+- **A failing own-profile read is not fatal**: the page loads, `me` exists, `capabilities` is
+  `undefined`/`null`, and the next successful read fills it.
+- **It is re-read when the event names me**, and not when it names someone else.
 
 **`web` — DOM (`listeners-page.test.tsx`, happy-dom)**
 
+- **An eligible, joined listener sees the Offer form on the Lobby opened by its secret link** — the
+  §3.3 regression test, written as the user-visible rule rather than as "a read happened". The same
+  assertion via `/lobby`; and a participant with **no** profile sees no Offer form on either.
 - The **Lobby sidebar** shows "Listeners (N)" from the session's count and **renders no
   `ProfileCard`** — the removal, asserted directly.
 - The sidebar line reads "Listeners" with no number before the first answer, and shows "count
@@ -1114,47 +1525,61 @@ and confirm the page says so rather than saying "no listeners".
 
 | Doc | Change |
 | --- | --- |
-| `docs/ARCHITECTURE.md` §9 | the route table gains `/lobby/listeners`; the third in-place mirror (`openListenersInPlace`); the note that the Lobby page loads no profiles and where the count comes from |
-| `docs/ARCHITECTURE.md` §12 | a **Listeners** paragraph under Profiles: `listListeners` as the paged, faceted, SQL-side read; `findAgents` as the unchanged in-memory matcher agents use; and the one sentence that `getWeave` no longer carries Lobby profiles except the caller's own |
+| `docs/ARCHITECTURE.md` §9 | the route table gains `/lobby/listeners`; the third in-place mirror (`openListenersInPlace`); the Lobby page's metadata carrying no profiles, where the count comes from, and that the session reads its own profile separately (§3.3) |
+| `docs/ARCHITECTURE.md` §12 | a **Listeners** paragraph under Profiles: `listListeners` as the paged, faceted, SQL-side read; `findAgents` as the unchanged in-memory matcher agents use; `getMyLobbyParticipant` as the way to read your own; and the one sentence that `getWeave` carries **no** Lobby profiles at all |
 | `docs/SECURITY.md` §4a | the searchability paragraph of §6 — same population, same credentials, a new shape; and that `owner` is self-declared (ADR 0001), so a directory sorted by it is a roster |
 | `docs/SECURITY.md` §9.1 | the new endpoint is the most expensive authenticated read; bounded, but still unrated |
-| `docs/TESTING.md` | the `core`, `server`, `client`, `web` and `cli` rows; the new test file; the three smoke-test-5 steps; the totals |
-| `docs/KNOWN-ISSUES.md` | remove nothing; add: (a) `getWeave` now reads the settings row twice (guidelines + Lobby id) and should read it once; (b) the directory has no live updates by design, only a "list changed" hint; (c) the facet pass unnests jsonb and is the query's expensive half at 10k listeners |
+| `docs/TESTING.md` | the `core`, `server`, `client`, `web` and `cli` rows; the new test files; the three smoke-test-5 steps; the totals |
+| `docs/KNOWN-ISSUES.md` | remove nothing; add: (a) `getWeave` now reads the settings row twice (guidelines + Lobby id) and should read it once; (b) the directory has no live updates by design, only a "list changed" hint; (c) the facet pass unnests jsonb and is the query's expensive half at 10k listeners; (d) **profiles still travel over the event log** — `participant.capabilities_changed` carries the whole profile and a Lobby load backfills the entire history, so the log grows with every profile change and a loading page downloads all of them (§11 has the two options and why neither is here); (e) `q` has no index, so a search is a filter over the Lobby's participants (`pg_trgm` is the fix if it ever hurts) |
 | `docs/superpowers/specs/v2-notes.md` | a dated entry for this idea linking this spec, plus Paw's "Later" note (§11) |
 | `src/web/README.md` | the new route and the listeners components |
 | `src/core/README.md` | `listListeners` beside `findAgents` |
 
 ## 10. Implementation order
 
-Six task-sized steps; each ends green and each is a plausible subagent task.
+**Seven** task-sized steps; each ends green and each is a plausible subagent task. (It was six
+before the review: the session work of §3.3 and §5.1 — the own-profile read and the count's four
+triggers — is now its own step rather than a rider on the sidebar, because it is where the one
+regression this revision exists to prevent would happen.)
 
-1. **The core query.** `src/core/src/lobby/listeners.ts` — types, validation, the cursor codec, the
-   seven queries, the facet fold; the GIN index in `schema.ts` and migration `0004`; the facade
-   method. `test/lobby-listeners.test.ts` in full, plus the `db.test.ts` index assertion. Nothing
-   else in the repo changes, so this lands on its own and everything after it can rely on it.
-2. **`getWeave` stops carrying Lobby profiles.** The `getLobbyWeaveId` check and the own-participant
-   exception; the doc comments on `PublicParticipant.capabilities` in core **and** the client
-   mirror; the `core` tests; the moved `claude-channel` assertions; the `loom lobby` merge with
-   `findAgents` and its CLI test. Deliberately one task, because it is one rule and its whole blast
-   radius (§3.2).
-3. **REST + client.** `GET /api/lobby/listeners`, the types-only mirror in
-   `src/client/src/types.ts`, `LoomClient.listListeners`, the route tests with the auth matrix and
-   the client round-trip test.
+1. **The core query.** `src/core/src/lobby/listeners.ts` — types, validation and its normalisation
+   rules, the cursor codec, the seven queries with whole-document containment, the bounded facet
+   fold; the GIN index in `schema.ts` and migration `0004`; the facade method.
+   `test/lobby-listeners.test.ts` in full, plus the `db.test.ts` index **and plan** assertions.
+   Nothing else in the repo changes, so this lands on its own and everything after it can rely on it.
+2. **`getWeave` stops carrying Lobby profiles, and `getMyLobbyParticipant` replaces the exception.**
+   The `getLobbyWeaveId` check with **no** own-row exception; the new core function beside
+   `setCapabilities` and its facade method; the doc comments on `PublicParticipant.capabilities` in
+   core **and** the client mirror; the `core` tests for both; the moved `claude-channel` assertions;
+   the `loom lobby` merge with `findAgents` and its CLI test. One task, because it is one rule and
+   its whole blast radius (§3.2) — and because shipping the blanking without the replacement read
+   would leave the Offer form broken between two commits.
+3. **REST + client.** `GET /api/lobby/listeners` **and `GET /api/lobby/participants/me`**, the
+   types-only mirrors in `src/client/src/types.ts`, `LoomClient.listListeners` and
+   `getMyLobbyParticipant`, the route tests with both auth matrices and the client round-trip tests.
 4. **Server static route + web router.** `/lobby/listeners` (+ trailing slash) in `app.ts`, the boot
    line, `static.test.ts`; `Route`, `routeOf`, `App`, `openListenersInPlace` in `app.tsx`, and a
    `ListenersRoute` that resolves the Lobby, picks a credential and renders "Loading…". Small,
    mechanical, and it unblocks the page.
 5. **The page.** `ListenersPage` and its controls: search with the debounce, the four facet-fed
-   filters, sort, the counts line, the `ProfileCard` grid, Show more, the empty/loading/error
-   states, the query-string round trip and the `replaceState` rule, the join-form and 401 branches.
-   DOM tests.
-6. **The sidebar and the counts, then docs.** `ProfileCards` → `ListenersLink`, `listenerCount` in
-   the session's `refreshInfo` with its non-fatal failure rule, `LobbySummary` re-pointed at
-   `listListeners({ limit: 0 })`, their DOM tests; then §9's docs in one commit.
+   filters (models with their bounded effort row), sort, the counts line, the `ProfileCard` grid,
+   Show more, the empty/loading/error states, the query-string round trip and the `replaceState`
+   rule, the join-form and 401 branches. DOM tests.
+6. **The session: my own profile, and the listener count.** `withMyProfile` and the
+   `myLobbyProfile` read on its three call sites (§3.3); `listenerCount` on its four triggers
+   (§5.1); both generation-guarded and both non-fatal. Store tests against a real server, including
+   the `/w/<lobby secret>` row and the failing-then-recovering count. This step is what keeps the
+   Offer form working, so it lands **with or before** the step that removes the profiles it used to
+   read — in practice immediately after task 2, which is why it is sequenced before the sidebar.
+7. **The sidebar, the Lobby summary, then docs.** `ProfileCards` → `ListenersLink` rendering the
+   count from `state`, `LobbySummary` re-pointed at `listListeners({ limit: 0, facets: false })`,
+   their DOM tests including the Offer-form assertions of §8; then §9's docs in one commit.
 
-Steps 1–3 are the data path and are independent of 5; step 4 is the join between them. Step 6 is
-last on purpose: it is the step that *removes* the old way of getting a profile count, and it should
-not run before the new way is proven.
+Steps 1–3 are the data path and are independent of 5; step 4 is the join between them. Steps 6 and 7
+are last on purpose: they are what *removes* the old way of getting a profile and a profile count,
+and neither should run before the new way is proven. Strictly, task 2 leaves `main` with a Lobby
+whose Offer form cannot render until task 6 lands — acceptable inside one branch, and the reason
+this spec names the ordering rather than leaving it to chance.
 
 ## 11. Later
 
@@ -1177,6 +1602,34 @@ Paw's own note, and the items this spec deliberately leaves on the far side of t
 - **A "profile last updated" column and sort** — a migration (§1, non-goals) and a write path.
 - **Live directory updates** — a stream and a "reshuffle politely" rule, if the hint of §5.5 ever
   proves too passive.
+- **Profiles in the event transport** — the cost this sub-project does **not** remove (§1,
+  problem 2). `setCapabilities` appends `participant.capabilities_changed` with the whole validated
+  profile ([`profile.ts:66-67`](../../../src/core/src/lobby/profile.ts)), and a session backfills the
+  Weave's entire history before reading metadata
+  ([`session.ts:504-512`](../../../src/web/src/session.ts)), so the Lobby's General thread grows by
+  up to 4000 characters per profile change for ever, and every loading page downloads all of them.
+  Two options, neither in scope here:
+
+  1. **Slim the payload** to `{ participantId }` (plus perhaps a `cleared: true`) and let readers
+     fetch what they need. This is a **wire-format change**, and the payload has readers today:
+     web [`MessageList.tsx:44-45`](../../../src/web/src/components/MessageList.tsx), CLI
+     [`commands/messages.ts:40-41`](../../../src/cli/src/commands/messages.ts) and channel
+     [`format.ts:85-86`](../../../src/claude-channel/src/format.ts) all branch on
+     `payload.capabilities` being truthy to say "updated" versus "cleared" — which a `cleared` flag
+     would have to replace in all three — the channel's wake rule reads the same event
+     ([`format.ts:114`](../../../src/claude-channel/src/format.ts)), and a **JSON export** emits the
+     payload verbatim ([`export.ts:31`](../../../src/core/src/export.ts)). Events are also an
+     append-only log: old ones keep the old shape, so every reader needs both for ever. That is a
+     sub-project with its own compatibility story, not a line in this one.
+  2. **Stop backfilling the whole history on the Lobby page** — window it, or start from a recent
+     seq. That is the same "paging the participant list / the log" work the layout overhaul owns,
+     and it changes what every Weave page shows, not just the Lobby's.
+
+  Recorded in KNOWN-ISSUES (§9) so the cost is written down where a reviewer will find it rather
+  than implied by a promise this spec does not make.
+- **A trigram index for the search.** `q` is an `ILIKE` substring filter with no index (§2.8);
+  `pg_trgm` plus a GIN trigram index on `name` and on `capabilities->>'owner'` would serve it. A
+  second extension and two more indexes, for a filter that today runs over one Weave's participants.
 
 ## 12. Open questions and assumptions
 
@@ -1186,17 +1639,30 @@ stays, and it remains a one-line addition later); the `getWeave` own-profile rul
 encoding, including in the page's own URL; and no live updates in the directory beyond the "list
 changed — reload" hint. The rest stand as the spec's own decisions.
 
+> **One of those four has changed since it was confirmed.** The spec review of 2026-09-19 showed
+> that the confirmed §12.3 could not work on `/w/<lobby secret>`, so the rule it names has been
+> replaced (§3.1, §3.3). Item 3 below says exactly what was confirmed, what it is now, and what Paw
+> is being asked to look at again. Items 1, 4 and 6 are unchanged from what was confirmed.
+
 1. **The facets are the four in the approved design, and `spawnsSubagents` is not a fifth**
    (§2.3). Assumed: the card's `subagents` badge is enough, and a boolean makes a poor chip row. One
    line of UI and one facet query to add if Paw disagrees.
 2. **Sorting by `name` and `owner` is case-insensitive** (§2.5), which also lets the default sort
    use the index that already exists. `joined` inherits the wall-clock caveat KNOWN-ISSUES records,
-   and the cursor stays exact because `id` is the tie-break.
-3. **`getWeave` keeps the caller's own Lobby profile and returns `null` for everyone else's**
-   (§3.1, §3.3), rather than omitting the field. It keeps the Offer form working with no extra
-   request and keeps `PublicParticipant` type-compatible across core and the client mirror. The cost
-   is that `null` now means two things in the Lobby — "no profile" and "not shown here" — and only
-   the doc comment says which.
+   and the cursor stays exact because `id` is the tie-break and **every sort key is non-null** — an
+   invariant §2.5 establishes from the code and §8 tests, rather than a null branch in the cursor.
+3. **CHANGED SINCE PAW CONFIRMED IT — needs re-confirmation.** What Paw confirmed was *"`getWeave`
+   keeps the caller's own Lobby profile and returns `null` for everyone else's"*. The spec review of
+   2026-09-19 showed that rule cannot hold on `/w/<lobby secret>`, where the metadata read
+   authenticates as the **secret** and owns no participant row
+   ([`session.ts:173, 542-546`](../../../src/web/src/session.ts)) — an eligible, joined listener
+   would have lost its Offer form. **The new shape:** `getWeave` blanks **every** Lobby profile with
+   no exception, and a new `GET /api/lobby/participants/me` (core `getMyLobbyParticipant`) answers
+   "my own profile" on one code path for all three routes (§3.1, §3.3, §4.1, §5.1). What Paw is
+   being asked to re-confirm is the **new route and core function**, which the original decision did
+   not contain. Two things improve with it: `null` from `getWeave` now means exactly one thing in
+   the Lobby rather than two, and the answer no longer depends on which credential happened to read
+   it. The cost is one small request per Lobby load, and one more public REST route.
 4. **`filter` travels as JSON, the scalars as plain query params** (§4.1), including in the page's
    own URL. Unambiguous against model names containing any delimiter, consistent with
    `/api/lobby/agents` — and uglier in an address bar than `&model=opus-5&tool=shell`. If Paw
@@ -1226,3 +1692,14 @@ changed — reload" hint. The rest stand as the spec's own decisions.
     existing command rather than a breach of "no CLI command in this change". The alternative is
     accepting that `loom lobby` prints `(no profile)` for every listener, which would be a
     regression shipped on a technicality.
+12. **An empty `tools` or `models` array, and a blank `q`, mean "no filter"** (§2.3) — including
+    `models: []`, which `validateRequirements` rejects outright
+    ([`matching.ts:29`](../../../src/core/src/lobby/matching.ts)). A UI control going from one chip
+    to none must not be a 400, and the empty `tools` case is the one place SQL containment and
+    `matches` would otherwise disagree.
+13. **The effort list inside the models facet is capped at 10 per model** (§2.7), with the same
+    `more` and always-include-the-selection rules as every other facet. `effort` is free text
+    ([`profile.ts:22`](../../../src/core/src/lobby/profile.ts)), so nothing else bounds it.
+14. **This spec promises to remove the profile *snapshot*, not profiles from the wire** (§1, §11).
+    Profiles still reach a loading page through the event log, and slimming that payload is a
+    wire-format change with four readers and an append-only history behind it.
