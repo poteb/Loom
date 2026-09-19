@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { LoomClientError, type Lobby } from "@loom/client";
 import type { RouteDeps } from "../../app.js";
 import type { WeavesSignal } from "../../weaves-signal.js";
-import { hasIdentity, migrateLegacy, readWeaveEntry } from "../../weaves-store.js";
+import { hasIdentity, migrateLegacy, readWeaveEntry, weaveKey } from "../../weaves-store.js";
 import { PersistenceBar } from "../PersistenceBar.js";
 import { InstanceGuidelines } from "./InstanceGuidelines.js";
 import { LobbySummary } from "./LobbySummary.js";
@@ -73,10 +73,17 @@ export function MainPage({ client, storage, notice, weaves, openInPlace }: Route
   // "Joined once, and it stopped working" is not "never joined": §4.1 shows the form for both and
   // says which of the two this is.
   const wasInvalid = entry?.identity === "invalid";
-  // The one full-page-load helper this page owns. Every other navigation here is an ordinary
-  // `<a href>`; this one exists because a form has to decide *after* a write whether leaving this JS
-  // context is safe at all (spec §3.1).
+  // The one full-page-load helper this page owns. Most navigation here is an ordinary `<a href>`;
+  // this one exists because a form has to decide *after* a write whether leaving this JS context is
+  // safe at all (spec §3.1).
   const navigate = (path: string) => { location.href = path; };
+  // …and the same question for the Lobby link: an identity that exists only as a pending override
+  // is one full page load from gone, so that link becomes a button that opens the Lobby here. Read
+  // on every render, so a later write that does persist restores the ordinary link.
+  const lobbyInMemoryOnly = !!lobby && joined && storage.isPending(weaveKey(lobby.weaveId));
+  const openLobby = lobby && (lobbyInMemoryOnly
+    ? <button type="button" class="lobby-open-inplace" onClick={() => openInPlace(lobby.weaveId)}>Open the Lobby</button>
+    : <a href="/lobby">Open the Lobby</a>);
 
   return (
     <div class="main-page">
@@ -87,8 +94,8 @@ export function MainPage({ client, storage, notice, weaves, openInPlace }: Route
         error={cell.kind === "error" ? cell.message : undefined} noLobby={cell.kind === "none"} />
       {lobby && (joined ? (
         joinedAs !== undefined
-          ? <p class="lobby-open">You are in the Lobby as <strong>{joinedAs}</strong>. <a href="/lobby">Open the Lobby</a></p>
-          : <p class="lobby-open">You are already in the Lobby. <a href="/lobby">Open the Lobby</a></p>
+          ? <p class="lobby-open">You are in the Lobby as <strong>{joinedAs}</strong>. {openLobby}</p>
+          : <p class="lobby-open">You are already in the Lobby. {openLobby}</p>
       ) : (
         <>
           {wasInvalid && <p class="muted">The identity this browser had in the Lobby stopped working — join again.</p>}
@@ -100,7 +107,8 @@ export function MainPage({ client, storage, notice, weaves, openInPlace }: Route
             onJoined={() => navigate("/lobby")} onJoinedInPlace={openInPlace} />
         </>
       ))}
-      <MyWeaves client={client} storage={storage} weaves={weaves} onWrite={notice.note} lobbyWeaveId={lobby?.weaveId} />
+      <MyWeaves client={client} storage={storage} weaves={weaves} onWrite={notice.note}
+                openInPlace={openInPlace} lobbyWeaveId={lobby?.weaveId} />
       <CreateWeaveForm client={client} storage={storage} notice={notice} weaves={weaves}
                        defaultName={joinedAs} openInPlace={openInPlace} navigate={navigate} />
     </div>

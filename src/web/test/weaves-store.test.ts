@@ -50,6 +50,7 @@ function counting(inner: KeyValueStorage = memoryStorage()) {
     set: (k, v): WriteResult => { sets++; return inner.set(k, v); },
     remove: (k) => { removes++; inner.remove(k); },
     keys: () => inner.keys(),
+    isPending: (k) => inner.isPending(k),
   };
   return { storage, sets: () => sets, removes: () => removes };
 }

@@ -4,7 +4,7 @@ import type { KeyValueStorage, WriteResult } from "../../storage.js";
 import type { WeavesSignal } from "../../weaves-signal.js";
 import {
   forgetWeave, hasIdentity, invalidateIdentity, isCredentialFailure, readerFor, readWeaveEntry,
-  saveWeaveEntry, storedWeaves, type StoredWeave,
+  saveWeaveEntry, storedWeaves, weaveKey, type StoredWeave,
 } from "../../weaves-store.js";
 import { createRefreshQueue, type RefreshQueue } from "./refresh-queue.js";
 
@@ -107,10 +107,12 @@ function stateText(row: WeaveRow): string | undefined {
  * component owns exactly one `createRefreshQueue(6, …)` for the life of the mount, and the effect
  * below only computes what is newly on screen and hands it over.
  */
-export function MyWeaves({ client, storage, weaves, onWrite, lobbyWeaveId }: {
+export function MyWeaves({ client, storage, weaves, onWrite, openInPlace, lobbyWeaveId }: {
   client: LoomClient; storage: KeyValueStorage; weaves: WeavesSignal;
   /** Every write this list makes reports its verdict here. Always `notice.note`. */
   onWrite: (r: WriteResult) => void;
+  /** How a row opens a Weave whose entry lives only in this page's memory (spec §3.1). */
+  openInPlace: (weaveId: string) => void;
   lobbyWeaveId?: string;
 }) {
   // Anything that writes an entry bumps the signal; this is the one place that listens. Storage
@@ -297,10 +299,24 @@ export function MyWeaves({ client, storage, weaves, onWrite, lobbyWeaveId }: {
                 // a gone Weave's link leads nowhere either, so Copy link goes with the row link.
                 const dead = row.state === "unavailable" || note === GONE;
                 const link = row.secret === undefined ? undefined : `${location.origin}/w/${row.secret}`;
+                // Whether this row's credentials would survive leaving this JS context, asked of the
+                // entry as it stands — re-read on every render, so a later write that does persist
+                // turns the row back into an ordinary link with nothing clicked (spec §4.2).
+                const inMemoryOnly = row.weaveId !== undefined && storage.isPending(weaveKey(row.weaveId));
+                const open = row.weaveId;
                 return (
                   <li key={key} class={`weave-row${dead ? " weave-row-dead" : ""}`}>
-                    {!dead && row.weaveId !== undefined
-                      ? <a class="weave-row-title" href={`/weave/${row.weaveId}`}>{row.title}</a>
+                    {/* Not an anchor when the entry is memory-only, rather than an anchor with a
+                        click handler: an anchor can also be middle-clicked or opened in a new tab,
+                        and either one is the full page load that loses the only copy of the
+                        credential (spec §3.1, §4.5). */}
+                    {!dead && open !== undefined
+                      ? (inMemoryOnly
+                        ? (
+                          <button type="button" class="weave-row-title weave-row-title-inplace"
+                            onClick={() => openInPlace(open)}>{row.title}</button>
+                        )
+                        : <a class="weave-row-title" href={`/weave/${open}`}>{row.title}</a>)
                       : <span class="weave-row-title">{row.title}</span>}
                     {row.isLobby && <span class="badge">Lobby</span>}
                     {row.archived && <span class="badge">Archived</span>}

@@ -63,6 +63,70 @@ describe("memoryStorage", () => {
   });
 });
 
+/**
+ * §2.4's pending query: whether the value a `get` would answer with exists **only in this page's
+ * memory**. It is what tells a navigation that leaving this JS context would take the credential
+ * with it — a verdict is about one write at one moment, and a row on screen needs the answer for
+ * the key as it stands now.
+ */
+describe("isPending", () => {
+  it("is false for every key of a durable memory store", () => {
+    const s = memoryStorage();
+    s.set("k", "v");
+    expect([s.isPending("k"), s.isPending("absent")]).toEqual([false, false]);
+  });
+
+  it("is true for the keys a fallback memory store holds, and false for the ones it does not", () => {
+    const s = memoryStorage({ durable: false });
+    s.set("k", "v");
+    expect([s.isPending("k"), s.isPending("absent")]).toEqual([true, false]);
+  });
+
+  it("is false for a write localStorage kept", () => {
+    installLocalStorage();
+    const s = browserStorage();
+    s.set("k", "v");
+    expect(s.isPending("k")).toBe(false);
+  });
+
+  it("is true for a write that reached this page and nothing else", () => {
+    const ls = installLocalStorage();
+    ls.setMode("throw");
+    const s = browserStorage();
+    s.set("k", "v");
+    expect(s.isPending("k")).toBe(true);
+  });
+
+  it("is false again once a later write persists", () => {
+    const ls = installLocalStorage();
+    const s = browserStorage();
+    ls.setMode("throw");
+    s.set("k", "v");
+    ls.setMode("ok");
+    s.set("k", "v2");
+    expect(s.isPending("k")).toBe(false);
+  });
+
+  it("is false for a tombstone: a removal that did not persist leaves no value to carry", () => {
+    const ls = installLocalStorage();
+    const s = browserStorage();
+    s.set("k", "v");
+    ls.setMode("throw");
+    s.remove("k");
+    expect([s.get("k"), s.isPending("k")]).toEqual([null, false]);
+  });
+
+  it("never writes, however often it is asked", () => {
+    const ls = installLocalStorage();
+    ls.setMode("throw");
+    const s = browserStorage();
+    s.set("k", "v");
+    ls.setMode("ok");
+    s.isPending("k"); s.isPending("k");
+    expect([ls.raw.has("k"), s.isPending("k")]).toEqual([false, true]);
+  });
+});
+
 describe("browserStorage write verdict", () => {
   it("is durable when the value reads back from localStorage", () => {
     installLocalStorage();

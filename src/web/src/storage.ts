@@ -8,6 +8,14 @@ export type KeyValueStorage = {
   remove(key: string): void;
   /** Every key held, so the Weaves this browser has a credential for can be listed. */
   keys(): string[];
+  /**
+   * Whether the value a `get` would answer with for this key exists **only in this page's memory**
+   * (spec §2.4). It is not the verdict of a past write: a verdict describes one write at one moment,
+   * and what a navigation needs to know is whether the key as it stands *now* would survive leaving
+   * this JS context. `false` for a key that is absent, and for a key whose removal did not persist —
+   * there is no value there to carry. Never writes.
+   */
+  isPending(key: string): boolean;
 };
 
 export function memoryStorage(opts: { durable?: boolean } = {}): KeyValueStorage {
@@ -20,6 +28,9 @@ export function memoryStorage(opts: { durable?: boolean } = {}): KeyValueStorage
     set: (k, v) => { m.set(k, v); return durable ? "durable" : "memory"; },
     remove: (k) => { m.delete(k); },
     keys: () => [...m.keys()],
+    // A store that reports `memory` holds everything only in memory, by definition; a durable one
+    // holds nothing that way.
+    isPending: (k) => !durable && m.has(k),
   };
 }
 
@@ -80,5 +91,9 @@ export function browserStorage(): KeyValueStorage {
       for (const [k, v] of overrides) { if (v === TOMBSTONE) seen.delete(k); else seen.add(k); }
       return [...seen];
     },
+    // The pending overrides *are* the answer: a value override is a write `localStorage` did not
+    // keep, and a tombstone is a removal it did not keep — which is the absence of a value, not a
+    // value this page is the only holder of.
+    isPending: (k) => { const o = overrides.get(k); return o !== undefined && o !== TOMBSTONE; },
   };
 }

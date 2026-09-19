@@ -913,12 +913,14 @@ function mountWeaves(opts: {
   const storage = opts.storage ?? memoryStorage();
   const weaves = opts.weaves ?? createWeavesSignal();
   const onWrite = vi.fn(opts.onWrite ?? ((_r: WriteResult) => {}));
+  const openInPlace = vi.fn();
   const view = render(
-    <MyWeaves client={client} storage={storage} weaves={weaves} onWrite={onWrite} lobbyWeaveId={opts.lobbyWeaveId} />,
+    <MyWeaves client={client} storage={storage} weaves={weaves} onWrite={onWrite}
+      openInPlace={openInPlace} lobbyWeaveId={opts.lobbyWeaveId} />,
   );
   const rows = () => [...view.container.querySelectorAll(".weave-row")];
   return {
-    ...view, fetchStub, storage, weaves, onWrite, rows,
+    ...view, fetchStub, storage, weaves, onWrite, openInPlace, rows,
     titles: () => rows().map((r) => r.querySelector(".weave-row-title")!.textContent),
     dead: (i: number) => rows()[i]!.classList.contains("weave-row-dead"),
     href: (i: number) => rows()[i]!.querySelector("a")?.getAttribute("href") ?? null,
@@ -936,7 +938,8 @@ describe("My Weaves renders from storage (spec §4.2)", () => {
     const client = new LoomClient({ baseUrl: BASE, allowInsecure: true, fetch: fetchStub as unknown as typeof fetch });
     const host = document.createElement("div");
     document.body.appendChild(host);
-    paint(<MyWeaves client={client} storage={storage} weaves={createWeavesSignal()} onWrite={() => {}} />, host);
+    paint(<MyWeaves client={client} storage={storage} weaves={createWeavesSignal()} onWrite={() => {}}
+      openInPlace={() => {}} />, host);
     const painted = [host.textContent?.includes("Cached Weave"), fetchStub.mock.calls.length];
     paint(null, host);      // unmounted before the effect could be flushed: nothing is left behind
     host.remove();
@@ -1596,7 +1599,8 @@ describe("My Weaves reports its writes (spec §4.2, §6)", () => {
     const view = render(
       <>
         <PersistenceBar notice={notice} />
-        <MyWeaves client={client} storage={opts.storage} weaves={createWeavesSignal()} onWrite={notice.note} />
+        <MyWeaves client={client} storage={opts.storage} weaves={createWeavesSignal()} onWrite={notice.note}
+          openInPlace={() => {}} />
       </>,
     );
     return {
@@ -1682,7 +1686,8 @@ function mountCreate(opts: {
     <>
       <CreateWeaveForm client={client} storage={storage} notice={notice} weaves={weaves}
         defaultName={opts.defaultName} openInPlace={openInPlace} navigate={navigate} />
-      {opts.withList && <MyWeaves client={client} storage={storage} weaves={weaves} onWrite={notice.note} />}
+      {opts.withList && <MyWeaves client={client} storage={storage} weaves={weaves} onWrite={notice.note}
+        openInPlace={openInPlace} />}
     </>,
   );
   const titleField = () => screen.getByLabelText("Title") as HTMLInputElement;
@@ -2031,5 +2036,61 @@ describe("a creation on the main page (spec §3.1, §4.5)", () => {
     await settle();
     expect([location.pathname, pushed.mock.calls.length, v.container.innerHTML.includes(NEW_SECRET)])
       .toEqual(["/", 0, false]);
+  });
+
+  // My Weaves shows the new Weave the instant it is created, beside the panel whose own Open is
+  // careful about this (§4.5). A row that was an anchor undid that care: a click — or a
+  // middle-click, or "open in a new tab" — is a full page load, and a fresh JS context has neither
+  // the token nor the secret this one is the only holder of.
+  it("offers the new row as a button, not a link, while its credentials live only in memory", async () => {
+    installThrowingLocalStorage();
+    const v = mountApp({ path: "/", storage: browserStorage(), routes: createdRoutes });
+    await settle();
+    await createOnPage();
+    const title = v.container.querySelector(".weave-row-title")!;
+    expect([title.tagName, title.getAttribute("href"), v.container.querySelector(`a[href="/weave/${CREATED}"]`)])
+      .toEqual(["BUTTON", null, null]);
+  });
+
+  it("opens that row in place, in a loaded writable session, with the URL untouched", async () => {
+    installThrowingLocalStorage();
+    const v = mountApp({ path: "/", storage: browserStorage(), routes: createdRoutes });
+    const pushed = vi.spyOn(history, "pushState");
+    await settle();
+    await createOnPage();
+    fireEvent.click(v.container.querySelector(".weave-row-title") as HTMLButtonElement);
+    await settle();
+    expect([v.iAm(), v.writable(), location.pathname, pushed.mock.calls.length]).toEqual(["dana", true, "/", 0]);
+  });
+
+  it("leaves a durable creation's row an ordinary link: a full page load is still the rule", async () => {
+    const v = mountApp({ path: "/", routes: createdRoutes });
+    await settle();
+    await createOnPage();
+    const title = v.container.querySelector(".weave-row-title")!;
+    expect([title.tagName, title.getAttribute("href")]).toEqual(["A", `/weave/${CREATED}`]);
+  });
+
+  it("offers a button under the store that keeps a bare identity and refuses the whole entry", async () => {
+    // The quota-shaped store of §4.5: the row is judged on the entry as it stands, which is the
+    // one that did not fit, not on some earlier write that did.
+    installSizeLimitedLocalStorage(ENTRY_LIMIT);
+    const v = mountApp({ path: "/", storage: browserStorage(), routes: createdRoutes });
+    await settle();
+    await createOnPage();
+    expect(v.container.querySelector(".weave-row-title")!.tagName).toBe("BUTTON");
+  });
+
+  it("opens the Lobby in place too when the identity for it lives only in memory", async () => {
+    installThrowingLocalStorage();
+    const storage = browserStorage();
+    setIdentity(storage, LOBBY.weaveId, { token: "participant-token", participantId: "p-dana", name: "dana" });
+    const v = mountApp({ path: "/", storage });
+    await settle();
+    const open = v.container.querySelector(".lobby-open button, .lobby-open a")!;
+    fireEvent.click(open);
+    await settle();
+    expect([open.tagName, open.getAttribute("href"), v.iAm(), v.writable(), location.pathname])
+      .toEqual(["BUTTON", null, "dana", true, "/"]);
   });
 });
