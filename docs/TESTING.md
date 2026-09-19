@@ -118,8 +118,8 @@ guarded by `typeof document !== "undefined"` because the package runs Vitest wit
 
 ## Current totals
 
-As of the smoke test 5 fixes on `fix/blank-opener-and-home-link` (last code commit `04ce966`):
-**1188 tests in 60 files** — core 305 in 22, web 464 in 10, server 141 in 9, claude-channel 139 in 9,
+As of the smoke test 5 fixes on `fix/blank-opener-and-home-link` (last code commit `f04eb47`):
+**1199 tests in 60 files** — core 305 in 22, web 475 in 10, server 141 in 9, claude-channel 139 in 9,
 cli 68 in 5, client 37 in 4, mcp-tools 34 in 1 — from `pnpm -r build` then
 `pnpm --workspace-concurrency=1 -r test`, with `pnpm -r typecheck` clean.
 Counts change with every feature; run the suites to see current numbers.
