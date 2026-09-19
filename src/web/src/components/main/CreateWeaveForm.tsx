@@ -45,14 +45,18 @@ type Created = { weaveId: string; title: string; secret: string; durable: boolea
  * small write fits and the large one does not — and the panel would then relax on a verdict that was
  * never about the part that cannot be recovered.
  */
-export function CreateWeaveForm({ client, storage, notice, weaves, defaultName, openInPlace, navigate }: {
+export function CreateWeaveForm({ client, storage, notice, weaves, defaultName, open }: {
   client: LoomClient; storage: KeyValueStorage; notice: PersistenceNotice; weaves: WeavesSignal;
   /** Prefills the name field when this browser already has a Lobby identity. */
   defaultName?: string;
-  /** Renders the new Weave here, without touching the URL: the non-durable branch of §3.1. */
-  openInPlace: (weaveId: string) => void;
-  /** An ordinary full page load to `/weave/<id>`, safe only once the entry is known durable. */
-  navigate: (path: string) => void;
+  /**
+   * Go to the new Weave. **Where** it goes — a full page load or the route switched in place — is
+   * the caller's decision, taken when this is called (spec §3.1), because it is a fact about the
+   * whole page and not about this form's write. The two questions are kept apart deliberately: the
+   * panel's hardened variant below is still the write's own verdict, because what that protects is
+   * the secret on screen.
+   */
+  open: (weaveId: string) => void;
 }) {
   const [title, setTitle] = useState("");
   // `undefined` means "nothing typed yet", so a `defaultName` that only arrives once the Lobby
@@ -129,9 +133,9 @@ export function CreateWeaveForm({ client, storage, notice, weaves, defaultName, 
   if (created) {
     const link = `${location.origin}/w/${created.secret}`;
     // A secret that reached only this tab's memory is one closed tab from an unrecoverable Weave, so
-    // the panel hardens rather than softens (spec §4.5): it says why, it cannot be dismissed until
-    // the link is copied or acknowledged, and it opens the Weave here instead of navigating to it —
-    // a full page load would destroy the JS context that is holding the only copy of the credential.
+    // the panel hardens rather than softens (spec §4.5): it says why, and it cannot be dismissed
+    // until the link is copied or acknowledged. This is the *write's* own verdict, and only that:
+    // where Open goes is the page's question, answered by `open` above.
     const hardened = !created.durable;
     const copy = () => {
       // Copy must always answer: an insecure origin has no `navigator.clipboard` at all, and a
@@ -176,9 +180,9 @@ export function CreateWeaveForm({ client, storage, notice, weaves, defaultName, 
           </p>
         )}
         <div class="create-saved-actions">
-          {/* `/weave/<id>`, never `/w/<secret>`: the secret does not enter this browser's history. */}
-          <button type="button" class="create-open"
-            onClick={() => (created.durable ? navigate(`/weave/${created.weaveId}`) : openInPlace(created.weaveId))}>
+          {/* The id, never the secret: whichever way the caller goes, the secret does not enter
+              this browser's history. */}
+          <button type="button" class="create-open" onClick={() => open(created.weaveId)}>
             Open the Weave
           </button>
           {hardened && !saved && (

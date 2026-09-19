@@ -26,8 +26,29 @@ same set by hand (no router library):
 
 `App` keeps the match in `useState`, not in `location`: after a join or a creation whose credential
 write returned `"memory"`, `openInPlace(weaveId)` renders the Weave **here**, in the same JS context,
-with the URL untouched — navigating would destroy the only copy of that credential. Every other
-navigation is an ordinary `<a href>` full page load. The client is built against `location.origin`,
+with the URL untouched — navigating would destroy the only copy of that credential. The exception
+runs both ways: every Weave page's header carries a **Loom** wordmark back to `/`, an ordinary
+`<a href="/">` normally, and `openMainInPlace()` — the mirror, which sets the route to `main` and
+leaves the URL alone — when leaving is not safe. The header is only on a loaded page, so the cards
+that replace it carry the same way back through the shared `HomeLink` ("Go to the main page"): the
+generic no-credential screen, the **unjoined-Lobby screen** (whose join form replaces that generic
+one whole, so it needs its own), `WeaveView`'s error card, and `LobbyRoute`'s no-Lobby and error
+cards. The three `Loading…` screens deliberately have none — a page still resolving what it is has
+nothing to say about itself yet. (The unknown-route card in `app.tsx` stays a plain anchor: it is
+the initial route, and nothing has written anything by then.) Every other navigation is an ordinary
+`<a href>` full page load.
+
+**One question decides all of it.** `leavingIsSafe(storage, notice, key?)`
+([src/persistence.ts](src/persistence.ts)) is asked by the header, those cards, My Weaves' row
+titles, the main page's **Open the Lobby** and both **successful form exits** — the Lobby join's
+`onJoined` and the save-this-link panel's **Open the Weave** — in both directions and the same way. It is false when
+either half says so: `storage.isPending(key)` — that entry is a write `localStorage` refused, re-read
+on every render so a later durable write restores the ordinary link — or `notice.degraded()`, the
+page-scoped latch, which never clears because a browser that refused one write is not trusted with a
+page load again. The second half is what makes a *durable* My Weaves row a button on a page that has
+already failed a write: the load would take every **other** memory-only entry with it. `MainPage`
+subscribes to the notice so that latch reaches these links, and `MyWeaves` takes the notice as a
+prop to read it — `notice.note` is still the only `onWrite`. The client is built against `location.origin`,
 so the UI is always same-origin with its API. In development `pnpm dev` serves it on Vite and proxies
 `/api` (WebSocket included) to `http://127.0.0.1:3000`.
 
@@ -102,11 +123,17 @@ entry, which it re-reads on every signal bump.
 
 `JoinLobbyForm` is the one Join-the-Lobby form, rendered both here and by the router's unjoined-Lobby
 fork. It never touches `location`: one write decides everything, and its verdict picks `onJoined`
-(durable — the caller may navigate) or `onJoinedInPlace`. `CreateWeaveForm` does **not** navigate on
-success — the save-this-link panel replaces it while the page, My Weaves included, stays up — and it
-branches on the verdict of the single write that stored identity, secret, title and `lastOpenedAt`
-together: a secret that reached only memory gets the hardened panel, which cannot be dismissed until
-the link is copied or acknowledged and opens the Weave in place.
+(the write persisted, so leaving is *this form's* business no longer) or `onJoinedInPlace`. Where
+`onJoined` actually goes is `MainPage`'s `leaveFor`, which asks `leavingIsSafe` at that moment — so a
+durable join on a page that has already failed a write renders the Lobby in place too. (The router's
+fork passes the same in-place callback for both, because that route *is* the destination.)
+`CreateWeaveForm` does **not** navigate on success — the save-this-link panel replaces it while the
+page, My Weaves included, stays up — and it branches on the verdict of the single write that stored
+identity, secret, title and `lastOpenedAt` together: a secret that reached only memory gets the
+hardened panel, which cannot be dismissed until the link is copied or acknowledged. That verdict
+decides the panel, and nothing else: **Open the Weave** hands the id to a single `open(weaveId)`
+prop, and `leaveFor` decides the route when it is clicked — which can be later than the write, and
+can therefore answer differently.
 
 `MyWeaves` renders every stored Weave **from storage, with no network at all**, sorted by
 `lastOpenedAt`. Row states come straight from the entry: `joined` ("joined as `dana`"), `read-only`
@@ -115,10 +142,10 @@ says which kind, and offers **Forget**) and `unresolved` (a legacy entry nothing
 Weave id yet: no link, but Copy link still works). It re-derives on every `WeavesSignal` bump, and
 refreshes only the rows on screen through [components/main/refresh-queue.ts](src/components/main/refresh-queue.ts)
 — one FIFO per mounted list, six requests in flight **in total across renders**, with a row's secret
-retry reusing its own slot. Rows link to `/weave/<id>`, never to `/w/<secret>` — except a row whose
-entry is memory-only (`storage.isPending`), whose title is a **button** that opens the Weave in
-place, because an anchor could be middle-clicked or opened in a new tab and a fresh JS context has
-neither the token nor the secret; the main page's **Open the Lobby** behaves the same way. **Copy link** falls
+retry reusing its own slot. Rows link to `/weave/<id>`, never to `/w/<secret>` — except a row that
+cannot safely be followed (`leavingIsSafe` above), whose title is a **button** that opens the Weave
+in place, because an anchor could be middle-clicked or opened in a new tab and a fresh JS context
+has neither the token nor the secret; the main page's **Open the Lobby** behaves the same way. **Copy link** falls
 back, when the clipboard is missing or refuses, to one selectable field with a **Hide** button — the
 only place a stored secret reaches the DOM here, and only after an explicit click on that row.
 
@@ -166,18 +193,18 @@ re-reads storage.
 
 - [index.html](index.html) / [src/main.tsx](src/main.tsx) — the shell and the `render(<App/>)` call: the one place
   the client, the **one** `browserStorage()` instance, the persistence notice and the Weaves signal are constructed
-- [src/app.tsx](src/app.tsx) — `routeOf`, the route state (including the in-place switch), `AppDeps`/`RouteDeps`
+- [src/app.tsx](src/app.tsx) — `routeOf`, the route state (including both in-place switches, `openInPlace` and `openMainInPlace`), `AppDeps`/`RouteDeps`
 - [src/useSession.ts](src/useSession.ts) — the Preact hook owning one session's lifetime; constructs nothing
 - [src/session.ts](src/session.ts) — the session store (above)
 - [src/requests-state.ts](src/requests-state.ts) — the versioned request reducer: `applySnapshot`, `applyEvent`, `displayStatus`
 - [src/storage.ts](src/storage.ts) — `WriteResult`, `KeyValueStorage` (including `isPending`: is this key's value memory-only *now*), `browserStorage` (override/tombstone layer), `memoryStorage`
 - [src/weaves-store.ts](src/weaves-store.ts) — `WeaveEntry`/`StoredWeave`, the key helpers, `saveWeaveEntry`, `setIdentity`, `invalidateIdentity`, `forgetWeave`, `hasIdentity`, `storedWeaves`, `mergeLegacy`, `migrateLegacy[One]`, `readerFor`, `isCredentialFailure`
 - [src/name.ts](src/name.ts) — `NAME_RE`, `isValidName`, `suggestName`: core's name rule, once
-- [src/persistence.ts](src/persistence.ts) — `PersistenceNotice`: the page-scoped latch for "this browser is not saving anything"
+- [src/persistence.ts](src/persistence.ts) — `PersistenceNotice`, the page-scoped latch for "this browser is not saving anything", and `leavingIsSafe`, the one predicate behind every in-place decision
 - [src/weaves-signal.ts](src/weaves-signal.ts) — `WeavesSignal`: "the stored Weaves changed", one per page, beside the storage instance
 - [src/markdown.ts](src/markdown.ts) — `renderMarkdown`: escaping, safe hrefs, mention spans
 - [src/styles.css](src/styles.css) — the stylesheet
-- [src/components/Header.tsx](src/components/Header.tsx) — title, identity, connection state, archive button
+- [src/components/Header.tsx](src/components/Header.tsx) — the **Loom** wordmark back to `/` (a button that switches in place when the session is memory-only), title, identity, connection state, archive button
 - [src/components/ThreadList.tsx](src/components/ThreadList.tsx) — threads, artefact links, new-thread form
 - [src/components/ThreadTools.tsx](src/components/ThreadTools.tsx) — per-thread URL field and invite list
 - [src/components/MessageList.tsx](src/components/MessageList.tsx) — rendered messages and system events
@@ -188,8 +215,9 @@ re-reads storage.
 - [src/components/ProfileCard.tsx](src/components/ProfileCard.tsx) — one Lobby participant's declared capabilities
 - [src/components/InviteBanner.tsx](src/components/InviteBanner.tsx) — "your input is wanted here"
 - [src/components/NamePrompt.tsx](src/components/NamePrompt.tsx) — choose a name before taking part
-- [src/components/WeaveRoute.tsx](src/components/WeaveRoute.tsx) — the one place a Weave page is mounted, for all three routes, plus the `/lobby` lookup and the unjoined-Lobby fork
+- [src/components/WeaveRoute.tsx](src/components/WeaveRoute.tsx) — the one place a Weave page is mounted, for all three routes, plus the `/lobby` lookup, the unjoined-Lobby fork (join form and its own way home) and the `leavingIsSafe` verdict it hands down
 - [src/components/WeaveView.tsx](src/components/WeaveView.tsx) — one Weave page: the `banner`, the `no-credential` and read-only/rejoin branches, then today's layout
+- [src/components/HomeLink.tsx](src/components/HomeLink.tsx) — "Go to the main page" on the cards that replace a Weave: an anchor, or the in-place button
 - [src/components/PersistenceBar.tsx](src/components/PersistenceBar.tsx) — the one-time "this browser is not saving anything" bar
 - [src/components/main/MainPage.tsx](src/components/main/MainPage.tsx) — the `/` shell: four independent cells, the migration pass, the one bar
 - [src/components/main/InstanceGuidelines.tsx](src/components/main/InstanceGuidelines.tsx) — the public instance text, collapsed past 12 lines
@@ -197,7 +225,7 @@ re-reads storage.
 - [src/components/main/JoinLobbyForm.tsx](src/components/main/JoinLobbyForm.tsx) — join by name, the `name_taken` suggestion, the durable/in-place branch
 - [src/components/main/MyWeaves.tsx](src/components/main/MyWeaves.tsx) — every stored Weave, its row state, Copy link and Forget
 - [src/components/main/refresh-queue.ts](src/components/main/refresh-queue.ts) — `createRefreshQueue(limit, run)`: the FIFO holding the in-flight bound across renders
-- [src/components/main/CreateWeaveForm.tsx](src/components/main/CreateWeaveForm.tsx) — create a Weave, and the save-this-link panel (hardened when the write did not persist)
+- [src/components/main/CreateWeaveForm.tsx](src/components/main/CreateWeaveForm.tsx) — create a Weave, and the save-this-link panel (hardened when the write did not persist); `open(weaveId)` is where it goes, and the page decides the route
 
 ## Testing
 

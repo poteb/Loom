@@ -37,11 +37,17 @@ export type AppDeps = {
   client: LoomClient; storage: KeyValueStorage; notice: PersistenceNotice; weaves: WeavesSignal;
 };
 
-/** What every route is handed: the app-owned trio, plus the one way to change the view in place. */
+/** What every route is handed: the app-owned trio, plus the two ways to change the view in place. */
 export type RouteDeps = {
   client: LoomClient; storage: KeyValueStorage; notice: PersistenceNotice;
   /** Renders a Weave here, in this JS context, without touching the URL (spec §3.1). */
   openInPlace: (weaveId: string) => void;
+  /**
+   * The mirror of `openInPlace`: renders the main page here, for a Weave page whose credentials
+   * would not survive leaving this JS context (spec §3.1). The URL is left alone for the same
+   * reason it is on the way in — a pushed `/` would be an address that comes back empty-handed.
+   */
+  openMainInPlace: () => void;
 };
 
 export function App({ client, storage, notice, weaves }: AppDeps) {
@@ -51,7 +57,8 @@ export function App({ client, storage, notice, weaves }: AppDeps) {
   // be an address this browser cannot honour after a reload.
   const [route, setRoute] = useState<Route>(() => routeOf(location.pathname));
   const openInPlace = (weaveId: string) => setRoute({ kind: "weave", weaveId });
-  const deps: RouteDeps = { client, storage, notice, openInPlace };
+  const openMainInPlace = () => setRoute({ kind: "main" });
+  const deps: RouteDeps = { client, storage, notice, openInPlace, openMainInPlace };
   switch (route.kind) {
     // `weaves` goes to the main page only: it is the one place a list of stored Weaves stays on
     // screen while something writes to storage. A Weave page never renders one.

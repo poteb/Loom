@@ -119,7 +119,7 @@ named):
 
 | Type | Payload | Source |
 | --- | --- | --- |
-| `message` | `{ text, mentions: participantId[] }` | `messages.ts`, `weaves.ts` (opener) |
+| `message` | `{ text, mentions: participantId[] }` | `messages.ts`, `weaves.ts` (a **non-blank** opener only: a creation that carried no text is born with `thread.created` and `participant.joined` alone, `lastSeq` 2) |
 | `participant.joined` | `{ participantId, name, kind, role }` | `weaves.ts` |
 | `participant.role_changed` | `{ participantId, role }` | `participants.ts` |
 | `thread.created` | `{ threadId, name, url }` (`url: null` for General) | `threads.ts`, `weaves.ts` |
