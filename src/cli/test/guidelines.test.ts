@@ -48,7 +48,9 @@ describe("guidelines", () => {
 
     const set = await run(["guidelines", "set", "rules 2"]);
     expect(set.code).toBe(0);
-    expect(set.out.trim()).toBe("Guidelines updated (seq 4)");
+    // `create` above passed no `--opener`, so this Weave was born with two events (thread.created,
+    // participant.joined) and the guidelines change is the third.
+    expect(set.out.trim()).toBe("Guidelines updated (seq 3)");
     const again = await run(["guidelines", "set", "rules 2"]);
     expect(again.code).toBe(0);
     expect(again.out.trim()).toBe("Guidelines unchanged");
@@ -62,7 +64,7 @@ describe("guidelines", () => {
     expect(noStdin.err).toContain("no stdin available for -");
 
     const read = await run(["read"]);
-    expect(read.out).toContain("#4 [General] * guidelines changed by Paw\n    rules 2");
+    expect(read.out).toContain("#3 [General] * guidelines changed by Paw\n    rules 2");
 
     const cleared = await run(["guidelines", "set", ""]);
     expect(cleared.code).toBe(0);

@@ -67,6 +67,19 @@ export async function createWeave(db: Db, bus: EventBus, input: CreateWeaveInput
   if (input.creator.kind !== "human" && input.creator.kind !== "agent") throw errors.validation("kind must be human or agent");
   const opener = input.opener ?? "";
   if (opener.length > settings.maxMessageLength) throw errors.messageTooLong(settings.maxMessageLength);
+  // A blank opener is not a message. `postMessage` refuses text that is empty once trimmed, so an
+  // unconditional third event here is the one way a message no participant could have posted gets
+  // into a log — a header with nothing under it. Every caller may omit the opener (the CLI's
+  // `--opener` defaults to `""`, the web form makes the first message optional), so a Weave created
+  // without one is born with two events and `lastSeq` 2. A non-blank opener is stored as given,
+  // untrimmed, exactly as `postMessage` stores a message that passes the same check.
+  //
+  // One deliberate asymmetry with `postMessage`: it *rejects* `"   "` as `validation`, while here a
+  // whitespace-only opener is dropped silently. A creation is not a post — every adapter defaults
+  // the field, so the caller usually did not write anything at all, and failing a Weave's creation
+  // over the blank it was handed would be a worse answer than making the Weave without a first
+  // message.
+  const hasOpener = opener.trim().length > 0;
   // Creation is the event: the Weave is born with these rules, so no weave.guidelines_changed.
   const guidelines = validateGuidelines(input.guidelines ?? "");
 
@@ -83,7 +96,9 @@ export async function createWeave(db: Db, bus: EventBus, input: CreateWeaveInput
       // `url: null` so every thread.created payload has the same shape, General included.
       { threadId, type: "thread.created", actor: participantId, payload: { threadId, name: "General", url: null } },
       { threadId, type: "participant.joined", actor: participantId, payload: { participantId, name: pub.name, kind: pub.kind, role: pub.role } },
-      { threadId, type: "message", actor: participantId, payload: { text: opener, mentions: parseMentions(opener, [pub]) } },
+      ...(hasOpener
+        ? [{ threadId, type: "message" as const, actor: participantId, payload: { text: opener, mentions: parseMentions(opener, [pub]) } }]
+        : []),
     ]);
     return { result: { weave: toPublicWeave(w!), secret, participant: pub, token, generalThread: toPublicThread(t!),
       guidelines: guidelinesFor(settings.guidelines, w!) }, committed };

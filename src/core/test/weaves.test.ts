@@ -30,8 +30,34 @@ describe("createWeave", () => {
     expect(evs[0]!.payload).toEqual({ threadId: r.generalThread.id, name: "General", url: null });
     expect(evs[2]!.payload).toEqual({ text: input.opener, mentions: [] });
     expect(evs[2]!.actor).toBe(r.participant.id);
+    expect(r.weave.lastSeq).toBe(3);
     const me = await resolveCredential(db, r.token);
     expect(me.kind).toBe("participant");
+  });
+  // A blank opener is not a message. `postMessage` refuses text that is empty once trimmed
+  // ("Message text is empty", messages.ts), so appending one here would be the only way a message
+  // no participant could ever have posted gets into a log — and it is what the web form's optional
+  // first message produced: a header with nothing under it.
+  it.each([["an empty", ""], ["a whitespace-only", " \t\n "]])
+    ("%s opener is not appended: the Weave is born with two events", async (_label, opener) => {
+    const r = await createWeave(db, bus, { ...input, opener });
+    const evs = await readEvents(db, r.weave.id, {});
+    expect(evs.map((e) => e.type)).toEqual(["thread.created", "participant.joined"]);
+    expect(evs.map((e) => e.seq)).toEqual([1, 2]);
+    expect(r.weave.lastSeq).toBe(2);
+  });
+  // Blankness is decided on the trimmed text; what is stored is the text as given, which is what
+  // `postMessage` does with a message that passes the same check.
+  it("stores a non-blank opener exactly as given, untrimmed", async () => {
+    const r = await createWeave(db, bus, { ...input, opener: "  hello  " });
+    const evs = await readEvents(db, r.weave.id, {});
+    expect(evs).toHaveLength(3);
+    expect(evs[2]!.payload).toEqual({ text: "  hello  ", mentions: [] });
+    expect(r.weave.lastSeq).toBe(3);
+  });
+  it("still refuses an opener longer than maxMessageLength", async () => {
+    await expect(createWeave(db, bus, { ...input, opener: "x".repeat(20_001) }))
+      .rejects.toMatchObject({ code: "message_too_long" });
   });
   it("respects openWeaveCreation=false", async () => {
     await seedKeepers(db, [keeperToken("k")]);
