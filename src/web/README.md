@@ -31,11 +31,12 @@ runs both ways: every Weave page's header carries a **Loom** wordmark back to `/
 `<a href="/">` normally, and `openMainInPlace()` — the mirror, which sets the route to `main` and
 leaves the URL alone — when leaving is not safe. The header is only on a loaded page, so the cards
 that replace it carry the same way back through the shared `HomeLink` ("Go to the main page"): the
-no-credential screen, `WeaveView`'s error card, and `LobbyRoute`'s no-Lobby and error cards. The
-`loading` card deliberately has none — a page still resolving what it is has nothing to say about
-itself yet. (The unknown-route card in `app.tsx` stays a plain anchor: it is the initial route, and
-nothing has written anything by then.) Every other navigation is an ordinary `<a href>` full page
-load.
+generic no-credential screen, the **unjoined-Lobby screen** (whose join form replaces that generic
+one whole, so it needs its own), `WeaveView`'s error card, and `LobbyRoute`'s no-Lobby and error
+cards. The three `Loading…` screens deliberately have none — a page still resolving what it is has
+nothing to say about itself yet. (The unknown-route card in `app.tsx` stays a plain anchor: it is
+the initial route, and nothing has written anything by then.) Every other navigation is an ordinary
+`<a href>` full page load.
 
 **One question decides all of it.** `leavingIsSafe(storage, notice, key?)`
 ([src/persistence.ts](src/persistence.ts)) is asked by the header, those cards, My Weaves' row
@@ -214,7 +215,7 @@ re-reads storage.
 - [src/components/ProfileCard.tsx](src/components/ProfileCard.tsx) — one Lobby participant's declared capabilities
 - [src/components/InviteBanner.tsx](src/components/InviteBanner.tsx) — "your input is wanted here"
 - [src/components/NamePrompt.tsx](src/components/NamePrompt.tsx) — choose a name before taking part
-- [src/components/WeaveRoute.tsx](src/components/WeaveRoute.tsx) — the one place a Weave page is mounted, for all three routes, plus the `/lobby` lookup and the unjoined-Lobby fork
+- [src/components/WeaveRoute.tsx](src/components/WeaveRoute.tsx) — the one place a Weave page is mounted, for all three routes, plus the `/lobby` lookup, the unjoined-Lobby fork (join form and its own way home) and the `leavingIsSafe` verdict it hands down
 - [src/components/WeaveView.tsx](src/components/WeaveView.tsx) — one Weave page: the `banner`, the `no-credential` and read-only/rejoin branches, then today's layout
 - [src/components/HomeLink.tsx](src/components/HomeLink.tsx) — "Go to the main page" on the cards that replace a Weave: an anchor, or the in-place button
 - [src/components/PersistenceBar.tsx](src/components/PersistenceBar.tsx) — the one-time "this browser is not saving anything" bar

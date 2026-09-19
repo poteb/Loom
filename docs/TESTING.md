@@ -380,4 +380,6 @@ second-profile guest variant of step 8 (the name prompt a browser holding nothin
 gets). **Not signed off:** the styling of the persistence bar on a Weave page and of the in-place
 title button — both were on screen during the run and no complaint was raised, but neither was
 looked at deliberately — and, added after the run and so never on screen at all, the header's
-**Loom** wordmark (`.home-link`) and the in-place "Go to the main page" button (`.home-back`).
+**Loom** wordmark (`.home-link`) and the "Go to the main page" control on the cards that replace a
+Weave (`.home-back` in its in-place form, and its placement under the join form on a
+credential-less Lobby page, `.page-join-home`).

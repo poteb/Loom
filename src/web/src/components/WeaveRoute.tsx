@@ -123,21 +123,6 @@ function WeaveMount({ client, storage, notice, openMainInPlace, target, lobby, o
     return () => { live = false; };
   }, [client, asking]);
 
-  const here = lobby ?? discovered;
-  const isLobby = !!here && target.kind === "id" && here.weaveId === target.weaveId;
-  // While the question is open the page has no honest card to show: the explanation is the wrong one
-  // for the one Weave that can be joined from here, and a request is long enough to read.
-  const noCredential = asking
-    ? <div class="center">Loading…</div>
-    : here && isLobby
-      ? (
-        <div class="page-join">
-          <JoinLobbyForm client={client} storage={storage} notice={notice}
-            lobby={{ weaveId: here.weaveId, title: here.title }}
-            onJoined={onJoined} onJoinedInPlace={onJoined} />
-        </div>
-      )
-      : undefined;
   // The way back to `/` (spec §3.1): whether it may be an anchor is the one question
   // `leavingIsSafe` answers, the same one My Weaves and Open the Lobby ask on the way in. Its two
   // halves behave differently and both are deliberate. The **pending** half is re-read on every
@@ -148,6 +133,28 @@ function WeaveMount({ client, storage, notice, openMainInPlace, target, lobby, o
   // before an in-place transition, and the main page lists every entry there is.
   const weaveId = state.weave?.id ?? (target.kind === "id" ? target.weaveId : undefined);
   const canLeave = leavingIsSafe(storage, notice, weaveId === undefined ? undefined : weaveKey(weaveId));
+
+  const here = lobby ?? discovered;
+  const isLobby = !!here && target.kind === "id" && here.weaveId === target.weaveId;
+  // While the question is open the page has no honest card to show: the explanation is the wrong one
+  // for the one Weave that can be joined from here, and a request is long enough to read. No way
+  // home on it either, for the reason `WeaveView`'s `loading` card has none.
+  const noCredential = asking
+    ? <div class="center">Loading…</div>
+    : here && isLobby
+      ? (
+        <div class="page-join">
+          <JoinLobbyForm client={client} storage={storage} notice={notice}
+            lobby={{ weaveId: here.weaveId, title: here.title }}
+            onJoined={onJoined} onJoinedInPlace={onJoined} />
+          {/* This element replaces the generic no-credential screen whole, `HomeLink` included, so
+              without one of its own a credential-less Lobby page has no way back at all — not from
+              the header either, which belongs to a loaded page. It is a page that can be degraded:
+              a Lobby identity invalidated by a write that reached only memory lands right here. */}
+          <p class="page-join-home"><HomeLink openMainInPlace={canLeave ? undefined : openMainInPlace} /></p>
+        </div>
+      )
+      : undefined;
   // The §6 notice belongs to the page, not to the main page's layout. A join made from `/` whose
   // credential did not persist replaces `MainPage` — and its bar — with this route in the very same
   // render, and a `/w/<secret>` load writes its own entry here (§10.9), so without this seam the one

@@ -611,12 +611,34 @@ without touching the URL — when this page's credentials live only in this JS c
 not an anchor, for the same reason My Weaves' memory-only rows are buttons: an anchor can be
 middle-clicked or opened in a new tab, which is the full page load the exception exists to avoid.
 
-The header is only on a **loaded** page, so the three cards that replace it carry the way back
-themselves, under the same rule: the no-credential screen of §3.3 (which is exactly where a §2.6
-invalidation whose write reached only memory ends up), `WeaveView`'s error card, and the
-instance-has-no-Lobby card. Their "Go to the main page" link is the shared `HomeLink`: an anchor, or
-a button calling `openMainInPlace`. The `loading` card deliberately carries none — a page still
-resolving what it is has nothing to say about itself yet, and the wait is short.
+The header is only on a **loaded** page, so every card that replaces it carries the way back itself,
+under the same rule, through the shared `HomeLink` ("Go to the main page" — an anchor, or a button
+calling `openMainInPlace`). Every screen the app can settle on, and how each one gets home:
+
+| Screen | Way home |
+| --- | --- |
+| `/` (the main page) | n/a — it *is* home |
+| a loaded Weave page (`ready`, archived and read-only included) | the header's **Loom** wordmark |
+| `no-credential`, generic (`NoCredential`, §3.3) | `HomeLink` |
+| `no-credential`, the unjoined-Lobby fork (the join form, §3.3) | `HomeLink` under the form |
+| the fork's "Loading…", while it asks where the Lobby is | none, deliberately |
+| `WeaveView`'s `loading` | none, deliberately |
+| `WeaveView`'s `error` | `HomeLink` |
+| `LobbyRoute`'s "Loading…" | none, deliberately |
+| `LobbyRoute`'s "This instance has no Lobby yet" | `HomeLink` |
+| `LobbyRoute`'s error card | `HomeLink` |
+| the unknown-route card (`app.tsx`) | a plain `<a href="/">` |
+
+The three `Loading…` screens deliberately carry none: a page still resolving what it is has nothing
+to say about itself yet, and the wait is short. The unknown-route card stays a plain anchor because
+it is only ever the *initial* route — nothing has written anything by the time it is on screen, so
+leaving is always safe there.
+
+The no-credential screens matter most of the list. A §2.6 invalidation whose write reached only
+memory ends on one of them, and the Lobby fork's was the easiest to miss: the route supplies its own
+`noCredential` content, which replaces the generic screen **whole** — `HomeLink` included — so
+before the PR #18 review a credential-less `/lobby` had neither header nor link, and typing the
+address was the only way out.
 
 #### One question, both directions
 
@@ -714,7 +736,10 @@ identity that has been invalidated (§2.6). The fork is on what the entry still 
   and offers a join (§2.6).
 - **No credential at all, and it is the Lobby id** → the same Join-the-Lobby form as `/` (§4.1),
   because joining needs no secret. On success, load **in place** — this is already the same JS
-  context, so the credential written by the join is the one the view uses, durable or not.
+  context, so the credential written by the join is the one the view uses, durable or not. The
+  screen also carries the shared `HomeLink` under the form (added by the PR #18 review of
+  2026-09-19): this content replaces the generic no-credential screen whole, and without a link of
+  its own the page had no way back to `/` at all.
 
   This holds for `/weave/<lobbyId>` as much as for `/lobby`. A direct link carries no discovery of
   its own, so the page cannot know the id is the Lobby's until it asks: it resolves the public

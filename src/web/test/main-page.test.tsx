@@ -492,6 +492,29 @@ describe("joining from an unjoined Lobby page (spec §3.1, §3.3)", () => {
     });
   }
 
+  // The fork supplies its own `noCredential` content, which replaces the generic screen whole — so
+  // without a link of its own, a credential-less Lobby page has neither `Header` nor `HomeLink`,
+  // and typing the address is the only way out. That page can be degraded: an invalidated Lobby
+  // identity whose invalidation reached only memory lands exactly here.
+  for (const [label, path] of [["/lobby", "/lobby"], ["/weave/<lobbyId>", `/weave/${LOBBY.weaveId}`]] as const) {
+    it(`offers the way home beside the join form on ${label}`, async () => {
+      mountApp({ path });
+      await settle();
+      expect([!!screen.queryByRole("heading", { name: "Join the Lobby" }),
+        screen.getByRole("link", { name: "Go to the main page" }).getAttribute("href")]).toEqual([true, "/"]);
+    });
+  }
+
+  it("offers it in place on a degraded unjoined Lobby page", async () => {
+    const notice = createPersistenceNotice();
+    notice.note("memory");
+    const v = mountApp({ path: "/lobby", notice });
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Go to the main page" }));
+    await settle();
+    expect([!!v.container.querySelector(".main-page"), location.pathname]).toEqual([true, "/lobby"]);
+  });
+
   it("leaves the URL alone after a join whose credential did not persist", async () => {
     installThrowingLocalStorage();
     const v = mountApp({ path: "/lobby", storage: browserStorage() });
