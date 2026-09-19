@@ -42,6 +42,58 @@ describe("validateListenersQuery q", () => {
   it("rejects a supplied q that is not a string", () => {
     expect(codeOf(q({ q: 42 }))).toBe("validation");
   });
+
+  it("rejects a NUL in q, which Postgres text cannot carry", () => {
+    expect(codeOf(q({ q: "a\u0000b" }))).toBe("validation");
+  });
+
+  it("rejects a tab in q, which can match no name or owner", () => {
+    expect(codeOf(q({ q: "a\tb" }))).toBe("validation");
+  });
+
+  it("keeps a q of non-ASCII letters, which are not control characters", () => {
+    expect(validateListenersQuery({ q: "žofia 日本" }).q).toBe("žofia 日本");
+  });
+});
+
+describe("validateListenersQuery rejects a query that is not an object", () => {
+  it("rejects null, which is not an absent query", () => {
+    expect(codeOf(q(null))).toBe("validation");
+  });
+
+  it("rejects a number", () => {
+    expect(codeOf(q(5))).toBe("validation");
+  });
+
+  it("rejects a string", () => {
+    expect(codeOf(q("str"))).toBe("validation");
+  });
+
+  it("rejects an array", () => {
+    expect(codeOf(q([]))).toBe("validation");
+  });
+
+  it("still answers an undefined query with the defaults", () => {
+    expect(validateListenersQuery(undefined)).toEqual({ sort: "name", dir: "asc", limit: 50, facets: true });
+  });
+});
+
+describe("validateListenersQuery rejects control characters in a filter", () => {
+  it("rejects a NUL in a tool, which jsonb containment cannot carry", () => {
+    expect(codeOf(q({ tools: ["a\u0000b"] }))).toBe("validation");
+  });
+
+  it("rejects a NUL in the runtime", () => {
+    expect(codeOf(q({ runtime: "a\u0000b" }))).toBe("validation");
+  });
+
+  it("rejects a NUL in a model name", () => {
+    expect(codeOf(q({ models: [{ model: "a\u0000b" }] }))).toBe("validation");
+  });
+
+  it("rejects a NUL in a model effort", () => {
+    expect(codeOf(q({ models: [{ model: "m", effort: "a\u0000b" }] }))).toBe("validation");
+  });
 });
 
 describe("validateListenersQuery filter normalisation", () => {
@@ -178,7 +230,9 @@ describe("cursor codec", () => {
     expect(decodeCursor(encodeCursor(c), "joined", "asc").k).toBe("2026-09-19T12:00:00.123456Z");
   });
 
-  it("rejects a cursor that is not base64url of JSON", () => {
+  it("rejects garbage that decodes to something other than JSON", () => {
+    // Node's base64url decoder never throws — it drops the characters it cannot read — so what this
+    // proves is that the leftover bytes fail `JSON.parse`, not that decoding did.
     expect(codeOf(() => decodeCursor("not-base64!", "name", "asc"))).toBe("validation");
   });
 
@@ -278,6 +332,19 @@ describe("cursor codec: a text key is bounded", () => {
   it("accepts an owner key of 64 characters, the longest an owner can be", () => {
     const k = "o".repeat(64);
     expect(decodeCursor(encodeCursor(cursor(k, "owner")), "owner", "asc").k).toBe(k);
+  });
+
+  it("rejects a NUL in a name key, which Postgres text cannot carry", () => {
+    expect(codeOf(() => decodeCursor(encodeCursor(cursor("a\u0000b")), "name", "asc"))).toBe("validation");
+  });
+
+  it("rejects a NUL in an owner key", () => {
+    expect(codeOf(() => decodeCursor(encodeCursor(cursor("a\u0000b", "owner")), "owner", "asc"))).toBe("validation");
+  });
+
+  it("keeps a key of non-ASCII letters, which are not control characters", () => {
+    const k = "žofia 日本";
+    expect(decodeCursor(encodeCursor(cursor(k)), "name", "asc").k).toBe(k);
   });
 });
 

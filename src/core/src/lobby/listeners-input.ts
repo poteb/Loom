@@ -65,18 +65,30 @@ export type CleanQuery = {
 const MAX_Q = 100;
 const DEFAULT_LIMIT = 50;
 
+/** Postgres text cannot carry `\u0000` (22021) and jsonb rejects it too; the rest of C0 matches no name or owner. */
+const CONTROL_CHAR_RE = /[\u0000-\u001f]/;
+
 /**
  * Bounds, defaults and normalisation — all of it here, because the adapters carry types only.
  * The `{ models, tools, runtime }` third reuses `validateRequirements`, so a filter and a request's
  * requirements can never drift apart in shape or in message.
  */
 export function validateListenersQuery(input: ListenersQuery = {}): CleanQuery {
+  // The default covers `undefined` and nothing else: a supplied `null` used to reach `input.q` and
+  // throw a `TypeError` (a 500), and `5`, `"str"` and `[]` used to read every property as absent and
+  // be answered with the whole Lobby. Same idiom as `validateProfile` (`profile.ts:41`).
+  if (typeof input !== "object" || (input as unknown) === null || Array.isArray(input)) {
+    throw errors.validation("query must be an object");
+  }
   // Absent is `undefined` and nothing else. A supplied `q` that is not a string is a caller error,
   // not an empty search box — reading it as "absent" would answer a nonsense query with the whole
   // Lobby instead of a 400.
   if (input.q !== undefined && typeof input.q !== "string") throw errors.validation("q must be a string");
   const q = input.q?.trim();
   if (q !== undefined && q.length > MAX_Q) throw errors.validation(`q must be at most ${MAX_Q} characters`);
+  // `q` becomes an `ILIKE` bind parameter, and a `\u0000` in a text parameter is 22021 "invalid byte
+  // sequence for encoding UTF8" — a 500 for a value that came out of the address bar.
+  if (q !== undefined && CONTROL_CHAR_RE.test(q)) throw errors.validation("q must not contain control characters");
   // An empty filter is no filter: `matches` accepts every profile for `tools: []`, and a control
   // that goes from one chip to none must not be a 400. **Only an actually empty array** — `?.length`
   // is a truthiness test, and `{}`, `5` and `null` are all falsy-length: each would be silently
@@ -84,9 +96,21 @@ export function validateListenersQuery(input: ListenersQuery = {}): CleanQuery {
   // Anything that is not an empty array is passed on **unchanged** to `validateRequirements`,
   // whose schema rejects it with `validation`.
   const emptyArrayToAbsent = <T>(v: T): T | undefined => (Array.isArray(v) && v.length === 0 ? undefined : v);
-  const models = emptyArrayToAbsent(input.models);
-  const tools = emptyArrayToAbsent(input.tools);
-  const req = validateRequirements({ models, tools, runtime: input.runtime });
+  const req = validateRequirements({
+    models: emptyArrayToAbsent(input.models),
+    tools: emptyArrayToAbsent(input.tools),
+    runtime: input.runtime,
+  });
+  // Explicitly, never `...req`: `Requirements` also declares `spawnsSubagents`, which `CleanQuery`
+  // does not have and no listener filter offers.
+  const { models, tools, runtime } = req;
+  // The same hole one level down. These three end up inside a jsonb containment bind parameter, and
+  // jsonb answers a `\u0000` with "unsupported Unicode escape sequence" — another 500 out of a URL.
+  // `validateRequirements` is shared with requests and profiles, so the rule is applied here.
+  const filterStrings = [runtime, ...(tools ?? []), ...(models ?? []).flatMap((m) => [m.model, m.effort])];
+  if (filterStrings.some((s) => s !== undefined && CONTROL_CHAR_RE.test(s))) {
+    throw errors.validation("filters must not contain control characters");
+  }
   if (input.serves !== undefined && !["anyone", "owner", "list"].includes(input.serves)) {
     throw errors.validation("serves must be anyone, owner or list");
   }
@@ -105,7 +129,7 @@ export function validateListenersQuery(input: ListenersQuery = {}): CleanQuery {
   }
   if (input.facets !== undefined && typeof input.facets !== "boolean") throw errors.validation("facets must be a boolean");
   return {
-    q: q || undefined, ...req, serves: input.serves, sort, dir, limit,
+    q: q || undefined, models, tools, runtime, serves: input.serves, sort, dir, limit,
     facets: input.facets ?? true,
     cursor: input.cursor === undefined ? undefined : decodeCursor(input.cursor, sort, dir),
   };
@@ -160,9 +184,10 @@ export function decodeCursor(raw: string, sort: ListenersSort, dir: "asc" | "des
     const leap = (yr! % 4 === 0 && yr! % 100 !== 0) || yr! % 400 === 0;
     const daysIn = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     if (yr! < 1 || mo! < 1 || mo! > 12 || day! < 1 || day! > daysIn[mo! - 1]! || hh! > 23 || mm! > 59 || ss! > 59) throw bad();
-  } else if (k.length === 0 || k.length > MAX_KEY) {
+  } else if (k.length === 0 || k.length > MAX_KEY || CONTROL_CHAR_RE.test(k)) {
     // `lower(name)` and `lower(capabilities->>'owner')` are both non-empty by invariant, so an empty
-    // key names no row this query could have been at.
+    // key names no row this query could have been at. A control character names no row either, and a
+    // `\u0000` in the text bind parameter would be 22021 rather than an empty page.
     throw bad();
   }
   return { s: sort, d: dir, k, i };
