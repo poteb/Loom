@@ -1180,7 +1180,11 @@ Paw's own note, and the items this spec deliberately leaves on the far side of t
 
 ## 12. Open questions and assumptions
 
-Stated as assumptions so implementation is not blocked. **Paw should confirm 1, 3, 4 and 6.**
+Stated as assumptions so implementation is not blocked. **Items 1, 3, 4 and 6 were confirmed by Paw on
+2026-09-19**: no `spawnsSubagents` filter for now ("that can be left out yet" — the badge on the card
+stays, and it remains a one-line addition later); the `getWeave` own-profile rule; the JSON `filter`
+encoding, including in the page's own URL; and no live updates in the directory beyond the "list
+changed — reload" hint. The rest stand as the spec's own decisions.
 
 1. **The facets are the four in the approved design, and `spawnsSubagents` is not a fifth**
    (§2.3). Assumed: the card's `subagents` badge is enough, and a boolean makes a poor chip row. One
