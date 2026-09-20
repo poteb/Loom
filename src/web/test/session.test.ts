@@ -877,17 +877,17 @@ describe("session requests", () => {
     } finally { session.dispose(); }
   });
 
-  it("a profile declared after load lands on the participant it belongs to", async () => {
+  // What is left of the old "a profile declared after load lands on the participant it belongs to":
+  // the participant list still converges on the stream. The profile half of that test is gone with
+  // the rule it asserted (spec §3.1) — no other participant's profile is in session state at all
+  // now — and lives on as the *own*-profile test below.
+  it("a participant who joins after load appears in state.participants", async () => {
     const f = await lobbyFixture();
     const session = await makeSession({ kind: "secret", secret: f.secret }, f.storage);
     try {
       await waitFor(() => session.getState().connection === "open");
       const late = await anon.joinLobby({ name: `Late-${++fixtureN}`, kind: "agent" });
-      // The join's own refresh has landed before the profile exists: only the capabilities event
-      // itself can bring it in, which is what the panel and the Offer form read.
       await waitFor(() => session.getState().participants.some((p) => p.id === late.participant.id));
-      await anon.withToken(late.token).setCapabilities({ models: [MODEL], serves: "anyone", owner: `late-${fixtureN}` });
-      await waitFor(() => session.getState().participants.find((p) => p.id === late.participant.id)?.capabilities != null);
     } finally { session.dispose(); }
   });
 
@@ -1886,6 +1886,635 @@ describe("session legacy identities", () => {
       await session.join("Dana");
       // The invalidation, the display cache the successful re-load writes, and the rejoin.
       expect(verdicts).toEqual(["memory", "memory", "memory"]);
+    } finally { session.dispose(); }
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// The Lobby's two side reads: the listener count (spec §5.1) and this browser's own profile
+// (spec §3.3). Neither is part of the page's own read any more, so each is asserted through what
+// the session publishes *and* through the requests these instrumented clients actually saw.
+
+const LISTENERS = "/api/lobby/listeners";
+const MY_PROFILE = "/api/lobby/participants/me";
+const isWeaveRead = (path: string) => /^\/api\/weaves\/[^/]+$/.test(path);
+
+/** How a scripted call answers: it is handed the pass-through to the server it replaced. */
+type Answer = (pass: () => Promise<Response>) => Promise<Response>;
+/** What a path answers on its n-th call; `undefined` is "let this one through". */
+type Script = (call: number) => Answer | undefined;
+
+const refuses = (code: string, message: string, status: number): Answer => () =>
+  Promise.resolve(new Response(JSON.stringify({ code, message }),
+    { status, headers: { "content-type": "application/json" } }));
+/** A credential the server refuses, and two failures that are no evidence about any credential. */
+const REVOKED = refuses("invalid_token", "Credential is not valid", 401);
+const BROKEN = refuses("internal", "simulated server failure", 500);
+const UNREACHABLE: Answer = () => Promise.reject(new Error("simulated network failure"));
+
+const onCall = (n: number, answer: Answer): Script => (call) => (call === n ? answer : undefined);
+const always = (answer: Answer): Script => () => answer;
+
+/**
+ * Parks the call on `gate` **holding the answer the server gave when it was made** — the shape of
+ * every stale answer here: true when it was asked for, overtaken by the time it lands.
+ */
+const parks = (gate: ReturnType<typeof makeGate>): Answer => async (pass) => {
+  const captured = await pass();
+  gate.markEntered();
+  await gate.released;
+  return captured;
+};
+/** Parks the call and only then fails it: a rejection that lands long after it was asked for. */
+const parksThen = (gate: ReturnType<typeof makeGate>, answer: Answer): Answer => async (pass) => {
+  gate.markEntered();
+  await gate.released;
+  return answer(pass);
+};
+
+/**
+ * A client whose calls to a named path are scripted by call number — the Weave metadata read by a
+ * script of its own, since its path carries the Weave id — recording the path and credential of
+ * every request, so "the count was never read", "the page reloaded" and "with which credential"
+ * are observed rather than hoped for.
+ */
+function sideReadClient(script: Record<string, Script> = {}, weaveRead: Script = () => undefined) {
+  const seen: { path: string; auth: string | undefined }[] = [];
+  const client = new LoomClient({
+    baseUrl: s.baseUrl, allowInsecure: true,
+    fetch: (input, init) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const path = new URL(url).pathname;
+      seen.push({ path, auth: (init?.headers as Record<string, string> | undefined)?.["authorization"] });
+      const pass = () => fetch(url, init);
+      const nth = seen.filter((c) => c.path === path).length;
+      const answer = isWeaveRead(path) ? weaveRead(nth) : script[path]?.(nth);
+      return answer ? answer(pass) : pass();
+    },
+  });
+  return {
+    client,
+    calls: (path: string) => seen.filter((c) => c.path === path).length,
+    weaveReads: () => seen.filter((c) => isWeaveRead(c.path)).length,
+    weaveReadsWith: (credential: string) =>
+      seen.filter((c) => isWeaveRead(c.path) && c.auth === `Bearer ${credential}`).length,
+  };
+}
+
+/** The Lobby's own id: what `/lobby` and `/weave/<lobby id>` both resolve to. */
+const lobbyId = async (): Promise<string> => (await s.core.getLobby()).weaveId;
+/** What the Lobby holds right now, asked for exactly as the session asks for it. */
+const countNow = async (credential: string): Promise<number> =>
+  (await anon.withToken(credential).listListeners({ limit: 0, facets: false })).total;
+/** A profile with an owner of its own, so no two fixtures can be taken for one another. */
+const aProfile = () => ({ models: [MODEL], serves: "anyone" as const, owner: `owner-${++fixtureN}` });
+/** Long enough for a delayed answer to have landed, if it were going to be acted on at all. */
+const quiet = () => new Promise((done) => setTimeout(done, 150));
+
+describe("the Lobby's listener count (spec §5.1)", () => {
+  it("has the count on the load of the Lobby, with no refresh and no event", async () => {
+    const f = await lobbyFixture();
+    const id = await lobbyId();
+    const session = await makeSession({ kind: "id", weaveId: id }, storedIdentity(id, f.requester));
+    try {
+      await waitFor(() => session.getState().listenerCount !== undefined);
+      expect(session.getState().listenerCount).toBe(await countNow(f.requester.token));
+    } finally { session.dispose(); }
+  });
+
+  it("has it on the Lobby opened by its secret link too", async () => {
+    const f = await lobbyFixture();
+    const session = await makeSession({ kind: "secret", secret: f.secret }, f.storage);
+    try {
+      await waitFor(() => session.getState().listenerCount !== undefined);
+      expect(session.getState().listenerCount).toBe(await countNow(f.requester.token));
+    } finally { session.dispose(); }
+  });
+
+  // A page whose `getLobby()` failed on load learns it is the Lobby in the retry loop, and nothing
+  // else would ever ask: the load's own trigger has been and gone.
+  it("still produces a count when the pointer only arrives on a retry", async () => {
+    const f = await lobbyFixture();
+    let lobbyCalls = 0;
+    const flaky = new LoomClient({
+      baseUrl: s.baseUrl, allowInsecure: true,
+      fetch: (input, init) => {
+        const url = typeof input === "string" ? input : input.toString();
+        return new URL(url).pathname === "/api/lobby" && ++lobbyCalls === 1
+          ? Promise.reject(new Error("simulated network failure")) : fetch(url, init);
+      },
+    });
+    const session = createSession({ client: flaky, target: { kind: "secret", secret: f.secret }, storage: f.storage, retry: QUICK_RETRY });
+    await session.load();
+    try {
+      expect([session.getState().lobby, session.getState().listenerCount]).toEqual([undefined, undefined]);
+      await waitFor(() => session.getState().listenerCount !== undefined);
+      expect(session.getState().listenerCount).toBe(await countNow(f.requester.token));
+    } finally { session.dispose(); }
+  });
+
+  it("brings a listener that appears after the load into the number", async () => {
+    const f = await lobbyFixture();
+    const session = await makeSession({ kind: "secret", secret: f.secret }, f.storage);
+    try {
+      await waitFor(() => session.getState().listenerCount !== undefined);
+      const before = session.getState().listenerCount!;
+      await waitFor(() => session.getState().connection === "open");
+      const late = await anon.joinLobby({ name: `Late-${++fixtureN}`, kind: "agent" });
+      await anon.withToken(late.token).setCapabilities(aProfile());
+      await waitFor(() => session.getState().listenerCount === before + 1);
+    } finally { session.dispose(); }
+  });
+
+  // The one event that changes the count without changing the participant list.
+  it("takes the number back down when a listener clears its profile", async () => {
+    const f = await lobbyFixture();
+    const session = await makeSession({ kind: "secret", secret: f.secret }, f.storage);
+    try {
+      await waitFor(() => session.getState().listenerCount !== undefined);
+      const before = session.getState().listenerCount!;
+      await waitFor(() => session.getState().connection === "open");
+      await anon.withToken(f.helper.token).setCapabilities(null);
+      await waitFor(() => session.getState().listenerCount === before - 1);
+    } finally { session.dispose(); }
+  });
+
+  it("does not let a failing count cost the load anything", async () => {
+    const f = await lobbyFixture();
+    const c = sideReadClient({ [LISTENERS]: onCall(1, BROKEN) });
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.secret }, storage: f.storage });
+    await session.load();
+    try {
+      const st = session.getState();
+      expect([st.status, st.threads.length > 0, st.participants.length > 0, st.events.length > 0, st.listenerCount])
+        .toEqual(["ready", true, true, true, undefined]);
+      // …and the next trigger fills it in: a failed count is retried, never given up on.
+      await waitFor(() => session.getState().connection === "open");
+      await anon.joinLobby({ name: `Late-${++fixtureN}`, kind: "human" });
+      await waitFor(() => session.getState().listenerCount !== undefined);
+    } finally { session.dispose(); }
+  });
+
+  // "Not answered yet" and "asked and failed" are different states, and §5.1 words them
+  // differently: `listenerCount === undefined` alone cannot say which of the two this is.
+  it("says the count failed rather than leaving it looking unanswered", async () => {
+    const f = await lobbyFixture();
+    const c = sideReadClient({ [LISTENERS]: always(BROKEN) });
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.secret }, storage: f.storage });
+    await session.load();
+    try {
+      await waitFor(() => session.getState().listenerCountError === true);
+      expect(session.getState().listenerCount).toBeUndefined();
+    } finally { session.dispose(); }
+  });
+
+  it("clears that flag on the next count that answers", async () => {
+    const f = await lobbyFixture();
+    const c = sideReadClient({ [LISTENERS]: onCall(1, BROKEN) });
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.secret }, storage: f.storage });
+    await session.load();
+    try {
+      await waitFor(() => session.getState().listenerCountError === true);
+      await waitFor(() => session.getState().connection === "open");
+      await anon.joinLobby({ name: `Late-${++fixtureN}`, kind: "human" });
+      await waitFor(() => session.getState().listenerCountError === false);
+      expect(session.getState().listenerCount).toBe(await countNow(f.requester.token));
+    } finally { session.dispose(); }
+  });
+
+  it("keeps the last number it had when a later count read fails", async () => {
+    const f = await lobbyFixture();
+    const c = sideReadClient({ [LISTENERS]: onCall(2, UNREACHABLE) });
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.secret }, storage: f.storage });
+    await session.load();
+    try {
+      await waitFor(() => session.getState().listenerCount !== undefined);
+      const answered = session.getState().listenerCount!;
+      await waitFor(() => session.getState().connection === "open");
+      await anon.joinLobby({ name: `Late-${++fixtureN}`, kind: "human" });
+      await waitFor(() => session.getState().listenerCountError === true);
+      // Never replaced by `undefined`, and never by 0: the number on screen is the last one that
+      // was true, beside a flag saying the newest attempt failed.
+      expect(session.getState().listenerCount).toBe(answered);
+    } finally { session.dispose(); }
+  });
+
+  // The ordering rule on the failure path. Without it, a stale rejection spends the page's
+  // credential recovery — the most destructive act on this page — on a read nothing is waiting for.
+  it("drops a count rejection that a newer answer has already overtaken", async () => {
+    const f = await lobbyFixture();
+    const id = await lobbyId();
+    const storage = storedIdentity(id, f.requester, { secret: f.secret });
+    const gate = makeGate();
+    const c = sideReadClient({ [LISTENERS]: onCall(1, parksThen(gate, REVOKED)) });
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: id }, storage });
+    await session.load();
+    try {
+      await gate.entered;                                   // read A is out, and unanswered
+      await waitFor(() => session.getState().connection === "open");
+      await anon.joinLobby({ name: `Late-${++fixtureN}`, kind: "human" });   // the refresh: read B
+      await waitFor(() => session.getState().listenerCount !== undefined);
+      const settled = { count: session.getState().listenerCount, entry: storage.get(weaveKey(id)), reads: c.weaveReads() };
+      gate.release();                                       // …and only now A's 401 lands
+      await quiet();
+      expect([session.getState().listenerCount, session.getState().listenerCountError,
+        storage.get(weaveKey(id)), c.weaveReads()])
+        .toEqual([settled.count, false, settled.entry, settled.reads]);
+    } finally { gate.release(); session.dispose(); }
+  });
+
+  it("drops a count rejection that a newer rejection has already overtaken", async () => {
+    const f = await lobbyFixture();
+    const id = await lobbyId();
+    const storage = storedIdentity(id, f.requester, { secret: f.secret });
+    const gate = makeGate();
+    const c = sideReadClient({ [LISTENERS]: (n) => (n === 1 ? parksThen(gate, REVOKED) : n === 2 ? BROKEN : undefined) });
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: id }, storage });
+    await session.load();
+    try {
+      await gate.entered;
+      await waitFor(() => session.getState().connection === "open");
+      await anon.joinLobby({ name: `Late-${++fixtureN}`, kind: "human" });
+      await waitFor(() => session.getState().listenerCountError === true);
+      const settled = { entry: storage.get(weaveKey(id)), reads: c.weaveReads() };
+      gate.release();
+      await quiet();
+      expect([session.getState().listenerCount, storage.get(weaveKey(id)), c.weaveReads()])
+        .toEqual([undefined, settled.entry, settled.reads]);
+    } finally { gate.release(); session.dispose(); }
+  });
+
+  // An older, larger number landing last would overwrite a newer, smaller one: the generation
+  // counter orders nothing *within* a generation, and both reads belong to this one.
+  it("does not let an older count overwrite a newer one", async () => {
+    const f = await lobbyFixture();
+    const gate = makeGate();
+    const c = sideReadClient({ [LISTENERS]: onCall(1, parks(gate)) });
+    const before = await countNow(f.requester.token);
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.secret }, storage: f.storage });
+    await session.load();
+    try {
+      await gate.entered;                                   // read A is parked holding `before`
+      await waitFor(() => session.getState().connection === "open");
+      await anon.withToken(f.helper.token).setCapabilities(null);            // one listener fewer
+      await waitFor(() => session.getState().listenerCount === before - 1);
+      gate.release();
+      await quiet();
+      expect(session.getState().listenerCount).toBe(before - 1);
+    } finally { gate.release(); session.dispose(); }
+  });
+
+  it("reads no count on a Weave that is not the Lobby", async () => {
+    const f = await lobbyFixture();
+    const c = sideReadClient();
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.target.secret }, storage: f.storage });
+    await session.load();
+    try {
+      await waitFor(() => session.getState().connection === "open");
+      const other = await anon.joinWeave(f.target.secret, { name: `Other-${++fixtureN}`, kind: "human" });
+      await waitFor(() => session.getState().participants.some((p) => p.id === other.participant.id));
+      expect(c.calls(LISTENERS)).toBe(0);                   // neither on the load nor on the refresh
+    } finally { session.dispose(); }
+  });
+
+  // The count is read with the page's own reader, so a 401 from it is a page-credential failure and
+  // takes the path the requests board's read already takes.
+  it("falls back to the stored secret when the count's own read is refused", async () => {
+    const f = await lobbyFixture();
+    const id = await lobbyId();
+    const storage = storedIdentity(id, f.requester, { secret: f.secret });
+    const c = sideReadClient({ [LISTENERS]: always(REVOKED) });
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: id }, storage });
+    await session.load();
+    try {
+      await waitFor(() => session.getState().readOnlyReason === "secret-fallback");
+      const e = readWeaveEntry(storage, id)!;
+      expect([session.getState().status, session.getState().me, e.identity, e.token, e.secret])
+        .toEqual(["ready", undefined, "invalid", undefined, f.secret]);
+    } finally { session.dispose(); }
+  });
+});
+
+describe("the session's own Lobby profile (spec §3.3)", () => {
+  /** This browser joined as the fixture's listener: an identity that owns a profile, name and all. */
+  const asListener = async (f: Awaited<ReturnType<typeof lobbyFixture>>, extra: { secret?: string } = {}) => {
+    const storage = memoryStorage();
+    setIdentity(storage, await lobbyId(),
+      { token: f.helper.token, participantId: f.helper.participant.id, name: f.helper.participant.name }, extra);
+    return storage;
+  };
+
+  it("reads my own profile onto my own participant on an id target", async () => {
+    const f = await lobbyFixture();
+    const id = await lobbyId();
+    const session = await makeSession({ kind: "id", weaveId: id }, await asListener(f));
+    try {
+      await waitFor(() => session.getState().me?.participant.capabilities != null);
+      expect(session.getState().me!.participant.capabilities).toMatchObject({ models: [MODEL], serves: "anyone" });
+    } finally { session.dispose(); }
+  });
+
+  // The row the spec's second revision was written for: here the page reads with the secret, which
+  // owns no participant row, so the profile can only come from a read made with `me`'s own token.
+  it("reads it on the Lobby opened by its secret link, where the page reader owns no profile", async () => {
+    const f = await lobbyFixture();
+    const session = await makeSession({ kind: "secret", secret: f.secret }, await asListener(f, { secret: f.secret }));
+    try {
+      await waitFor(() => session.getState().me?.participant.capabilities != null);
+      expect(session.getState().me!.participant.capabilities).toMatchObject({ models: [MODEL], serves: "anyone" });
+    } finally { session.dispose(); }
+  });
+
+  // `refreshInfo` rebuilds `me` from `getWeave`'s list, which carries no profile at all now: without
+  // `withMyProfile` at every site that builds `me`, the next refresh quietly blanks it again.
+  it("keeps my profile through a refresh", async () => {
+    const f = await lobbyFixture();
+    const id = await lobbyId();
+    const session = await makeSession({ kind: "id", weaveId: id }, await asListener(f));
+    try {
+      await waitFor(() => session.getState().me?.participant.capabilities != null);
+      await waitFor(() => session.getState().connection === "open");
+      const late = await anon.joinLobby({ name: `Late-${++fixtureN}`, kind: "human" });
+      await waitFor(() => session.getState().participants.some((p) => p.id === late.participant.id));
+      expect(session.getState().me!.participant.capabilities).toMatchObject({ models: [MODEL] });
+    } finally { session.dispose(); }
+  });
+
+  it("lands a profile declared from another client on my own participant", async () => {
+    const f = await lobbyFixture();
+    const session = await makeSession({ kind: "secret", secret: f.secret }, f.storage);
+    try {
+      await waitFor(() => session.getState().connection === "open");
+      expect(session.getState().me!.participant.capabilities).toBeNull();
+      // The same identity, declaring its profile from somewhere else: the event names me.
+      await anon.withToken(f.requester.token).setCapabilities(aProfile());
+      await waitFor(() => session.getState().me?.participant.capabilities != null);
+    } finally { session.dispose(); }
+  });
+
+  it("gives a participant that has declared none a null profile, and throws nothing", async () => {
+    const f = await lobbyFixture();
+    const c = sideReadClient();
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.secret }, storage: f.storage });
+    await session.load();
+    try {
+      await waitFor(() => c.calls(MY_PROFILE) > 0);
+      expect([session.getState().status, session.getState().me!.participant.capabilities]).toEqual(["ready", null]);
+    } finally { session.dispose(); }
+  });
+
+  it("does not let a failing own-profile read cost the load anything", async () => {
+    const f = await lobbyFixture();
+    const c = sideReadClient({ [MY_PROFILE]: always(BROKEN) });
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.secret }, storage: f.storage });
+    await session.load();
+    const after = f.storage.get(weaveKey(await lobbyId()));
+    try {
+      await waitFor(() => c.calls(MY_PROFILE) > 0);
+      await quiet();
+      expect([session.getState().status, session.getState().me!.participant.capabilities,
+        session.getState().readOnlyReason, f.storage.get(weaveKey(await lobbyId()))])
+        .toEqual(["ready", null, undefined, after]);
+    } finally { session.dispose(); }
+  });
+
+  // The event naming me is the mechanism; the refresh it also schedules is only the backstop. The
+  // refresh's own metadata read is parked here, so what is counted is the event's own doing.
+  it("re-reads my profile on a capabilities event that names me", async () => {
+    const f = await lobbyFixture();
+    const id = await lobbyId();
+    const gate = makeGate();
+    const c = sideReadClient({}, onCall(2, parks(gate)));   // read 1 is the load's; park the refresh's
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: id }, storage: await asListener(f) });
+    await session.load();
+    try {
+      await waitFor(() => c.calls(MY_PROFILE) > 0);
+      const reads = c.calls(MY_PROFILE);
+      await waitFor(() => session.getState().connection === "open");
+      await anon.withToken(f.helper.token).setCapabilities(aProfile());
+      await gate.entered;                                   // the refresh that event scheduled is parked
+      await waitFor(() => c.calls(MY_PROFILE) > reads);
+    } finally { gate.release(); session.dispose(); }
+  });
+
+  it("does not re-read it on a capabilities event that names someone else", async () => {
+    const f = await lobbyFixture();
+    const id = await lobbyId();
+    const gate = makeGate();
+    const c = sideReadClient({}, onCall(2, parks(gate)));
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: id }, storage: await asListener(f) });
+    await session.load();
+    try {
+      await waitFor(() => c.calls(MY_PROFILE) > 0);
+      const reads = c.calls(MY_PROFILE);
+      await waitFor(() => session.getState().connection === "open");
+      const other = await anon.joinLobby({ name: `Other-${++fixtureN}`, kind: "agent" });
+      await anon.withToken(other.token).setCapabilities(aProfile());
+      await gate.entered;
+      await waitFor(() => session.getState().events.some((e) => e.type === "participant.capabilities_changed"
+        && e.payload.participantId === other.participant.id));
+      expect(c.calls(MY_PROFILE)).toBe(reads);
+    } finally { gate.release(); session.dispose(); }
+  });
+
+  it("does not let an older profile answer resurrect a profile a newer one cleared", async () => {
+    const f = await lobbyFixture();
+    const id = await lobbyId();
+    const gate = makeGate();
+    const c = sideReadClient({ [MY_PROFILE]: onCall(1, parks(gate)) });
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: id }, storage: await asListener(f) });
+    await session.load();
+    try {
+      await gate.entered;                                   // read A is parked holding the profile
+      await waitFor(() => session.getState().connection === "open");
+      await anon.withToken(f.helper.token).setCapabilities(null);
+      await waitFor(() => c.calls(MY_PROFILE) > 1);         // read B has answered `null`
+      await quiet();
+      gate.release();
+      await quiet();
+      expect(session.getState().me!.participant.capabilities).toBeNull();
+    } finally { gate.release(); session.dispose(); }
+  });
+
+  it("discards an answer read for the identity this session has since left", async () => {
+    const f = await lobbyFixture();
+    const gate = makeGate();
+    const c = sideReadClient({ [MY_PROFILE]: onCall(1, parks(gate)) });
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.secret },
+      storage: await asListener(f, { secret: f.secret }) });
+    await session.load();
+    try {
+      await gate.entered;                                   // the read is out, for the old identity
+      await session.join(`Rejoined-${++fixtureN}`);
+      gate.release();
+      await quiet();
+      expect(session.getState().me!.participant.capabilities).toBeNull();
+    } finally { gate.release(); session.dispose(); }
+  });
+
+  // `join()` deliberately does not bump the generation, which is exactly why the cache is keyed on
+  // the identity it was read for: a rejoin is a different participant, with no profile until it
+  // declares one.
+  it("starts a rejoined identity with no profile", async () => {
+    const f = await lobbyFixture();
+    const session = await makeSession({ kind: "secret", secret: f.secret }, await asListener(f, { secret: f.secret }));
+    try {
+      await waitFor(() => session.getState().me?.participant.capabilities != null);
+      const name = `Rejoined-${++fixtureN}`;
+      await session.join(name);
+      expect([session.getState().me!.participant.name, session.getState().me!.participant.capabilities])
+        .toEqual([name, null]);
+    } finally { session.dispose(); }
+  });
+
+  // The sibling rule: the page is reading perfectly well with the secret, so the identity is
+  // retired and *nothing else* — no reload, no retired stream, no generation bump.
+  it("invalidates the identity a secret-link visit is refused for, without reloading the page", async () => {
+    const f = await lobbyFixture();
+    const id = await lobbyId();
+    const storage = await asListener(f, { secret: f.secret });
+    const c = sideReadClient({ [MY_PROFILE]: always(REVOKED) });
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.secret }, storage });
+    await session.load();
+    const reads = c.weaveReads();
+    try {
+      await waitFor(() => session.getState().readOnlyReason === "secret-fallback");
+      const e = readWeaveEntry(storage, id)!;
+      expect([e.identity, e.token, e.participantId, e.name, e.secret, e.title])
+        .toEqual(["invalid", undefined, undefined, undefined, f.secret, session.getState().weave!.title]);
+      // Still ready, still reading, and the page was never reloaded to report it.
+      expect([session.getState().status, session.getState().me, session.getState().threads.length > 0,
+        session.getState().events.length > 0, c.weaveReads()])
+        .toEqual(["ready", undefined, true, true, reads]);
+    } finally { session.dispose(); }
+  });
+
+  // On an id target that token *is* the page credential, so the helper retires it and answers
+  // `{ reload: true }` — and the caller's job is to act on that answer. Dropping it leaves the page
+  // reading with the very token the server has just refused.
+  it("reloads an id target with the stored secret when its own token is refused", async () => {
+    const f = await lobbyFixture();
+    const id = await lobbyId();
+    const storage = await asListener(f, { secret: f.secret });
+    const c = sideReadClient({ [MY_PROFILE]: always(REVOKED) });
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: id }, storage });
+    await session.load();
+    const reads = c.weaveReads();
+    try {
+      await waitFor(() => session.getState().readOnlyReason === "secret-fallback");
+      const e = readWeaveEntry(storage, id)!;
+      expect([e.identity, e.token, e.participantId, e.name, e.secret]).toEqual(["invalid", undefined, undefined, undefined, f.secret]);
+      expect([session.getState().me, c.weaveReads() > reads, c.weaveReadsWith(f.secret)])
+        .toEqual([undefined, true, 1]);
+    } finally { session.dispose(); }
+  });
+
+  it("settles at no-credential when that token is refused and no secret was stored", async () => {
+    const f = await lobbyFixture();
+    const id = await lobbyId();
+    const storage = await asListener(f);
+    const c = sideReadClient({ [MY_PROFILE]: always(REVOKED) });
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: id }, storage });
+    await session.load();
+    try {
+      await waitFor(() => session.getState().status === "no-credential");
+      expect([session.getState().me, readWeaveEntry(storage, id)!.identity]).toEqual([undefined, "invalid"]);
+    } finally { session.dispose(); }
+  });
+
+  it("leaves a freshly rejoined identity untouched when the old one's 401 lands late", async () => {
+    const f = await lobbyFixture();
+    const id = await lobbyId();
+    const storage = await asListener(f, { secret: f.secret });
+    const gate = makeGate();
+    const verdicts: WriteResult[] = [];
+    const c = sideReadClient({ [MY_PROFILE]: onCall(1, parksThen(gate, REVOKED)) });
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.secret }, storage,
+      onWrite: (v) => verdicts.push(v) });
+    await session.load();
+    try {
+      await gate.entered;
+      await session.join(`Rejoined-${++fixtureN}`);
+      const settled = { entry: storage.get(weaveKey(id)), writes: verdicts.length };
+      gate.release();
+      await quiet();
+      // Byte-identical: the rejected token is not this browser's any more, and a credential the
+      // server issued seconds ago must not be deleted on its account.
+      expect([storage.get(weaveKey(id)), verdicts.length, !!session.getState().me, session.getState().readOnlyReason])
+        .toEqual([settled.entry, settled.writes, true, undefined]);
+    } finally { gate.release(); session.dispose(); }
+  });
+
+  it("does nothing with a 401 whose generation has been retired", async () => {
+    const f = await lobbyFixture();
+    const id = await lobbyId();
+    const storage = await asListener(f, { secret: f.secret });
+    const gate = makeGate();
+    const c = sideReadClient({ [MY_PROFILE]: onCall(1, parksThen(gate, REVOKED)) });
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.secret }, storage });
+    await session.load();
+    try {
+      await gate.entered;
+      await session.load();                                 // a fresh load, and a fresh generation
+      const settled = storage.get(weaveKey(id));
+      gate.release();
+      await quiet();
+      expect([storage.get(weaveKey(id)), !!session.getState().me, session.getState().readOnlyReason])
+        .toEqual([settled, true, undefined]);
+    } finally { gate.release(); session.dispose(); }
+  });
+
+  it("is equally silent about a transient failure for an identity this session has left", async () => {
+    const f = await lobbyFixture();
+    const id = await lobbyId();
+    const storage = await asListener(f, { secret: f.secret });
+    const gate = makeGate();
+    const c = sideReadClient({ [MY_PROFILE]: onCall(1, parksThen(gate, UNREACHABLE)) });
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.secret }, storage });
+    await session.load();
+    try {
+      await gate.entered;
+      await session.join(`Rejoined-${++fixtureN}`);
+      const settled = storage.get(weaveKey(id));
+      gate.release();
+      await quiet();
+      expect([session.getState().refreshError, storage.get(weaveKey(id)), session.getState().me!.participant.capabilities])
+        .toEqual([undefined, settled, null]);
+    } finally { gate.release(); session.dispose(); }
+  });
+
+  // A newer success with that same token is later, stronger evidence that it works — and deleting a
+  // credential cannot be undone.
+  it("does not invalidate on a stale 401 for the identity a newer read has just proven good", async () => {
+    const f = await lobbyFixture();
+    const id = await lobbyId();
+    const storage = await asListener(f, { secret: f.secret });
+    const gate = makeGate();
+    const c = sideReadClient({ [MY_PROFILE]: onCall(1, parksThen(gate, REVOKED)) });
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: id }, storage });
+    await session.load();
+    try {
+      await gate.entered;
+      await waitFor(() => session.getState().connection === "open");
+      await anon.withToken(f.helper.token).setCapabilities(aProfile());      // read B, for the same identity
+      await waitFor(() => session.getState().me?.participant.capabilities != null);
+      gate.release();
+      await quiet();
+      expect([readWeaveEntry(storage, id)!.token, session.getState().readOnlyReason, !!session.getState().me])
+        .toEqual([f.helper.token, undefined, true]);
+    } finally { gate.release(); session.dispose(); }
+  });
+
+  it("reads no profile on a Weave that is not the Lobby", async () => {
+    const f = await lobbyFixture();
+    const c = sideReadClient();
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.target.secret }, storage: f.storage });
+    await session.load();
+    try {
+      await waitFor(() => session.getState().connection === "open");
+      const other = await anon.joinWeave(f.target.secret, { name: `Other-${++fixtureN}`, kind: "human" });
+      await waitFor(() => session.getState().participants.some((p) => p.id === other.participant.id));
+      expect(c.calls(MY_PROFILE)).toBe(0);
     } finally { session.dispose(); }
   });
 });
