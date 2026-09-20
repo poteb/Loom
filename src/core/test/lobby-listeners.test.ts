@@ -53,6 +53,15 @@ const pairs = (f: { values: FacetValue[] }) => f.values.map((v) => [v.value, v.c
 const setJoinedAt = (id: string, ts: string) =>
   db.execute(sql`update ${participants} set joined_at = ${ts}::timestamptz where ${participants.id} = ${id}`);
 
+/**
+ * Replaces a stored profile's `models` array in the column, past `validateProfile`. Only for the
+ * shapes that validator does not write but the column can hold — a restore, a hand-edited row, a
+ * later relaxation of the schema — because the facet SQL reads the column, not the validator.
+ */
+const setModelsRaw = (id: string, models: unknown[]) =>
+  db.execute(sql`update ${participants} set capabilities = jsonb_set(capabilities, '{models}', ${JSON.stringify(models)}::jsonb)
+                 where ${participants.id} = ${id}`);
+
 /** Four listeners, no two alike in name, owner, model, tool, runtime or serving policy. */
 const cast: Record<string, Profile> = {
   alice: { owner: "zoe", models: [{ model: "opus-5", effort: "high" }], tools: ["shell", "github"], runtime: "node", serves: "anyone" },
@@ -436,6 +445,30 @@ describe("the facets are bounded", () => {
     const page = await listListeners(db, reader, { limit: 0 });
     const model = page.facets!.models.values[0]!;
     expect([model.model, model.count, model.efforts.length, model.moreEfforts]).toEqual(["m", 30, 10, true]);
+  });
+
+  /**
+   * A model entry with no `effort` at all (`{"model":"m"}`). `validateProfile` requires one today,
+   * so this is written straight into the column — the shape a restore, a hand-edited row or a
+   * later relaxation of that schema would leave behind, and the facet SQL reads the column, not
+   * the validator. The listener still counts for the model; its *absence* of an effort is not one
+   * of the ten efforts on offer, so it may not take a slot in the ranking the ten are cut from.
+   */
+  it("does not let effort-less declarations take a slot in a model's effort ranking", async () => {
+    const many: Record<string, Profile> = {};
+    for (let i = 1; i <= 12; i++) {
+      const e = `e${String(i).padStart(2, "0")}`;
+      many[`p${String(i).padStart(2, "0")}`] = { owner: "ann", models: [{ model: "m", effort: e }] };
+    }
+    for (let i = 1; i <= 3; i++) many[`bare${i}`] = { owner: "ann", models: [{ model: "m", effort: "x" }] };
+    const joined = await seed(many);
+    for (let i = 1; i <= 3; i++) await setModelsRaw(joined[`bare${i}`]!.id, [{ model: "m" }]);
+    const page = await listListeners(db, reader, { limit: 0 });
+    const model = page.facets!.models.values[0]!;
+    // 15 listeners offer `m`; 12 efforts are on offer, of which the top 10 are shown.
+    expect([model.model, model.count, model.efforts.length, model.moreEfforts]).toEqual(["m", 15, 10, true]);
+    // And every slot holds a real effort, never a hole where the effort-less group was.
+    expect(model.efforts.map((e) => e.value).every((v) => /^e\d\d$/.test(v))).toBe(true);
   });
 
   it("ranks models by listener count, not by how many efforts they carry", async () => {

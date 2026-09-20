@@ -166,8 +166,14 @@ function modelsFacet(db: Db, lobbyId: string, c: CleanQuery): Promise<ModelRow[]
       SELECT s.model, coalesce(mc.n, 0) FROM unnest(${sql.param(selModels)}::text[]) AS s(model)
       LEFT JOIN model_counts mc ON mc.model = s.model
     ), effort_counts AS (
+      -- IS NOT NULL here and *only* here. A model entry with no effort, {"model":"m"}, is still a
+      -- listener offering that model, so pairs and model_counts above must keep its row. It is not
+      -- an effort on offer, though: grouped in, the NULL group takes one of the ranked slots and is
+      -- then dropped by foldModels, leaving a real effort unshown and moreEfforts reading false
+      -- although there are more.
       SELECT p.model, p.effort, count(DISTINCT p.id)::int AS n
-      FROM pairs p JOIN kept_models k ON k.model = p.model GROUP BY p.model, p.effort
+      FROM pairs p JOIN kept_models k ON k.model = p.model
+      WHERE p.effort IS NOT NULL GROUP BY p.model, p.effort
     ), ranked_efforts AS (
       SELECT model, effort, n,
              row_number() OVER (PARTITION BY model ORDER BY n DESC, effort COLLATE "C") AS rn FROM effort_counts
