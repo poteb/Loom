@@ -12,14 +12,15 @@ one thing it does enforce locally is rendering safety: Markdown is escaped and o
 
 [`@loom/server`](../server) serves the build when `webDist` is set (`LOOM_WEB_DIST`, else
 `../../web/dist` if it exists): `/assets/*` immutably cached, and `index.html` for exactly `/`,
-`/lobby`, `/lobby/`, `/weave/:id`, `/weave/:id/`, `/w/:secret`, `/w/:secret/` — no catch-all, so an
-unknown path stays the API's JSON 404. `routeOf(pathname)` in [src/app.tsx](src/app.tsx) matches the
-same set by hand (no router library):
+`/lobby`, `/lobby/`, `/lobby/listeners`, `/lobby/listeners/`, `/weave/:id`, `/weave/:id/`,
+`/w/:secret`, `/w/:secret/` — no catch-all, so an unknown path stays the API's JSON 404.
+`routeOf(pathname)` in [src/app.tsx](src/app.tsx) matches the same set by hand (no router library):
 
 | Path | `Route` | What renders |
 | --- | --- | --- |
 | `/` | `main` | `MainPage` — the four cells below |
 | `/lobby` | `lobby` | `WeaveRoute` after the public `getLobby()` resolves the id |
+| `/lobby/listeners` | `listeners` | `ListenersRoute` — the directory; it resolves the Lobby and picks a credential itself, and opens **no session and no stream** |
 | `/weave/<uuid>` | `weave` | `WeaveRoute` on `{ kind: "id", weaveId }` |
 | `/w/<43-char secret>` | `secret` | `WeaveRoute` on `{ kind: "secret", secret }` — unchanged from v1 |
 | anything else | `unknown` | "No such page." and a link to `/` |
@@ -29,7 +30,10 @@ write returned `"memory"`, `openInPlace(weaveId)` renders the Weave **here**, in
 with the URL untouched — navigating would destroy the only copy of that credential. The exception
 runs both ways: every Weave page's header carries a **Loom** wordmark back to `/`, an ordinary
 `<a href="/">` normally, and `openMainInPlace()` — the mirror, which sets the route to `main` and
-leaves the URL alone — when leaving is not safe. The header is only on a loaded page, so the cards
+leaves the URL alone — when leaving is not safe. The Lobby sidebar's **Listeners (N)** line is the
+third such pair, `openListenersInPlace()`, and a directory opened that way leaves the address bar
+entirely alone: not only does it not navigate, it never rewrites its own query string either, because
+that URL would name a view this browser could not load again. The header is only on a loaded page, so the cards
 that replace it carry the same way back through the shared `HomeLink` ("Go to the main page"): the
 generic no-credential screen, the **unjoined-Lobby screen** (whose join form replaces that generic
 one whole, so it needs its own), `WeaveView`'s error card, and `LobbyRoute`'s no-Lobby and error
@@ -74,7 +78,8 @@ identity died, so the composer is withheld and a join is offered), the `weave`, 
 (`connecting` / `open` / `reconnecting` / `closed`), `needsName`, a background `refreshError`,
 `invitesForMe` (threads holding an invite newer than this session has read there), `invited`
 (everyone invited, per thread), `instanceGuidelines` (the public instance layer; the Weave's own
-layer is `weave.guidelines`), and — on the Lobby's own page — `lobby` (where it is) and `requests`.
+layer is `weave.guidelines`), and — on the Lobby's own page — `lobby` (where it is), `requests`, and
+`listenerCount` / `listenerCountError`.
 A write attempted without an identity raises `needsName` and throws
 `no_identity`; mutations that already committed update state locally and let a coalesced, retrying
 refresh reconcile.
@@ -89,20 +94,53 @@ it still joins the log but does not touch the panel, and a metadata snapshot tha
 the text the newer change installed — so a slow refresh cannot resurrect stale rules in either
 direction.
 
-**The Lobby.** The Lobby is an ordinary Weave page (`/w/<lobby secret>`) with two additions, and the
-session only builds them when `state.lobby.weaveId` is the Weave it is showing. Each participant with
-a profile gets a **profile card** (models and efforts, tools, runtime, owner, serves), and the
-sidebar gets the **requests panel**: open requests with their requirements, `wanted`/accepted, a
+**The Lobby.** The Lobby is an ordinary Weave page (`/lobby`, or `/w/<lobby secret>`) with two
+additions, and the session only builds them when `state.lobby.weaveId` is the Weave it is showing.
+The sidebar gets one **Listeners (N)** line into the directory at `/lobby/listeners`
+([ListenersLink](src/components/ListenersLink.tsx)) — a link, or a button that renders the directory
+in place when leaving is not safe — and the **requests panel**: open requests with their requirements, `wanted`/accepted, a
 countdown and the offers so far, with the terminal ones collapsed below. `listRequests` is paged
 (newest first), so the session asks for the two halves separately: every **open** request at the
 server's page maximum, and the newest `CLOSED_REQUESTS_PAGE` (25) of each terminal status, merged
 through the same watermark. An open request older than the newest page of the whole board would
 otherwise be missing from the live section; the collapsed section says when it is only a page. The requester sees Accept
 per offer (disabled once `wanted` is reached) and Cancel; an eligible listener whose own profile this
-browser holds sees an Offer form, which gives way once it has offered; anyone else reads. Opening a
+browser holds sees an Offer form, which gives way once it has offered; anyone else reads. **That
+profile is no longer on the page metadata.** `getWeave` blanks `capabilities` on every participant
+of the Lobby's Weave, the caller's own included, so the session makes two side reads instead
+([src/side-reads.ts](src/side-reads.ts) holds the rules, `session.ts` the wiring): the **listener
+count** through `listListeners({ limit: 0, facets: false })` with the page reader, on the initial
+load, on a late Lobby discovery and on every refresh; and **my own profile** through
+`getMyLobbyParticipant()` with `me`'s own token, which on a `/w/<lobby secret>` visit is not the
+page reader. Both are non-fatal, both carry the session generation **and** a request number, and
+both the answer and the rejection are dropped unless both still hold — a rejection retires a
+credential, which is the one stale outcome that cannot be undone. The profile cache is owned by the
+`{ participantId, token }` it was read for. A count that has never arrived is an **absent** number,
+never `Listeners (0)`; `listenerCountError` is what keeps "not answered yet" and "asked and failed"
+apart, and a last known number is kept behind a failed refresh. Opening a
 request is a form whose target Weave and Thread pickers list only the Weaves this browser holds a
 token for — that token travels as `targetCredential`, the authority the Lobby credential cannot
 prove. Request events also render as system lines in the request's Thread.
+
+**The listeners directory** ([src/components/listeners](src/components/listeners)) is the page the
+sidebar line leads to, and it has no session at all: `ListenersRoute` resolves the Lobby pointer,
+picks a credential — the stored Lobby token, else the stored Lobby secret — and owns the join form
+for a browser that holds neither, the `weave_not_found` and error cards, and the 401 rule the page
+reports to it through `onCredentialFailure` (one
+fallback onto the stored secret, and if *that* is refused the page ends at the join form saying
+*"The Lobby refused the link this browser holds."* rather than looping). `ListenersPage` is
+everything else: a debounced search, the four facet-fed filters through `FacetChips` (counts,
+selected state, a selected chip whose count is now zero, and the nested effort row under a selected
+model), sort, the counts line, the `ProfileCard` grid, **Show more** — which sends the cursor,
+`facets: false` and *appends*, keeps its own error beside its own button, and forgets a cursor the
+server refused — and the four states in which an error is **never** an empty directory. One
+generation counter per page decides which answer, and which **rejection**, is allowed to land.
+[src/components/listeners/listeners-query.ts](src/components/listeners/listeners-query.ts) is the
+codec both ways and the one place this feature touches the history API: `replaceState` only, only
+while `location.pathname` is already this page's, only when the string would actually change, and
+never at all for a page rendered in place. It validates a link against **core's own bounds** rather
+than sniffing its shape, and every supplied value it discards — an entry of an array included — sets
+`partial`, which is what renders the one-line "part of this link was not understood" notice.
 
 [src/requests-state.ts](src/requests-state.ts) is the reducer, a pure module so the discipline can be
 tested without a store: every request is held at the **version** it was last advanced to
@@ -196,6 +234,7 @@ re-reads storage.
 - [src/app.tsx](src/app.tsx) — `routeOf`, the route state (including both in-place switches, `openInPlace` and `openMainInPlace`), `AppDeps`/`RouteDeps`
 - [src/useSession.ts](src/useSession.ts) — the Preact hook owning one session's lifetime; constructs nothing
 - [src/session.ts](src/session.ts) — the session store (above)
+- [src/side-reads.ts](src/side-reads.ts) — `Stamp`, `Now`, `createCounter()`, `isCurrent(stamp, now)` and `cachedProfile`: the sequencing, generation and identity-ownership rules of the Lobby's two side reads, as pure units, so `session.ts` gains wiring rather than policy
 - [src/requests-state.ts](src/requests-state.ts) — the versioned request reducer: `applySnapshot`, `applyEvent`, `displayStatus`
 - [src/storage.ts](src/storage.ts) — `WriteResult`, `KeyValueStorage` (including `isPending`: is this key's value memory-only *now*), `browserStorage` (override/tombstone layer), `memoryStorage`
 - [src/weaves-store.ts](src/weaves-store.ts) — `WeaveEntry`/`StoredWeave`, the key helpers, `saveWeaveEntry`, `setIdentity`, `invalidateIdentity`, `forgetWeave`, `hasIdentity`, `storedWeaves`, `mergeLegacy`, `migrateLegacy[One]`, `readerFor`, `isCredentialFailure`
@@ -212,7 +251,12 @@ re-reads storage.
 - [src/components/mention-logic.ts](src/components/mention-logic.ts) — `completeMention`, `applyMention`, `clampSelection`
 - [src/components/GuidelinesPanel.tsx](src/components/GuidelinesPanel.tsx) — the Weave's guidelines, the keeper editor, and the collapsed instance text
 - [src/components/RequestsPanel.tsx](src/components/RequestsPanel.tsx) — the Lobby's requests, the Accept/Cancel/Offer controls and the Open-request form
-- [src/components/ProfileCard.tsx](src/components/ProfileCard.tsx) — one Lobby participant's declared capabilities
+- [src/components/ProfileCard.tsx](src/components/ProfileCard.tsx) — one Lobby participant's declared capabilities, and `modelSpecs`; used by the directory grid and by the requests panel (the `ProfileCards` column it used to export is gone)
+- [src/components/ListenersLink.tsx](src/components/ListenersLink.tsx) — the Lobby sidebar's **Listeners (N)** line: the Lobby-and-status gate, the four count states, link or in-place button
+- [src/components/listeners/ListenersRoute.tsx](src/components/listeners/ListenersRoute.tsx) — the Lobby pointer, the credential, the join form and the 401 rule
+- [src/components/listeners/ListenersPage.tsx](src/components/listeners/ListenersPage.tsx) — search, controls, sort, the counts line, the grid, Show more, and every loading/empty/error state
+- [src/components/listeners/FacetChips.tsx](src/components/listeners/FacetChips.tsx) — one facet's chips: counts, selection, the zero-count selected chip, the nested effort row
+- [src/components/listeners/listeners-query.ts](src/components/listeners/listeners-query.ts) — `ListenersView` ⇄ query string both ways, `queryFromView`, and the one `replaceState` rule
 - [src/components/InviteBanner.tsx](src/components/InviteBanner.tsx) — "your input is wanted here"
 - [src/components/NamePrompt.tsx](src/components/NamePrompt.tsx) — choose a name before taking part
 - [src/components/WeaveRoute.tsx](src/components/WeaveRoute.tsx) — the one place a Weave page is mounted, for all three routes, plus the `/lobby` lookup, the unjoined-Lobby fork (join form and its own way home) and the `leavingIsSafe` verdict it hands down
@@ -233,17 +277,25 @@ re-reads storage.
 
 `session.test.ts` runs the store against a real server from
 [`@loom/server`](../server/test/helpers.ts), so Postgres is needed via the shared global setup in
-[`@loom/core`](../core/test/global-setup.ts); build the workspace first. `components.test.tsx` and
-`main-page.test.tsx` opt into DOM per file with a `// @vitest-environment happy-dom` docblock and
+[`@loom/core`](../core/test/global-setup.ts); build the workspace first — it also covers the two
+Lobby side reads, their triggers, their ordering and ownership races and their stale rejections.
+`components.test.tsx`, `main-page.test.tsx` and `listeners-page.test.tsx`
+opt into DOM per file with a `// @vitest-environment happy-dom` docblock and
 render through `@testing-library/preact` ([test/dom-setup.ts](test/dom-setup.ts) unmounts after each
 test); `main-page.test.tsx` drives the router, the main page's cells, the join and create forms and
 My Weaves over a `LoomClient` with a stubbed `fetch` (its base URL is `https://loom.test` — the
 client allows plain `http:` on loopback hosts only, so `http://loom.test` is refused as
-`insecure_url`). `markdown.test.ts`, `composer-logic.test.ts`, `requests-state.test.ts` (the version
+`insecure_url`), and `listeners-page.test.tsx` drives the route, the page and the sidebar line over
+a **path-keyed** stub, because every control change is the same path with a different query string —
+what each request asked for is asserted separately. `markdown.test.ts`, `composer-logic.test.ts`,
+`requests-state.test.ts` (the version
 watermark, monotonic terminal states, derived expiry), `storage.test.ts` (the durable/memory verdict
 and the override-and-tombstone precedence), `weaves-store.test.ts` (the entry rules, `mergeLegacy`,
-`readerFor`, migration) and `refresh-queue.test.ts` (the limit across enqueues, FIFO order, a
-rejecting `run`, `dispose`) are pure units; `one-storage-instance.test.ts` holds the guard that
+`readerFor`, migration), `refresh-queue.test.ts` (the limit across enqueues, FIFO order, a
+rejecting `run`, `dispose`), `side-reads.test.ts` (the counter, the monotonic watermark, `isCurrent`
+and the identity-owned profile cache) and `listeners-query.test.ts` (the codec both ways, one case
+per validated value and one per class of silent drop) are pure units;
+`one-storage-instance.test.ts` holds the guard that
 `browserStorage(` is constructed only in `main.tsx`, beside the `PersistenceNotice` and `WeavesSignal`
 unit cases.
 

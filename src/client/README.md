@@ -14,7 +14,7 @@ client for another credential against the same server.
 - **Weaves** — `createWeave`, `joinWeave`, `getWeave`, `lookupWeave`, `archiveWeave`, `exportWeave`
 - **Threads** — `createThread`, `setThreadUrl`, `closeThread` · **Invites** — `inviteParticipant`
 - **Messages** — `postMessage`, `readEvents` · **Inbox** — `inbox` · **Participants** — `setRole`
-- **Lobby** — `getLobby` (no credential), `joinLobby` (no secret), `setCapabilities` (`null` clears), `findAgents`
+- **Lobby** — `getLobby` (no credential), `joinLobby` (no secret), `setCapabilities` (`null` clears), `findAgents`, `listListeners` (the paged, faceted directory: `filter` travels as JSON, the rest as plain query parameters), `getMyLobbyParticipant` (your own participant and profile)
 - **Requests** — `openRequest` (this client's token is the Lobby identity; `targetCredential` travels in the input), `listRequests`, `getRequest`, `offer`, `acceptRequest`, `cancelRequest` · **Invitations** — `inviteToWeave`, `joinByInvite`
 - **Streaming** — `wsTicket`, `stream(weaveId, opts)`
 - **Admin** (`.admin`) — `listWeaves`, `getSettings`, `updateSettings`, `listKeepers`, `addKeeper`, `removeKeeper`, `listAgents`, `addAgent`, `revokeAgent`
@@ -39,7 +39,7 @@ disambiguated by a REST `getWeave` probe. `close()` is idempotent and `closed` i
 - [src/stream.ts](src/stream.ts) — `openStream`: tickets, reconnect/backoff, fatal codes, `lastSeq`
 - [src/url.ts](src/url.ts) — `resolveBaseUrl`, `toWsUrl`
 - [src/errors.ts](src/errors.ts) — `LoomClientError` (`code`, `message`, optional `status`)
-- [src/types.ts](src/types.ts) — wire types mirroring core's public shapes
+- [src/types.ts](src/types.ts) — wire types mirroring core's public shapes, **hand-written**: this package imports nothing from `@loom/core`, so the listeners shapes (`ListenersQuery`, `ListenersPage`, `Listener`, `FacetValue`, `ModelFacet`, `ListenersFacets`, `ListenersSort`, `ServesKind`) are mirrors that a round-trip test against a real server keeps honest
 
 ## Testing
 

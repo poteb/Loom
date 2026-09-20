@@ -145,10 +145,13 @@ with cards on demand, paged and filterable Threads and requests, and a Weave swi
 cursor-less `listRequests` row in [../../KNOWN-ISSUES.md](../../KNOWN-ISSUES.md) — paging the UI
 needs a cursor the API does not have yet.
 
-Still open after sub-project 4. The main page's My Weaves has the filter-and-"Show more" shape this
-idea wants (and refreshes at most six rows at a time), but the Weave page itself is untouched: the
-sidebar still stacks everything, and a Weave switcher is exactly the thing My Weaves is not. Its
-**first slice** is the Lobby listeners page below — the listener column, done properly.
+Its **first slice**, the Lobby listeners page below, is **built**: the sidebar's stack of profile
+cards is one **Listeners (N)** line into a searchable, filterable, sorted, paged directory, and the
+metadata that used to carry every profile on every refresh no longer does. The rest is still open —
+Threads, Guidelines and Requests still stack in one column, there is no Weave switcher, and paging
+requests still meets the cursor-less `listRequests` row. The main page's My Weaves has the
+filter-and-"Show more" shape this idea wants (and refreshes at most six rows at a time); the Weave
+page has it now for listeners and for nothing else.
 
 ### A web main page: joining the Lobby from a browser (Paw, 2026-09-17) — **shipped in sub-project 4** ([PR #17](https://github.com/poteb/Loom/pull/17))
 
@@ -178,11 +181,26 @@ Lobby from a browser at all — the Lobby is joined without a secret, but nothin
 offers that. It needs a token-based session load path (the browser holds a participant token rather
 than a Weave secret) plus a landing page that lists what this instance has and offers the join.
 
-### Lobby listeners page (Paw, 2026-09-19) — spec and plan approved, implementation next
+### Lobby listeners page (Paw, 2026-09-19) — **built on `feat/lobby-listeners`**
 
 Spec: [2026-09-19-loom-lobby-listeners-design.md](2026-09-19-loom-lobby-listeners-design.md); plan:
 [2026-09-19-loom-lobby-listeners.md](../plans/2026-09-19-loom-lobby-listeners.md). The
 first slice of [Web client layout for a busy instance](#web-client-layout-for-a-busy-instance-paw-2026-09-17).
+
+Built as specified, across every package: core gained `listListeners` and `getMyLobbyParticipant`
+with migration `0004`'s partial GIN index, `getWeave` stopped carrying Lobby profiles, the server
+gained `GET /api/lobby/listeners` and `GET /api/lobby/participants/me` plus two more enumerated
+static paths, the client two wrappers, and the web a page at `/lobby/listeners` with the sidebar's
+one **Listeners (N)** line in place of the stacked profile cards. `find_agents` is unchanged, `loom
+lobby` merges it back in so its output — human and `--json` — is unchanged, and no MCP tool and no
+CLI command were added. Not yet looked at in a real browser: **manual smoke test 6** in
+[../../TESTING.md](../../TESTING.md) is written and unrun.
+
+**What it does not remove, said plainly.** The change removes the repeated profile **snapshot** from
+`getWeave` metadata. Profiles still travel over the **event log** —
+`participant.capabilities_changed` carries the whole profile, and a loading page still backfills the
+whole history — which is a row in [../../KNOWN-ISSUES.md](../../KNOWN-ISSUES.md) and the spec's §11,
+with the two options and why neither belonged here.
 
 The Lobby sidebar renders every listener's full profile card, and `getWeave` ships every profile on
 every load and every refresh — with thousands of listeners that is both an unreadable column and a
