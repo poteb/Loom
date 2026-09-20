@@ -89,8 +89,8 @@ export type MainArea = "thread" | "listeners";
 A string union rather than a boolean, because the main area is one slot showing one thing and a name
 reads better at every call site than `listenersOpen`; and rather than an object, because there is
 nothing else to carry. It is **not** put in `App`'s route state: the route is what the URL says, the
-view is what is on screen, and on a browser that may not write history those two are allowed to
-differ (§4.5).
+view is what the human has asked the main area for, and on a browser that may not write history those
+two are allowed to differ (§4.5).
 
 It lives in [`WeaveSession`](../../../src/web/src/components/WeaveRoute.tsx) — the component that
 owns `reloadKey` — as one `useState`, **above** the `key` that rebuilds the page after a join:
@@ -132,11 +132,57 @@ The props that carry it:
 | --- | --- | --- |
 | `WeaveRoute` → `LobbyRoute` → `WeaveSession` | `initialView?: MainArea` | which view this page opened on, derived from the path by `routeOf` and handed down unchanged. Defaults to `"thread"`, absent on every non-Lobby page, and read **once** — to seed the state above, never again. |
 | `WeaveSession` → `WeaveMount` | `setView: (next: MainArea) => void` | the raw setter. |
-| `WeaveMount` → `WeaveView` | `view: MainArea` | what the main area renders. |
+| `WeaveMount` → `WeaveView` | `view: MainArea` | the view the human **asked for**, and not by itself what is rendered — that is `showListeners`, below. |
 | `WeaveMount` → `WeaveView` | `viewKey: number` | the directory's `key` (§4.4). |
 | `WeaveMount` → `WeaveView` | `onView: (next: MainArea) => void` | the one way the view changes. `WeaveMount` wraps `setView` with §4.2's push, because `WeaveMount` is where `canLeave` already is — so the history permission needs **no new prop**, and nothing below it has a history decision of its own. |
 
 `WeaveView` loses one prop: `openListenersInPlace` (§7).
+
+**The requested view, and the effective one.** `view` is what was asked for — by pressing the sidebar
+line, by a `popstate`, or by opening `/lobby/listeners` cold. Whether the directory can be drawn at
+all is a **second** question, and §5's Lobby gate is what answers it: away from the Lobby, and on a
+Lobby page whose pointer has not settled, there is no directory to draw. Those two are multiplied
+together **once**, in `WeaveView`, immediately below its early returns for `no-credential`, `loading`
+and `error`:
+
+```tsx
+// §5's gate, which is the sidebar line's own, id-based and unchanged by this spec
+// (ListenersLink.tsx:23).
+const lobbyGate = state.status === "ready" && !!state.lobby && state.lobby.weaveId === state.weave?.id;
+// The one predicate every rendering branch below reads. `view` on its own renders nothing.
+const showListeners = lobbyGate && view === "listeners";
+```
+
+**Why one name, and not the gate repeated at each site.** Because a site that forgets it is not a
+missing directory — it is a **broken Thread**. `view === "listeners"` with a false gate renders the
+Thread (§5), and a composer hidden on the raw `view` would then be hidden behind a Thread the human
+is perfectly entitled to write in: a deep-linked `/lobby/listeners` that reaches `ready` while
+discovery is still retrying would show a message list, no directory, and no way to answer it. The
+same slip would leave the `<h2>` heading a directory that is not there, or mark the sidebar line
+current while the Thread is on screen. One predicate, computed once and passed nowhere, is how none
+of those has to be remembered separately.
+
+| Reads | Who, and why |
+| --- | --- |
+| **`view`** — the request | The push of §4.2, which writes `pathForView(next)` for the view that was *asked* for; the `popstate` listener that sets it (§4.4); `initialView`, which seeds it; and the state itself, held above `key={reloadKey}` so a rejoin restores the request (§3.1, §5). Every one of these is about the **address** and about what the human wants, and the Lobby pointer has no say in either. |
+| **`showListeners`** — the effect | Everything **rendered**: which group of §3.3 is drawn, the composer slot's `hidden` (§3.5), `ListenersPage` with its `<h2>` and its `viewKey`, and the sidebar line's `active`/`aria-current` (§8). Nothing rendered reads `view`. |
+
+**When the gate turns true later.** `retryLobbyData` settles the pointer and publishes it —
+`set({ lobby: found.lobby })` ([`session.ts:508-514`](../../../src/web/src/session.ts)) — `WeaveView`
+re-renders for that state change as it does for any other, `showListeners` is now true, and the
+directory opens exactly as the deep link asked. **No extra state, no pending-open flag and no
+effect**: the predicate is recomputed on the render the pointer already causes, and `view` never
+moved, so nothing has to remember that an open is owed.
+
+**And when it turns false.** It can, in one way, and the answer is the same one backwards. Within a
+load the pointer is only ever written while it is unknown (`if (!lobbyKnown)`, `session.ts:508`), so
+it cannot flicker under a live directory; but a **new load** republishes it — `doLoad` sets
+`status: "loading"` and then `set({ …, lobby: discovery.lobby })`
+([`session.ts:717`](../../../src/web/src/session.ts)) — so a reload whose own `getLobby()` fails
+comes back ready with no pointer. Then `showListeners` is false: the Thread comes back **whole**,
+composer included, the sidebar line is not rendered either (it shares the gate), and the retry that
+load already started opens the directory again the moment it settles the pointer. The human's
+request is not spent by the gap, because the gap never touched `view`.
 
 ### 3.2 The session does not remount
 
@@ -175,6 +221,11 @@ something?* An element may be thread-view-only only when both answers are no —
 from session state that is still there when the Thread comes back, and when nothing that is still on
 screen and still clickable reports through it.
 
+Which group an element is *drawn* in is decided by **`showListeners`** (§3.1) and by nothing else:
+the two one-view groups below are `!showListeners` and `showListeners`, never the raw `view`. A
+requested `"listeners"` the gate refuses is therefore the thread view in full — the always group, the
+invite banner, the message list and the composer, exactly as on `/lobby`.
+
 - **Always, in both views** — the `archived` banner, the read-only/`secret-fallback` banner with its
   **Join**, the `refreshError` warn bar, and the mutation **`error` bar**. The first three describe
   the page or the Weave, not the Thread. The error bar is in this group for a harder reason:
@@ -184,19 +235,21 @@ screen and still clickable reports through it.
   Drawn only in the thread view, a failed thread creation, a failed guidelines save, a refused offer
   or a failed archive would fail **silently** — the button would simply do nothing. The bar belongs
   to the layout, not to the Thread.
-- **Thread view only** — `InviteBanner` and `MessageList`. Both are pure functions of session state:
-  every line of the invite banner is derived from `state.invitesForMe`, so nothing is destroyed by
-  not drawing it and the same lines are back, unchanged, the moment the Thread is. Nothing reports a
-  failure through either, and the banner's one control — its dismiss, `session.markSeen` — cannot
-  fail. Nor is an invite arriving while the directory is open lost: `ThreadList`'s `invited` badge is
-  in the sidebar, on screen in **both** views, fed by the same `invitesForMe` and cleared by the same
-  `markSeen`. The banner is an invitation to go and read the Thread below it; with no Thread below
-  it there is nothing for it to point at.
-- **Mounted in both, drawn in one** — `Composer`, which keeps what was typed (§3.5).
-- **Directory view only** — `ListenersPage`, under an `<h2>Listeners</h2>`. Demoted from `<h1>`
-  because the page's `<h1>` is the Weave title in the header; this is the heading of one region of
-  it. The class hook stays `listeners` so the existing selectors keep working, and the deleted
-  `listeners-head` block takes the wordmark and **Back to the Lobby** with it (§7).
+- **Thread view only** (`!showListeners`) — `InviteBanner` and `MessageList`. Both are pure
+  functions of session state: every line of the invite banner is derived from `state.invitesForMe`,
+  so nothing is destroyed by not drawing it and the same lines are back, unchanged, the moment the
+  Thread is. Nothing reports a failure through either, and the banner's one control — its dismiss,
+  `session.markSeen` — cannot fail. Nor is an invite arriving while the directory is open lost:
+  `ThreadList`'s `invited` badge is in the sidebar, on screen in **both** views, fed by the same
+  `invitesForMe` and cleared by the same `markSeen`. The banner is an invitation to go and read the
+  Thread below it; with no Thread below it there is nothing for it to point at.
+- **Mounted in both, drawn in one** — `Composer`, which keeps what was typed (§3.5). Drawn whenever
+  `showListeners` is false, which includes every state in which the directory was asked for and
+  refused: a Thread on screen is a Thread that can be written in.
+- **Directory view only** (`showListeners`) — `ListenersPage`, under an `<h2>Listeners</h2>`.
+  Demoted from `<h1>` because the page's `<h1>` is the Weave title in the header; this is the heading
+  of one region of it. The class hook stays `listeners` so the existing selectors keep working, and
+  the deleted `listeners-head` block takes the wordmark and **Back to the Lobby** with it (§7).
 
 `NamePrompt` is outside `<div class="main">` altogether, at the foot of the layout, and stays
 exactly where it is: the read-only banner's **Join** is on screen in both views, so the prompt it
@@ -243,7 +296,7 @@ So the composer is **mounted in both views and drawn in one**:
 >
 > ```tsx
 > {!archived && !readOnly && (
->   <div class="composer-slot" hidden={view === "listeners"}>
+>   <div class="composer-slot" hidden={showListeners}>
 >     <Composer state={state} onSend={send} draft={draft} />
 >   </div>
 > )}
@@ -254,6 +307,16 @@ So the composer is **mounted in both views and drawn in one**:
 > cannot be typed into by a keyboard that wandered into it, and a screen reader is not offered a
 > message box for a Thread that is not on screen. `composer-slot` is a hook for the design session,
 > and **no rule may give it a `display`** — that would defeat the UA's `[hidden]`.
+
+**`showListeners`, and never `view === "listeners"`.** The composer is hidden because the Thread is
+not on screen, so it must be hidden by the same predicate that took the Thread off it (§3.1). On the
+raw `view` the two come apart in an ordinary case: a cold `/lobby/listeners` whose Lobby pointer is
+still being retried reaches `ready` with the gate false, so §5 renders the **Thread** — and a
+composer hidden on the request alone would leave a human with a valid identity reading a Thread they
+cannot answer, with no directory on screen to explain why and no control anywhere to put it right.
+The same holds for a Weave that is not the Lobby, and for the window after a reload whose discovery
+failed (§3.1). There is exactly one predicate so that this cannot be got wrong in one place and
+right in the others.
 
 **Why not lift the text into `WeaveView`.** It is the larger change and it buys less. The text would
 survive; the caret, the `busy` flag of a send in flight, the mention list's highlight and its
@@ -435,21 +498,35 @@ The gate is the sidebar line's own, unchanged and id-based:
 it:
 
 > The view state is held whatever the gate says; the gate decides only whether the directory is
-> **rendered**. `view === "listeners"` with a false gate renders the Thread.
+> **rendered**. The two are multiplied once, in §3.1, into `showListeners = lobbyGate && view ===
+> "listeners"`, and that is the only thing any rendering branch reads. A requested `"listeners"`
+> under a false gate is `showListeners === false`, which renders the Thread — **the whole Thread**:
+> message list, invite banner and composer, exactly as `/lobby` renders it.
 
-So a deep link whose Lobby pointer has not settled yet shows the Thread and opens the directory the
-moment `retryLobbyData` settles it — no second flag, no pending-open state.
+So a deep link whose Lobby pointer has not settled yet shows a working Thread, and opens the
+directory the moment `retryLobbyData` settles it — no second flag, no pending-open state. The Thread
+it shows in the meantime is not a degraded one: the credential is whatever the session picked, the
+identity is whatever the human joined as, and neither has anything to do with the pointer being
+unread. Withholding the composer there would punish a human for a `getLobby()` that is still in
+flight.
+
+**Two discoveries, not one** — which is why the last row is reachable at all on a page that got this
+far. `LobbyRoute` resolves the pointer to know which Weave to mount; the session resolves it **again**
+for `state.lobby` ([`discoverLobby`, `session.ts:284-289`](../../../src/web/src/session.ts)), and the
+gate reads the session's copy. `LobbyRoute`'s copy answering is therefore no promise that the
+session's has: the first three rows below are `LobbyRoute`'s and they replace the whole page, while
+the gate can still be false underneath a page that is up, ready and perfectly usable.
 
 | Situation on `/lobby/listeners` | What happens |
 | --- | --- |
 | discovery pending | `LobbyRoute` renders its existing "Loading…" card. `WeaveSession` is not mounted yet; the initial view is still in the route, and nothing can have pushed. |
 | discovery fails | `LobbyRoute`'s existing error card, with its way home. The directory's own duplicate of this card is deleted (§7). |
 | `weave_not_found` — no Lobby | `LobbyRoute`'s existing "This instance has no Lobby yet." |
-| session `loading` | `WeaveView`'s existing "Loading…". The view state is above it (§3.1) and untouched by a load, so the directory opens on ready — which is also what happens after a credential recovery (§6.3). |
+| session `loading` | `WeaveView`'s existing "Loading…". The view state is above it (§3.1) and untouched by a load, so the directory opens on ready — which is also what happens after a credential recovery (§6.3) — provided that load settled the pointer too; where it did not, the row below applies until the retry does. |
 | session `error` | `WeaveView`'s existing error card. |
 | session `no-credential` — an unjoined visitor | `WeaveRoute`'s existing unjoined-Lobby fork: `JoinLobbyForm` with its own way home. On success `reloadKey` remounts `WeaveMount`, and the view comes back **as it was**, because it is held above that key (§3.1): a visitor who deep-linked the directory lands in it — the brainstorm's rule — and so does one who opened it here and then lost the credential, including on a browser that was never allowed to put it in the URL. |
-| ready, gate true | the directory. |
-| ready, gate false (pointer unsettled, or not the Lobby) | the Thread; the sidebar line is not rendered either. |
+| ready, gate true | the directory (`showListeners`). |
+| ready, gate false (the session's own discovery still retrying or failed, or this Weave is not the Lobby) | the Thread, **whole and writable** — `showListeners` is false, so every group of §3.3 renders exactly as it does on `/lobby`, the composer slot included. The sidebar line is not rendered either, since it shares the gate. `view` still says `"listeners"`, so the directory opens by itself if the pointer settles later (§3.1). |
 
 ## 6. Credentials: one owner, and who may spend a recovery
 
@@ -574,6 +651,12 @@ directory **unmounts**, and on ready it mounts again and makes its first query w
 credential. The view state is above all of it (§3.1) and a load does not touch it, so the directory
 is what comes back — whether the round trip ended in a reload or in a join through the fork.
 
+What the round trip *can* move is the **gate**, not the view: the reload runs its own
+`discoverLobby`, and one that fails republishes the page with no pointer. Then `showListeners` is
+false and what comes back is the Thread, whole and writable, until the retry settles the pointer and
+the directory opens by itself (§3.1). The request the human made survives that gap untouched, because
+nothing in it is written to `view`.
+
 The cost, stated: that remount re-seeds from the URL, so the filters survive exactly where the
 address bar holds them — which by §4.5 is **every browser sitting on `/lobby/listeners`**, durable
 or not, the deep-linked memory-only one included. They are lost only where the path was never this
@@ -631,6 +714,18 @@ and **there is never an invented zero**. Two changes:
   thread buttons next to it already say `aria-current="true"` for the selected Thread
   ([`ThreadList.tsx:50`](../../../src/web/src/components/ThreadList.tsx)). One convention for "this
   is the one you are looking at" beats two.
+
+`active` is **`showListeners`** (§3.1), not the raw `view` — the line says what is on screen, and it
+is the same predicate that put it there. The two can only differ where the line renders nothing at
+all, since its own gate *is* `lobbyGate`; passing the effective view anyway is what keeps "the line
+is marked current exactly when the directory is drawn" true by construction rather than by two
+conditions happening to agree.
+
+**`ThreadList`'s own `aria-current` is untouched**, in both views. The selected Thread is still
+selected — it is what the main area comes back to, its unread mark keeps moving, and clearing the
+mark while the directory is open would say the session had forgotten where it was. It is not a
+function of the view today and this spec does not make it one; whether the two marked lines want to
+look different is a question for the design session (§15), not a behaviour change here.
 
 Pressing it while the directory is open closes it (and pushes `/lobby`), so the control is a toggle in
 behaviour as well as in appearance.
@@ -698,7 +793,9 @@ Confirmed by reading the code, not assumed:
   bar it feeds is rendered in both (§3.3). Nothing that can still be clicked reports into a bar that
   is not on screen.
 - **What a view switch destroys, deliberately, and what it does not.** Destroyed: the directory's
-  rows, facets, "list changed" baseline and in-flight query when it closes (§4.4, §15), and the
+  rows, facets, "list changed" baseline and in-flight query when it closes (§4.4, §15), whether the
+  human closed it or a reload's own failed discovery closed it under them (§3.1) — reopening
+  re-queries either way; and the
   message list's scroll position when the Thread comes back — `MessageList` holds no scroll state of
   its own and its one effect scrolls to the newest message on mount
   ([`MessageList.tsx:53`](../../../src/web/src/components/MessageList.tsx)), so a human who had
@@ -792,6 +889,20 @@ instance refuses"; and `ListenersLink`'s link-versus-button tests.
     by a filter, not by the sidebar line, not by picking a Thread. A durable `/lobby` that opens the
     directory and then loses persistence: filtering still replaces, closing the directory pushes
     nothing, and the address bar stays at `/lobby/listeners` with the Thread on screen.
+19. **A deep link whose Lobby discovery is delayed renders a WRITABLE Thread.** The stub answers
+    `LobbyRoute`'s `getLobby` and leaves the **session's** hanging, so `/lobby/listeners` reaches
+    `ready` with no pointer. On screen: the message list, and the composer **visible and usable** —
+    type into it and send, and the post lands with exactly that text. No directory is rendered, no
+    `<h2>Listeners</h2>`, and no sidebar line is marked current — the line is not on screen at all,
+    because it shares the gate. Then release the pending `getLobby`: with no further input the
+    directory opens, the composer's wrapper carries `hidden`, and the line is there carrying
+    `aria-current="true"`. The requested view was never touched, and nothing was re-mounted to get
+    there (the request counts of test 2 do not move).
+20. **A deep link whose discovery fails, or finds no Lobby, still leaves the Thread writable.** The
+    same shape with the session's `getLobby` **rejecting**, and again with it answering
+    `weave_not_found`: `/lobby/listeners` is ready, the Thread is whole, and a typed message sends.
+    In the `weave_not_found` case nothing ever opens the directory, and the page is a working Lobby
+    Thread rather than a half-drawn one for the rest of its life.
 
 ## 13. Docs to update
 
@@ -812,9 +923,12 @@ Four task-sized steps; each ends green.
 
 1. **The route and the view shell.** `lobby-view.ts`; `Route`/`routeOf`/`App` (the `listeners` kind
    and `openListenersInPlace` deleted); the view state in `WeaveSession` and the prop chain down to
-   `WeaveView`; the four render groups, the hidden composer slot, the shared error bar, the `<h2>`;
-   `ListenersLink` as a toggle; `ThreadList`'s `onPick`. `ListenersPage` still mounted with its old
-   props behind a temporary adapter so the suite stays green. DOM tests 2, 3, 13, 15, 16.
+   `WeaveView`; **`showListeners`**, computed once and read by every branch below it (§3.1); the four
+   render groups, the hidden composer slot, the shared error bar, the `<h2>`; `ListenersLink` as a
+   toggle taking `active={showListeners}`; `ThreadList`'s `onPick`. `ListenersPage` still mounted
+   with its old props behind a temporary adapter so the suite stays green. DOM tests 2, 3, 13, 15,
+   16, **19 and 20** — the gated-deep-link pair belongs here, with the predicate it pins, and needs
+   no query string and no history to run.
 2. **`session.listListeners` / `reportCredentialFailure`, and `ListenersPage`'s new props.** The two
    entry points with their guards; `ListenersPage` down to `{ session }` and its failure path down to
    one branch; `ListenersRoute` deleted; `writeSearch` loses `inPlace`; the seeding rule. Tests 9,
@@ -848,13 +962,15 @@ does not settle it.
 1. `routeOf("/lobby/listeners")` returns `{ kind: "lobby", view: "listeners" }`, and `Route.view` is
    an initial value that a later `pushState` deliberately does not update (§4.1).
 2. The sidebar line is **always** a `<button>` and never an anchor, and it carries `aria-current`
-   rather than `aria-pressed`, to match the Thread buttons beside it (§8).
+   rather than `aria-pressed`, to match the Thread buttons beside it; its `active` is
+   `showListeners`, and `ThreadList`'s own `aria-current` is not made a function of the view (§8).
 3. `ThreadList` gains an `onPick` prop, and **creating** a Thread closes the directory as well as
    selecting one (§3.4).
 4. The view state (and `popSeq`, and the `popstate` listener) lives in **`WeaveSession`**, above
    `key={reloadKey}`, so a join rebuilds the page under it without resetting which part of the page
    the human was looking at; `WeaveView` takes `view`, `viewKey` and `onView` as props and owns none
-   of it (§3.1).
+   of it (§3.1). `view` is the view **requested**: history and the rejoin read it, and nothing
+   rendered does — see assumption 19.
 5. The push of §4.2 is made in **`WeaveMount`**, which wraps the setter before handing it on, so the
    `leavingIsSafe` permission needs no new prop and no component below it makes a history decision
    (§3.1, §4.2).
@@ -862,11 +978,11 @@ does not settle it.
    error bar** in both views, because the header and all three sidebar panels report through that bar
    and stay live in the directory view; `InviteBanner` and `MessageList` are thread-view-only, on the
    ground that both are pure functions of session state and the sidebar's `invited` badge carries the
-   invite in both views (§3.3).
+   invite in both views (§3.3). Which group is drawn is decided by `showListeners`, never by `view`.
 7. `Composer` is **mounted in both views and hidden** in the directory, in a `composer-slot` wrapper
-   carrying the `hidden` attribute, rather than unmounted — so the text, the caret, an in-flight send
-   and today's cross-Thread draft behaviour are all unchanged. The `draft` hand-back is untouched
-   (§3.5).
+   carrying `hidden={showListeners}`, rather than unmounted — so the text, the caret, an in-flight
+   send and today's cross-Thread draft behaviour are all unchanged. The `draft` hand-back is
+   untouched (§3.5).
 8. The message list's **scroll position is not preserved** across a view switch: the Thread comes
    back at its newest message (§11, §15).
 9. The directory **unmounts** when closed and re-seeds by §4.3's one rule on every open, and every
@@ -892,3 +1008,10 @@ does not settle it.
     persistence bar already on screen (§4.5).
 18. No core, server or client change — verified against `src/server/src/app.ts` and the existing
     client method (§10).
+19. **One effective predicate decides everything that is rendered.** `WeaveView` computes
+    `showListeners = lobbyGate && view === "listeners"` once, and the main area, the §3.3 groups, the
+    composer slot's `hidden`, the directory with its `<h2>` and `viewKey`, and the sidebar line's
+    `active` all read it; the raw `view` is read only by the push of §4.2, by `popstate`, by
+    `initialView` and by the state that survives a rejoin. A requested `"listeners"` the gate refuses
+    therefore renders the Thread **whole and writable**, and a gate that turns true later opens the
+    directory with no extra state and no effect (§3.1, §5).
