@@ -170,6 +170,8 @@ button.listeners-back { padding: 0; border: 0; background: none; font: inherit; 
 .listeners-more { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center; margin-top: 16px; }
 /* The Lobby identity this browser held has been retired; the form below it is the way back in. */
 .page-join-invalid { margin: 0 0 8px; text-align: center; }
+/* The end of the fallback chain: the stored secret itself was refused, so the form is all there is. */
+.page-join-refused { margin: 0 0 8px; text-align: center; }
 /* --- Main page: create a Weave (§4.5) --------------------------------------- */
 .create-weave form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .create-weave label { display: flex; gap: 6px; align-items: center; }

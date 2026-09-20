@@ -7,7 +7,7 @@ import { ListenersRoute } from "../src/components/listeners/ListenersRoute.js";
 import { memoryStorage, type KeyValueStorage } from "../src/storage.js";
 import { createPersistenceNotice, type PersistenceNotice } from "../src/persistence.js";
 import { createWeavesSignal } from "../src/weaves-signal.js";
-import { readWeaveEntry, setIdentity, weaveKey } from "../src/weaves-store.js";
+import { readWeaveEntry, saveWeaveEntry, setIdentity, weaveKey } from "../src/weaves-store.js";
 
 // `http://loom.test` is refused by the client's own URL policy (http is allowed on loopback only,
 // `src/client/src/url.ts`), so the stubbed instance speaks https to the same host: no request leaves
@@ -168,6 +168,13 @@ function joined(): KeyValueStorage {
 function joinedInMemory(): KeyValueStorage {
   const storage = memoryStorage({ durable: false });
   setIdentity(storage, LOBBY.weaveId, { token: "participant-token", participantId: "p-dana" });
+  return storage;
+}
+
+/** The Weave secret and no identity: the credential a 401 has already fallen back to (spec §5.5). */
+function secretOnly(): KeyValueStorage {
+  const storage = memoryStorage();
+  saveWeaveEntry(storage, LOBBY.weaveId, { secret: "lobby-secret" });
   return storage;
 }
 
@@ -674,6 +681,56 @@ describe("a credential the Lobby refuses (spec §5.5)", () => {
     mountApp({ storage: joinedInMemory(), notice, routes: { [LISTENERS]: INVALID } });
     await settle();
     expect(notice.degraded()).toBe(true);
+  });
+});
+
+/**
+ * The end of the fallback chain. Retrying a refused *secret* with the same secret is the same
+ * request again, forever: there is no second credential behind it and — unlike an identity — there
+ * is nothing in storage to retire either. So the page settles rather than loops (spec §5.5).
+ */
+describe("a Lobby secret the instance refuses (spec §5.5)", () => {
+  it("asks once and stops, rather than sending the same refused secret again", async () => {
+    const v = mountApp({ storage: secretOnly(), routes: { [LISTENERS]: INVALID } });
+    await settle();
+    expect(v.calls(LISTENERS)).toBe(1);
+  });
+
+  it("writes nothing to storage for it: a secret reader has no identity to invalidate", async () => {
+    const storage = secretOnly();
+    const writes = vi.spyOn(storage, "set");
+    mountApp({ storage, routes: { [LISTENERS]: INVALID } });
+    await settle();
+    expect(writes.mock.calls.length).toBe(0);
+  });
+
+  it("settles on the join form, saying what the Lobby refused", async () => {
+    mountApp({ storage: secretOnly(), routes: { [LISTENERS]: INVALID } });
+    await settle();
+    expect([!!screen.queryByRole("heading", { name: "Join the Lobby" }),
+      !!screen.queryByText("The Lobby refused the link this browser holds.")]).toEqual([true, true]);
+  });
+
+  // That fork replaces the page whole, header included, so without one there is no way out but the
+  // address bar — which an in-place browser does not have either.
+  it("keeps a way off the page on that fork", async () => {
+    mountApp({ storage: secretOnly(), routes: { [LISTENERS]: INVALID } });
+    await settle();
+    expect(screen.getByRole("link", { name: "Go to the main page" }).getAttribute("href")).toBe("/");
+  });
+
+  it("retries a refused identity with the secret exactly once: two queries, and no third", async () => {
+    const v = mountApp({ storage: joinedWithSecret(), routes: { [LISTENERS]: INVALID } });
+    await settle();
+    expect(v.calls(LISTENERS)).toBe(2);
+  });
+
+  it("retires that identity once, and writes nothing more when the secret is refused too", async () => {
+    const storage = joinedWithSecret();
+    const writes = vi.spyOn(storage, "set");
+    mountApp({ storage, routes: { [LISTENERS]: INVALID } });
+    await settle();
+    expect(writes.mock.calls.length).toBe(1);
   });
 });
 

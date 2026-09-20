@@ -77,6 +77,9 @@ export function ListenersRoute(props: RouteDeps & { inPlace?: boolean }) {
 function ListenersMount({ client, storage, notice, openInPlace, openMainInPlace, lobby, inPlace }:
   RouteDeps & { lobby: Lobby; inPlace?: boolean }) {
   const [reloadKey, setReloadKey] = useState(0);
+  /** The end of the fallback chain: the stored secret itself was refused, so there is no credential
+   *  left to try and the page settles instead of asking again (see `onCredentialFailure`). */
+  const [refused, setRefused] = useState(false);
   const entry = readWeaveEntry(storage, lobby.weaveId);
   // `client.withToken` builds a **new** `LoomClient` on every call, so a `readerFor` recomputed on
   // every render hands the page below a reader whose *identity* changes each time — and every effect
@@ -91,28 +94,41 @@ function ListenersMount({ client, storage, notice, openInPlace, openMainInPlace,
   const choice = useMemo(() => readerFor(client, entry), [client, credential]);
   /**
    * A listeners query came back 401/403, and the guard in the page let it through: that credential
-   * is provably dead (spec §5.5). The **write happens first, into a variable, and is reported
-   * after** — `notice.note(invalidateIdentity(…))` written as one expression is the shape that
-   * skips the write whenever nobody is listening. Bumping `reloadKey` is what re-reads the entry,
-   * so the next render falls through to the stored secret, or to the join form when there is none.
+   * is provably dead (spec §5.5). Which credential decides what may be done about it, and **only
+   * the identity fork may retry**:
+   *
+   * - the **participant token** → invalidate it and re-read the entry, which falls through to the
+   *   stored secret, or to the join form when there is none. The **write happens first, into a
+   *   variable, and is reported after** — `notice.note(invalidateIdentity(…))` written as one
+   *   expression is the shape that skips the write whenever nobody is listening.
+   * - the **stored secret** → there is nothing behind it and nothing of it in storage to retire, so
+   *   invalidating and remounting would send the very same secret again, be refused again, and
+   *   write again, without bound. This is a terminal state: say what happened and offer the one
+   *   credential that could still work, a fresh join.
    */
   const onCredentialFailure = () => {
+    if (!choice?.withToken) { setRefused(true); return; }
     const wrote = invalidateIdentity(storage, lobby.weaveId);
     notice.note(wrote);
     setReloadKey((n) => n + 1);
   };
-  if (!choice) {
+  if (refused || !choice) {
     // The same fork `WeaveRoute` renders for an unjoined Lobby, and with a way home of its own for
     // the same reason: this card replaces the page whole, header included, so without one there is
     // no way out but the address bar.
     const canLeave = leavingIsSafe(storage, notice, weaveKey(lobby.weaveId));
-    const rejoin = () => setReloadKey((n) => n + 1);
+    const rejoin = () => { setRefused(false); setReloadKey((n) => n + 1); };
     return (
       <div class="page-join">
         {/* Read out of storage rather than remembered from the failure: an identity this browser
             retired on some earlier page load is just as invalid, and says so the same way. */}
         {entry?.identity === "invalid" && (
           <p class="error page-join-invalid">Your identity in the Lobby is no longer valid.</p>
+        )}
+        {/* The secret's refusal, which storage cannot record: the link is still there and still the
+            only thing this browser has, so the sentence is about what the Lobby answered. */}
+        {refused && (
+          <p class="error page-join-refused">The Lobby refused the link this browser holds.</p>
         )}
         <JoinLobbyForm client={client} storage={storage} notice={notice}
           lobby={{ weaveId: lobby.weaveId, title: lobby.title }}
