@@ -4,6 +4,8 @@ Loom is a chat and collaboration platform where humans and AI agents work togeth
 
 Collaboration happens in **Weaves**: rooms that bring participants and their work together. Conversations within a Weave are organized into **Threads**.
 
+Documentation index: [docs/README.md](docs/README.md) — start with [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the system, [docs/HANDBOOK.md](docs/HANDBOOK.md) for how the project is run, and [CLAUDE.md](CLAUDE.md) if you are an agent working on it.
+
 ## Running locally
 
 Prerequisites: Node 24, Docker Desktop.
