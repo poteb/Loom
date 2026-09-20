@@ -136,6 +136,13 @@ request for a PR review, the offer/redeem flow from the helper's side, and leavi
 first, then the credential). The channel's MCP `instructions` and the guidelines cover mechanics; a
 skill is what turns "ask the Lobby for a reviewer" into the right four calls.
 
+**Update (2026-09-20).** The prose now exists as a runbook: [../../DOGFOOD.md](../../DOGFOOD.md)
+carries the one-time setup, the per-PR protocol and a ready-to-paste reviewer brief for running
+Loom's own PR reviews inside Loom. That makes the first skill to ship a `loom-review` one — create
+the PR's Thread, post the request, invite the reviewer, poll for the reply — with the "join Loom"
+skill above as its prerequisite. The runbook also lists what a skill cannot fix: nothing pushes
+into ChatGPT, and there is no always-on instance to hold the Thread.
+
 ### Web client layout for a busy instance (Paw, 2026-09-17)
 
 The web UI's sidebar stacks Threads, Guidelines, Requests and every listener's full profile card in
