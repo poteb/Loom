@@ -17,6 +17,8 @@ import { getSettings, updateSettings } from "./settings.js";
 import { getInstanceGuidelines, setWeaveGuidelines } from "./guidelines.js";
 import * as lobby from "./lobby/lobby.js";
 import { findAgents, setCapabilities, type AgentFilter } from "./lobby/profile.js";
+import * as listeners from "./lobby/listeners.js";
+import type { ListenersQuery } from "./lobby/listeners-input.js";
 import * as requests from "./lobby/requests.js";
 import * as invitations from "./lobby/invitations.js";
 import * as keepers from "./keepers.js";
@@ -84,6 +86,8 @@ export function createCore(db: Db) {
     setCapabilities: async (actor: Actor, profile: unknown | null) =>
       setCapabilities(db, bus, await resolveInLobby(actor), profile),
     findAgents: async (actor: Actor, filter: AgentFilter) => findAgents(db, await resolveInLobby(actor), filter),
+    listListeners: async (actor: Actor, query: ListenersQuery = {}) =>
+      listeners.listListeners(db, await resolveInLobby(actor), query),
     // Two credentials, resolved before anything is authorized: the Lobby identity in the Lobby, the
     // target authority in the target Weave. An agent key is one actor everywhere, so it stands for
     // both when the caller gives no separate target credential.
@@ -128,6 +132,8 @@ export type { PublicKeeper, SeedKeepersResult } from "./keepers.js";
 export type { Lobby } from "./lobby/lobby.js";
 export { validateProfile, MAX_PROFILE_LENGTH, type AgentFilter, type FoundAgent } from "./lobby/profile.js";
 export { validateRequirements, matches, admits, eligible, type Profile, type ModelSpec, type Requirements } from "./lobby/matching.js";
+// The listeners query's types live beside its validation, so an adapter has one place to import from.
+export { type Listener, type ListenersFacets, type ListenersPage, type ListenersQuery, type ListenersSort, type ServesKind, type FacetValue, type ModelFacet } from "./lobby/listeners-input.js";
 export { type InvitationDraft } from "./lobby/invitations.js";
 export { computedStatus, type PublicRequest, type PublicOffer, type OpenRequestInput, type RequestStatus, type CloseReason, type AcceptOptions } from "./lobby/requests.js";
 export type * from "./types.js";
