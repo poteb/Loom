@@ -140,6 +140,11 @@ third-party connector, or a real browser with its own storage settings. All are 
 calling a release done; the commands come from the [README](../README.md) and
 `src/claude-channel/README.md`.
 
+**Restart the server after every web build.** `src/server/src/app.ts` reads `index.html` once into
+`indexHtml` at boot, so a running server keeps serving the bundle it started with until it is
+restarted — a `pnpm --filter @loom/web build` alone changes nothing in the browser (it cost one
+confused check on 2026-09-20).
+
 **1. A live Claude Code channel session.**
 
     run.cmd                      # Postgres + Caddy in Docker, server on the host

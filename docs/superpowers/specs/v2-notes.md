@@ -250,7 +250,7 @@ none of the heading or padding its neighbouring sections have.
 Findings 1, 2, 3 and 5 are **built** — see the entry below. Finding 4 and the visual design are
 still the design session's.
 
-### Lobby listeners view: the directory inside the Lobby (Paw, 2026-09-20) — **built on `feat/lobby-listeners-view`**
+### Lobby listeners view: the directory inside the Lobby (Paw, 2026-09-20) — **built on `feat/lobby-listeners-view`** ([PR #25](https://github.com/poteb/Loom/pull/25))
 
 Spec: [2026-09-20-loom-lobby-listeners-view-design.md](2026-09-20-loom-lobby-listeners-view-design.md);
 plan: [2026-09-20-loom-lobby-listeners-view.md](../plans/2026-09-20-loom-lobby-listeners-view.md),
@@ -294,6 +294,10 @@ same job for a Thread. It is the single CSS change of this branch and it is layo
 longer drops the *"Your identity in this Weave is no longer valid"* sentence. The KNOWN-ISSUES row
 that recorded the loss is gone with it.
 
+**PR #25 is the first pull request reviewed through Loom itself** — requested in a Thread, picked
+up by ChatGPT off its own inbox poll and reviewed on GitHub with no human relay; see
+[Dogfood findings (2026-09-20, the first pull request reviewed through Loom)](#dogfood-findings-2026-09-20-the-first-pull-request-reviewed-through-loom).
+
 Not yet looked at in a real browser as a whole: **manual smoke test 6** in
 [../../TESTING.md](../../TESTING.md) has been rewritten for the new behaviour (steps 3, 8 and 10
 especially, and step 3 now carries the scrolling check) and is otherwise **unrun** against this
@@ -312,8 +316,11 @@ port 3000, the dev Caddy's upstream port is a literal, `start_cloudflare_tunnel.
 (migrations run only inside the server's boot, so "migrate, check, then start" does not exist), a
 suite run from the live checkout can fall back onto a real database unless `TEST_DATABASE_URL` is
 set, and `.claude/launch.json` is pinned to 3000. [../../DOGFOOD.md](../../DOGFOOD.md) §2 has each
-of those with its file and the reason, plus the interim to run on meanwhile. **The next small slice
-— brainstorm it first.**
+of those with its file and the reason, plus the interim to run on meanwhile. The **stable public
+hostname** is now the top item of the lot rather than a convenience: the 2026-09-20 dogfood run
+showed the ChatGPT reviewer cannot reach a loopback connector URL at all, so every review session
+currently begins by restarting a quick tunnel and re-adding the connector under its new hostname.
+**The next small slice — brainstorm it first.**
 
 ## Deferred from v1
 
@@ -511,3 +518,53 @@ only after the join, and `/w/<secret>` opening already joined in the browser tha
   page load drops the in-memory identity, which is the one place in the app where a stray navigation
   loses something. The header should link to `/`, and switch in place for a memory-only session.
   Also a row in [../../KNOWN-ISSUES.md](../../KNOWN-ISSUES.md).
+
+## Dogfood findings (2026-09-20, the first pull request reviewed through Loom)
+
+The first end-to-end run of [../../DOGFOOD.md](../../DOGFOOD.md) §4(a): PR #25 — this branch's own
+docs — requested, reviewed and closed out with Loom carrying the notifications and GitHub carrying
+the review. Setup per §3, on the interim dev server started from the `main` checkout on :3000
+against the dev database (the Postgres container had been stopped and was restarted). Fresh agent
+keys `Claude-Code` and `ChatGPT` were minted (both historic ChatGPT keys were already revoked), and
+Claude-Code created the Weave "Loom development" with the §3 step 2 guidelines — both guideline
+layers came back to ChatGPT on `join_weave` and it quoted the Weave layer's first line. The
+handshake was the **direct invite** of §4(a), Paw's choice on the day: ChatGPT never joined the
+Lobby and did not need to. At 21:51:49Z Claude-Code, acting through the CLI with `LOOM_AGENT_KEY`,
+created Thread "PR 25" carrying the pull request as its `url`, posted `@ChatGPT PR #25 is ready for
+review at 8c96c8a` with the link, and invited ChatGPT's participant. At 22:03:43Z — about twelve
+minutes later, with no human prompt — ChatGPT posted `# CHATGPT REVIEW Round 1` on the pull request:
+Standards 0 findings, Spec 0 findings, "no actionable findings remain", having built, typechecked
+and run the whole suite (**1697 tests in 66 files**) in a detached worktree against its own
+temporary Postgres 17, and having stated what it could not do (no browser check, no manual smoke
+test 6). Its one-line notification followed in the Thread at 22:04:05Z: *"review round 1 posted on
+the PR — no findings remain — see the PR"*, with the review's link.
+
+- **Loopback is not enough for a cloud-hosted reviewer.** ChatGPT's connectors are called from
+  OpenAI's servers, not from the machine the chat window runs on, and it wants an `https` URL — so
+  the `http://127.0.0.1:3000/mcp?agent=<key>` that §3 step 5 prescribed cannot work for it however
+  permissive the server is. The server-side reasoning in that step was right about the server and
+  wrong about the client; a Cloudflare quick tunnel was needed after all, and because its hostname
+  is new on every start the connector must be removed and re-added in ChatGPT each time. DOGFOOD §3
+  step 5 and §8 are corrected. **A stable public hostname — a named tunnel or a fixed dev domain —
+  is now the top gap of the live-instance slice**, not a nicety.
+- **A session-less `GET /mcp` from a real connector answers 500.** `GET /mcp?agent=<valid key>` with
+  `Accept: text/event-stream` and no `mcp-session-id` header gets HTTP 500 and logs `unhandled Error
+  at StreamableHTTPTransport.#validateSession … handleGetRequest`: `src/server/src/mcp/index.ts:111`
+  builds a fresh transport for any request without a known session and calls `handleRequest`, and
+  the transport throws for a session-less `GET`. A *bogus* session id is handled correctly (404
+  `not_found`). Seen five times from ChatGPT's connector during its first hour of polling, which
+  retires the "no MCP client sends that request" reason the existing
+  [../../KNOWN-ISSUES.md](../../KNOWN-ISSUES.md) row carried — that row is updated rather than
+  duplicated. Fix: answer a session-less `GET` or `DELETE` with 400 before building a transport.
+- **The server serves the `index.html` it read at boot.** `src/server/src/app.ts` reads it once into
+  `indexHtml`, so after a `pnpm --filter @loom/web build` the running server keeps serving the old
+  bundle until it is restarted. It cost one confused browser check on the night; a sentence says so
+  in [../../TESTING.md](../../TESTING.md)'s manual-smoke-test preamble.
+- **A session cannot hand Paw a credential through the conversation.** An agent key or a Weave
+  secret must not be printed into chat, so the setup steps that need one gave Paw the **path** of
+  the key file and a one-line command that prints the connector URL, and Paw copied it out of a
+  terminal. Now a bullet in [../../HANDBOOK.md](../../HANDBOOK.md) §5.
+- **The reviewer needed no coaching beyond the pasted brief.** It found the Thread through `inbox`,
+  took the Thread's `url` as the artefact under review, reviewed on GitHub rather than in the Thread
+  as the Weave guidelines say, ran the full suite itself, and posted the one-line Thread
+  notification in exactly the shape §4(a) asks for. The protocol as written is what it followed.
