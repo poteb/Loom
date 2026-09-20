@@ -247,18 +247,44 @@ recorded here. Two cosmetic things seen in passing and left for that session: a 
 the sidebar is default dark blue on the dark background, and the sidebar's **Listeners (N)** line has
 none of the heading or padding its neighbouring sections have.
 
-**The next slice: the directory becomes a view inside the Lobby (2026-09-20).** Findings 1, 2, 3 and
-5 above are specified in
-[2026-09-20-loom-lobby-listeners-view-design.md](2026-09-20-loom-lobby-listeners-view-design.md): the
-Lobby's header and sidebar stay on screen and only the main area swaps, the session is never
-remounted, `/lobby/listeners` becomes the Lobby route with an initial view and the app's first
-`pushState` (so Back and Forward mean what a human means by them), and one credential owner — the
-session — serves the directory through a new `session.listListeners`. It amends spec §5.1–§5.5 and
-deletes `ListenersRoute`, `openListenersInPlace` and the page's own wordmark and **Back to the
-Lobby**. Finding 4 and all visual design are deliberately left to the owner's separate design
-session. **Spec and plan approved 2026-09-20, implementation next** — the plan is
-[2026-09-20-loom-lobby-listeners-view.md](../plans/2026-09-20-loom-lobby-listeners-view.md), six
-tasks on `feat/lobby-listeners-view`; no implementation yet.
+Findings 1, 2, 3 and 5 are **built** — see the entry below. Finding 4 and the visual design are
+still the design session's.
+
+### Lobby listeners view: the directory inside the Lobby (Paw, 2026-09-20) — **built on `feat/lobby-listeners-view`**
+
+Spec: [2026-09-20-loom-lobby-listeners-view-design.md](2026-09-20-loom-lobby-listeners-view-design.md);
+plan: [2026-09-20-loom-lobby-listeners-view.md](../plans/2026-09-20-loom-lobby-listeners-view.md),
+six tasks. The next slice of the listeners page above, from findings 1, 2, 3 and 5 of its first run
+in a real browser.
+
+Built as specified, and **entirely in `src/web`** — no core, server or client change at all: the
+server already served both spellings of the deep link, `GET /api/lobby/listeners` and every core rule
+behind it are untouched, and `static.test.ts` needed no edit. The directory is now a **view of the
+Lobby page** rather than a page of its own: the header, the sidebar and the stream stay on screen and
+only the main area swaps, so the session is never remounted and the composer keeps its half-written
+message in a `hidden` slot. `Route` lost its `listeners` kind — `/lobby/listeners` is the Lobby route
+carrying an initial view, seeded from the path once — and the view itself lives in `WeaveSession`
+above the `key` a join rebuilds, because which part of the page someone was looking at is not a
+join's to reset. The app made its **first `pushState`**: opening or closing the directory is a real
+history entry, so one **Back** returns to the live Thread and **Forward** comes back with that
+entry's filters, while filter and sort changes remain `replaceState` and are not entries at all. It
+is pushed only when the view actually changed, the path is one of the Lobby's, and `leavingIsSafe`
+holds at the moment the handler runs — a browser that keeps nothing still gets the view, with the
+address bar left where it was. One credential owner now serves the whole page: the session, through
+`listListeners` (a pure read) and `reportCredentialFailure` (the recovery), kept as two calls so that
+reading the directory can never spend the page's one recovery. `ListenersRoute`,
+`openListenersInPlace`, `writeSearch`'s `inPlace` parameter and the page's own wordmark and **Back to
+the Lobby** are all deleted; the sidebar line is always a button carrying `aria-current`. Finding 2's
+counts line (`Showing 11 of 11 matches (out of 62 listeners)`) and finding 5's always-present **Clear
+filters**, which now resets the sort too, landed with it.
+
+**Finding 4 and all visual design remain the owner's separate design session's**, deliberately: the
+plan forbade every task from prescribing styling, and the [KNOWN-ISSUES.md](../../KNOWN-ISSUES.md)
+appearance row has been narrowed to exactly that — the structure is settled, the look is not.
+
+Not yet looked at in a real browser: **manual smoke test 6** in [../../TESTING.md](../../TESTING.md)
+has been rewritten for the new behaviour (steps 3, 8 and 10 especially) and is **unrun** against this
+branch.
 
 ### A live Loom instance for the project's own use (Paw, 2026-09-20) — **wanted; not built**
 

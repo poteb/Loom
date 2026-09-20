@@ -20,7 +20,7 @@ one thing it does enforce locally is rendering safety: Markdown is escaped and o
 | --- | --- | --- |
 | `/` | `main` | `MainPage` — the four cells below |
 | `/lobby` | `lobby` | `WeaveRoute` after the public `getLobby()` resolves the id |
-| `/lobby/listeners` | `listeners` | `ListenersRoute` — the directory; it resolves the Lobby and picks a credential itself, and opens **no session and no stream** |
+| `/lobby/listeners` | `lobby`, with `view: "listeners"` | the **same** `WeaveRoute` as `/lobby` — the Lobby page with the directory open in its main area, not a page of its own. The path seeds the initial view and nothing else; after that the view is state and the path follows it |
 | `/weave/<uuid>` | `weave` | `WeaveRoute` on `{ kind: "id", weaveId }` |
 | `/w/<43-char secret>` | `secret` | `WeaveRoute` on `{ kind: "secret", secret }` — unchanged from v1 |
 | anything else | `unknown` | "No such page." and a link to `/` |
@@ -30,10 +30,10 @@ write returned `"memory"`, `openInPlace(weaveId)` renders the Weave **here**, in
 with the URL untouched — navigating would destroy the only copy of that credential. The exception
 runs both ways: every Weave page's header carries a **Loom** wordmark back to `/`, an ordinary
 `<a href="/">` normally, and `openMainInPlace()` — the mirror, which sets the route to `main` and
-leaves the URL alone — when leaving is not safe. The Lobby sidebar's **Listeners (N)** line is the
-third such pair, `openListenersInPlace()`, and a directory opened that way leaves the address bar
-entirely alone: not only does it not navigate, it never rewrites its own query string either, because
-that URL would name a view this browser could not load again. The header is only on a loaded page, so the cards
+leaves the URL alone — when leaving is not safe. Those are the **two** in-place mirrors, and there is
+no third: the Lobby sidebar's **Listeners (N)** line used to be one and is now a plain view toggle
+(see **The listeners directory** below), because swapping the main area of the page you are already
+on never leaves a JS context and so has nothing to mirror. The header is only on a loaded page, so the cards
 that replace it carry the same way back through the shared `HomeLink` ("Go to the main page"): the
 generic no-credential screen, the **unjoined-Lobby screen** (whose join form replaces that generic
 one whole, so it needs its own), `WeaveView`'s error card, and `LobbyRoute`'s no-Lobby and error
@@ -117,28 +117,55 @@ both the answer and the rejection are dropped unless both still hold — a rejec
 credential, which is the one stale outcome that cannot be undone. The profile cache is owned by the
 `{ participantId, token }` it was read for. A count that has never arrived is an **absent** number,
 never `Listeners (0)`; `listenerCountError` is what keeps "not answered yet" and "asked and failed"
-apart, and a last known number is kept behind a failed refresh. Opening a
+apart, and a last known number is kept behind a failed refresh. Beside that count read, and with the
+same reader, the session serves the **directory** itself: `listListeners(query)` returns
+`{ issue, page }` and performs **no** side effect on either outcome — no write, no `onWrite`, no
+reload — so reading the directory can never spend anything. Spending the page's one credential
+recovery is a second call, `reportCredentialFailure(e, issue)`, which the **view** makes only after
+its own liveness guard says the failed query is still wanted, and which the session refuses unless
+`issue.generation` is still the one it holds. Two calls precisely so that the first cannot perform
+the second. Note that both now hit the **same pathname**: the count read is `limit=0` and the
+directory's query is `limit=50`, so any stub or counter must tell them apart by query string.
+Opening a
 request is a form whose target Weave and Thread pickers list only the Weaves this browser holds a
 token for — that token travels as `targetCredential`, the authority the Lobby credential cannot
 prove. Request events also render as system lines in the request's Thread.
 
-**The listeners directory** ([src/components/listeners](src/components/listeners)) is the page the
-sidebar line leads to, and it has no session at all: `ListenersRoute` resolves the Lobby pointer,
-picks a credential — the stored Lobby token, else the stored Lobby secret — and owns the join form
-for a browser that holds neither, the `weave_not_found` and error cards, and the 401 rule the page
-reports to it through `onCredentialFailure` (one
-fallback onto the stored secret, and if *that* is refused the page ends at the join form saying
-*"The Lobby refused the link this browser holds."* rather than looping). `ListenersPage` is
-everything else: a debounced search, the four facet-fed filters through `FacetChips` (counts,
+**The listeners directory** ([src/components/listeners](src/components/listeners)) is a **view of the
+Lobby page**, not a page of its own, and it has no credential owner of its own either. Which of the
+two things the main area shows is one piece of state, `MainArea` in
+[src/lobby-view.ts](src/lobby-view.ts) (with `viewOfPath` and `pathForView`, the Lobby's two
+addresses in one module), held in `WeaveRoute`'s `WeaveSession` **above** the `key` a join rebuilds
+— which part of the page the human was looking at is not a join's to reset. `WeaveView` turns the
+request into what is drawn with one predicate, `showListeners = lobbyGate && view === "listeners"`:
+everything rendered reads that and nothing reads `view`, so a requested view the Lobby gate refuses
+renders the Thread whole and writable rather than a broken directory. The header, the sidebar and
+the stream stay live across a flip, the composer stays **mounted** in a `hidden` slot so a
+half-written message survives a look at the directory, and the mutation error bar is drawn in both
+views because its writers — the header and all three sidebar panels — stay live in both. The
+credential is the **session's**, through two calls kept deliberately apart (`Session.listListeners`
+and `Session.reportCredentialFailure`, below). `ListenersPage` takes `{ session }` and is everything
+else: a debounced search, the four facet-fed filters through `FacetChips` (counts,
 selected state, a selected chip whose count is now zero, and the nested effort row under a selected
 model), sort, the counts line, the `ProfileCard` grid, **Show more** — which sends the cursor,
 `facets: false` and *appends*, keeps its own error beside its own button, and forgets a cursor the
 server refused — and the four states in which an error is **never** an empty directory. One
 generation counter per page decides which answer, and which **rejection**, is allowed to land.
 [src/components/listeners/listeners-query.ts](src/components/listeners/listeners-query.ts) is the
-codec both ways and the one place this feature touches the history API: `replaceState` only, only
-while `location.pathname` is already this page's, only when the string would actually change, and
-never at all for a page rendered in place. It validates a link against **core's own bounds** rather
+codec both ways, and the place the directory's **own** query string is written: `replaceState` only,
+only while `location.pathname` is already this page's (either spelling), and only when the string
+would actually change. It asks no permission — `writeSearch` has no `inPlace` parameter any more and
+gained nothing in its place — because replacing the path you are already on adds no entry, loads
+nothing and takes away no address, so there is nothing for `leavingIsSafe` to protect. The **view**
+change is the other half, and the only `pushState` this app makes: it lives in `WeaveRoute.tsx`'s
+`WeaveMount`, which already holds the storage, the notice and the Weave id, and it happens only when
+the requested view actually changed, the current path is one of the Lobby's, and `leavingIsSafe` is
+true **at the moment the handler runs** — all three asked inside the handler, which also carries a
+lifetime guard because a join can retire the mount that owns it while its callback is still reachable.
+Ten keystrokes of filtering are therefore never ten Back steps, while one **Back** leaves the
+directory for the live Thread; one `popstate` listener in `WeaveSession` re-seeds the directory from
+the entry it landed on. A browser that would lose what it holds gets the view with the address bar
+left alone. The codec validates a link against **core's own bounds** rather
 than sniffing its shape, and every supplied value it discards — an entry of an array included — sets
 `partial`, which is what renders the one-line "part of this link was not understood" notice.
 
@@ -252,15 +279,15 @@ re-reads storage.
 - [src/components/GuidelinesPanel.tsx](src/components/GuidelinesPanel.tsx) — the Weave's guidelines, the keeper editor, and the collapsed instance text
 - [src/components/RequestsPanel.tsx](src/components/RequestsPanel.tsx) — the Lobby's requests, the Accept/Cancel/Offer controls and the Open-request form
 - [src/components/ProfileCard.tsx](src/components/ProfileCard.tsx) — one Lobby participant's declared capabilities, and `modelSpecs`; used by the directory grid and by the requests panel (the `ProfileCards` column it used to export is gone)
-- [src/components/ListenersLink.tsx](src/components/ListenersLink.tsx) — the Lobby sidebar's **Listeners (N)** line: the Lobby-and-status gate, the four count states, link or in-place button
-- [src/components/listeners/ListenersRoute.tsx](src/components/listeners/ListenersRoute.tsx) — the Lobby pointer, the credential, the join form and the 401 rule
-- [src/components/listeners/ListenersPage.tsx](src/components/listeners/ListenersPage.tsx) — search, controls, sort, the counts line, the grid, Show more, and every loading/empty/error state
+- [src/components/ListenersLink.tsx](src/components/ListenersLink.tsx) — the Lobby sidebar's **Listeners (N)** line: the Lobby-and-status gate, the four count states, and the toggle — always a `<button>` now, carrying `aria-current` while the directory is the main area
+- [src/lobby-view.ts](src/lobby-view.ts) — `MainArea`, `viewOfPath(pathname)` and `pathForView(view)`: the Lobby's two addresses in one module, so `app.tsx` and `WeaveView` share them without an import cycle
+- [src/components/listeners/ListenersPage.tsx](src/components/listeners/ListenersPage.tsx) — the directory over `{ session }`: search, controls, sort, the counts line, the grid, Show more, the always-present **Clear filters**, and every loading/empty/error state
 - [src/components/listeners/FacetChips.tsx](src/components/listeners/FacetChips.tsx) — one facet's chips: counts, selection, the zero-count selected chip, the nested effort row
 - [src/components/listeners/listeners-query.ts](src/components/listeners/listeners-query.ts) — `ListenersView` ⇄ query string both ways, `queryFromView`, and the one `replaceState` rule
 - [src/components/InviteBanner.tsx](src/components/InviteBanner.tsx) — "your input is wanted here"
 - [src/components/NamePrompt.tsx](src/components/NamePrompt.tsx) — choose a name before taking part
-- [src/components/WeaveRoute.tsx](src/components/WeaveRoute.tsx) — the one place a Weave page is mounted, for all three routes, plus the `/lobby` lookup, the unjoined-Lobby fork (join form and its own way home) and the `leavingIsSafe` verdict it hands down
-- [src/components/WeaveView.tsx](src/components/WeaveView.tsx) — one Weave page: the `banner`, the `no-credential` and read-only/rejoin branches, then today's layout
+- [src/components/WeaveRoute.tsx](src/components/WeaveRoute.tsx) — the one place a Weave page is mounted, for all four addresses, plus the `/lobby` lookup, the unjoined-Lobby fork (join form and its own way home), the `leavingIsSafe` verdict it hands down, and the Lobby's view state: `WeaveSession` holds `{ view, popSeq }` above `key={reloadKey}` with the one `popstate` listener, and `WeaveMount` owns the app's only `pushState` behind its lifetime guard, its change test and a freshly asked `leavingIsSafe`
+- [src/components/WeaveView.tsx](src/components/WeaveView.tsx) — one Weave page: the `banner`, the `no-credential` and read-only/rejoin branches, then the layout — with `showListeners` computed once and read by everything rendered (the four groups, the hidden `composer-slot`, the error bar in both views, the sidebar line's `active`, and `<h2>Listeners</h2>` over the directory)
 - [src/components/HomeLink.tsx](src/components/HomeLink.tsx) — "Go to the main page" on the cards that replace a Weave: an anchor, or the in-place button
 - [src/components/PersistenceBar.tsx](src/components/PersistenceBar.tsx) — the one-time "this browser is not saving anything" bar
 - [src/components/main/MainPage.tsx](src/components/main/MainPage.tsx) — the `/` shell: four independent cells, the migration pass, the one bar
