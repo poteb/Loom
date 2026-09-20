@@ -20,11 +20,12 @@ export type ListenersView = {
 const CONTROL_CHAR_RE = /[\u0000-\u001f]/;
 
 /**
- * What a `filter` and a model alternative may contain. Core's schema is `.strict()`, so anything
- * else is `validation` there rather than something quietly ignored — and the rule that nothing is
- * dropped silently is about a **key** as much as about a value: a link carrying `{"owner":"ada"}`
- * is asking for something this page cannot do, and saying nothing would let it look as though it
- * had been honoured.
+ * What a `filter` and a model alternative may contain. Core rejects unknown keys — a top-level one
+ * in `validateListenersQuery`, one inside a model alternative in `validateRequirements`' strict
+ * schema — so anything else is `validation` there rather than something quietly ignored; and the
+ * rule that nothing is dropped silently is about a **key** as much as about a value: a link
+ * carrying `{"owner":"ada"}` is asking for something this page cannot do, and saying nothing would
+ * let it look as though it had been honoured.
  */
 const FILTER_KEYS = ["models", "tools", "runtime", "serves"];
 const MODEL_KEYS = ["model", "effort"];

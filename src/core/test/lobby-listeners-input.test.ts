@@ -78,6 +78,55 @@ describe("validateListenersQuery rejects a query that is not an object", () => {
   });
 });
 
+/**
+ * The query is a closed shape. An unknown key read as absent is a caller asking for something this
+ * query cannot do and being answered with the **whole Lobby** instead of a 400 — `?filter=
+ * {"owner":"ada"}` over REST, or a typo like `"tool"` for `"tools"`. The web page's own codec says
+ * in so many words that core refuses these, and the answer has to be true.
+ */
+describe("validateListenersQuery rejects an unknown key", () => {
+  /** The message a rejection carries, for the cases that assert what it says. */
+  const messageOf = (fn: () => unknown): string | undefined => {
+    try { fn(); return undefined; } catch (e) { return (e as LoomError).message; }
+  };
+
+  it("rejects a key nothing in the query means", () => {
+    expect(codeOf(q({ owner: "ada" }))).toBe("validation");
+  });
+
+  it("rejects a near miss of a known key rather than ignoring it", () => {
+    expect(codeOf(q({ tool: ["x"] }))).toBe("validation");
+  });
+
+  it("names the key it refused, so a typo is findable", () => {
+    expect(messageOf(q({ owner: "ada" }))).toContain("owner");
+  });
+
+  it("escapes a key out of a URL rather than echoing its control characters", () => {
+    const key = `a${String.fromCharCode(1)}b`;
+    const message = messageOf(q({ [key]: 1 }))!;
+    expect([message.includes(String.fromCharCode(1)), message.includes("\\u0001")]).toEqual([false, true]);
+  });
+
+  it("bounds the key it echoes, so a long one cannot fill the message", () => {
+    expect(messageOf(q({ ["x".repeat(500)]: 1 }))!.length).toBeLessThan(200);
+  });
+
+  it("accepts every key the query really has", () => {
+    expect(codeOf(q({
+      q: "a", models: [{ model: "m" }], tools: ["t"], runtime: "node", serves: "anyone",
+      sort: "name", dir: "asc", limit: 10, cursor: undefined, facets: true,
+    }))).toBeUndefined();
+  });
+
+  // The REST route sets `q`, `sort`, `dir`, `limit`, `cursor` and `facets` on every call, as
+  // `undefined` when the parameter was absent. A key present with no value is still a known key.
+  it("accepts a known key that is present with no value", () => {
+    expect(validateListenersQuery({ q: undefined, sort: undefined, cursor: undefined }))
+      .toEqual({ sort: "name", dir: "asc", limit: 50, facets: true });
+  });
+});
+
 describe("validateListenersQuery rejects control characters in a filter", () => {
   it("rejects a NUL in a tool, which jsonb containment cannot carry", () => {
     expect(codeOf(q({ tools: ["a\u0000b"] }))).toBe("validation");

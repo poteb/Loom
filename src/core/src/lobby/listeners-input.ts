@@ -65,6 +65,16 @@ export type CleanQuery = {
 const MAX_Q = 100;
 const DEFAULT_LIMIT = 50;
 
+/**
+ * Every key `ListenersQuery` has, and the whole of what this query will read. The shape is closed
+ * on purpose: an unknown key read as absent answers `?filter={"owner":"ada"}` — or a typo like
+ * `"tool"` for `"tools"` — with the **entire Lobby** instead of a 400, which is a filter silently
+ * not applied. Keep in step with `ListenersQuery` above.
+ */
+const QUERY_KEYS = ["q", "models", "tools", "runtime", "serves", "sort", "dir", "limit", "cursor", "facets"];
+/** How much of a rejected key the message repeats. It is a value out of a URL, so it is bounded. */
+const MAX_SHOWN_KEY = 64;
+
 /** Postgres text cannot carry `\u0000` (22021) and jsonb rejects it too; the rest of C0 matches no name or owner. */
 const CONTROL_CHAR_RE = /[\u0000-\u001f]/;
 
@@ -79,6 +89,14 @@ export function validateListenersQuery(input: ListenersQuery = {}): CleanQuery {
   // be answered with the whole Lobby. Same idiom as `validateProfile` (`profile.ts:41`).
   if (typeof input !== "object" || (input as unknown) === null || Array.isArray(input)) {
     throw errors.validation("query must be an object");
+  }
+  // Named back, so a typo is findable rather than silently honoured as "no filter" — but named back
+  // through `JSON.stringify` and cut first: the key came out of a query string, and neither a
+  // control character nor five hundred characters of it belong in an error message. A key merely
+  // *present* with `undefined` is still a known key; the REST route sets six of them that way.
+  const unknown = Object.keys(input).find((k) => !QUERY_KEYS.includes(k));
+  if (unknown !== undefined) {
+    throw errors.validation(`unknown query key ${JSON.stringify(unknown.slice(0, MAX_SHOWN_KEY))}`);
   }
   // Absent is `undefined` and nothing else. A supplied `q` that is not a string is a caller error,
   // not an empty search box — reading it as "absent" would answer a nonsense query with the whole

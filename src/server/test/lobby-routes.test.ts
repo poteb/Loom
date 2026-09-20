@@ -317,6 +317,15 @@ describe("GET /api/lobby/listeners", () => {
     expect(r.json.matched).toBe(r.json.total);
   });
 
+  // The route spreads the filter into the query, so a key core did not read would be dropped in
+  // silence and the caller handed the whole Lobby — a filter that looks honoured and is not.
+  it("hands a filter carrying an unknown key to core, which refuses it", async () => {
+    const d = await directory();
+    const r = await api(s.baseUrl, "GET", listenersUrl({ filter: JSON.stringify({ owner: "ada" }) }), undefined, d.ada.token);
+    expect(r.status).toBe(400);
+    expect(r.json.code).toBe("validation");
+  });
+
   it("hands a filter value that is not an empty array to core, which refuses it", async () => {
     const d = await directory();
     const r = await api(s.baseUrl, "GET", listenersUrl({ filter: JSON.stringify({ tools: {} }) }), undefined, d.ada.token);

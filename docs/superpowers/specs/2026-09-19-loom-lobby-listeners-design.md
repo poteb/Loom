@@ -1615,8 +1615,8 @@ So the rule here is precise, and narrower than "no history API":
 - **Amendment, 2026-09-20 (as built): the query string is validated against core's bounds, not
   sniffed.** §5.4's "anything invalid is ignored with a one-line notice" is implemented as full
   validation — the page refuses in the browser exactly what core would refuse on the wire — plus
-  three rules found in implementation. **Unknown keys are reported**, not ignored: core's filter
-  schema is `.strict()`, so `{"owner":"ada"}` is asking for something this page cannot do, and
+  three rules found in implementation. **Unknown keys are reported**, not ignored: core rejects a
+  key its query does not have, so `{"owner":"ada"}` is asking for something this page cannot do, and
   honouring the half it understood would answer a wider question than the link asked. **C0 control
   characters are dropped and reported** rather than forwarded, for the reason §2.3's amendment
   gives: forwarding one turns a hand-edited link into a 500. And the **`limit`/`cursor` pair is
