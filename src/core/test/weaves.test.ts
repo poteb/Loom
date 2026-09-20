@@ -2,11 +2,13 @@ import { describe, it, expect, afterAll, beforeEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { freshDb, closeTestDb, keeperToken } from "./helpers.js";
 import { EventBus } from "../src/bus.js";
-import { threads } from "../src/db/schema.js";
+import { participants, threads } from "../src/db/schema.js";
 import { createThread } from "../src/threads.js";
 import { createWeave, getWeave, joinWeave, archiveWeave, listWeaves, lookupWeaveIdBySecret } from "../src/weaves.js";
 import { readEvents } from "../src/events.js";
 import { resolveCredential } from "../src/actors.js";
+import { ensureLobby, joinLobby } from "../src/lobby/lobby.js";
+import { findAgents, setCapabilities } from "../src/lobby/profile.js";
 import { seedKeepers } from "../src/keepers.js";
 import { updateSettings } from "../src/settings.js";
 import type { Db } from "../src/db/index.js";
@@ -133,6 +135,47 @@ describe("getWeave", () => {
     const b = await createWeave(db, bus, input);
     const meA = await resolveCredential(db, a.token);
     await expect(getWeave(db, meA, b.weave.id)).rejects.toMatchObject({ code: "forbidden" });
+  });
+});
+
+/** The Lobby, two listeners standing in it with a profile each, and the first one's actor. */
+async function lobbyWithTwoListeners() {
+  const { weaveId: lobbyId } = await ensureLobby(db);
+  const mine = await joinLobby(db, bus, { name: "Mine", kind: "agent" });
+  const theirs = await joinLobby(db, bus, { name: "Theirs", kind: "agent" });
+  const actor = await resolveCredential(db, mine.token);
+  await setCapabilities(db, bus, actor, { owner: "paw", runtime: "node" });
+  await setCapabilities(db, bus, await resolveCredential(db, theirs.token), { owner: "bob", runtime: "deno" });
+  return { lobbyId, mine, theirs, actor };
+}
+
+describe("getWeave in the Lobby", () => {
+  it("blanks the capabilities of every Lobby participant, the caller's own included", async () => {
+    const { lobbyId, actor } = await lobbyWithTwoListeners();
+    const info = await getWeave(db, actor, lobbyId);
+    expect(info.participants.map((p) => [p.name, p.capabilities])).toEqual([["Mine", null], ["Theirs", null]]);
+  });
+
+  // `PublicParticipant.capabilities` is non-optional, so this also pins the key as present and
+  // `null` rather than dropped: `toEqual` reads an absent key as `undefined`, which is not `null`.
+  it("leaves every other field of a Lobby participant where it was", async () => {
+    const { lobbyId, mine, actor } = await lobbyWithTwoListeners();
+    const info = await getWeave(db, actor, lobbyId);
+    expect(info.participants[0]).toEqual({ ...mine.participant, capabilities: null });
+  });
+
+  it("leaves another Weave's participants untouched", async () => {
+    await ensureLobby(db);
+    const other = await createWeave(db, bus, input);
+    await db.update(participants).set({ capabilities: { owner: "paw" } }).where(eq(participants.id, other.participant.id));
+    const info = await getWeave(db, await resolveCredential(db, other.token), other.weave.id);
+    expect(info.participants[0]!.capabilities).toEqual({ owner: "paw" });
+  });
+
+  it("still carries the profiles through findAgents", async () => {
+    const { actor } = await lobbyWithTwoListeners();
+    expect((await findAgents(db, actor, {})).map((a) => [a.participant.name, a.capabilities.owner]))
+      .toEqual([["Mine", "paw"], ["Theirs", "bob"]]);
   });
 });
 

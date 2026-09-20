@@ -8,7 +8,11 @@ export type Thread = {
 };
 export type Participant = {
   id: string; weaveId: string; name: string; kind: Kind; role: Role; joinedAt: string; agentId: string | null;
-  /** The Lobby capability profile. Null everywhere but the Lobby, and there until one is set. */
+  /**
+   * The Lobby capability profile. Null everywhere but the Lobby — and null from `getWeave` **in**
+   * the Lobby too: read a listener's profile with `listListeners` or `findAgents`, and your own
+   * with `getMyLobbyParticipant`.
+   */
   capabilities: Profile | null;
 };
 

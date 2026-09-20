@@ -114,7 +114,13 @@ export async function getWeave(db: Queryable, actor: Actor, weaveId: string): Pr
   if (!w) throw errors.weaveNotFound();
   const ts = await db.select().from(threads).where(eq(threads.weaveId, weaveId)).orderBy(asc(threads.createdAt));
   const ps = await db.select().from(participants).where(eq(participants.weaveId, weaveId)).orderBy(asc(participants.joinedAt));
-  return { weave: toPublicWeave(w), threads: ts.map(toPublicThread), participants: ps.map(toPublicParticipant),
+  // The Lobby's profiles are a directory, not page metadata: `getWeave` used to carry every one of
+  // them on every load and every refresh (spec §1). Read them with `listListeners` or `findAgents`,
+  // and your own with `getMyLobbyParticipant` — there is no exception for the caller here, because
+  // a `/w/<lobby secret>` read authenticates as the secret and owns no participant row (spec §3.1).
+  const hideProfiles = (await getLobbyWeaveId(db)) === weaveId;
+  return { weave: toPublicWeave(w), threads: ts.map(toPublicThread),
+    participants: ps.map((p) => hideProfiles ? { ...toPublicParticipant(p), capabilities: null } : toPublicParticipant(p)),
     guidelines: guidelinesFor(await getInstanceGuidelines(db), w) };
 }
 

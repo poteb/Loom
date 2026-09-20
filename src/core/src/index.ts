@@ -16,7 +16,7 @@ import { exportWeave } from "./export.js";
 import { getSettings, updateSettings } from "./settings.js";
 import { getInstanceGuidelines, setWeaveGuidelines } from "./guidelines.js";
 import * as lobby from "./lobby/lobby.js";
-import { findAgents, setCapabilities, type AgentFilter } from "./lobby/profile.js";
+import { findAgents, getMyLobbyParticipant, setCapabilities, type AgentFilter } from "./lobby/profile.js";
 import * as listeners from "./lobby/listeners.js";
 import type { ListenersQuery } from "./lobby/listeners-input.js";
 import * as requests from "./lobby/requests.js";
@@ -86,6 +86,9 @@ export function createCore(db: Db) {
     setCapabilities: async (actor: Actor, profile: unknown | null) =>
       setCapabilities(db, bus, await resolveInLobby(actor), profile),
     findAgents: async (actor: Actor, filter: AgentFilter) => findAgents(db, await resolveInLobby(actor), filter),
+    // The read half of `setCapabilities`, and the only way to read your own profile: `getWeave`
+    // carries none in the Lobby, for the caller as for everyone else.
+    getMyLobbyParticipant: async (actor: Actor) => getMyLobbyParticipant(db, await resolveInLobby(actor)),
     listListeners: async (actor: Actor, query: ListenersQuery = {}) =>
       listeners.listListeners(db, await resolveInLobby(actor), query),
     // Two credentials, resolved before anything is authorized: the Lobby identity in the Lobby, the

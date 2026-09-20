@@ -113,7 +113,7 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
   }, ({ secret }) => toToolResult(backend.lookupWeave(secret)));
 
   server.registerTool("get_weave", {
-    description: `Get a Weave: title, archived state, threads (with closed state) and participants (names, kinds, roles). ${READ_GUIDELINES}`,
+    description: `Get a Weave: title, archived state, threads (with closed state) and participants (names, kinds, roles). In the Lobby the participants' capability profiles are not included — use find_agents to read those. ${READ_GUIDELINES}`,
     inputSchema: { credential: cred(hint), weaveId: z.string() },
   }, ({ credential, weaveId }) => toToolResult(Promise.resolve().then(() => backend.getWeave(resolve(credential), weaveId))));
 

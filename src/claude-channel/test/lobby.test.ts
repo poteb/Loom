@@ -73,6 +73,16 @@ function waitFor(pred: () => boolean, what = "condition", ms = 8000): Promise<vo
 }
 const typed = (got: Note[], type: string) => got.find((g) => g.meta.type === type);
 
+/**
+ * The profile the Lobby carries for a participant, or null when it carries none. Read through
+ * `find_agents`: `getWeave` carries no Lobby profile at all now (core spec §3.1), and `find_agents`
+ * lists only participants that have one, so an absent entry is a cleared profile.
+ */
+async function profileOf(credential: string, participantId: string): Promise<unknown> {
+  const actor = await s!.core.resolveCredential(credential);
+  return (await s!.core.findAgents(actor, {})).find((a) => a.participant.id === participantId)?.capabilities ?? null;
+}
+
 /** Lobby names are unique per instance, and the Lobby outlives every test in this file. */
 let n = 0;
 const uniq = (prefix: string) => `${prefix}-${++n}`;
@@ -213,14 +223,13 @@ describe("the Lobby over the channel", () => {
       expect(j.weaveId).toBe(L);
       expect(readState(stateDir).weaves[L]).toMatchObject({ token: j.token, isLobby: true });
       await a.callTool({ name: "set_capabilities", arguments: { credential: j.token, profile: { owner: "paw", serves: "anyone" } } });
-      const actor = await s!.core.resolveCredential(j.token);
-      expect((await s!.core.getWeave(actor, L)).participants.find((p) => p.id === j.participant.id)?.capabilities).toMatchObject({ owner: "paw" });
+      expect(await profileOf(j.token, j.participant.id)).toMatchObject({ owner: "paw" });
 
       const left = json(await a.callTool({ name: "leave_weave", arguments: { weaveId: L } }));
       expect(left).toEqual({ weaveId: L, left: true });
       // The point of the flag: the profile is gone from the server before the credential is,
       // so nothing eligible is left behind with nobody to answer for it.
-      expect((await s!.core.getWeave(actor, L)).participants.find((p) => p.id === j.participant.id)?.capabilities).toBeNull();
+      expect(await profileOf(j.token, j.participant.id)).toBeNull();
       expect(readState(stateDir).weaves[L]).toBeUndefined();
     });
   });
@@ -230,15 +239,12 @@ describe("the Lobby over the channel", () => {
     await withChannel(stateDir, async (a) => {
       const lob = json(await a.callTool({ name: "join_lobby", arguments: { name: uniq("Leaver") } }));
       await a.callTool({ name: "set_capabilities", arguments: { credential: "stored", profile: { owner: "paw", serves: "anyone" } } });
-      const actor = await s!.core.resolveCredential(lob.token);
-      const before = await s!.core.getWeave(actor, L);
-      expect(before.participants.find((p) => p.id === lob.participant.id)?.capabilities).toMatchObject({ owner: "paw" });
+      expect(await profileOf(lob.token, lob.participant.id)).toMatchObject({ owner: "paw" });
 
       const left = json(await a.callTool({ name: "leave_weave", arguments: { weaveId: L } }));
       expect(left).toEqual({ weaveId: L, left: true });
       expect(readState(stateDir).weaves[L]).toBeUndefined();
-      const after = await s!.core.getWeave(actor, L);
-      expect(after.participants.find((p) => p.id === lob.participant.id)?.capabilities).toBeNull();
+      expect(await profileOf(lob.token, lob.participant.id)).toBeNull();
     });
   });
 });

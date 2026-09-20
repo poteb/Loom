@@ -116,6 +116,18 @@ describe("loom lobby", () => {
     expect(human.out).toContain("serves: owner");
   });
 
+  // The summary column is merged in from `find_agents`, which lists nobody without a profile: a
+  // participant missing from that answer must still get its own line, not be dropped or blank.
+  it("lobby prints (no profile) for a participant that has set none", async () => {
+    const cfg = newCfg();
+    const name = uniq("Lurker");
+    const j = await run(["lobby", "join", "--name", name, "--json"], { cfg });
+    const listed = await run(["lobby"], { cfg });
+    expect(listed.code).toBe(0);
+    const line = listed.out.split("\n").find((l) => l.includes(j.json().participant.id));
+    expect(line).toContain(`${name} (agent, member)  (no profile)`);
+  });
+
   it("lobby prints the Lobby's web URL to an instance keeper, and to nobody else", async () => {
     const cfg = newCfg();
     await run(["lobby", "join", "--name", uniq("Keeperly"), "--json"], { cfg });

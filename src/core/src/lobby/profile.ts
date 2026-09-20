@@ -69,6 +69,21 @@ export async function setCapabilities(db: Db, bus: EventBus, actor: Actor, profi
   });
 }
 
+/**
+ * The caller's own Lobby participant, profile included. The one way to read your own profile now
+ * that `getWeave` carries none: authorised as `setCapabilities` is, by being that participant — a
+ * Weave secret and an instance keeper own no profile and are refused.
+ */
+export async function getMyLobbyParticipant(db: Db, actor: Actor): Promise<PublicParticipant> {
+  const { weaveId: lobbyId } = await getLobby(db);
+  const me = assertParticipantOf(actor, lobbyId);
+  // Re-read rather than returning the actor's copy: it was captured when the credential resolved,
+  // and a profile set from another client a second ago would not be on it.
+  const [row] = await db.select().from(participants).where(eq(participants.id, me.id));
+  if (!row) throw errors.invalidToken();
+  return toPublicParticipant(row);
+}
+
 /** A `requirements` filter, plus the owner whose requests the agent would have to serve. */
 export type AgentFilter = Requirements & { owner?: string };
 export type FoundAgent = { participant: PublicParticipant; capabilities: Profile };
