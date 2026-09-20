@@ -948,7 +948,7 @@ describe("the directory grid and its counts (spec §5.3)", () => {
     await settle();
     // Locale-formatted, so the expectation is built the same way rather than pinning one locale's
     // thousands separator.
-    expect(!!screen.queryByText(`Showing 50 of 87 matches (${(1204).toLocaleString()} listeners)`)).toBe(true);
+    expect(!!screen.queryByText(`Showing 50 of 87 matches (out of ${(1204).toLocaleString()} listeners)`)).toBe(true);
   });
 
   it("says the Lobby is empty rather than that nothing matched, when nothing is there", async () => {
@@ -972,6 +972,89 @@ describe("the directory grid and its counts (spec §5.3)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
     await settle();
     expect(v.queries().map((q) => q.has("filter"))).toEqual([true, false]);
+  });
+});
+
+/**
+ * CR2, word for word, in the spec's own numbers: `of` before `matched` and `out of` before `total`,
+ * because three numbers in one sentence need the two relations spelled differently (spec §9).
+ * Locale-formatted, so both expectations are built the same way rather than pinning one locale.
+ */
+describe("the counts line names both relations (spec §9, CR2)", () => {
+  const rows = (count: number) => Array.from({ length: count }, (_, i) => listener(`a${i}`, "owner"));
+  const n = (v: number) => v.toLocaleString();
+
+  it("names the Lobby alone where nothing has been filtered out", async () => {
+    mountLobby({ storage: joined(),
+      routes: { [LISTENERS]: () => json(directory(rows(50), { matched: 62, total: 62 })) } });
+    await settle();
+    expect(!!screen.queryByText(`Showing ${n(50)} of ${n(62)} listeners`)).toBe(true);
+  });
+
+  it("names the matches and the Lobby they came out of where a filter has narrowed it", async () => {
+    mountLobby({ storage: joined(),
+      routes: { [LISTENERS]: () => json(directory(rows(11), { matched: 11, total: 62 })) } });
+    await settle();
+    expect(!!screen.queryByText(`Showing ${n(11)} of ${n(11)} matches (out of ${n(62)} listeners)`)).toBe(true);
+  });
+});
+
+/**
+ * CR5. The control is always on the page, and `disabled` is the whole of "there is nothing to
+ * clear" — so a test that presses it mounts on a link that is already off the defaults, a disabled
+ * button being no control at all. The two that make it live press the **search box**, which is on
+ * screen in every state of this page because it is rendered above the facets and waits for no
+ * answer (spec §9).
+ */
+describe("Clear filters (spec §9, CR5)", () => {
+  const clearFilters = () => screen.getByRole("button", { name: "Clear filters" }) as HTMLButtonElement;
+
+  it("is on the page and disabled where everything is at its default", async () => {
+    mountLobby({ storage: joined() });                            // the bare /lobby/listeners
+    await settle();
+    expect(clearFilters().disabled).toBe(true);
+  });
+
+  it("is live from the first keystroke, before the 250 ms window closes", async () => {
+    vi.useFakeTimers();
+    mountLobby({ storage: joined() });                            // the bare /lobby/listeners
+    await settleFake();
+    // The clock is not advanced past the debounce: what makes the control live is the draft, not
+    // the view a query has yet to carry.
+    fireEvent.input(screen.getByLabelText("Search"), { target: { value: "a" } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(clearFilters().disabled).toBe(false);
+  });
+
+  it("counts a single typed space, the draft being read raw and never trimmed", async () => {
+    vi.useFakeTimers();
+    mountLobby({ storage: joined() });                            // the bare /lobby/listeners
+    await settleFake();
+    fireEvent.input(screen.getByLabelText("Search"), { target: { value: " " } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(clearFilters().disabled).toBe(false);
+  });
+
+  it("puts the sort and the direction back too", async () => {
+    // Off its defaults from the first render, which is what makes the button pressable here.
+    const v = mountLobby({ path: "/lobby/listeners?sort=owner&dir=desc", storage: joined() });
+    await settle();
+    fireEvent.click(clearFilters());
+    await settle();
+    const last = v.queries().at(-1)!;
+    expect([
+      (screen.getByLabelText("sort") as HTMLSelectElement).value,
+      (screen.getByLabelText("direction") as HTMLSelectElement).value,
+      last.get("sort"), last.get("dir"),
+    ]).toEqual(["name", "asc", "name", "asc"]);
+  });
+
+  it("leaves the address bar at a bare /lobby/listeners", async () => {
+    mountLobby({ path: "/lobby/listeners?q=ada", storage: joined() });
+    await settle();
+    fireEvent.click(clearFilters());
+    await settle();
+    expect([location.pathname, location.search]).toEqual(["/lobby/listeners", ""]);
   });
 });
 

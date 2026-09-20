@@ -195,8 +195,10 @@ export function ListenersPage({ session }: { session: Session }) {
   const toggleServes = (serves: string) => apply((v) => ({ ...v,
     serves: v.serves === serves ? undefined : serves as ServesKind }));
 
-  const anySet = view.q !== "" || view.models.length > 0 || view.tools.length > 0
-    || view.runtime !== undefined || view.serves !== undefined;
+  // The raw `draft`, not a trimmed one: anything at all in the box — a space included — must leave
+  // the control live, because pressing it is also what cancels a pending debounce (spec §9).
+  const atDefaults = draft === "" && view.q === "" && view.models.length === 0 && view.tools.length === 0
+    && view.runtime === undefined && view.serves === undefined && view.sort === "name" && view.dir === "asc";
   const clear = () => {
     // The pending keystroke is cancelled *before* `apply`, not folded into it: Clear filters empties
     // the box too, so there is no text left for it to carry, and a timer left running would have
@@ -204,7 +206,9 @@ export function ListenersPage({ session }: { session: Session }) {
     if (debounce.current) { clearTimeout(debounce.current); debounce.current = undefined; }
     setDraft("");
     draftRef.current = "";
-    apply((v) => ({ q: "", models: [], tools: [], runtime: undefined, serves: undefined, sort: v.sort, dir: v.dir }));
+    // One `EMPTY_VIEW`: the sort and the direction go back too. This overrides listeners spec §5.3,
+    // which kept the sort (spec §9, CR5).
+    apply(() => ({ ...EMPTY_VIEW }));
   };
   /** What the "the list has changed" line offers: this view again, with the new count as the
    *  baseline. Never `location.reload()` — a full page load is exactly what an in-place browser
@@ -213,10 +217,12 @@ export function ListenersPage({ session }: { session: Session }) {
   const showMore = () => { if (state.nextCursor && !state.appending) run(view, state.nextCursor); };
 
   const n = (v: number) => v.toLocaleString();
+  // `of` before `matched` and `out of` before `total`: three numbers in one sentence need the two
+  // relations spelled differently (spec §9, CR2). Nothing else is ever rendered here — never a zero.
   const counts = state.status !== "error" && state.total !== undefined && state.matched !== undefined
     ? state.matched === state.total
       ? `Showing ${n(state.rows.length)} of ${n(state.total)} listeners`
-      : `Showing ${n(state.rows.length)} of ${n(state.matched)} matches (${n(state.total)} listeners)`
+      : `Showing ${n(state.rows.length)} of ${n(state.matched)} matches (out of ${n(state.total)} listeners)`
     : undefined;
 
   return (
@@ -245,7 +251,7 @@ export function ListenersPage({ session }: { session: Session }) {
             <option value="desc">desc</option>
           </select>
         </label>
-        {anySet && <button type="button" class="link" onClick={clear}>Clear filters</button>}
+        <button type="button" class="link" disabled={atDefaults} onClick={clear}>Clear filters</button>
       </div>
 
       {state.facets && (
