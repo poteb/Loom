@@ -332,6 +332,331 @@ describe("the deep link (spec §4.3)", () => {
 });
 
 /**
+ * What the browser does on Back, in the order it does it: happy-dom implements `pushState`,
+ * `replaceState` and `location`, but `history.back()` dispatches no `popstate`. So the address bar is
+ * moved without adding an entry, and then the event is dispatched. The listener reads
+ * `location.pathname` and never `event.state`, so a plain `new Event("popstate")` would do as well.
+ */
+const pop = async (to: string, settling: () => Promise<void> = settle) => {
+  history.replaceState(null, "", to);
+  window.dispatchEvent(new PopStateEvent("popstate"));
+  await settling();
+};
+
+/**
+ * "Did this push?" is asked of a spy and never of `history.length`: happy-dom carries a pushed entry
+ * into the next test, so the stack's length is a property of the file and not of the test. Installed
+ * once the mount has settled and cleared with it, so what each one counts is what the test did next;
+ * `vi.restoreAllMocks()` in the `afterEach` takes both off again.
+ */
+const spies = () => {
+  const push = vi.spyOn(history, "pushState");
+  const replace = vi.spyOn(history, "replaceState");
+  push.mockClear();
+  replace.mockClear();
+  /** The paths pushed, in order: a pushed entry carries no query string, so this is the whole of it. */
+  return { push, replace, pushed: () => push.mock.calls.map((c) => c[2]) };
+};
+
+/** Types a name into `ThreadList`'s own form and submits it. The form is on screen because
+ *  **New thread** is, which `ThreadList` renders for every unarchived Weave. */
+const createThread = (name: string) => {
+  fireEvent.click(screen.getByRole("button", { name: "New thread" }));
+  const box = screen.getByPlaceholderText("Thread name");
+  fireEvent.input(box, { target: { value: name } });
+  fireEvent.submit(box.closest("form")!);
+};
+
+describe("the push, from /lobby on a durable browser (spec §4.2)", () => {
+  it("pushes the directory's address when the directory opens", async () => {
+    const v = mountLobby({ path: "/lobby", storage: joined() });
+    await settle();
+    const s = spies();
+    await v.toggle();
+    expect([s.pushed(), location.pathname]).toEqual([["/lobby/listeners"], "/lobby/listeners"]);
+  });
+
+  // The entry belongs to the view; the filters belong to the entry, which the directory rewrites in
+  // place. So the push carries no query string, and the chip adds no second entry to go back through.
+  it("rewrites that entry's query string for a chip, and pushes nothing for it", async () => {
+    const v = mountLobby({ path: "/lobby", storage: joined() });
+    await settle();
+    const s = spies();
+    await v.toggle();
+    fireEvent.click(chip(/^shell/));
+    await settle();
+    expect([s.pushed(), s.replace.mock.calls.length]).toEqual([["/lobby/listeners"], 1]);
+  });
+
+  it("pushes the bare /lobby when a Thread is picked from the open directory", async () => {
+    const v = mountLobby({ path: "/lobby", storage: joined() });
+    await settle();
+    await v.toggle();
+    const s = spies();
+    fireEvent.click(screen.getByRole("button", { name: "General" }));
+    await settle();
+    expect([s.pushed(), location.pathname]).toEqual([["/lobby"], "/lobby"]);
+  });
+});
+
+/**
+ * Spec §4.2's change test. `onView` is `ThreadList`'s `onPick` too, called on every selection and
+ * every successful creation (§3.4), so a handler that pushed unconditionally would fill Back with
+ * duplicate `/lobby` entries for ordinary Thread navigation — a page whose Back button walks through
+ * a human's Thread clicks. The directory stays **closed** through the first two.
+ */
+describe("a view that does not change is not a history entry (spec §4.2)", () => {
+  it("records nothing when a Thread is picked with the directory closed", async () => {
+    mountLobby({ path: "/lobby", storage: joined() });
+    await settle();
+    const s = spies();
+    fireEvent.click(screen.getByRole("button", { name: "General" }));
+    await settle();
+    expect(s.pushed()).toEqual([]);
+  });
+
+  it("records nothing when a Thread is created with the directory closed", async () => {
+    mountLobby({ path: "/lobby", storage: joined(), routes: { [THREADS]: () => json(DESIGN) } });
+    await settle();
+    const s = spies();
+    createThread("Design");
+    await settle();
+    expect(s.pushed()).toEqual([]);
+  });
+
+  // And the other half of the rule, which stops the guard being written as "never push from
+  // `onPick`": the close **is** a view change, and it is recorded like any other.
+  it("records one entry per real change, the close included", async () => {
+    const v = mountLobby({ path: "/lobby", storage: joined() });
+    await settle();
+    const s = spies();
+    await v.toggle();
+    await v.toggle();
+    expect(s.pushed()).toEqual(["/lobby/listeners", "/lobby"]);
+  });
+});
+
+/**
+ * Spec §4.2's "re-read per click". `ThreadList.submit` calls `onPick` **after** `await
+ * session.createThread(…)`, so the handler that decides the push is the one a render before the
+ * request made — and the write that degrades this browser lands **inside** that await. Applied
+ * before the click, any implementation would pass and the test would prove nothing.
+ */
+describe("the permission is the one that holds when the handler runs (spec §4.2)", () => {
+  async function degradedInsideTheAwait() {
+    const create = gated(() => json(DESIGN));
+    const v = mountLobby({ path: "/lobby", storage: joined(), routes: { [THREADS]: create.answer } });
+    await settle();
+    await v.toggle();                    // the one push this page was still allowed to make
+    const s = spies();
+    createThread("Design");              // parks inside `session.createThread`, holding this `onPick`
+    await settle();
+    v.notice.note("memory");             // …and persistence fails while it is parked
+    await settle();
+    create.release();
+    await settle();
+    return { v, s };
+  }
+
+  it("makes no entry for a change whose permission expired inside the await", async () => {
+    const { s } = await degradedInsideTheAwait();
+    expect(s.pushed()).toEqual([]);
+  });
+
+  it("changes the view all the same: only the history write is withheld", async () => {
+    const { v } = await degradedInsideTheAwait();
+    expect([v.directory(), screen.getByRole("button", { name: /^Design/ }).getAttribute("aria-current")])
+      .toEqual([false, "true"]);
+  });
+
+  it("leaves the address bar where the push put it, disagreeing with the view (spec §4.5)", async () => {
+    await degradedInsideTheAwait();
+    expect(location.pathname).toBe("/lobby/listeners");
+  });
+});
+
+/**
+ * Spec §4.2's lifetime amendment. A Create submitted before a join resolves after it — the POST
+ * carries no `AbortSignal`, so disposing the old session cannot cancel it — and calls the **retired**
+ * mount's `onView`. That mount's ref stopped updating when it came off screen, while `setView` lives
+ * above `key={reloadKey}` and is still pointed at the page on screen: without the lifetime guard the
+ * human's directory vanishes because of a button pressed before the join. The directory's script has
+ * exactly two answers on purpose — a third query would mean the retired handler took the page
+ * somewhere and the page queried its way back, and `inTurn` reports that rather than absorbing it.
+ */
+describe("a handler a join has retired does nothing at all (spec §4.2)", () => {
+  async function retiredByAJoin() {
+    const create = gated(() => json(DESIGN));
+    const v = mountLobby({ path: "/lobby", storage: joined(), routes: {
+      [LISTENERS]: inTurn(INVALID, () => json(directory([listener("ada", "a")]))),
+      [THREADS]: create.answer,
+    } });
+    await settle();
+    createThread("Design");              // parked, holding the old mount's `onPick`
+    await settle();
+    await v.toggle();                    // one push; the first query refuses, and there is no secret
+    await v.joinAs("dana");              // the join retires that mount; the view crosses the key
+    const s = spies();
+    create.release();                    // the old `await` resolves, into the old `onView("thread")`
+    await settle();
+    return { v, s };
+  }
+
+  it("records no history entry for the page it no longer belongs to", async () => {
+    const { s } = await retiredByAJoin();
+    expect(s.pushed()).toEqual([]);
+  });
+
+  it("leaves the live page's directory exactly where the human left it", async () => {
+    const { v } = await retiredByAJoin();
+    expect(v.directory()).toBe(true);
+  });
+
+  it("leaves the address bar on the directory it is showing", async () => {
+    await retiredByAJoin();
+    expect(location.pathname).toBe("/lobby/listeners");
+  });
+});
+
+/** Spec §4.4: Back leaves the directory, Forward comes back to it, and the entry Forward landed on
+ *  is what the directory seeds itself from — one fresh query, not the one it had before. */
+describe("Back and Forward (spec §4.4)", () => {
+  /** The two entries Back walks: the `/lobby` the page opened on, and the pushed listeners entry the
+   *  chip then rewrote in place. */
+  async function twoEntries() {
+    const v = mountLobby({ path: "/lobby", storage: joined() });
+    await settle();
+    await v.toggle();
+    fireEvent.click(chip(/^shell/));
+    await settle();
+    return v;
+  }
+  /** An entry carrying both halves, so "seeded from **that** entry" is something to see. */
+  const FORWARD = `/lobby/listeners?q=ada&${FILTERED}`;
+
+  it("leaves the directory when Back returns to /lobby", async () => {
+    const v = await twoEntries();
+    await pop("/lobby");
+    expect([v.directory(), !!v.container.querySelector(".messages")]).toEqual([false, true]);
+  });
+
+  it("brings it back seeded from the entry Forward landed on", async () => {
+    const v = await twoEntries();
+    await pop("/lobby");
+    await pop(FORWARD);
+    expect([v.directory(), chip(/^shell/).getAttribute("aria-pressed"),
+      (screen.getByLabelText("Search") as HTMLInputElement).value]).toEqual([true, "true", "ada"]);
+  });
+
+  // A **delta**, snapshotted immediately before the `pop`: the page behind this one has been
+  // querying since it mounted.
+  it("makes exactly one fresh query, carrying that entry's filter", async () => {
+    const v = await twoEntries();
+    await pop("/lobby");
+    const before = v.asked();
+    await pop(FORWARD);
+    expect([v.asked() - before, v.queries().at(-1)!.get("filter")]).toEqual([1, '{"tools":["shell"]}']);
+  });
+});
+
+/**
+ * Spec §4.5: on the Lobby's other two addresses the path is not this page's at all, so the directory
+ * opens and filters and **nothing whatever** is written — not an entry, and not a query string.
+ */
+describe("the Lobby under an address that is not its own (spec §4.5)", () => {
+  const SECRET = "s".repeat(43);
+  const LOOKUP = `${BASE}/api/weaves/${SECRET}/lookup`;
+
+  async function openAndFilter(path: string) {
+    const v = mountLobby({ path, storage: joined(),
+      routes: { [LOOKUP]: () => json({ weaveId: LOBBY.weaveId }) } });
+    await settle();
+    const s = spies();
+    await v.toggle();
+    fireEvent.click(chip(/^shell/));
+    await settle();
+    return { v, s };
+  }
+
+  for (const [name, path] of [
+    ["/weave/<lobby id>", `/weave/${LOBBY.weaveId}`],
+    ["/w/<lobby secret>", `/w/${SECRET}`],
+  ] as const) {
+    it(`opens and filters the directory on ${name}`, async () => {
+      const { v } = await openAndFilter(path);
+      expect([v.directory(), v.queries().at(-1)!.get("filter")]).toEqual([true, '{"tools":["shell"]}']);
+    });
+
+    it(`touches neither half of the history API on ${name}`, async () => {
+      const { s } = await openAndFilter(path);
+      expect([s.push.mock.calls.length, s.replace.mock.calls.length]).toEqual([0, 0]);
+    });
+  }
+});
+
+/** Spec §4.5: a `/lobby` this browser could not load again keeps its view flip and loses its URL. */
+describe("a memory-only /lobby never moves the address bar (spec §4.5)", () => {
+  async function memoryOnly() {
+    const notice = createPersistenceNotice();
+    notice.note("memory");               // a write has already failed: this page may not be left
+    const v = mountLobby({ path: "/lobby", storage: joinedInMemory(), notice });
+    await settle();
+    const s = spies();
+    await v.toggle();
+    fireEvent.click(chip(/^shell/));
+    await settle();
+    return { v, s };
+  }
+
+  it("switches the view and filters it all the same", async () => {
+    const { v } = await memoryOnly();
+    expect([v.directory(), v.queries().at(-1)!.get("filter")]).toEqual([true, '{"tools":["shell"]}']);
+  });
+
+  it("writes neither an entry nor a query string", async () => {
+    const { s } = await memoryOnly();
+    expect([s.push.mock.calls.length, s.replace.mock.calls.length, location.pathname, location.search])
+      .toEqual([0, 0, "/lobby", ""]);
+  });
+});
+
+/**
+ * Spec §4.5's two cases, which are the two the path test alone got wrong: a browser that may not
+ * push can be standing on `/lobby/listeners` because it was deep-linked there, or because the push
+ * was made while it was still durable and persistence failed afterwards. In both, the query string
+ * is still this page's own to keep honest.
+ */
+describe("one history rule, in the two cases the path test alone got wrong (spec §4.5)", () => {
+  it("rewrites a deep-linked memory-only page's query string, and pushes for nothing at all", async () => {
+    const v = mountLobby({ path: "/lobby/listeners", storage: joinedInMemory() });
+    await settle();
+    const s = spies();
+    fireEvent.click(chip(/^shell/));                                  // the filter
+    await settle();
+    await v.toggle();                                                 // the sidebar line
+    fireEvent.click(screen.getByRole("button", { name: "General" })); // and a Thread
+    await settle();
+    expect([new URLSearchParams(location.search).get("filter"), s.replace.mock.calls.length, s.pushed()])
+      .toEqual(['{"tools":["shell"]}', 1, []]);
+  });
+
+  it("keeps rewriting, and stops pushing, when persistence fails after the push", async () => {
+    const v = mountLobby({ path: "/lobby", storage: joined() });
+    await settle();
+    await v.toggle();                    // the push this browser was still durable enough to make
+    const s = spies();
+    v.notice.note("memory");
+    await settle();
+    fireEvent.click(chip(/^shell/));
+    await settle();
+    await v.toggle();                    // the close, which is no longer anything to come back to
+    expect([s.replace.mock.calls.length, s.pushed(), location.pathname, v.directory(),
+      !!v.container.querySelector(".messages")])
+      .toEqual([1, [], "/lobby/listeners", false, true]);
+  });
+});
+
+/**
  * Spec §3.4 and §3.5. The controls pressed here are the sidebar's own, which `INSTANCE` puts on
  * screen: the `General` thread button comes from the Weave row's one thread, **New thread** from
  * `ThreadList`'s own head, and the composer from `JOINED.participant` being a writable member.
