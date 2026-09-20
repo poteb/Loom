@@ -848,8 +848,12 @@ instance refuses"; and `ListenersLink`'s link-versus-button tests.
    works, and the address bar never changes — no push, so the path stays `/lobby` and `writeSearch`
    has nothing to write to.
 9. **A live 401 recovers, exactly once.** From the open directory, a query answered `401`: the
-   identity is invalidated, the secret is kept, the next query carries the secret, the directory is
-   still on screen and the rows that were there are still there. Two rejections from the same
+   identity is invalidated, the secret is kept, the next query carries the secret, and the directory is
+   on screen again with rows — **re-fetched, not preserved**: the recovery takes the page through
+   `loading`, which unmounts the directory, and its fresh first query is the one that carries the
+   secret (§6.3). The stub must tell the directory's query from the session's count read, which
+   shares its pathname: the count is the one with `limit=0`, and a `401` scripted onto the pathname
+   alone would be spent by the count read instead. Two rejections from the same
    generation cause **one** invalidation. With no secret to fall back to, the page settles at
    `no-credential` and the join fork replaces the layout. The store assertions live in
    `session.test.ts` against a real server; what is on screen is asserted here.
