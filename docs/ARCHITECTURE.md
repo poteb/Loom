@@ -566,6 +566,7 @@ wake: the addressed request event beside them is what does.
 - [superpowers/specs/2026-09-16-loom-lobby-design.md](superpowers/specs/2026-09-16-loom-lobby-design.md) — v2 sub-project 3 (the Lobby)
 - [superpowers/specs/2026-09-17-loom-web-main-page-design.md](superpowers/specs/2026-09-17-loom-web-main-page-design.md) — v2 sub-project 4 (the web main page)
 - [superpowers/specs/2026-09-19-loom-lobby-listeners-design.md](superpowers/specs/2026-09-19-loom-lobby-listeners-design.md) — v2 sub-project 5 (the Lobby listeners page)
+- [superpowers/specs/2026-09-20-loom-lobby-listeners-view-design.md](superpowers/specs/2026-09-20-loom-lobby-listeners-view-design.md) — the directory as a **view** of the Lobby, which supersedes several sections of the one above
 - [adr/0001-lobby-owner-self-declared.md](adr/0001-lobby-owner-self-declared.md) — why a Lobby `owner` is self-declared
 - [superpowers/specs/v2-notes.md](superpowers/specs/v2-notes.md) — running list of v2 ideas and deferred items
 - [../src/claude-channel/README.md](../src/claude-channel/README.md) — installing and using the channel plugin

@@ -282,9 +282,22 @@ filters**, which now resets the sort too, landed with it.
 plan forbade every task from prescribing styling, and the [KNOWN-ISSUES.md](../../KNOWN-ISSUES.md)
 appearance row has been narrowed to exactly that — the structure is settled, the look is not.
 
-Not yet looked at in a real browser: **manual smoke test 6** in [../../TESTING.md](../../TESTING.md)
-has been rewritten for the new behaviour (steps 3, 8 and 10 especially) and is **unrun** against this
-branch.
+**Two things the branch review raised and Paw decided on 2026-09-20**, both now on the branch. (1)
+The open directory **scrolls inside the layout**: putting a full-height region into the Lobby's
+`height: 100vh` grid made the *document* scroll instead, taking the header, the identity and the
+connection indicator off the screen — the one thing the spec's success scenario promises will not
+happen, seen in a browser at roughly 1,960px of page scroll. One rule settles it,
+`.listeners-view { flex: 1; min-height: 0; overflow-y: auto; }`, beside `.messages`, which does the
+same job for a Thread. It is the single CSS change of this branch and it is layout, not appearance.
+(2) A Lobby identity that dies **says so again**: the Lobby's join fork now renders the session's own
+`state.error` above the form, exactly as the generic no-credential card already did, so the branch no
+longer drops the *"Your identity in this Weave is no longer valid"* sentence. The KNOWN-ISSUES row
+that recorded the loss is gone with it.
+
+Not yet looked at in a real browser as a whole: **manual smoke test 6** in
+[../../TESTING.md](../../TESTING.md) has been rewritten for the new behaviour (steps 3, 8 and 10
+especially, and step 3 now carries the scrolling check) and is otherwise **unrun** against this
+branch — only the scrolling above was checked by hand.
 
 ### A live Loom instance for the project's own use (Paw, 2026-09-20) — **wanted; not built**
 

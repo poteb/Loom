@@ -93,8 +93,11 @@ re-report them, but do say if you think one is under-rated:
    own cursors and facet values.
 7. **The appearance is not signed off.** Manual smoke test 6 in [TESTING.md](TESTING.md) was run on
    2026-09-20 and all twelve behaviours passed, but the look of the grid, the chips, the counts line
-   and the sidebar line was deliberately left for a separate design pass, and the owner wants the
-   directory moved inside the Lobby's layout ([v2-notes.md](superpowers/specs/v2-notes.md)).
+   and the sidebar line was deliberately left for a separate design pass. The owner's other wish —
+   the directory **inside** the Lobby's layout — is **done on 2026-09-20** by
+   `feat/lobby-listeners-view` ([v2-notes.md](superpowers/specs/v2-notes.md)), which makes it a view
+   of the Lobby rather than a page of its own; [KNOWN-ISSUES.md](KNOWN-ISSUES.md) records that half
+   as settled and keeps only the look open. The appearance is still not signed off.
 
 **Where to look first on this branch**, in order: `src/core/src/lobby/listeners-input.ts` (the
 bounds, and the normalisation rule that only an *empty array* means "no filter"),
