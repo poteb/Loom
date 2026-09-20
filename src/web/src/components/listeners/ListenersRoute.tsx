@@ -1,19 +1,12 @@
 import { useEffect, useMemo, useState } from "preact/hooks";
-import { LoomClientError, type Lobby, type LoomClient } from "@loom/client";
+import { LoomClientError, type Lobby } from "@loom/client";
 import type { RouteDeps } from "../../app.js";
 import { leavingIsSafe } from "../../persistence.js";
-import { hasIdentity, readWeaveEntry, readerFor, weaveKey } from "../../weaves-store.js";
+import { hasIdentity, invalidateIdentity, readWeaveEntry, readerFor, weaveKey } from "../../weaves-store.js";
 import { HomeLink } from "../HomeLink.js";
 import { PersistenceBar } from "../PersistenceBar.js";
 import { JoinLobbyForm } from "../main/JoinLobbyForm.js";
-
-/**
- * What the directory is handed once this route has settled the two questions it owns: which client
- * to read with, and which Weave the Lobby is. `inPlace` is true when the page was rendered here
- * rather than navigated to (`openListenersInPlace`), which is what keeps its query string off the
- * address bar (spec §5.4).
- */
-export type ListenersPageProps = { reader: LoomClient; lobbyId: string; inPlace?: boolean };
+import { ListenersPage } from "./ListenersPage.js";
 
 type Found =
   | { kind: "loading" } | { kind: "lobby"; lobby: Lobby }
@@ -81,7 +74,7 @@ export function ListenersRoute(props: RouteDeps & { inPlace?: boolean }) {
  * callbacks land in the same place: this route *is* the destination, so a join has nowhere to
  * navigate to and re-runs the first query here instead, durable or not (spec §5.5).
  */
-function ListenersMount({ client, storage, notice, openMainInPlace, lobby, inPlace }:
+function ListenersMount({ client, storage, notice, openInPlace, openMainInPlace, lobby, inPlace }:
   RouteDeps & { lobby: Lobby; inPlace?: boolean }) {
   const [reloadKey, setReloadKey] = useState(0);
   const entry = readWeaveEntry(storage, lobby.weaveId);
@@ -96,6 +89,18 @@ function ListenersMount({ client, storage, notice, openMainInPlace, lobby, inPla
   // `entry` is deliberately not a dependency: it is a fresh object every render, and `credential` is
   // the whole of what `readerFor` reads out of it.
   const choice = useMemo(() => readerFor(client, entry), [client, credential]);
+  /**
+   * A listeners query came back 401/403, and the guard in the page let it through: that credential
+   * is provably dead (spec §5.5). The **write happens first, into a variable, and is reported
+   * after** — `notice.note(invalidateIdentity(…))` written as one expression is the shape that
+   * skips the write whenever nobody is listening. Bumping `reloadKey` is what re-reads the entry,
+   * so the next render falls through to the stored secret, or to the join form when there is none.
+   */
+  const onCredentialFailure = () => {
+    const wrote = invalidateIdentity(storage, lobby.weaveId);
+    notice.note(wrote);
+    setReloadKey((n) => n + 1);
+  };
   if (!choice) {
     // The same fork `WeaveRoute` renders for an unjoined Lobby, and with a way home of its own for
     // the same reason: this card replaces the page whole, header included, so without one there is
@@ -104,6 +109,11 @@ function ListenersMount({ client, storage, notice, openMainInPlace, lobby, inPla
     const rejoin = () => setReloadKey((n) => n + 1);
     return (
       <div class="page-join">
+        {/* Read out of storage rather than remembered from the failure: an identity this browser
+            retired on some earlier page load is just as invalid, and says so the same way. */}
+        {entry?.identity === "invalid" && (
+          <p class="error page-join-invalid">Your identity in the Lobby is no longer valid.</p>
+        )}
         <JoinLobbyForm client={client} storage={storage} notice={notice}
           lobby={{ weaveId: lobby.weaveId, title: lobby.title }}
           onJoined={rejoin} onJoinedInPlace={rejoin} />
@@ -111,29 +121,11 @@ function ListenersMount({ client, storage, notice, openMainInPlace, lobby, inPla
       </div>
     );
   }
-  return <Directory key={reloadKey} reader={choice.reader} lobbyId={lobby.weaveId} inPlace={inPlace} />;
-}
-
-/**
- * The directory's first query, and the heading above it. The search box, the filter chips, the grid
- * and the counts line are the page's own (spec §5.3) and arrive with it; what is settled here is
- * what that page is handed, and the one rule a page with nothing on it yet must already keep: a
- * failed read shows the server's message, never an empty directory (spec §5.3).
- */
-function Directory({ reader }: ListenersPageProps) {
-  const [error, setError] = useState<string | undefined>();
-  useEffect(() => {
-    let live = true;
-    reader.listListeners().then(
-      () => {},
-      (e: unknown) => { if (live) setError(e instanceof Error ? e.message : String(e)); },
-    );
-    return () => { live = false; };
-  }, [reader]);
+  // `key={reloadKey}` is what makes a rejoin — and a fall back to the secret — a fresh page with a
+  // fresh first query, rather than one that kept the state of a credential that is gone.
   return (
-    <div class="listeners">
-      <h1>Listeners</h1>
-      {error && <p class="error">{error}</p>}
-    </div>
+    <ListenersPage key={reloadKey} reader={choice.reader} lobbyId={lobby.weaveId} inPlace={inPlace}
+      storage={storage} notice={notice} openInPlace={openInPlace} openMainInPlace={openMainInPlace}
+      onCredentialFailure={onCredentialFailure} />
   );
 }

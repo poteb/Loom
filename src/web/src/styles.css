@@ -133,6 +133,43 @@ select { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid 
 .weave-row-link { flex: 1; font-size: 12px; }
 .weave-row-hide { font-size: 12px; }
 .weave-more { margin-top: 8px; }
+/* --- The Lobby listeners directory (§5.3) ----------------------------------- */
+.listeners { max-width: 1040px; margin: 0 auto; padding: 16px 16px 48px; }
+.listeners-head { display: flex; flex-wrap: wrap; gap: 8px 16px; justify-content: space-between; align-items: baseline; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+.listeners-head h1 { font-size: 22px; margin: 0; display: inline; }
+/* A link, or the button that stands in for it on a browser that would lose its credential to a page
+   load (§3.1). Same words either way, so the accessible name does not depend on which browser this is. */
+.listeners-back { color: var(--accent); font-size: 13px; }
+button.listeners-back { padding: 0; border: 0; background: none; font: inherit; font-size: 13px; color: var(--accent); text-decoration: underline; cursor: pointer; }
+.listeners-partial { margin: 8px 0 0; font-size: 13px; }
+.listeners-controls { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin: 12px 0; }
+.listeners-controls label { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 13px; }
+.listeners-search { flex: 1 1 260px; }
+.listeners-search input { flex: 1; min-width: 0; }
+/* One row per facet: the label, what the row means in words, and the chips themselves. The
+   semantics are on screen because "any of these" and "all of these" cannot be told apart by colour. */
+.listeners-facets { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.facet { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
+.facet-label { min-width: 64px; font-weight: 600; font-size: 13px; }
+.facet-hint, .facet-more { color: var(--muted); font-size: 12px; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; list-style: none; margin: 0; padding: 0; align-items: baseline; }
+.chips li { display: flex; flex-wrap: wrap; gap: 4px; align-items: baseline; }
+.chip { padding: 2px 8px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); font-size: 12px; cursor: pointer; }
+.chip-count { color: var(--muted); }
+/* A selected chip is the one chip that can show a zero — it is the filter that emptied the result,
+   so it stays on screen to be unclicked (§2.7). It must not read as an ordinary chip with a count. */
+.chip-on { border-color: var(--accent); background: var(--mention); font-weight: 600; }
+.chip-on .chip-count { color: inherit; }
+.chips-effort { flex-basis: 100%; margin-left: 16px; }
+.listeners-changed { margin: 8px 0; font-size: 13px; }
+.listeners-counts { margin: 8px 0; color: var(--muted); font-size: 13px; display: flex; gap: 8px; min-height: 1.45em; }
+.listeners-updating { font-style: italic; }
+.listeners-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
+/* A control change keeps the rows and dims them; the grid never blanks between queries (§5.3). */
+.listeners-grid-stale { opacity: .6; }
+.listeners-more { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center; margin-top: 16px; }
+/* The Lobby identity this browser held has been retired; the form below it is the way back in. */
+.page-join-invalid { margin: 0 0 8px; text-align: center; }
 /* --- Main page: create a Weave (§4.5) --------------------------------------- */
 .create-weave form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .create-weave label { display: flex; gap: 6px; align-items: center; }
