@@ -14,8 +14,9 @@ AI of its own. Work happens in **Weaves**, addressed by a secret; conversations 
 append-only event log with a single monotonic `seq`, so any client catches up by asking for
 everything after the last `seq` it saw. Agents reach it three ways: the REST/WebSocket API, the
 remote MCP endpoint `/mcp`, and the Claude Code channel plugin. The point of the whole thing is the
-review loop: a finding is a message in the PR's Thread, answered in place, with the human reading
-rather than relaying.
+review loop: a review reaches the people and agents who need it as messages in a Thread, answered in
+place, with the human reading rather than relaying. (Where this project puts its own findings — on
+the PR, or in the Thread — is [DOGFOOD.md](DOGFOOD.md) §5.)
 
 ### Vocabulary
 
@@ -24,7 +25,7 @@ Enough to speak the language; [ARCHITECTURE.md](ARCHITECTURE.md) §4, §6 and §
 | Word | Means |
 | --- | --- |
 | Weave | A room and its event log. A working session, or one piece of work. |
-| Thread | A conversation inside a Weave, optionally carrying a `url` (the PR). `General` is the one born with the Weave. |
+| Thread | A conversation inside a Weave, optionally carrying a `url` (the PR, or the document under review). `General` is the one born with the Weave. |
 | Participant | An identity **inside one Weave**: a name, a kind (`human`/`agent`), a role, and a token. |
 | Keeper | A participant with `role = keeper` — the Weave's admin. |
 | Instance keeper | An instance-wide administrator, holding a keeper token. Counts as a keeper of every Weave, but cannot post and has no `inbox`. |
@@ -59,7 +60,8 @@ discussed".
 **The external reviewer** is **ChatGPT** (`gpt-5.6-sol`), not GitHub Copilot. Since 2026-09-19 it
 watches the pull request itself: it posts a `# CHATGPT REVIEW` review, and re-reviews automatically
 after each push. Its post states when no findings remain — that is the signal to stop. Spec and
-plan rounds still arrive by Paw pasting them in.
+plan rounds arrive by Paw pasting them in, or, when the live Loom is in use, run in the document's
+own Thread ([DOGFOOD.md](DOGFOOD.md) §4).
 
 ## 3. The development cycle
 
@@ -81,8 +83,9 @@ Each step ends where its completion criterion says, and not before.
 4. **Spec review rounds.** Paw runs it past ChatGPT and pastes the findings. **Verify every finding
    against the code before accepting it** — nothing is accepted on the reviewer's authority, and a
    wrong finding is answered with reasons. Fixes go through a fresh subagent. Record each round,
-   its findings and the commit that fixed them, in the brainstorm file. *Done when:* Paw says
-   "spec approved".
+   its findings and the commit that fixed them, in the brainstorm file. When the live Loom is in
+   use, the round runs in the document's Thread — see [DOGFOOD.md](DOGFOOD.md) §4. *Done when:* Paw
+   says "spec approved".
 5. **Plan.** `docs/superpowers/plans/YYYY-MM-DD-<slug>.md`, in the format of the superpowers
    `writing-plans` skill: Goal, Architecture, Tech Stack, Spec, Base, the commit trailer, a
    **Global Constraints** section every task implicitly includes, then one section per task with
@@ -128,8 +131,9 @@ Each step ends where its completion criterion says, and not before.
     code; fix via a subagent, one commit per finding; review the diff; push; post a PR comment
     headed `# Response to review round N` stating the head SHA, each finding accepted-and-fixed
     with its commit or pushed back with reasons, and a Verification section with the new totals
-    (`.superpowers/sdd/2026-09-19-loom-lobby-listeners/pr20-reply-1.md` is the worked example).
-    *Done when:* the
+    (`.superpowers/sdd/2026-09-19-loom-lobby-listeners/pr20-reply-1.md` is the worked example). The
+    findings and the answers stay on the PR; when the live Loom is in use, announce each round in
+    the PR's Thread — see [DOGFOOD.md](DOGFOOD.md) §4. *Done when:* the
     reviewer's post says no actionable findings remain.
 13. **Merge.** Squash-only. **Only on Paw's explicit word, given for that PR.** A previous
     authorisation is not a standing one. *Done when:* Paw has said merge, and `main` carries it.
@@ -229,11 +233,19 @@ enforced; this is the index.
 
 ### The current state — 2026-09-20
 
-`main` is at **19d4461**; shipped through **PR #22**; **1663 tests in 65 files**. Only `main` exists
-locally and there are no worktrees. The next slice, **the Lobby listeners view** (the directory
-becomes a view inside the Lobby layout), has an **approved spec and an approved plan on `main`**:
-`docs/superpowers/specs/2026-09-20-loom-lobby-listeners-view-design.md` and
-`docs/superpowers/plans/2026-09-20-loom-lobby-listeners-view.md`, six tasks.
+`main` is at **6fe9bd5**; shipped through **PR #23** (the agent docs: this handbook, the root
+`CLAUDE.md` and [DOGFOOD.md](DOGFOOD.md)); **1663 tests in 65 files**. No feature branch and no
+worktree is in play.
 
-**Paw has said not to start development until told.** Do not cut `feat/lobby-listeners-view`
-and do not execute the plan before that word.
+On 2026-09-20 Paw settled the dogfood questions: the ChatGPT reviewer runs on this machine, so its
+connector is the loopback URL; **a pull request's review is the record on GitHub and its Thread
+carries only the notifications**, while a spec or plan review lives in its Thread; the old reviewer
+agent keys are revoked; and an **always-on Loom instance is wanted** — that live instance is now the
+**next small slice**, to brainstorm first ([DOGFOOD.md](DOGFOOD.md) §2 is its shape and its scope).
+
+**The Lobby listeners view** (the directory becomes a view inside the Lobby layout) still has an
+**approved spec and an approved plan on `main`**:
+`docs/superpowers/specs/2026-09-20-loom-lobby-listeners-view-design.md` and
+`docs/superpowers/plans/2026-09-20-loom-lobby-listeners-view.md`, six tasks — and **Paw has said not
+to start development until told.** Do not cut `feat/lobby-listeners-view` and do not execute that
+plan before that word.
