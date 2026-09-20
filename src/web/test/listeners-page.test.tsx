@@ -413,6 +413,21 @@ describe("the controls and the query string (spec §5.4)", () => {
     expect([replaced.mock.calls.length, location.search]).toEqual([0, ""]);
   });
 
+  // Rendered in place the page was not *opened* with this URL: the address bar still names whatever
+  // page the browser really loaded, and its query string is that page's, not this one's.
+  it("reads none of the address bar's query string when it was rendered in place", async () => {
+    const v = mountRoute({ inPlace: true, path: `/lobby?q=fable&${FILTERED}` });
+    await settle();
+    const q = v.queries()[0]!;
+    expect([q.has("q"), q.has("filter")]).toEqual([false, false]);
+  });
+
+  it("says nothing about a link it was not opened with", async () => {
+    mountRoute({ inPlace: true, path: "/lobby?filter=not-json" });
+    await settle();
+    expect(!!screen.queryByText("Part of this link was not understood, so it was ignored.")).toBe(false);
+  });
+
   it("renders the directory for a link it could not read whole, with a note", async () => {
     const v = mountApp({ path: "/lobby/listeners?filter=not-json", storage: joined() });
     await settle();
@@ -596,6 +611,67 @@ describe("Show more (spec §5.3)", () => {
     await settle();
     expect(!!screen.queryByRole("button", { name: "Show more" })).toBe(false);
   });
+
+  // The facets describe the *filters*, which an appended page does not change, and §6 names the
+  // facet pass the most expensive read this query makes.
+  it("asks for no facets: appending a page cannot change them", async () => {
+    const v = mountApp({ storage: joined(), routes: {
+      [LISTENERS]: inTurn(page1, () => json(directory([listener("cy", "c")], { total: 3, matched: 3 }))),
+    } });
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+    await settle();
+    expect(v.queries()[1]!.get("facets")).toBe("false");
+  });
+
+  it("keeps the chips the facet-free answer did not carry", async () => {
+    const appended = { ...directory([listener("cy", "c")], { total: 3, matched: 3 }), facets: undefined };
+    mountApp({ storage: joined(), routes: { [LISTENERS]: inTurn(page1, () => json(appended)) } });
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+    await settle();
+    expect(!!screen.queryByRole("button", { name: /^shell/ })).toBe(true);
+  });
+});
+
+/**
+ * Spec §7's last rule: core answers a malformed or stale-format cursor with `validation`, and a
+ * cursor the server refuses must not wedge the page. Offering the button again would send the same
+ * refused cursor for as long as the human keeps pressing it.
+ */
+describe("a cursor the Lobby refuses (spec §7)", () => {
+  const page1 = () => json(directory([listener("ada", "a"), listener("bo", "b")], { nextCursor: "c1", total: 3, matched: 3 }));
+  const REFUSED = fail("validation", "cursor is malformed", 400);
+  const after = async () => {
+    const v = mountApp({ storage: joined(), routes: { [LISTENERS]: inTurn(page1, REFUSED) } });
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+    await settle();
+    return v;
+  };
+
+  it("stops offering it rather than sending the same refused cursor again", async () => {
+    await after();
+    expect(!!screen.queryByRole("button", { name: "Show more" })).toBe(false);
+  });
+
+  it("keeps the rows that were on screen and says what happened", async () => {
+    const v = await after();
+    expect([v.names(), !!screen.queryByText("cursor is malformed")]).toEqual([["ada", "bo"], true]);
+  });
+
+  // The cursor is gone; the view is not. A control change starts a fresh first page as it always has.
+  it("leaves the next control change working", async () => {
+    const v = mountApp({ storage: joined(), routes: {
+      [LISTENERS]: inTurn(page1, REFUSED, () => json(directory([listener("cy", "c")]))),
+    } });
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+    await settle();
+    fireEvent.click(chip(/^shell/));
+    await settle();
+    expect([v.names(), v.queries()[2]!.has("cursor")]).toEqual([["cy"], false]);
+  });
 });
 
 describe("a failed query is never an empty directory (spec §7)", () => {
@@ -672,6 +748,35 @@ describe("the chips (spec §5.3)", () => {
     fireEvent.click(chip(/^high/));
     await settle();
     expect(v.queries()[2]!.get("filter")).toBe('{"models":[{"model":"opus-5","effort":"high"}]}');
+  });
+
+  it("clears the serving policy when its own chip is clicked again", async () => {
+    const v = mountRoute();
+    await settle();
+    fireEvent.click(chip(/^anyone/));
+    await settle();
+    fireEvent.click(chip(/^anyone/));
+    await settle();
+    expect(v.queries().map((q) => q.get("filter"))).toEqual([null, '{"serves":"anyone"}', null]);
+  });
+
+  it("says a facet was cut at twenty when the answer says it was", async () => {
+    const cut = directory([listener("ada", "a")]);
+    cut.facets!.tools.more = true;
+    mountRoute({ routes: { [LISTENERS]: () => json(cut) } });
+    await settle();
+    expect(!!screen.queryByText("20 most common")).toBe(true);
+  });
+
+  it("says an effort row was cut at ten when the answer says it was", async () => {
+    const cut = directory([listener("ada", "a")]);
+    cut.facets!.models.values[0]!.efforts = [{ value: "high", count: 1 }];
+    cut.facets!.models.values[0]!.moreEfforts = true;
+    mountRoute({ routes: { [LISTENERS]: () => json(cut) } });
+    await settle();
+    fireEvent.click(chip(/^opus-5/));
+    await settle();
+    expect(!!screen.queryByText("10 most common")).toBe(true);
   });
 
   it("chooses one serving policy at a time", async () => {
@@ -785,6 +890,46 @@ describe("a Lobby secret the instance refuses (spec §5.5)", () => {
     mountApp({ storage, routes: { [LISTENERS]: INVALID } });
     await settle();
     expect(writes.mock.calls.length).toBe(1);
+  });
+});
+
+/**
+ * A grid that changes under a human who is not looking at it has to say so. `CreateWeaveForm`'s
+ * saved panel sets the precedent (`role="status"`): the page announces what it is doing rather than
+ * relying on the eye catching a line of muted text.
+ */
+describe("the states this page says out loud (spec §5.3)", () => {
+  it("announces a failed query as an alert", async () => {
+    mountApp({ storage: joined(), routes: { [LISTENERS]: fail("internal", "boom", 500) } });
+    await settle();
+    expect(screen.getByRole("alert").textContent).toBe("boom");
+  });
+
+  it("announces a failed Show more beside its button", async () => {
+    const page1 = () => json(directory([listener("ada", "a")], { nextCursor: "c1", total: 2, matched: 2 }));
+    mountApp({ storage: joined(), routes: { [LISTENERS]: inTurn(page1, fail("internal", "boom", 500)) } });
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+    await settle();
+    expect(screen.getByRole("alert").textContent).toBe("boom");
+  });
+
+  it("announces the refresh that is keeping the old rows on screen", async () => {
+    const held = gated(() => json(directory([listener("bo", "b")])));
+    mountApp({ storage: joined(), routes: {
+      [LISTENERS]: inTurn(() => json(directory([listener("ada", "a")])), held.answer),
+    } });
+    await settle();
+    fireEvent.click(chip(/^shell/));
+    await settle();
+    expect(screen.getByRole("status").textContent).toBe("updating…");
+  });
+
+  it("announces the first load, which has no rows to keep", async () => {
+    const held = gated(() => json(directory([])));
+    mountApp({ storage: joined(), routes: { [LISTENERS]: held.answer } });
+    await settle();
+    expect(screen.getByRole("status").textContent).toBe("Loading…");
   });
 });
 

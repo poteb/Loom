@@ -164,7 +164,12 @@ export function writeSearch(view: ListenersView, inPlace?: boolean): void {
  * client would otherwise put `"tools":[]` on the wire, which core reads as no filter anyway but
  * which makes every request carry a filter it does not have).
  */
-export function queryFromView(view: ListenersView, extra: { limit?: number; cursor?: string } = {}): ListenersQuery {
+export function queryFromView(
+  view: ListenersView,
+  /** `facets: false` is Show more's: the facets describe the filters, which appending cannot
+   *  change, and the facet pass is the most expensive read this query makes (spec §6). */
+  extra: { limit?: number; cursor?: string; facets?: boolean } = {},
+): ListenersQuery {
   const query: ListenersQuery = { sort: view.sort, dir: view.dir, limit: extra.limit ?? 50 };
   if (view.q !== "") query.q = view.q;
   if (view.models.length > 0) query.models = view.models;
@@ -172,5 +177,6 @@ export function queryFromView(view: ListenersView, extra: { limit?: number; curs
   if (view.runtime !== undefined) query.runtime = view.runtime;
   if (view.serves !== undefined) query.serves = view.serves;
   if (extra.cursor !== undefined) query.cursor = extra.cursor;
+  if (extra.facets === false) query.facets = false;
   return query;
 }

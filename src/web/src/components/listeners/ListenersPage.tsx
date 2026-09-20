@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { LoomClientError } from "@loom/client";
 import type { Listener, ListenersFacets, ListenersSort, LoomClient, ServesKind } from "@loom/client";
 import type { KeyValueStorage } from "../../storage.js";
 import { leavingIsSafe, type PersistenceNotice } from "../../persistence.js";
@@ -6,7 +7,7 @@ import { isCredentialFailure, weaveKey } from "../../weaves-store.js";
 import { ProfileCard } from "../ProfileCard.js";
 import { FacetChips, ModelChips } from "./FacetChips.js";
 import {
-  queryFromView, viewFromSearch, writeSearch, type ListenersView,
+  EMPTY_VIEW, queryFromView, viewFromSearch, writeSearch, type ListenersView,
 } from "./listeners-query.js";
 
 /** Spec §5.3: one page of 50, and "Show more" appends the next. */
@@ -60,7 +61,13 @@ export function ListenersPage({
 }: ListenersPageProps) {
   // The link this page was opened with, read once. `partial` latches with it: it describes that
   // link, not the controls, which the human has been driving ever since.
-  const opened = useMemo(() => viewFromSearch(location.search), []);
+  //
+  // Rendered in place there is no such link: the address bar still names whatever page this browser
+  // really loaded, and reading its query string would seed this page's controls from another page's
+  // URL — and report that page's unreadable parts as this one's. It is also the URL this page then
+  // refuses to write to (`writeSearch`), so reading it would be half of a rule.
+  const opened = useMemo(
+    () => inPlace ? { view: EMPTY_VIEW, partial: false } : viewFromSearch(location.search), []);
   const [view, setView] = useState<ListenersView>(opened.view);
   const [draft, setDraft] = useState(opened.view.q);
   // The view and the draft are also held in refs, because the debounce timer and every control read
@@ -89,7 +96,10 @@ export function ListenersPage({
     setState((s) => cursor
       ? { ...s, appending: true, moreError: undefined }
       : { ...s, status: "loading", error: undefined, moreError: undefined, appending: false });
-    reader.listListeners(queryFromView(next, { limit: PAGE, cursor })).then(
+    // The facets are asked for on every query but Show more's: they describe the *filters*, which
+    // appending a page cannot change, and they are the most expensive read this query makes (§6).
+    // The page keeps the ones it has (`page.facets ?? s.facets` below).
+    reader.listListeners(queryFromView(next, { limit: PAGE, cursor, facets: cursor === undefined })).then(
       (page) => {
         if (!live.current || n !== gen.current) return;
         if (firstTotal.current === undefined) firstTotal.current = page.total;
@@ -109,8 +119,14 @@ export function ListenersPage({
         if (!live.current || n !== gen.current) return;
         if (isCredentialFailure(e)) { onCredentialFailure(); return; }
         const message = e instanceof Error ? e.message : String(e);
+        // A cursor core answered with `validation` is malformed or in a format this instance no
+        // longer writes, and it will be refused for as long as this page offers it (spec §7). So
+        // the page forgets it: the rows stay, the reason is said, and the button goes rather than
+        // sending the same refused value on every press. Every other failure keeps the cursor,
+        // because a retry is exactly what it wants.
+        const refused = cursor !== undefined && e instanceof LoomClientError && e.code === "validation";
         setState((s) => cursor
-          ? { ...s, appending: false, moreError: message }
+          ? { ...s, appending: false, moreError: message, nextCursor: refused ? undefined : s.nextCursor }
           : { ...s, status: "error", error: message, appending: false });
       },
     );
@@ -253,8 +269,9 @@ export function ListenersPage({
         </div>
       )}
 
-      {/* Above the rows, never instead of them (spec §7). */}
-      {state.status === "error" && <p class="error">{state.error}</p>}
+      {/* Above the rows, never instead of them (spec §7) — and announced, because the rows below it
+          do not change when a query fails and there is nothing else to notice. */}
+      {state.status === "error" && <p class="error" role="alert">{state.error}</p>}
       {changed && (
         <p class="listeners-changed muted">
           <span>The list has changed since you loaded it.</span>{" "}
@@ -264,15 +281,23 @@ export function ListenersPage({
 
       <p class="listeners-counts">
         {counts && <span>{counts}</span>}
-        {state.status === "loading" && state.rows.length > 0 && <span class="listeners-updating">updating…</span>}
+        {state.status === "loading" && state.rows.length > 0 && (
+          // The rows are deliberately kept on screen while this runs (spec §5.3), so the only sign
+          // that anything is happening is this word. `CreateWeaveForm` sets the precedent.
+          <span class="listeners-updating" role="status">updating…</span>
+        )}
       </p>
 
       <Grid state={state} />
 
-      {state.nextCursor && (
+      {/* The error outlives the button: a cursor core refused with `validation` is forgotten, and
+          the reason it was refused must not go with it. */}
+      {(state.nextCursor || state.moreError) && (
         <div class="listeners-more">
-          <button type="button" onClick={showMore} disabled={state.appending}>Show more</button>
-          {state.moreError && <span class="error">{state.moreError}</span>}
+          {state.nextCursor && (
+            <button type="button" onClick={showMore} disabled={state.appending}>Show more</button>
+          )}
+          {state.moreError && <span class="error" role="alert">{state.moreError}</span>}
         </div>
       )}
     </div>
@@ -286,7 +311,7 @@ export function ListenersPage({
  */
 function Grid({ state }: { state: PageState }) {
   if (state.rows.length === 0) {
-    if (state.status === "loading") return <p class="muted">Loading…</p>;
+    if (state.status === "loading") return <p class="muted" role="status">Loading…</p>;
     if (state.status === "ready") {
       return state.total === 0
         ? <p class="muted">Nobody has declared a profile yet.</p>
