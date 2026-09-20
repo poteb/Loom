@@ -5,6 +5,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   EMPTY_VIEW, queryFromView, searchFromView, viewFromSearch, writeSearch, type ListenersView,
 } from "../src/components/listeners/listeners-query.js";
+import { pathForView, viewOfPath } from "../src/lobby-view.js";
 
 /** A view with every control set, used for the round trip and as the base of the bound cases. */
 const FULL: ListenersView = {
@@ -323,13 +324,6 @@ describe("the one replaceState rule (spec §5.4)", () => {
     expect([replaced.mock.calls.length, location.search]).toEqual([0, ""]);
   });
 
-  it("leaves the address bar entirely alone for a page rendered in place", () => {
-    at("/lobby/listeners");
-    const replaced = vi.spyOn(history, "replaceState");
-    writeSearch(NODE, true);
-    expect([replaced.mock.calls.length, location.search]).toEqual([0, ""]);
-  });
-
   it("writes nothing when the string it would write is the one already there", () => {
     at("/lobby/listeners");
     writeSearch(NODE);
@@ -344,5 +338,29 @@ describe("the one replaceState rule (spec §5.4)", () => {
     writeSearch(NODE);
     writeSearch(EMPTY_VIEW);
     expect(pushed.mock.calls.length).toBe(0);
+  });
+});
+
+/**
+ * The Lobby's two addresses, in the module `app.tsx` and `WeaveView` share (spec §4.1). They live
+ * here rather than in a file of their own because `lobby-view.ts` is a twenty-line module and
+ * `writeSearch`'s own path test is already above, so all of the feature's path rules read together.
+ */
+describe("the Lobby's two addresses (spec §4.1)", () => {
+  it("names the directory for both spellings the server serves", () => {
+    expect([viewOfPath("/lobby/listeners"), viewOfPath("/lobby/listeners/")]).toEqual(["listeners", "listeners"]);
+  });
+
+  it("names the thread for both spellings of the Lobby", () => {
+    expect([viewOfPath("/lobby"), viewOfPath("/lobby/")]).toEqual(["thread", "thread"]);
+  });
+
+  it("says nothing at all about a path that is not the Lobby's", () => {
+    expect([viewOfPath("/"), viewOfPath("/lobby/listenersx"), viewOfPath("/weave/x")])
+      .toEqual([undefined, undefined, undefined]);
+  });
+
+  it("writes one canonical spelling, never a trailing slash", () => {
+    expect([pathForView("thread"), pathForView("listeners")]).toEqual(["/lobby", "/lobby/listeners"]);
   });
 });

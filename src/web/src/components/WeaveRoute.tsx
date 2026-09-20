@@ -5,6 +5,7 @@ import type { SessionTarget } from "../session.js";
 import { useSession } from "../useSession.js";
 import { leavingIsSafe } from "../persistence.js";
 import { weaveKey } from "../weaves-store.js";
+import type { MainArea } from "../lobby-view.js";
 import { WeaveView } from "./WeaveView.js";
 import { HomeLink } from "./HomeLink.js";
 import { PersistenceBar } from "./PersistenceBar.js";
@@ -15,13 +16,13 @@ import { JoinLobbyForm } from "./main/JoinLobbyForm.js";
  * the unjoined-Lobby fork (§3.3).
  */
 export function WeaveRoute(props: RouteDeps & (
-  | { lobbyRoute: true; target?: never }
+  | { lobbyRoute: true; target?: never; initialView?: MainArea }
   | { lobbyRoute?: false; target: SessionTarget })) {
   // Explicitly, not `{...props}`: the two route props below are this component's own business, and
   // spreading them onto children that ignore or overwrite them would say otherwise.
-  const { client, storage, notice, openInPlace, openMainInPlace, openListenersInPlace } = props;
-  const deps: RouteDeps = { client, storage, notice, openInPlace, openMainInPlace, openListenersInPlace };
-  if (props.lobbyRoute) return <LobbyRoute {...deps} />;
+  const { client, storage, notice, openInPlace, openMainInPlace } = props;
+  const deps: RouteDeps = { client, storage, notice, openInPlace, openMainInPlace };
+  if (props.lobbyRoute) return <LobbyRoute {...deps} initialView={props.initialView} />;
   return <WeaveSession {...deps} target={props.target} />;
 }
 
@@ -36,7 +37,7 @@ type Found =
  * Every other failure is a failed *read*, and saying "no Lobby" for one would be a guess about an
  * instance that may well have a perfectly good Lobby.
  */
-export function LobbyRoute(deps: RouteDeps) {
+export function LobbyRoute(deps: RouteDeps & { initialView?: MainArea }) {
   const { client, storage, notice, openMainInPlace } = deps;
   const [found, setFound] = useState<Found>({ kind: "loading" });
   // Same reason as `WeaveMount` below: the notice is a plain page-scoped object, and the two cards
@@ -90,13 +91,18 @@ export function LobbyRoute(deps: RouteDeps) {
  * is no reason to — the session it would rebuild is the one this already has, and one code path is
  * easier to be sure of than two.
  */
-function WeaveSession(props: RouteDeps & { target: SessionTarget; lobby?: Lobby }) {
+function WeaveSession(props: RouteDeps & { target: SessionTarget; lobby?: Lobby; initialView?: MainArea }) {
   const [reloadKey, setReloadKey] = useState(0);
-  return <WeaveMount key={reloadKey} {...props} onJoined={() => setReloadKey((n) => n + 1)} />;
+  // Above the key, deliberately: a join rebuilds everything below it, and which part of the page the
+  // human was looking at is not the join's to reset. `initialView` is read once, to seed this.
+  const [view, setView] = useState<MainArea>(() => props.initialView ?? "thread");
+  return <WeaveMount key={reloadKey} {...props} onJoined={() => setReloadKey((n) => n + 1)}
+    view={view} setView={setView} />;
 }
 
-function WeaveMount({ client, storage, notice, openMainInPlace, openListenersInPlace, target, lobby, onJoined }:
-  RouteDeps & { target: SessionTarget; lobby?: Lobby; onJoined: () => void }) {
+function WeaveMount({ client, storage, notice, openMainInPlace, target, lobby, onJoined, view, setView }:
+  RouteDeps & { target: SessionTarget; lobby?: Lobby; onJoined: () => void;
+    view: MainArea; setView: (next: MainArea) => void }) {
   const { session, state } = useSession(target, { client, storage, onWrite: notice.note });
   // The notice is a plain page-scoped object, so a subscription is what turns a failed write —
   // raised by this session's own §10.9 entry write, or by the form that rendered this page in
@@ -161,10 +167,10 @@ function WeaveMount({ client, storage, notice, openMainInPlace, openListenersInP
   // warning the human needs would be latched and never drawn. `App` hands every route the same
   // notice and mounts one route at a time, so it stays one bar, and one dismissal, per page load.
   //
-  // The sidebar's way into the directory is decided by the same `canLeave`, and for the same reason
-  // (spec §5.1): an anchor to `/lobby/listeners` can be middle-clicked, and on this browser that is
-  // the page load which drops the only copy of the credential. The view renders the answer.
+  // `onView` is the seam the view change goes through, and it is opened here rather than below so
+  // that nothing under this mount ever gains a history decision of its own: this is where `storage`,
+  // `notice` and the Weave id `canLeave` is computed from already are (spec §4.2).
   return <WeaveView session={session} state={state} banner={<PersistenceBar notice={notice} />}
     noCredential={noCredential} openMainInPlace={canLeave ? undefined : openMainInPlace}
-    openListenersInPlace={canLeave ? undefined : openListenersInPlace} />;
+    view={view} onView={setView} />;
 }

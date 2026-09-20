@@ -4,12 +4,11 @@ import { render, screen, fireEvent } from "@testing-library/preact";
 import { LoomClient, type Listener, type ListenersPage } from "@loom/client";
 import { App, routeOf } from "../src/app.js";
 import { ListenersLink } from "../src/components/ListenersLink.js";
-import { ListenersRoute } from "../src/components/listeners/ListenersRoute.js";
 import type { SessionState } from "../src/session.js";
 import { memoryStorage, type KeyValueStorage } from "../src/storage.js";
 import { createPersistenceNotice, type PersistenceNotice } from "../src/persistence.js";
 import { createWeavesSignal } from "../src/weaves-signal.js";
-import { readWeaveEntry, saveWeaveEntry, setIdentity, weaveKey } from "../src/weaves-store.js";
+import { readWeaveEntry, setIdentity, weaveKey } from "../src/weaves-store.js";
 
 // `http://loom.test` is refused by the client's own URL policy (http is allowed on loopback only,
 // `src/client/src/url.ts`), so the stubbed instance speaks https to the same host: no request leaves
@@ -21,6 +20,23 @@ const JOIN = `${BASE}/api/lobby/join`;
 /** The listeners route. Stubs match on the **path**: every query the page makes is this path with a
  *  different query string, and what each one asked for is asserted on its own (`queries()`). */
 const LISTENERS = `${BASE}/api/lobby/listeners`;
+/** The session's own count read (spec §5.1) shares this path with the directory's query and is told
+ *  apart by `limit=0`. It gets a row of its own in the table, so an ordinary `[LISTENERS]` row still
+ *  means "what the directory is answered with" and every `inTurn` script keeps its call numbering. */
+const COUNT = `${LISTENERS}?limit=0`;
+const LISTENERS_PATH = new URL(LISTENERS).pathname;
+const isCount = (url: URL) => url.pathname === LISTENERS_PATH && url.searchParams.get("limit") === "0";
+/** The three paths the no-remount test counts, and the two `POST`s the Lobby page can make. */
+const WEAVE = `${BASE}/api/weaves/${LOBBY.weaveId}`;
+const EVENTS = `${WEAVE}/events`;
+const TICKET = `${BASE}/api/auth/ws-ticket`;
+/** `POST` only, and no row of its own in `INSTANCE`: creating a Thread is something four tests do
+ *  deliberately, each with the answer its own rule needs. */
+const THREADS = `${WEAVE}/threads`;
+/** The send. `postMessage` answers with the event it made, which the session applies through
+ *  `onEvent` — the row cannot echo the posted text (a stub row sees the URL, not the body), and it
+ *  does not have to: what these tests assert is the **request**, read off `fetchStub.mock.calls`. */
+const MESSAGES = `${BASE}/api/threads/g1/messages`;
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -55,6 +71,22 @@ function directory(listeners: Listener[] = [], over: Partial<ListenersPage> = {}
   };
 }
 
+/** The `General` thread the Lobby's Weave carries. Its id is `g1`, because the send posts to its path. */
+const GENERAL = { id: "g1", weaveId: LOBBY.weaveId, name: "General", isGeneral: true, createdBy: "p-dana", createdAt: "", closedAt: null, url: null };
+/** A second Thread, for the one test that needs a switch: a switch cannot be made against a list of one. */
+const DESIGN = { ...GENERAL, id: "t2", name: "Design", isGeneral: false };
+/**
+ * What `getWeave` answers for the Lobby: the shape it really uses now, with no profile per
+ * participant at all (spec §3.1), which is why the sidebar counts instead. Two tests override it —
+ * one needs a second Thread, one needs this browser to be a keeper.
+ */
+const weaveBody = (over: Record<string, unknown> = {}) => ({
+  weave: { id: LOBBY.weaveId, title: "Lobby", createdAt: "", archivedAt: null, lastSeq: 0, guidelines: "" },
+  threads: [GENERAL],
+  participants: [JOINED.participant],
+  ...over,
+});
+
 type Routes = Record<string, (url: URL) => Response | Promise<Response>>;
 
 /**
@@ -65,7 +97,7 @@ type Routes = Record<string, (url: URL) => Response | Promise<Response>>;
 function stubFetch(routes: Routes) {
   return vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
     const url = new URL(String(input));
-    const route = routes[`${url.origin}${url.pathname}`];
+    const route = routes[isCount(url) ? COUNT : `${url.origin}${url.pathname}`];
     if (!route) throw new Error(`no stub for ${url.pathname}`);
     return route(url);
   });
@@ -88,15 +120,27 @@ function gated(body: () => Response) {
   return { answer: async () => { await gate; return body(); }, release: () => release() };
 }
 
-/** What this page reads while it loads: where the Lobby is, and its first page of listeners. */
+/**
+ * Everything the **Lobby page** reads while it loads, the two side reads included; an unstubbed path
+ * is a test bug, loudly. The directory is one view of that page now, so its own query is a row here
+ * beside the Weave, its events, the guidelines, the request board and the count read.
+ */
 const INSTANCE: Routes = {
   [LOBBY_URL]: () => json(LOBBY),
   [LISTENERS]: () => json(directory([listener("ada", "ada@example.com")])),
+  /** A Lobby that answers a count of its own, so the number beside the sidebar line names this table. */
+  [COUNT]: () => json(directory([], { total: 12 })),
   [JOIN]: () => json(JOINED),
-  // The directory opens no WebSocket (spec §5.5), so nothing here asks for a ticket. Stubbed all the
-  // same: a *fatal* ticket failure is what leaves no socket and no reconnect timer behind, so a test
-  // that mounts a Weave page beside this one gets the same silence.
-  [`${BASE}/api/auth/ws-ticket`]: () => json({ code: "forbidden", message: "no stream in tests" }, 403),
+  [EVENTS]: () => json({ events: [] }),
+  [WEAVE]: () => json(weaveBody()),
+  [`${BASE}/api/guidelines`]: () => json({ guidelines: "" }),
+  [`${BASE}/api/requests`]: () => json({ requests: [] }),
+  [`${BASE}/api/lobby/participants/me`]: () => json(JOINED.participant),
+  [MESSAGES]: () => json({ weaveId: LOBBY.weaveId, seq: 1, threadId: "g1", type: "message",
+    actor: JOINED.participant.id, at: "", payload: { text: "" } }),
+  // A *fatal* ticket failure is what leaves no socket and no reconnect timer behind, so nothing of
+  // this page outlives the test that mounted it.
+  [TICKET]: () => json({ code: "forbidden", message: "no stream in tests" }, 403),
 };
 
 /** Several macrotask turns: the pointer resolving, the first query landing, and a rebuilt one after. */
@@ -119,17 +163,22 @@ function harness(opts: MountOpts) {
   const storage = opts.storage ?? memoryStorage();
   const notice = opts.notice ?? createPersistenceNotice();
   const to = (url: string) => fetchStub.mock.calls.filter((c) => new URL(String(c[0])).pathname === new URL(url).pathname);
-  return {
+  const directoryCalls = () => to(LISTENERS).filter((c) => new URL(String(c[0])).searchParams.get("limit") !== "0");
+  const h = {
     fetchStub, client, storage, notice,
     calls: (url: string) => to(url).length,
-    /** What each listeners request asked for, in order. */
-    queries: () => to(LISTENERS).map((c) => new URL(String(c[0])).searchParams),
-    /** The credential the n-th listeners request was made with. */
-    authOf: (n: number) => (to(LISTENERS)[n]?.[1]?.headers as Record<string, string> | undefined)?.authorization,
-    heading: () => !!screen.queryByRole("heading", { name: "Listeners" }),
+    /** What each **directory** query asked for, in order. The count read is not one of them. */
+    queries: () => directoryCalls().map((c) => new URL(String(c[0])).searchParams),
+    /** How many directory queries have been made. Replaces `calls(LISTENERS)`, which now also counts
+     *  the session's two-side-reads-per-refresh. */
+    asked: () => h.queries().length,
+    /** The credential the n-th **directory** query was made with. */
+    authOf: (n: number) => (directoryCalls()[n]?.[1]?.headers as Record<string, string> | undefined)?.authorization,
+    heading: () => !!screen.queryByRole("heading", { level: 2, name: "Listeners" }),
     /** The names on the cards, in the order the grid renders them. */
     names: () => [...document.querySelectorAll(".profile-name")].map((e) => e.textContent),
   };
+  return h;
 }
 
 function mountApp(opts: MountOpts = {}) {
@@ -147,16 +196,30 @@ function mountApp(opts: MountOpts = {}) {
 }
 
 /**
- * The route on its own, with the three in-place callbacks as spies. `openListenersInPlace` has no
- * caller until the sidebar arrives, so `inPlace` — and the two controls that ask where they may
- * send this browser — are reachable only from here.
+ * The Lobby page, with the directory open or closed. The path is the *real* one this browser loaded,
+ * so `/lobby/listeners` is a deep link — the directory is on screen as soon as the session is ready,
+ * because `initialView` seeded it — and `/lobby` is a Lobby whose directory is reached by pressing
+ * the sidebar line. **The deep link is the default**, and that is a rule and not a convenience: a
+ * directory opened by `toggle()` from `/lobby` leaves `location.pathname` at `/lobby` until the app
+ * learns to push, and `writeSearch` then correctly refuses to write — so every test that reads or
+ * asserts a query string must be standing on the path that owns it. Only a test about the
+ * transition itself starts at `/lobby`.
  */
-function mountRoute(opts: MountOpts & { inPlace?: boolean } = {}) {
-  const h = harness({ storage: joined(), ...opts });
-  const spies = { openInPlace: vi.fn(), openMainInPlace: vi.fn(), openListenersInPlace: vi.fn() };
-  const view = render(<ListenersRoute client={h.client} storage={h.storage} notice={h.notice}
-    {...spies} inPlace={opts.inPlace} />);
-  return { ...view, ...h, ...spies };
+function mountLobby(opts: MountOpts = {}) {
+  const v = mountApp({ storage: joined(), ...opts, path: opts.path ?? "/lobby/listeners" });
+  const line = (): HTMLElement | null => screen.queryByRole("button", { name: /^Listeners/ });
+  return {
+    ...v,
+    line,
+    /**
+     * Presses the sidebar line and lets the query that follows land. `settling` is the parameter that
+     * keeps this usable under `vi.useFakeTimers()`: awaiting the real-timer `settle()` on a clock the
+     * test owns never returns, so a fake-timer test calls `await v.toggle(settleFake)`.
+     */
+    toggle: async (settling: () => Promise<void> = settle) => { fireEvent.click(line()!); await settling(); },
+    directory: () => !!v.container.querySelector(".listeners"),
+    composerSlot: () => v.container.querySelector(".composer-slot") as HTMLElement | null,
+  };
 }
 
 /** A browser that has already joined the Lobby: the directory's ordinary starting point. */
@@ -173,13 +236,6 @@ function joinedInMemory(): KeyValueStorage {
   return storage;
 }
 
-/** The Weave secret and no identity: the credential a 401 has already fallen back to (spec §5.5). */
-function secretOnly(): KeyValueStorage {
-  const storage = memoryStorage();
-  saveWeaveEntry(storage, LOBBY.weaveId, { secret: "lobby-secret" });
-  return storage;
-}
-
 /** An identity and a Weave secret beside it: what a 401 falls back to (spec §5.5). */
 function joinedWithSecret(): KeyValueStorage {
   const storage = memoryStorage();
@@ -190,21 +246,26 @@ function joinedWithSecret(): KeyValueStorage {
 
 const INVALID = fail("invalid_token", "Unknown or expired credential", 401);
 const chip = (label: RegExp | string) => screen.getByRole("button", { name: label });
+/** The body of the one `POST` to `MESSAGES` this page made: what a send test actually asserts. */
+const posted = (v: { fetchStub: ReturnType<typeof stubFetch> }) =>
+  JSON.parse(String(v.fetchStub.mock.calls.find((c) => String(c[0]) === MESSAGES)![1]!.body));
 /** `?filter={"tools":["shell"]}`, the one filter the fixture's facets can answer for. */
 const FILTERED = `filter=${encodeURIComponent(JSON.stringify({ tools: ["shell"] }))}`;
 
-afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+// `location` is reset too: from this task on a test can leave the address bar somewhere else, and
+// `replaceState` rather than a push, so the reset itself adds no entry.
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); history.replaceState(null, "", "/"); });
 
-describe("the listeners route (spec §5.2)", () => {
-  it("matches /lobby/listeners", () => {
-    expect(routeOf("/lobby/listeners")).toEqual({ kind: "listeners" });
+describe("the Lobby's two addresses (spec §4.1)", () => {
+  it("reads /lobby/listeners as the Lobby with the directory open", () => {
+    expect(routeOf("/lobby/listeners")).toEqual({ kind: "lobby", view: "listeners" });
   });
 
-  it("matches it with a trailing slash, as the server serves both", () => {
-    expect(routeOf("/lobby/listeners/")).toEqual({ kind: "listeners" });
+  it("reads its trailing slash the same way, as the server serves both", () => {
+    expect(routeOf("/lobby/listeners/")).toEqual({ kind: "lobby", view: "listeners" });
   });
 
-  it("leaves /lobby the Lobby: two exact matches, neither shadowing the other", () => {
+  it("leaves /lobby the Lobby with no view of its own", () => {
     expect(routeOf("/lobby")).toEqual({ kind: "lobby" });
   });
 
@@ -213,101 +274,331 @@ describe("the listeners route (spec §5.2)", () => {
   });
 });
 
-describe("the listeners page (spec §5.5)", () => {
-  it("renders the directory for a browser holding a Lobby identity", async () => {
-    const v = mountApp({ storage: joined() });
+/**
+ * Spec §3.2, asserted by counting requests and never by inspecting internals. This is the one
+ * **absolute** request count in the suite, and it is one legitimately: the `ws-ticket` row answers a
+ * fatal `403`, so this harness opens no stream, has no reconnect and therefore schedules no refresh
+ * — nothing but a remount can ask for the Weave or its events a second time, which is the claim.
+ */
+describe("the session does not remount on a view flip (spec §3.2)", () => {
+  it("asks for the Weave, its events and a stream ticket once across three flips", async () => {
+    const v = mountLobby({ path: "/lobby" });
     await settle();
-    expect(v.heading()).toBe(true);
+    await v.toggle();
+    await v.toggle();
+    await v.toggle();
+    expect([v.calls(WEAVE), v.calls(EVENTS), v.calls(TICKET)]).toEqual([1, 1, 1]);
+  });
+});
+
+describe("the sidebar line is the toggle (spec §8)", () => {
+  it("is a button, with no href a middle click could turn into a page load", async () => {
+    const v = mountLobby({ path: "/lobby" });
+    await settle();
+    expect([v.line()!.tagName, v.line()!.getAttribute("href")]).toEqual(["BUTTON", null]);
   });
 
-  it("asks for the first page exactly once", async () => {
-    const v = mountApp({ storage: joined() });
+  it("is marked current only while the directory is on screen", async () => {
+    const v = mountLobby({ path: "/lobby" });
     await settle();
-    expect(v.calls(LISTENERS)).toBe(1);
+    const closed = v.line()!.getAttribute("aria-current");
+    await v.toggle();
+    const open = v.line()!.getAttribute("aria-current");
+    await v.toggle();
+    expect([closed, open, v.line()!.getAttribute("aria-current")]).toEqual([null, "true", null]);
   });
 
-  it("shows a failed query's message rather than an empty directory", async () => {
-    const v = mountApp({ storage: joined(), routes: { [LISTENERS]: fail("internal", "boom", 500) } });
+  it("closes the directory when it is pressed again", async () => {
+    const v = mountLobby({ path: "/lobby" });
     await settle();
-    expect([v.heading(), !!screen.queryByText("boom")]).toEqual([true, true]);
+    await v.toggle();
+    await v.toggle();
+    expect(v.directory()).toBe(false);
+  });
+});
+
+describe("the deep link (spec §4.3)", () => {
+  it("mounts the Lobby with the directory open and the box seeded from the link", async () => {
+    const v = mountLobby({ path: "/lobby/listeners?q=ada" });
+    await settle();
+    expect([v.directory(), (screen.getByLabelText("Search") as HTMLInputElement).value]).toEqual([true, "ada"]);
   });
 
-  it("offers the join form when this browser holds no credential", async () => {
-    mountApp();
+  it("asks for exactly that one query", async () => {
+    const v = mountLobby({ path: "/lobby/listeners?q=ada" });
     await settle();
-    expect([!!screen.queryByRole("heading", { name: "Join the Lobby" }), !!screen.queryByRole("heading", { name: "Listeners" })])
-      .toEqual([true, false]);
+    expect([v.queries().length, v.queries()[0]!.get("q")]).toEqual([1, "ada"]);
+  });
+});
+
+/**
+ * Spec §3.4 and §3.5. The controls pressed here are the sidebar's own, which `INSTANCE` puts on
+ * screen: the `General` thread button comes from the Weave row's one thread, **New thread** from
+ * `ThreadList`'s own head, and the composer from `JOINED.participant` being a writable member.
+ */
+describe("picking a Thread, and the composer (spec §3.4, §3.5)", () => {
+  const create = (name: string) => {
+    fireEvent.click(screen.getByRole("button", { name: "New thread" }));
+    const box = screen.getByPlaceholderText("Thread name");
+    fireEvent.input(box, { target: { value: name } });
+    fireEvent.submit(box.closest("form")!);
+  };
+
+  it("closes the directory when a Thread is picked", async () => {
+    const v = mountLobby({ path: "/lobby" });
+    await settle();
+    await v.toggle();
+    fireEvent.click(screen.getByRole("button", { name: "General" }));
+    await settle();
+    expect(v.directory()).toBe(false);
   });
 
-  it("renders the directory in place once that join lands", async () => {
-    const v = mountApp();
+  // Creating one selects it (`session.ts:831`), and leaving the human on the directory would hide
+  // what they just made.
+  it("closes it when a Thread is created", async () => {
+    const v = mountLobby({ path: "/lobby", routes: { [THREADS]: () => json(DESIGN) } });
+    await settle();
+    await v.toggle();
+    create("Design");
+    await settle();
+    expect(v.directory()).toBe(false);
+  });
+
+  // The attribute, deliberately, and not `queryByRole("textbox")`: happy-dom's handling of the UA
+  // `[hidden]` rule is not something this suite should depend on.
+  it("keeps the composer mounted and undrawn while the directory is open", async () => {
+    const v = mountLobby({ path: "/lobby" });
+    await settle();
+    await v.toggle();
+    expect([v.composerSlot()!.hasAttribute("hidden"), !!v.composerSlot()!.querySelector("textarea")])
+      .toEqual([true, true]);
+  });
+});
+
+/**
+ * Spec §6.1: a rejection nobody is waiting for must not spend the page's one credential recovery.
+ * The default deep-link mount, whose one query is the gated one.
+ */
+describe("a 401 that lands too late (spec §6.1)", () => {
+  const entryOf = (s: KeyValueStorage) => s.get(weaveKey(LOBBY.weaveId));
+
+  it("writes nothing when it lands after the directory was closed", async () => {
+    const held = gated(INVALID);
+    const v = mountLobby({ storage: joinedWithSecret(), routes: { [LISTENERS]: held.answer } });
+    await settle();
+    fireEvent.click(v.line()!);                  // the view closes; the query nobody wants is still out
+    await settle();
+    const before = entryOf(v.storage);
+    held.release();
+    await settle();
+    expect([entryOf(v.storage), !!screen.queryByRole("heading", { name: "Join the Lobby" })])
+      .toEqual([before, false]);
+  });
+
+  it("writes nothing when it lands after the whole page has gone", async () => {
+    const held = gated(INVALID);
+    const v = mountLobby({ storage: joinedWithSecret(), routes: { [LISTENERS]: held.answer } });
+    await settle();
+    const before = entryOf(v.storage);
+    v.unmount();
+    held.release();
+    await settle();
+    expect([entryOf(v.storage), !!screen.queryByRole("heading", { name: "Join the Lobby" })])
+      .toEqual([before, false]);
+  });
+});
+
+describe("the draft survives the round trip (spec §3.5)", () => {
+  const TYPED = "half a message";
+  const composer = () => screen.getByPlaceholderText(/^Write a message/) as HTMLTextAreaElement;
+
+  it("keeps the text and the caret across a look at the directory", async () => {
+    const v = mountLobby({ path: "/lobby" });
+    await settle();
+    fireEvent.input(composer(), { target: { value: TYPED } });
+    const caret = composer().selectionStart;
+    await v.toggle();
+    await v.toggle();
+    expect([composer().value, composer().selectionStart]).toEqual([TYPED, caret]);
+  });
+
+  it("sends exactly that text when the Thread comes back", async () => {
+    const v = mountLobby({ path: "/lobby" });
+    await settle();
+    fireEvent.input(composer(), { target: { value: TYPED } });
+    await v.toggle();
+    await v.toggle();
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await settle();
+    expect(posted(v)).toEqual({ text: TYPED });
+  });
+
+  // Unchanged behaviour, pinned here so the next change cannot move it by accident: the composer is
+  // not keyed on the Thread, so a draft follows the human into the next one.
+  it("carries the draft across a Thread switch, exactly as it does today", async () => {
+    const v = mountLobby({ path: "/lobby",
+      routes: { [WEAVE]: () => json(weaveBody({ threads: [GENERAL, DESIGN] })) } });
+    await settle();
+    fireEvent.input(composer(), { target: { value: TYPED } });
+    fireEvent.click(screen.getByRole("button", { name: "Design" }));
+    await settle();
+    expect(composer().value).toBe(TYPED);
+  });
+});
+
+/**
+ * Spec §3.3: `reportError` is the failure channel of the header and of all three sidebar panels,
+ * every one of which stays live while the directory is open.
+ */
+describe("a mutation failure is visible while the directory is open (spec §3.3)", () => {
+  const bar = (v: { container: Element }) => v.container.querySelector(".error-bar")?.textContent;
+
+  it("says so when creating a Thread from the sidebar fails", async () => {
+    const v = mountLobby({ path: "/lobby", routes: { [THREADS]: fail("internal", "boom", 500) } });
+    await settle();
+    await v.toggle();
+    fireEvent.click(screen.getByRole("button", { name: "New thread" }));
+    const box = screen.getByPlaceholderText("Thread name");
+    fireEvent.input(box, { target: { value: "Design" } });
+    fireEvent.submit(box.closest("form")!);
+    await settle();
+    expect([bar(v), v.directory()]).toEqual(["boom", true]);
+  });
+
+  // `GuidelinesPanel` renders **Edit** only for `session.canModerate()`, so this test alone makes
+  // this browser a keeper — which is what `doLoad` builds `state.me` from.
+  it("says so when saving the guidelines fails", async () => {
+    const v = mountLobby({ path: "/lobby", routes: {
+      [WEAVE]: () => json(weaveBody({ participants: [{ ...JOINED.participant, role: "keeper" }] })),
+      [`${WEAVE}/guidelines`]: fail("internal", "boom", 500),
+    } });
+    await settle();
+    await v.toggle();
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const box = screen.getByLabelText("Weave guidelines");
+    fireEvent.input(box, { target: { value: "be kind" } });
+    fireEvent.submit(box.closest("form")!);
+    await settle();
+    expect([bar(v), v.directory()]).toEqual(["boom", true]);
+  });
+});
+
+/**
+ * Spec §3.1: the view lives above `key={reloadKey}`, so a join rebuilds the page under it without
+ * resetting which part of the page the human was looking at. Both halves script the directory's
+ * query as refused once and answered after the join: a row that refused *every* query would refuse
+ * the credential the join has just written too, and what "came back" would be the fork again.
+ */
+describe("a rejoin restores the view (spec §3.1)", () => {
+  const refusedThenAda = () => inTurn(INVALID, () => json(directory([listener("ada", "a")])));
+
+  it("comes back to the directory on a browser whose address bar names it", async () => {
+    const v = mountLobby({ path: "/lobby/listeners", storage: joined(),
+      routes: { [LISTENERS]: refusedThenAda() } });
     await settle();
     await v.joinAs("dana");
-    expect(v.heading()).toBe(true);
+    expect([v.directory(), v.names(), location.pathname]).toEqual([true, ["ada"], "/lobby/listeners"]);
   });
 
-  it("asks for its first page once that join lands, and once only", async () => {
-    const v = mountApp();
+  // The open never touched the URL here, so the view is the only record there is.
+  it("comes back to it on a memory-only browser whose address bar never left /lobby", async () => {
+    const v = mountLobby({ path: "/lobby", storage: joinedInMemory(),
+      routes: { [LISTENERS]: refusedThenAda() } });
     await settle();
+    await v.toggle();
     await v.joinAs("dana");
-    expect(v.calls(LISTENERS)).toBe(1);
+    expect([v.directory(), v.names(), location.pathname]).toEqual([true, ["ada"], "/lobby"]);
+  });
+});
+
+/**
+ * Spec §12.19. `LobbyRoute`'s own discovery answers; the session's first one fails transiently, which
+ * settles the load with `lobbyKnown` false; and the one `retryLobbyData` makes after its 250 ms sleep
+ * is held — which is why this block runs on the test's own clock.
+ */
+describe("a delayed discovery leaves the Thread writable (spec §5)", () => {
+  const composer = () => screen.getByPlaceholderText(/^Write a message/) as HTMLTextAreaElement;
+
+  async function held() {
+    vi.useFakeTimers();
+    const gate = gated(() => json(LOBBY));
+    let n = 0;
+    const v = mountLobby({ routes: { [LOBBY_URL]: () => {
+      n += 1;
+      if (n === 1) return json(LOBBY);
+      if (n === 2) return Promise.reject(new Error("simulated network failure"));
+      return gate.answer();
+    } } });
+    await settleFake();
+    return { v, gate };
+  }
+
+  it("renders a Thread, and no directory at all, while the retry is still out", async () => {
+    const { v } = await held();
+    expect([!!v.container.querySelector(".messages"), v.heading(), v.line()]).toEqual([true, false, null]);
   });
 
-  it("navigates nowhere to do it: this route is the destination", async () => {
-    const v = mountApp();
-    const pushed = vi.spyOn(history, "pushState");
-    const replaced = vi.spyOn(history, "replaceState");
-    await settle();
-    await v.joinAs("dana");
-    expect([location.pathname, pushed.mock.calls.length, replaced.mock.calls.length])
-      .toEqual(["/lobby/listeners", 0, 0]);
+  it("leaves the composer drawn there, and a message typed into it sends", async () => {
+    const { v } = await held();
+    expect(v.composerSlot()!.hasAttribute("hidden")).toBe(false);
+    fireEvent.input(composer(), { target: { value: "still writable" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await settleFake();
+    expect(posted(v)).toEqual({ text: "still writable" });
   });
 
-  // The test above runs on a durable store, where navigating away would have been safe anyway. This
-  // is the browser the in-place rule exists for: the identity it just wrote reached this tab's
-  // memory and nothing else, so a navigation would have left with the only copy of it.
-  it("renders the directory in place for a browser whose join reached memory alone", async () => {
-    const v = mountApp({ storage: memoryStorage({ durable: false }) });
-    const pushed = vi.spyOn(history, "pushState");
-    const replaced = vi.spyOn(history, "replaceState");
-    await settle();
-    await v.joinAs("dana");
-    expect([v.heading(), pushed.mock.calls.length, replaced.mock.calls.length]).toEqual([true, 0, 0]);
+  it("opens the directory by itself once the pointer settles, with no further input", async () => {
+    const { v, gate } = await held();
+    gate.release();
+    await settleFake();
+    expect([v.heading(), v.composerSlot()!.hasAttribute("hidden"), v.line()!.getAttribute("aria-current")])
+      .toEqual([true, true, "true"]);
   });
 
-  it("says so on that browser: the not-persisting bar rides the directory", async () => {
-    const v = mountApp({ storage: memoryStorage({ durable: false }) });
+  // A **delta** rather than the absolute triple above: this page settled its pointer late, and
+  // `retryLobbyData` makes side reads of its own.
+  it("remounts nothing to get there", async () => {
+    const { v, gate } = await held();
+    const before = [v.calls(WEAVE), v.calls(EVENTS), v.calls(TICKET)];
+    gate.release();
+    await settleFake();
+    expect([v.calls(WEAVE), v.calls(EVENTS), v.calls(TICKET)]).toEqual(before);
+  });
+});
+
+/** Spec §12.20: a Lobby with no pointer is still a writable Thread, which is the rule. */
+describe("a failed or absent Lobby still leaves the Thread writable (spec §5)", () => {
+  const composer = () => screen.getByPlaceholderText(/^Write a message/) as HTMLTextAreaElement;
+  /** `LobbyRoute`'s own discovery answers; every call the session makes gets the second answer. */
+  const afterTheFirst = (answer: () => Response | Promise<Response>) => {
+    let n = 0;
+    return () => (++n === 1 ? json(LOBBY) : answer());
+  };
+  const send = async (text: string) => {
+    fireEvent.input(composer(), { target: { value: text } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await settle();
-    await v.joinAs("dana");
-    expect(!!screen.queryByRole("button", { name: "Dismiss" })).toBe(true);
+  };
+
+  it("sends a message on a page whose pointer could not be read at all", async () => {
+    const v = mountLobby({ routes: {
+      [LOBBY_URL]: afterTheFirst(() => Promise.reject(new Error("simulated network failure"))),
+    } });
+    await settle();
+    expect([!!v.container.querySelector(".messages"), v.heading()]).toEqual([true, false]);
+    await send("still writable");
+    expect(posted(v)).toEqual({ text: "still writable" });
   });
 
-  // `client.withToken` builds a *new* `LoomClient` every call, so a reader rebuilt on every render
-  // is a new object every render and re-fires every effect keyed on it. Dismissing the bar above is
-  // a render this page already has, and it must not cost a second query.
-  it("keeps its reader across a re-render, so dismissing the bar is not a second query", async () => {
-    const notice = createPersistenceNotice();
-    const v = mountApp({ storage: joined(), notice });
+  // That answer settles the question and starts no retry, so nothing ever opens the directory.
+  it("sends a message on an instance that answers that it has no Lobby, and opens nothing", async () => {
+    const v = mountLobby({ routes: {
+      [LOBBY_URL]: afterTheFirst(fail("weave_not_found", "No Lobby", 404)),
+    } });
     await settle();
-    notice.note("memory");
+    await send("still writable");
     await settle();
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
-    await settle();
-    expect(v.calls(LISTENERS)).toBe(1);
-  });
-
-  it("says so when the instance has no Lobby, with the way back to the main page", async () => {
-    mountApp({ storage: joined(), routes: { [LOBBY_URL]: fail("weave_not_found", "No Lobby", 404) } });
-    await settle();
-    expect([!!screen.queryByText("This instance has no Lobby yet."),
-      screen.getByRole("link", { name: "Go to the main page" }).getAttribute("href")]).toEqual([true, "/"]);
-  });
-
-  it("shows the server's own message when where the Lobby is cannot be read at all", async () => {
-    mountApp({ storage: joined(), routes: { [LOBBY_URL]: fail("internal", "boom", 500) } });
-    await settle();
-    expect([!!screen.queryByText("boom"), !!screen.queryByText("This instance has no Lobby yet.")])
-      .toEqual([true, false]);
+    expect([posted(v), v.directory()]).toEqual([{ text: "still writable" }, false]);
   });
 });
 
@@ -315,20 +606,20 @@ describe("the directory grid and its counts (spec §5.3)", () => {
   const two = [listener("ada", "ada@example.com"), listener("bo", "bo@example.com")];
 
   it("renders one card per listener", async () => {
-    const v = mountApp({ storage: joined(), routes: { [LISTENERS]: () => json(directory(two)) } });
+    const v = mountLobby({ storage: joined(), routes: { [LISTENERS]: () => json(directory(two)) } });
     await settle();
     expect(v.names()).toEqual(["ada", "bo"]);
   });
 
   it("collapses the counts line when nothing has been filtered out", async () => {
-    mountApp({ storage: joined(), routes: { [LISTENERS]: () => json(directory(two)) } });
+    mountLobby({ storage: joined(), routes: { [LISTENERS]: () => json(directory(two)) } });
     await settle();
     expect(!!screen.queryByText("Showing 2 of 2 listeners")).toBe(true);
   });
 
   it("names both numbers when a filter has narrowed the Lobby", async () => {
     const rows = Array.from({ length: 50 }, (_, i) => listener(`a${i}`, "owner"));
-    mountApp({ storage: joined(), routes: { [LISTENERS]: () => json(directory(rows, { matched: 87, total: 1204 })) } });
+    mountLobby({ storage: joined(), routes: { [LISTENERS]: () => json(directory(rows, { matched: 87, total: 1204 })) } });
     await settle();
     // Locale-formatted, so the expectation is built the same way rather than pinning one locale's
     // thousands separator.
@@ -336,21 +627,21 @@ describe("the directory grid and its counts (spec §5.3)", () => {
   });
 
   it("says the Lobby is empty rather than that nothing matched, when nothing is there", async () => {
-    mountApp({ storage: joined(), routes: { [LISTENERS]: () => json(directory([])) } });
+    mountLobby({ storage: joined(), routes: { [LISTENERS]: () => json(directory([])) } });
     await settle();
     expect([!!screen.queryByText("Nobody has declared a profile yet."),
       !!screen.queryByText("No listener matches these filters.")]).toEqual([true, false]);
   });
 
   it("says nothing matched when the Lobby is not empty but the filters exclude everyone", async () => {
-    mountApp({ path: `/lobby/listeners?${FILTERED}`, storage: joined(),
+    mountLobby({ path: `/lobby/listeners?${FILTERED}`, storage: joined(),
       routes: { [LISTENERS]: () => json(directory([], { total: 5, matched: 0 })) } });
     await settle();
     expect(!!screen.queryByText("No listener matches these filters.")).toBe(true);
   });
 
   it("clears the filters and asks again when Clear filters is clicked", async () => {
-    const v = mountApp({ path: `/lobby/listeners?${FILTERED}`, storage: joined(),
+    const v = mountLobby({ path: `/lobby/listeners?${FILTERED}`, storage: joined(),
       routes: { [LISTENERS]: () => json(directory([], { total: 5, matched: 0 })) } });
     await settle();
     fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
@@ -361,7 +652,7 @@ describe("the directory grid and its counts (spec §5.3)", () => {
 
 describe("the controls and the query string (spec §5.4)", () => {
   it("seeds every control from the link it was opened with", async () => {
-    mountApp({ path: `/lobby/listeners?q=fable&${FILTERED}&sort=owner&dir=desc`, storage: joined() });
+    mountLobby({ path: `/lobby/listeners?q=fable&${FILTERED}&sort=owner&dir=desc`, storage: joined() });
     await settle();
     expect([
       (screen.getByLabelText("Search") as HTMLInputElement).value,
@@ -372,7 +663,7 @@ describe("the controls and the query string (spec §5.4)", () => {
   });
 
   it("asks for exactly what that link described", async () => {
-    const v = mountApp({ path: `/lobby/listeners?q=fable&${FILTERED}&sort=owner&dir=desc`, storage: joined() });
+    const v = mountLobby({ path: `/lobby/listeners?q=fable&${FILTERED}&sort=owner&dir=desc`, storage: joined() });
     await settle();
     const q = v.queries()[0]!;
     expect([q.get("q"), q.get("filter"), q.get("sort"), q.get("dir"), q.get("limit")])
@@ -380,7 +671,7 @@ describe("the controls and the query string (spec §5.4)", () => {
   });
 
   it("rewrites its own query string in place, and never pushes a history entry", async () => {
-    mountApp({ storage: joined() });
+    mountLobby({ storage: joined() });
     await settle();
     const pushed = vi.spyOn(history, "pushState");
     const replaced = vi.spyOn(history, "replaceState");
@@ -391,54 +682,22 @@ describe("the controls and the query string (spec §5.4)", () => {
   });
 
   it("sends the filter the chip turned on", async () => {
-    const v = mountApp({ storage: joined() });
+    const v = mountLobby({ storage: joined() });
     await settle();
     fireEvent.click(chip(/^shell/));
     await settle();
     expect(v.queries().map((q) => q.get("filter"))).toEqual([null, '{"tools":["shell"]}']);
-  });
-
-  it("filters just the same when it was rendered in place", async () => {
-    const v = mountRoute({ inPlace: true });
-    await settle();
-    fireEvent.click(chip(/^shell/));
-    await settle();
-    expect(v.queries().map((q) => q.get("filter"))).toEqual([null, '{"tools":["shell"]}']);
-  });
-
-  it("leaves the address bar entirely alone when it was rendered in place", async () => {
-    mountRoute({ inPlace: true });
-    await settle();
-    const replaced = vi.spyOn(history, "replaceState");
-    fireEvent.click(chip(/^shell/));
-    await settle();
-    expect([replaced.mock.calls.length, location.search]).toEqual([0, ""]);
-  });
-
-  // Rendered in place the page was not *opened* with this URL: the address bar still names whatever
-  // page the browser really loaded, and its query string is that page's, not this one's.
-  it("reads none of the address bar's query string when it was rendered in place", async () => {
-    const v = mountRoute({ inPlace: true, path: `/lobby?q=fable&${FILTERED}` });
-    await settle();
-    const q = v.queries()[0]!;
-    expect([q.has("q"), q.has("filter")]).toEqual([false, false]);
-  });
-
-  it("says nothing about a link it was not opened with", async () => {
-    mountRoute({ inPlace: true, path: "/lobby?filter=not-json" });
-    await settle();
-    expect(!!screen.queryByText("Part of this link was not understood, so it was ignored.")).toBe(false);
   });
 
   it("renders the directory for a link it could not read whole, with a note", async () => {
-    const v = mountApp({ path: "/lobby/listeners?filter=not-json", storage: joined() });
+    const v = mountLobby({ path: "/lobby/listeners?filter=not-json", storage: joined() });
     await settle();
     expect([v.heading(), !!screen.queryByText("Part of this link was not understood, so it was ignored.")])
       .toEqual([true, true]);
   });
 
   it("sends none of what it could not read", async () => {
-    const v = mountApp({ path: "/lobby/listeners?filter=not-json", storage: joined() });
+    const v = mountLobby({ path: "/lobby/listeners?filter=not-json", storage: joined() });
     await settle();
     expect(v.queries()[0]!.has("filter")).toBe(false);
   });
@@ -450,7 +709,7 @@ describe("the controls and the query string (spec §5.4)", () => {
     const tabbed = "a\tb";
     const page = directory([listener("ada", "ada@example.com")]);
     page.facets!.tools.values = [{ value: tabbed, count: 1 }];
-    const v = mountApp({ storage: joined(), routes: { [LISTENERS]: () => json(page) } });
+    const v = mountLobby({ storage: joined(), routes: { [LISTENERS]: () => json(page) } });
     await settle();
     fireEvent.click([...document.querySelectorAll(".chip")].find((c) => c.textContent!.includes(tabbed))!);
     await settle();
@@ -460,18 +719,18 @@ describe("the controls and the query string (spec §5.4)", () => {
 
   it("waits for the typing to stop: three keystrokes inside the window are one request", async () => {
     vi.useFakeTimers();
-    const v = mountApp({ storage: joined() });
+    const v = mountLobby({ storage: joined() });
     await settleFake();
     const box = screen.getByLabelText("Search");
     for (const s of ["f", "fa", "fab"]) fireEvent.input(box, { target: { value: s } });
     await vi.advanceTimersByTimeAsync(250);
     await settleFake();
-    expect(v.calls(LISTENERS)).toBe(2);
+    expect(v.asked()).toBe(2);
   });
 
   it("and that one request carries the last thing typed", async () => {
     vi.useFakeTimers();
-    const v = mountApp({ storage: joined() });
+    const v = mountLobby({ storage: joined() });
     await settleFake();
     const box = screen.getByLabelText("Search");
     for (const s of ["f", "fa", "fab"]) fireEvent.input(box, { target: { value: s } });
@@ -491,7 +750,7 @@ describe("a control pressed while the typing has not settled (spec §5.3)", () =
   /** Types `fab` without letting the window close, does `act`, then lets the clock run past it. */
   async function typingThen(act: () => void, opts: MountOpts = {}) {
     vi.useFakeTimers();
-    const v = mountApp({ storage: joined(), ...opts });
+    const v = mountLobby({ storage: joined(), ...opts });
     await settleFake();
     fireEvent.input(screen.getByLabelText("Search"), { target: { value: "fab" } });
     act();
@@ -511,7 +770,7 @@ describe("a control pressed while the typing has not settled (spec §5.3)", () =
 
   it("asks once for the two of them together, not twice", async () => {
     const v = await typingThen(() => fireEvent.click(chip(/^shell/)));
-    expect(v.calls(LISTENERS)).toBe(2);
+    expect(v.asked()).toBe(2);
   });
 
   it("leaves the filter in the address bar too", async () => {
@@ -523,7 +782,7 @@ describe("a control pressed while the typing has not settled (spec §5.3)", () =
     const v = await typingThen(() =>
       fireEvent.change(screen.getByLabelText("sort"), { target: { value: "owner" } }));
     const last = v.queries().at(-1)!;
-    expect([last.get("sort"), last.get("q"), v.calls(LISTENERS)]).toEqual(["owner", "fab", 2]);
+    expect([last.get("sort"), last.get("q"), v.asked()]).toEqual(["owner", "fab", 2]);
   });
 
   it("lets Clear filters cancel it rather than be undone by it 250 ms later", async () => {
@@ -531,7 +790,7 @@ describe("a control pressed while the typing has not settled (spec §5.3)", () =
       () => fireEvent.click(screen.getByRole("button", { name: "Clear filters" })),
       { path: `/lobby/listeners?${FILTERED}`, routes: { [LISTENERS]: () => json(directory([], { total: 5, matched: 0 })) } });
     const last = v.queries().at(-1)!;
-    expect([last.has("filter"), last.has("q"), v.calls(LISTENERS)]).toEqual([false, false, 2]);
+    expect([last.has("filter"), last.has("q"), v.asked()]).toEqual([false, false, 2]);
   });
 });
 
@@ -540,7 +799,7 @@ describe("one query at a time (spec §7)", () => {
   async function twoInFlight(older: () => Response) {
     const first = gated(older);
     const second = gated(() => json(directory([listener("cy", "cy@example.com")])));
-    const v = mountApp({ storage: joined(), routes: {
+    const v = mountLobby({ storage: joined(), routes: {
       [LISTENERS]: inTurn(() => json(directory([listener("ada", "ada@example.com")])), first.answer, second.answer),
     } });
     await settle();
@@ -550,9 +809,13 @@ describe("one query at a time (spec §7)", () => {
     await settle();
     second.release();
     await settle();
+    // Snapshotted here, after the round trip that legitimately wrote this entry — the session's own
+    // load does (`saveWeaveEntry`) — and before the superseded 401 is let go. What the block asserts
+    // is that the late rejection moves nothing, never that nothing was ever written.
+    const entryBefore = v.storage.get(weaveKey(LOBBY.weaveId));
     first.release();
     await settle();
-    return v;
+    return { ...v, entryBefore };
   }
 
   it("paints the newest answer and never the one it superseded", async () => {
@@ -562,7 +825,7 @@ describe("one query at a time (spec §7)", () => {
 
   it("keeps the rows on screen while the next answer is still coming", async () => {
     const held = gated(() => json(directory([listener("bo", "bo@example.com")])));
-    const v = mountApp({ storage: joined(), routes: {
+    const v = mountLobby({ storage: joined(), routes: {
       [LISTENERS]: inTurn(() => json(directory([listener("ada", "ada@example.com")])), held.answer),
     } });
     await settle();
@@ -580,9 +843,8 @@ describe("one query at a time (spec §7)", () => {
   });
 
   it("writes nothing to storage for a superseded query's 401", async () => {
-    const before = joined().get(weaveKey(LOBBY.weaveId));
     const v = await twoInFlight(INVALID);
-    expect(v.storage.get(weaveKey(LOBBY.weaveId))).toBe(before);
+    expect(v.storage.get(weaveKey(LOBBY.weaveId))).toBe(v.entryBefore);
   });
 
   it("stays on the directory for a superseded query's 401, rather than falling back to the join form", async () => {
@@ -595,7 +857,7 @@ describe("Show more (spec §5.3)", () => {
   const page1 = () => json(directory([listener("ada", "a"), listener("bo", "b")], { nextCursor: "c1", total: 3, matched: 3 }));
 
   it("sends the cursor the last answer gave it", async () => {
-    const v = mountApp({ storage: joined(), routes: {
+    const v = mountLobby({ storage: joined(), routes: {
       [LISTENERS]: inTurn(page1, () => json(directory([listener("cy", "c")], { total: 3, matched: 3 }))),
     } });
     await settle();
@@ -605,7 +867,7 @@ describe("Show more (spec §5.3)", () => {
   });
 
   it("appends the next page below the rows already on screen, in order", async () => {
-    const v = mountApp({ storage: joined(), routes: {
+    const v = mountLobby({ storage: joined(), routes: {
       [LISTENERS]: inTurn(page1, () => json(directory([listener("cy", "c")], { total: 3, matched: 3 }))),
     } });
     await settle();
@@ -615,7 +877,7 @@ describe("Show more (spec §5.3)", () => {
   });
 
   it("keeps the rows and the button when the next page fails, with the error beside it", async () => {
-    const v = mountApp({ storage: joined(), routes: { [LISTENERS]: inTurn(page1, fail("internal", "boom", 500)) } });
+    const v = mountLobby({ storage: joined(), routes: { [LISTENERS]: inTurn(page1, fail("internal", "boom", 500)) } });
     await settle();
     fireEvent.click(screen.getByRole("button", { name: "Show more" }));
     await settle();
@@ -624,7 +886,7 @@ describe("Show more (spec §5.3)", () => {
   });
 
   it("offers nothing more to show when the answer carried no cursor", async () => {
-    mountApp({ storage: joined() });
+    mountLobby({ storage: joined() });
     await settle();
     expect(!!screen.queryByRole("button", { name: "Show more" })).toBe(false);
   });
@@ -632,7 +894,7 @@ describe("Show more (spec §5.3)", () => {
   // The facets describe the *filters*, which an appended page does not change, and §6 names the
   // facet pass the most expensive read this query makes.
   it("asks for no facets: appending a page cannot change them", async () => {
-    const v = mountApp({ storage: joined(), routes: {
+    const v = mountLobby({ storage: joined(), routes: {
       [LISTENERS]: inTurn(page1, () => json(directory([listener("cy", "c")], { total: 3, matched: 3 }))),
     } });
     await settle();
@@ -643,7 +905,7 @@ describe("Show more (spec §5.3)", () => {
 
   it("keeps the chips the facet-free answer did not carry", async () => {
     const appended = { ...directory([listener("cy", "c")], { total: 3, matched: 3 }), facets: undefined };
-    mountApp({ storage: joined(), routes: { [LISTENERS]: inTurn(page1, () => json(appended)) } });
+    mountLobby({ storage: joined(), routes: { [LISTENERS]: inTurn(page1, () => json(appended)) } });
     await settle();
     fireEvent.click(screen.getByRole("button", { name: "Show more" }));
     await settle();
@@ -662,7 +924,7 @@ describe("a control change drops the cursor (spec §5.3)", () => {
 
   it("takes the button away while the fresh query is still loading", async () => {
     const slow = gated(() => json(directory([listener("cy", "c")], { nextCursor: "c2" })));
-    mountApp({ storage: joined(), routes: { [LISTENERS]: inTurn(page1, slow.answer) } });
+    mountLobby({ storage: joined(), routes: { [LISTENERS]: inTurn(page1, slow.answer) } });
     await settle();
     fireEvent.click(chip(/^shell/));
     await settle();
@@ -672,7 +934,7 @@ describe("a control change drops the cursor (spec §5.3)", () => {
   });
 
   it("leaves it away when the fresh query fails, with the old rows and the reason", async () => {
-    const v = mountApp({ storage: joined(), routes: { [LISTENERS]: inTurn(page1, fail("internal", "boom", 500)) } });
+    const v = mountLobby({ storage: joined(), routes: { [LISTENERS]: inTurn(page1, fail("internal", "boom", 500)) } });
     await settle();
     fireEvent.click(chip(/^shell/));
     await settle();
@@ -681,7 +943,7 @@ describe("a control change drops the cursor (spec §5.3)", () => {
   });
 
   it("brings it back on the new query's own cursor", async () => {
-    const v = mountApp({ storage: joined(), routes: {
+    const v = mountLobby({ storage: joined(), routes: {
       [LISTENERS]: inTurn(page1, () => json(directory([listener("cy", "c")], { nextCursor: "c2", total: 3, matched: 3 })),
         () => json(directory([listener("di", "d")], { total: 3, matched: 3 }))),
     } });
@@ -712,13 +974,13 @@ describe("the controls stop at core's bounds", () => {
     models: { values: names.map((model) => ({ model, count: 1, efforts: [], moreEfforts: false })), more: false } }));
   const withTools = (names: string[]) => facetOf((f) => ({ ...f,
     tools: { values: names.map((value) => ({ value, count: 1 })), more: false } }));
-  const at = (filter: unknown, route: () => Response) => mountApp({ storage: joined(),
+  const at = (filter: unknown, route: () => Response) => mountLobby({ storage: joined(),
     path: `/lobby/listeners?filter=${encodeURIComponent(JSON.stringify(filter))}`,
     routes: { [LISTENERS]: route } });
   const disabled = (label: RegExp) => (chip(label) as HTMLButtonElement).disabled;
 
   it("bounds the search box at the hundred characters core accepts", async () => {
-    mountApp({ storage: joined() });
+    mountLobby({ storage: joined() });
     await settle();
     expect((screen.getByLabelText("Search") as HTMLInputElement).maxLength).toBe(100);
   });
@@ -775,7 +1037,7 @@ describe("a cursor the Lobby refuses (spec §7)", () => {
   const page1 = () => json(directory([listener("ada", "a"), listener("bo", "b")], { nextCursor: "c1", total: 3, matched: 3 }));
   const REFUSED = fail("validation", "cursor is malformed", 400);
   const after = async () => {
-    const v = mountApp({ storage: joined(), routes: { [LISTENERS]: inTurn(page1, REFUSED) } });
+    const v = mountLobby({ storage: joined(), routes: { [LISTENERS]: inTurn(page1, REFUSED) } });
     await settle();
     fireEvent.click(screen.getByRole("button", { name: "Show more" }));
     await settle();
@@ -794,7 +1056,7 @@ describe("a cursor the Lobby refuses (spec §7)", () => {
 
   // The cursor is gone; the view is not. A control change starts a fresh first page as it always has.
   it("leaves the next control change working", async () => {
-    const v = mountApp({ storage: joined(), routes: {
+    const v = mountLobby({ storage: joined(), routes: {
       [LISTENERS]: inTurn(page1, REFUSED, () => json(directory([listener("cy", "c")]))),
     } });
     await settle();
@@ -810,7 +1072,7 @@ describe("a failed query is never an empty directory (spec §7)", () => {
   const ada = () => json(directory([listener("ada", "a")]));
 
   it("keeps the rows that were on screen", async () => {
-    const v = mountApp({ storage: joined(), routes: { [LISTENERS]: inTurn(ada, fail("internal", "boom", 500)) } });
+    const v = mountLobby({ storage: joined(), routes: { [LISTENERS]: inTurn(ada, fail("internal", "boom", 500)) } });
     await settle();
     fireEvent.click(chip(/^shell/));
     await settle();
@@ -818,7 +1080,7 @@ describe("a failed query is never an empty directory (spec §7)", () => {
   });
 
   it("does not claim that nothing matched", async () => {
-    mountApp({ storage: joined(), routes: { [LISTENERS]: inTurn(ada, fail("internal", "boom", 500)) } });
+    mountLobby({ storage: joined(), routes: { [LISTENERS]: inTurn(ada, fail("internal", "boom", 500)) } });
     await settle();
     fireEvent.click(chip(/^shell/));
     await settle();
@@ -826,7 +1088,7 @@ describe("a failed query is never an empty directory (spec §7)", () => {
   });
 
   it("says nothing in the counts line rather than saying zero", async () => {
-    mountApp({ storage: joined(), routes: { [LISTENERS]: inTurn(ada, fail("internal", "boom", 500)) } });
+    mountLobby({ storage: joined(), routes: { [LISTENERS]: inTurn(ada, fail("internal", "boom", 500)) } });
     await settle();
     fireEvent.click(chip(/^shell/));
     await settle();
@@ -840,13 +1102,13 @@ describe("the chips (spec §5.3)", () => {
     routes: { [LISTENERS]: () => json(directory([], { total: 5, matched: 0 })) } };
 
   it("keeps a selected chip on screen at a count of zero, which is the only chip that may show one", async () => {
-    mountApp(emptyUnderFilter);
+    mountLobby(emptyUnderFilter);
     await settle();
     expect([chip(/^shell/).getAttribute("aria-pressed"), chip(/^shell/).textContent]).toEqual(["true", "shell 0"]);
   });
 
   it("clears that filter when the zero chip is clicked", async () => {
-    const v = mountApp(emptyUnderFilter);
+    const v = mountLobby(emptyUnderFilter);
     await settle();
     fireEvent.click(chip(/^shell/));
     await settle();
@@ -854,7 +1116,7 @@ describe("the chips (spec §5.3)", () => {
   });
 
   it("says in words that the model chips are any-of and the tool chips all-of", async () => {
-    mountApp({ storage: joined() });
+    mountLobby({ storage: joined() });
     await settle();
     expect([!!screen.queryByText("any of these"), !!screen.queryByText("all of these")]).toEqual([true, true]);
   });
@@ -862,7 +1124,7 @@ describe("the chips (spec §5.3)", () => {
   it("offers the model's efforts once that model is selected", async () => {
     const withEfforts = directory([listener("ada", "a")]);
     withEfforts.facets!.models.values[0]!.efforts = [{ value: "high", count: 1 }];
-    const v = mountRoute({ routes: { [LISTENERS]: () => json(withEfforts) } });
+    const v = mountLobby({ routes: { [LISTENERS]: () => json(withEfforts) } });
     await settle();
     const before = !!screen.queryByRole("button", { name: /^high/ });
     fireEvent.click(chip(/^opus-5/));
@@ -873,7 +1135,7 @@ describe("the chips (spec §5.3)", () => {
   it("turns the selected model into an exact pair when an effort is chosen", async () => {
     const withEfforts = directory([listener("ada", "a")]);
     withEfforts.facets!.models.values[0]!.efforts = [{ value: "high", count: 1 }];
-    const v = mountRoute({ routes: { [LISTENERS]: () => json(withEfforts) } });
+    const v = mountLobby({ routes: { [LISTENERS]: () => json(withEfforts) } });
     await settle();
     fireEvent.click(chip(/^opus-5/));
     await settle();
@@ -883,7 +1145,7 @@ describe("the chips (spec §5.3)", () => {
   });
 
   it("clears the serving policy when its own chip is clicked again", async () => {
-    const v = mountRoute();
+    const v = mountLobby();
     await settle();
     fireEvent.click(chip(/^anyone/));
     await settle();
@@ -895,7 +1157,7 @@ describe("the chips (spec §5.3)", () => {
   it("says a facet was cut at twenty when the answer says it was", async () => {
     const cut = directory([listener("ada", "a")]);
     cut.facets!.tools.more = true;
-    mountRoute({ routes: { [LISTENERS]: () => json(cut) } });
+    mountLobby({ routes: { [LISTENERS]: () => json(cut) } });
     await settle();
     expect(!!screen.queryByText("20 most common")).toBe(true);
   });
@@ -904,7 +1166,7 @@ describe("the chips (spec §5.3)", () => {
     const cut = directory([listener("ada", "a")]);
     cut.facets!.models.values[0]!.efforts = [{ value: "high", count: 1 }];
     cut.facets!.models.values[0]!.moreEfforts = true;
-    mountRoute({ routes: { [LISTENERS]: () => json(cut) } });
+    mountLobby({ routes: { [LISTENERS]: () => json(cut) } });
     await settle();
     fireEvent.click(chip(/^opus-5/));
     await settle();
@@ -912,7 +1174,7 @@ describe("the chips (spec §5.3)", () => {
   });
 
   it("chooses one serving policy at a time", async () => {
-    const v = mountRoute();
+    const v = mountLobby();
     await settle();
     fireEvent.click(chip(/^anyone/));
     await settle();
@@ -927,13 +1189,13 @@ describe("the list changed while you were reading it (spec §5.5)", () => {
   const CHANGED = "The list has changed since you loaded it.";
 
   it("says nothing about a list that has not changed", async () => {
-    mountApp({ storage: joined() });
+    mountLobby({ storage: joined() });
     await settle();
     expect(!!screen.queryByText(CHANGED)).toBe(false);
   });
 
   it("says so when a later answer counts the Lobby differently", async () => {
-    const v = mountApp({ storage: joined(), routes: { [LISTENERS]: inTurn(
+    const v = mountLobby({ storage: joined(), routes: { [LISTENERS]: inTurn(
       () => json(directory([listener("ada", "a")], { total: 3 })),
       () => json(directory([listener("ada", "a")], { total: 4 })),
     ) } });
@@ -944,84 +1206,67 @@ describe("the list changed while you were reading it (spec §5.5)", () => {
   });
 });
 
-describe("a credential the Lobby refuses (spec §5.5)", () => {
+/**
+ * Spec §6.3, and the reason the count read has a row of its own: the directory's own query is the
+ * one that is refused here, and the session's `limit=0` read answers normally beside it. The default
+ * deep-link mount throughout, so nothing has to push for any of it.
+ */
+describe("a live 401 recovers, exactly once (spec §6.3)", () => {
+  /** Refused once, answered after the recovery — which is the whole state machine of these tests. */
+  const thenAda = () => inTurn(INVALID, () => json(directory([listener("ada", "a")])));
+
+  // No control is pressed: query 1 is the mount's own, its 401 is reported, and the recovery's
+  // `loading` → `ready` takes the directory through a fresh mount whose first query is query 2.
+  // By the entry's **content**, which no later no-op write can fake, and not by a count of writes:
+  // the recovery's own `doLoad()` writes the entry again through `saveWeaveEntry`, as does the load
+  // before it, so the three fields that carry the rule are what is asserted.
   it("invalidates the identity, keeping the secret beside it", async () => {
-    const v = mountApp({ storage: joinedWithSecret(),
-      routes: { [LISTENERS]: inTurn(INVALID, () => json(directory([listener("ada", "a")]))) } });
+    const v = mountLobby({ storage: joinedWithSecret(), routes: { [LISTENERS]: thenAda() } });
     await settle();
-    expect(readWeaveEntry(v.storage, LOBBY.weaveId))
-      .toEqual({ secret: "lobby-secret", identity: "invalid" });
+    const entry = readWeaveEntry(v.storage, LOBBY.weaveId)!;
+    expect([entry.secret, entry.identity, entry.token]).toEqual(["lobby-secret", "invalid", undefined]);
   });
 
-  it("reads on with that stored secret", async () => {
-    const v = mountApp({ storage: joinedWithSecret(),
-      routes: { [LISTENERS]: inTurn(INVALID, () => json(directory([listener("ada", "a")]))) } });
+  it("makes the next query on that stored secret, and the rows come back", async () => {
+    const v = mountLobby({ storage: joinedWithSecret(), routes: { [LISTENERS]: thenAda() } });
     await settle();
     expect([v.authOf(1), v.names()]).toEqual(["Bearer lobby-secret", ["ada"]]);
   });
 
-  it("offers the join form, and says why, when there is no secret to fall back to", async () => {
-    mountApp({ storage: joined(), routes: { [LISTENERS]: INVALID } });
+  // With every answer a rejection there are no rows, no facets and therefore no chips: the only
+  // thing on screen is the join fork, with the layout gone.
+  it("settles at the join fork when there is no secret to fall back to", async () => {
+    const v = mountLobby({ storage: joined(), routes: { [LISTENERS]: INVALID } });
     await settle();
-    expect([!!screen.queryByRole("heading", { name: "Join the Lobby" }),
-      !!screen.queryByText("Your identity in the Lobby is no longer valid.")]).toEqual([true, true]);
+    expect([!!screen.queryByRole("heading", { name: "Join the Lobby" }), v.directory()])
+      .toEqual([true, false]);
   });
 
   it("reports a write it could not keep", async () => {
     const notice = createPersistenceNotice();
-    mountApp({ storage: joinedInMemory(), notice, routes: { [LISTENERS]: INVALID } });
+    mountLobby({ storage: joinedInMemory(), notice, routes: { [LISTENERS]: INVALID } });
     await settle();
     expect(notice.degraded()).toBe(true);
   });
-});
 
-/**
- * The end of the fallback chain. Retrying a refused *secret* with the same secret is the same
- * request again, forever: there is no second credential behind it and — unlike an identity — there
- * is nothing in storage to retire either. So the page settles rather than loops (spec §5.5).
- */
-describe("a Lobby secret the instance refuses (spec §5.5)", () => {
-  it("asks once and stops, rather than sending the same refused secret again", async () => {
-    const v = mountApp({ storage: secretOnly(), routes: { [LISTENERS]: INVALID } });
-    await settle();
-    expect(v.calls(LISTENERS)).toBe(1);
-  });
-
-  it("writes nothing to storage for it: a secret reader has no identity to invalidate", async () => {
-    const storage = secretOnly();
-    const writes = vi.spyOn(storage, "set");
-    mountApp({ storage, routes: { [LISTENERS]: INVALID } });
-    await settle();
-    expect(writes.mock.calls.length).toBe(0);
-  });
-
-  it("settles on the join form, saying what the Lobby refused", async () => {
-    mountApp({ storage: secretOnly(), routes: { [LISTENERS]: INVALID } });
-    await settle();
-    expect([!!screen.queryByRole("heading", { name: "Join the Lobby" }),
-      !!screen.queryByText("The Lobby refused the link this browser holds.")]).toEqual([true, true]);
-  });
-
-  // That fork replaces the page whole, header included, so without one there is no way out but the
-  // address bar — which an in-place browser does not have either.
-  it("keeps a way off the page on that fork", async () => {
-    mountApp({ storage: secretOnly(), routes: { [LISTENERS]: INVALID } });
-    await settle();
-    expect(screen.getByRole("link", { name: "Go to the main page" }).getAttribute("href")).toBe("/");
-  });
-
-  it("retries a refused identity with the secret exactly once: two queries, and no third", async () => {
-    const v = mountApp({ storage: joinedWithSecret(), routes: { [LISTENERS]: INVALID } });
-    await settle();
-    expect(v.calls(LISTENERS)).toBe(2);
-  });
-
-  it("retires that identity once, and writes nothing more when the secret is refused too", async () => {
+  /**
+   * The one case that presses something, so the script gives it something to press. Query 1 is
+   * refused and recovers; query 2 is the re-mounted directory's and answers rows **and facets**,
+   * which is what puts the chips on screen; only then is there a chip to press, and pressing it
+   * makes query 3, which is refused again. Reading with the secret, that 401 is an ordinary query
+   * error with nothing left to retire — so nothing more is written.
+   */
+  it("writes nothing more when a second query is refused on the secret", async () => {
     const storage = joinedWithSecret();
-    const writes = vi.spyOn(storage, "set");
-    mountApp({ storage, routes: { [LISTENERS]: INVALID } });
+    const v = mountLobby({ storage, routes: {
+      [LISTENERS]: inTurn(INVALID, () => json(directory([listener("ada", "a")])), INVALID),
+    } });
     await settle();
-    expect(writes.mock.calls.length).toBe(1);
+    expect(v.names()).toEqual(["ada"]);           // the fresh query landed on the secret
+    const set = vi.spyOn(storage, "set");
+    fireEvent.click(chip(/^shell/));
+    await settle();
+    expect(set).not.toHaveBeenCalled();
   });
 });
 
@@ -1032,14 +1277,14 @@ describe("a Lobby secret the instance refuses (spec §5.5)", () => {
  */
 describe("the states this page says out loud (spec §5.3)", () => {
   it("announces a failed query as an alert", async () => {
-    mountApp({ storage: joined(), routes: { [LISTENERS]: fail("internal", "boom", 500) } });
+    mountLobby({ storage: joined(), routes: { [LISTENERS]: fail("internal", "boom", 500) } });
     await settle();
     expect(screen.getByRole("alert").textContent).toBe("boom");
   });
 
   it("announces a failed Show more beside its button", async () => {
     const page1 = () => json(directory([listener("ada", "a")], { nextCursor: "c1", total: 2, matched: 2 }));
-    mountApp({ storage: joined(), routes: { [LISTENERS]: inTurn(page1, fail("internal", "boom", 500)) } });
+    mountLobby({ storage: joined(), routes: { [LISTENERS]: inTurn(page1, fail("internal", "boom", 500)) } });
     await settle();
     fireEvent.click(screen.getByRole("button", { name: "Show more" }));
     await settle();
@@ -1048,7 +1293,7 @@ describe("the states this page says out loud (spec §5.3)", () => {
 
   it("announces the refresh that is keeping the old rows on screen", async () => {
     const held = gated(() => json(directory([listener("bo", "b")])));
-    mountApp({ storage: joined(), routes: {
+    mountLobby({ storage: joined(), routes: {
       [LISTENERS]: inTurn(() => json(directory([listener("ada", "a")])), held.answer),
     } });
     await settle();
@@ -1059,62 +1304,27 @@ describe("the states this page says out loud (spec §5.3)", () => {
 
   it("announces the first load, which has no rows to keep", async () => {
     const held = gated(() => json(directory([])));
-    mountApp({ storage: joined(), routes: { [LISTENERS]: held.answer } });
+    mountLobby({ storage: joined(), routes: { [LISTENERS]: held.answer } });
     await settle();
     expect(screen.getByRole("status").textContent).toBe("Loading…");
   });
 });
 
-describe("the way out of the directory (spec §5.3)", () => {
-  it("is a link to the Lobby for a browser that may leave this JS context", async () => {
-    mountApp({ storage: joined() });
-    await settle();
-    expect(screen.getByRole("link", { name: "Back to the Lobby" }).getAttribute("href")).toBe("/lobby");
-  });
-
-  it("is a button that renders the Lobby here for a browser that may not", async () => {
-    const v = mountRoute({ storage: joinedInMemory() });
-    await settle();
-    fireEvent.click(screen.getByRole("button", { name: "Back to the Lobby" }));
-    expect(v.openInPlace.mock.calls).toEqual([[LOBBY.weaveId]]);
-  });
-
-  // It is the only exit an in-place browser has, so it may not wait for an answer that never comes.
-  it("is on screen while the first query is still in flight", async () => {
-    const held = gated(() => json(directory([])));
-    mountApp({ storage: joined(), routes: { [LISTENERS]: held.answer } });
-    await settle();
-    expect(!!screen.queryByRole("link", { name: "Back to the Lobby" })).toBe(true);
-  });
-
-  it("is on screen when that query failed", async () => {
-    mountApp({ storage: joined(), routes: { [LISTENERS]: fail("internal", "boom", 500) } });
-    await settle();
-    expect(!!screen.queryByRole("link", { name: "Back to the Lobby" })).toBe(true);
-  });
-
-  it("carries the wordmark home beside it", async () => {
-    mountApp({ storage: joined() });
-    await settle();
-    expect(screen.getByRole("link", { name: "Loom" }).getAttribute("href")).toBe("/");
-  });
-});
-
 /**
  * The Lobby sidebar's line (spec §5.1), where `ProfileCards` used to stack a card per listener.
- * Most of these hand the component a state, because the four states §5.1 words differently are
- * facts about two state cells and nothing else; the ones about *which element* the line is mount
- * the real page, because that answer comes from the storage this browser holds.
+ * Every one of these hands the component a state, because the four states §5.1 words differently
+ * are facts about two state cells and nothing else. Which element the line is, and when it is
+ * marked current, is a rule about the page around it and is pinned on the real Lobby below.
  */
 describe("the Lobby sidebar's listeners line (spec §5.1)", () => {
-  const WEAVE = { id: LOBBY.weaveId, title: "Lobby", createdAt: "", archivedAt: null, lastSeq: 0, guidelines: "" };
+  const LOBBY_WEAVE = { id: LOBBY.weaveId, title: "Lobby", createdAt: "", archivedAt: null, lastSeq: 0, guidelines: "" };
   /**
    * A loaded Lobby page's state, in the shapes the session actually produces: `getWeave` carries no
    * Lobby profile at all now (spec §3.1), so every participant here has `capabilities: null` and
    * the count beside the line is the only thing that knows how many listeners there are.
    */
   const lobbyState = (over: Partial<SessionState> = {}): SessionState => ({
-    status: "ready", weave: WEAVE, lobby: LOBBY,
+    status: "ready", weave: LOBBY_WEAVE, lobby: LOBBY,
     threads: [], participants: [JOINED.participant], events: [],
     me: { participant: JOINED.participant, token: "participant-token" },
     connection: "open", needsName: false, instanceGuidelines: "",
@@ -1125,37 +1335,37 @@ describe("the Lobby sidebar's listeners line (spec §5.1)", () => {
   const line = (container: Element) => container.textContent ?? "";
 
   it("shows how many listeners the Lobby holds", () => {
-    const { container } = render(<ListenersLink state={lobbyState({ listenerCount: 3 })} />);
+    const { container } = render(<ListenersLink active={false} onToggle={() => {}} state={lobbyState({ listenerCount: 3 })} />);
     expect(line(container)).toBe("Listeners (3)");
   });
 
   // Before the first answer: no number, and not a word about a failure that has not happened.
   it("reads Listeners, with nothing beside it, before the first count answers", () => {
-    const { container } = render(<ListenersLink state={lobbyState()} />);
+    const { container } = render(<ListenersLink active={false} onToggle={() => {}} state={lobbyState()} />);
     expect(line(container)).toBe("Listeners");
   });
 
   // The whole text, so the rule that makes this worth having is asserted in the same breath: an
   // absent count is an absent number, never an invented `(0)`.
   it("says the count is unavailable when the read failed, and invents no zero", () => {
-    const { container } = render(<ListenersLink state={lobbyState({ listenerCountError: true })} />);
+    const { container } = render(<ListenersLink active={false} onToggle={() => {}} state={lobbyState({ listenerCountError: true })} />);
     expect(line(container)).toBe("Listenerscount unavailable");
   });
 
   it("keeps the last known number when a later count read fails, and says nothing beside it", () => {
-    const { container } = render(<ListenersLink state={lobbyState({ listenerCount: 7, listenerCountError: true })} />);
+    const { container } = render(<ListenersLink active={false} onToggle={() => {}} state={lobbyState({ listenerCount: 7, listenerCountError: true })} />);
     expect(line(container)).toBe("Listeners (7)");
   });
 
   it("drops that note again when a later count answers", () => {
-    const { container } = render(<ListenersLink state={lobbyState({ listenerCount: 9, listenerCountError: false })} />);
+    const { container } = render(<ListenersLink active={false} onToggle={() => {}} state={lobbyState({ listenerCount: 9, listenerCountError: false })} />);
     expect(line(container)).toBe("Listeners (9)");
   });
 
   // A zero the server actually answered is a number like any other: what §5.1 forbids is inventing
   // one, not reporting one.
   it("shows a zero the Lobby really answered", () => {
-    const { container } = render(<ListenersLink state={lobbyState({ listenerCount: 0, listenerCountError: false })} />);
+    const { container } = render(<ListenersLink active={false} onToggle={() => {}} state={lobbyState({ listenerCount: 0, listenerCountError: false })} />);
     expect(line(container)).toBe("Listeners (0)");
   });
 
@@ -1163,14 +1373,14 @@ describe("the Lobby sidebar's listeners line (spec §5.1)", () => {
   // (spec §3.3). The line needs none: it describes the Lobby, not the reader.
   it("works on a page that has fallen back to the Weave link and has no identity", () => {
     const { container } = render(
-      <ListenersLink state={lobbyState({ me: undefined, readOnlyReason: "secret-fallback", listenerCount: 4 })} />,
+      <ListenersLink active={false} onToggle={() => {}} state={lobbyState({ me: undefined, readOnlyReason: "secret-fallback", listenerCount: 4 })} />,
     );
     expect(line(container)).toBe("Listeners (4)");
   });
 
   it("renders nothing on a Weave that is not the Lobby", () => {
     const { container } = render(
-      <ListenersLink state={lobbyState({ weave: { ...WEAVE, id: "22222222-2222-4222-8222-222222222222" }, listenerCount: 3 })} />,
+      <ListenersLink active={false} onToggle={() => {}} state={lobbyState({ weave: { ...LOBBY_WEAVE, id: "22222222-2222-4222-8222-222222222222" }, listenerCount: 3 })} />,
     );
     expect(container.innerHTML).toBe("");
   });
@@ -1178,57 +1388,18 @@ describe("the Lobby sidebar's listeners line (spec §5.1)", () => {
   // A reload keeps the Weave and the pointer on screen while it runs, and neither count cell is
   // cleared by it: a page that is not actually showing the Lobby has no directory to offer.
   it("renders nothing while the page is loading, Lobby or not", () => {
-    const { container } = render(<ListenersLink state={lobbyState({ status: "loading", listenerCount: 3 })} />);
+    const { container } = render(<ListenersLink active={false} onToggle={() => {}} state={lobbyState({ status: "loading", listenerCount: 3 })} />);
     expect(container.innerHTML).toBe("");
-  });
-
-  it("is a link to the directory when this browser may leave the page", () => {
-    render(<ListenersLink state={lobbyState({ listenerCount: 3 })} />);
-    expect(screen.getByRole("link", { name: "Listeners (3)" }).getAttribute("href")).toBe("/lobby/listeners");
-  });
-
-  // Never an anchor with a handler: an anchor can be middle-clicked or opened in a new tab, and
-  // either one is the full page load that loses an in-memory credential.
-  it("is a button carrying no href when it may not", () => {
-    render(<ListenersLink state={lobbyState({ listenerCount: 3 })} openListenersInPlace={vi.fn()} />);
-    expect(screen.getByRole("button", { name: "Listeners (3)" }).getAttribute("href")).toBeNull();
-  });
-
-  it("renders the directory here when that button is clicked", () => {
-    const openListenersInPlace = vi.fn();
-    render(<ListenersLink state={lobbyState({ listenerCount: 3 })} openListenersInPlace={openListenersInPlace} />);
-    fireEvent.click(screen.getByRole("button", { name: "Listeners (3)" }));
-    expect(openListenersInPlace.mock.calls.length).toBe(1);
   });
 });
 
 /**
- * The same line on the real Lobby page: which element it is comes from the storage this browser
- * holds, and it is asked on every render (`WeaveRoute`'s `canLeave`), so a later durable write puts
- * the ordinary link back.
+ * The same line on the real Lobby page, where the number beside it comes from the session's own
+ * count read and pressing it opens the directory in the main area rather than loading a page.
  */
 describe("the listeners line on the Lobby page (spec §5.1)", () => {
-  /** Everything a Lobby page reads, the two side reads included; an unstubbed path is a test bug. */
-  const LOBBY_PAGE: Routes = {
-    [`${BASE}/api/weaves/${LOBBY.weaveId}/events`]: () => json({ events: [] }),
-    [`${BASE}/api/weaves/${LOBBY.weaveId}`]: () => json({
-      weave: { id: LOBBY.weaveId, title: "Lobby", createdAt: "", archivedAt: null, lastSeq: 0, guidelines: "" },
-      threads: [{ id: "g1", weaveId: LOBBY.weaveId, name: "General", isGeneral: true, createdBy: "p-dana", createdAt: "", closedAt: null, url: null }],
-      // The shape `getWeave` really answers with in the Lobby now: the profile per participant is
-      // exactly what stopped travelling (spec §3.1), which is why this sidebar counts instead.
-      participants: [JOINED.participant],
-    }),
-    [`${BASE}/api/guidelines`]: () => json({ guidelines: "" }),
-    [`${BASE}/api/requests`]: () => json({ requests: [] }),
-    [`${BASE}/api/lobby/participants/me`]: () => json(JOINED.participant),
-  };
-  /** A Lobby that answers a count of its own, so the number on screen names this test. */
-  const counted: Routes = { [LISTENERS]: () => json(directory([], { total: 12 })) };
-  const mountLobby = (opts: MountOpts = {}) =>
-    mountApp({ ...opts, path: "/lobby", routes: { ...LOBBY_PAGE, ...opts.routes } });
-
   it("is in the Lobby's sidebar, carrying the number the Lobby answered", async () => {
-    const v = mountLobby({ storage: joined(), routes: counted });
+    const v = mountLobby({ path: "/lobby", storage: joined() });
     await settle();
     expect(v.container.querySelector(".sidebar")!.textContent).toContain("Listeners (12)");
   });
@@ -1236,42 +1407,26 @@ describe("the listeners line on the Lobby page (spec §5.1)", () => {
   // The removal itself: the sidebar used to stack a card per listener, and there is no card and no
   // section left to hold one.
   it("stacks no profile card there any more", async () => {
-    const v = mountLobby({ storage: joined() });
+    const v = mountLobby({ path: "/lobby", storage: joined() });
     await settle();
     expect([!!v.container.querySelector(".profiles"), !!v.container.querySelector(".profile-card")])
       .toEqual([false, false]);
   });
 
-  it("is a link for a browser whose credential would survive leaving the page", async () => {
-    mountLobby({ storage: joined(), routes: counted });
-    await settle();
-    expect(screen.getByRole("link", { name: "Listeners (12)" }).getAttribute("href")).toBe("/lobby/listeners");
-  });
-
-  it("is a button for one whose credential lives only in this JS context", async () => {
-    mountLobby({ storage: joinedInMemory(), routes: counted });
-    await settle();
-    expect(!!screen.queryByRole("button", { name: "Listeners (12)" })).toBe(true);
-  });
-
   it("renders the directory here when that button is clicked", async () => {
-    const v = mountLobby({ storage: joinedInMemory(),
+    const v = mountLobby({ path: "/lobby", storage: joinedInMemory(),
       routes: { [LISTENERS]: () => json(directory([listener("ada", "ada@example.com")], { total: 12 })) } });
     await settle();
-    fireEvent.click(screen.getByRole("button", { name: "Listeners (12)" }));
-    await settle();
+    await v.toggle();
     expect([v.heading(), v.names()]).toEqual([true, ["ada"]]);
   });
 
   it("leaves the address bar alone when it does", async () => {
+    const v = mountLobby({ path: "/lobby", storage: joinedInMemory() });
+    await settle();
     const push = vi.spyOn(history, "pushState");
     const replace = vi.spyOn(history, "replaceState");
-    mountLobby({ storage: joinedInMemory(), routes: counted });
-    await settle();
-    push.mockClear();
-    replace.mockClear();
-    fireEvent.click(screen.getByRole("button", { name: "Listeners (12)" }));
-    await settle();
+    await v.toggle();
     expect([location.pathname, push.mock.calls.length, replace.mock.calls.length]).toEqual(["/lobby", 0, 0]);
   });
 });

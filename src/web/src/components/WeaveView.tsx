@@ -12,6 +12,8 @@ import { InviteBanner } from "./InviteBanner.js";
 import { GuidelinesPanel } from "./GuidelinesPanel.js";
 import { RequestsPanel } from "./RequestsPanel.js";
 import { ListenersLink } from "./ListenersLink.js";
+import { ListenersPage } from "./listeners/ListenersPage.js";
+import type { MainArea } from "../lobby-view.js";
 
 /**
  * One Weave page, whichever route reached it (spec §2.7). It takes the session rather than building
@@ -25,7 +27,8 @@ import { ListenersLink } from "./ListenersLink.js";
  * composer until that join lands (§2.6) — the composer would otherwise promise a write this
  * credential cannot make.
  */
-export function WeaveView({ session, state, banner, noCredential, openMainInPlace, openListenersInPlace }: {
+export function WeaveView({ session, state, banner, noCredential, openMainInPlace,
+  view = "thread", viewKey = 0, onView }: {
   session: Session; state: SessionState;
   /** Rendered above the Weave: the persistence bar, and nothing else today. */
   banner?: JSX.Element | null;
@@ -40,12 +43,15 @@ export function WeaveView({ session, state, banner, noCredential, openMainInPlac
    */
   openMainInPlace?: () => void;
   /**
-   * The same rule for the sidebar's way into `/lobby/listeners` (spec §5.1): given only when leaving
-   * this JS context would lose what this page holds, and then the line is a button that renders the
-   * directory here rather than an `<a href>` a middle click could turn into a full page load. The
-   * Lobby's sidebar is the one place it is read.
+   * Which part of the main area the human has **asked** for (spec §3.1). Optional, because every
+   * page that is not the Lobby's wants exactly these defaults and none of them has a prop of its
+   * own. It is not by itself what is rendered — that is `showListeners`, below.
    */
-  openListenersInPlace?: () => void;
+  view?: MainArea;
+  /** The directory's `key`: bumped by a `popstate`, so Back and Forward re-seed it from that entry. */
+  viewKey?: number;
+  /** The one way the view changes. The mount above owns what else that costs — a history entry. */
+  onView?: (next: MainArea) => void;
 }) {
   const [pending, setPending] = useState<string | null>(null);   // message waiting for a name
   const [draft, setDraft] = useState<string | undefined>();      // text handed back to the composer
@@ -114,6 +120,11 @@ export function WeaveView({ session, state, banner, noCredential, openMainInPlac
   // Reading with the Weave link, because the identity that used to work no longer does (§2.6). A
   // join is the way out, and `session.join()` clears the reason.
   const readOnly = state.readOnlyReason === "secret-fallback";
+  // §5's gate, which is the sidebar line's own, id-based and unchanged by this spec (ListenersLink.tsx:23).
+  const lobbyGate = state.status === "ready" && !!state.lobby && state.lobby.weaveId === state.weave?.id;
+  // The one predicate every rendering branch below reads. `view` on its own renders nothing: a site
+  // that forgot the gate would not be a missing directory, it would be a broken Thread.
+  const showListeners = lobbyGate && view === "listeners";
 
   return (
     <div class="layout">
@@ -121,11 +132,12 @@ export function WeaveView({ session, state, banner, noCredential, openMainInPlac
       <Header state={state} session={session} onError={reportError} openMainInPlace={openMainInPlace} />
       <div class="body">
         <aside class="sidebar">
-          <ThreadList state={state} session={session} onError={reportError} />
+          <ThreadList state={state} session={session} onError={reportError} onPick={() => onView?.("thread")} />
           <GuidelinesPanel state={state} session={session} onError={reportError} />
           {/* Both render nothing away from the Lobby, so every other Weave's sidebar is unchanged. */}
           <RequestsPanel state={state} session={session} onError={reportError} />
-          <ListenersLink state={state} openListenersInPlace={openListenersInPlace} />
+          <ListenersLink state={state} active={showListeners}
+            onToggle={() => onView?.(showListeners ? "thread" : "listeners")} />
         </aside>
         <div class="main">
           {archived && <div class="banner">This Weave is archived and read-only.</div>}
@@ -136,10 +148,30 @@ export function WeaveView({ session, state, banner, noCredential, openMainInPlac
             </div>
           )}
           {state.refreshError && <div class="warn-bar">Having trouble syncing: {state.refreshError}</div>}
-          <InviteBanner state={state} session={session} />
-          <MessageList state={state} />
+          {!showListeners && <InviteBanner state={state} session={session} />}
+          {!showListeners && <MessageList state={state} />}
+          {showListeners && (
+            <section class="listeners-view">
+              {/* Demoted from <h1>: the page's <h1> is the Weave title in the header, and this is
+                  the heading of one region of it (spec §3.3). */}
+              <h2>Listeners</h2>
+              <ListenersPage key={viewKey} session={session} />
+            </section>
+          )}
+          {/* In both views, because `reportError` is the failure channel of the header and of all
+              three sidebar panels, every one of which stays live while the directory is open
+              (spec §3.3). Drawn only in the thread view, a failed thread creation or guidelines save
+              would fail silently. */}
           {error && <div class="error-bar">{error}</div>}
-          {!archived && !readOnly && <Composer state={state} onSend={send} draft={draft} />}
+          {!archived && !readOnly && (
+            // Mounted in both views and drawn in one, so a half-written message survives a look at
+            // the directory (spec §3.5). `hidden` and not a class of our own: it is the one way of
+            // being off the page that also leaves the accessibility tree and the tab order. No CSS
+            // rule may give this element a `display`.
+            <div class="composer-slot" hidden={showListeners}>
+              <Composer state={state} onSend={send} draft={draft} />
+            </div>
+          )}
         </div>
       </div>
       {(pending !== null || askName || (state.needsName && !state.me)) && (

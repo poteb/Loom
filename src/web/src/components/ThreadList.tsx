@@ -14,7 +14,12 @@ function shortUrl(url: string): string {
   return bare.length > 40 ? `${bare.slice(0, 39)}…` : bare;
 }
 
-export function ThreadList({ state, session, onError }: { state: SessionState; session: Session; onError: (e: unknown) => void }) {
+export function ThreadList({ state, session, onError, onPick }: {
+  state: SessionState; session: Session; onError: (e: unknown) => void;
+  /** Told that this list has put a Thread on screen, by a selection or by a creation (spec §3.4).
+   *  It reports; what that costs — closing the directory, and a history entry — is the caller's. */
+  onPick?: () => void;
+}) {
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
@@ -23,7 +28,13 @@ export function ThreadList({ state, session, onError }: { state: SessionState; s
     e.preventDefault();
     const n = name.trim();
     if (!n) return;
-    try { await session.createThread(n, url.trim() || null); setName(""); setUrl(""); setCreating(false); }
+    try {
+      await session.createThread(n, url.trim() || null);
+      setName(""); setUrl(""); setCreating(false);
+      // Creating a Thread selects it (`session.ts:831`), so this is a pick like any other: leaving
+      // the human on the directory would hide what they have just made.
+      onPick?.();
+    }
     catch (err) { onError(err); }
   };
   const close = async (id: string) => {
@@ -48,7 +59,7 @@ export function ThreadList({ state, session, onError }: { state: SessionState; s
           <li key={t.id} class={[t.id === state.currentThreadId ? "active" : "", state.invitesForMe.has(t.id) ? "invited" : ""].filter(Boolean).join(" ")}>
             {/* A real button, so selecting a thread is reachable by keyboard (Tab, then Enter or Space). */}
             <button type="button" class="thread-pick" aria-current={t.id === state.currentThreadId ? "true" : undefined}
-              onClick={() => session.selectThread(t.id)}>
+              onClick={() => { session.selectThread(t.id); onPick?.(); }}>
               <span>{t.name}</span>
               {t.closedAt && <span class="badge">closed</span>}
               {state.invitesForMe.has(t.id) && <span class="badge badge-invited">invited</span>}

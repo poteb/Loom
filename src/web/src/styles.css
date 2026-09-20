@@ -142,12 +142,6 @@ select { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid 
 .weave-more { margin-top: 8px; }
 /* --- The Lobby listeners directory (§5.3) ----------------------------------- */
 .listeners { max-width: 1040px; margin: 0 auto; padding: 16px 16px 48px; }
-.listeners-head { display: flex; flex-wrap: wrap; gap: 8px 16px; justify-content: space-between; align-items: baseline; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
-.listeners-head h1 { font-size: 22px; margin: 0; display: inline; }
-/* A link, or the button that stands in for it on a browser that would lose its credential to a page
-   load (§3.1). Same words either way, so the accessible name does not depend on which browser this is. */
-.listeners-back { color: var(--accent); font-size: 13px; }
-button.listeners-back { padding: 0; border: 0; background: none; font: inherit; font-size: 13px; color: var(--accent); text-decoration: underline; cursor: pointer; }
 .listeners-partial { margin: 8px 0 0; font-size: 13px; }
 .listeners-controls { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin: 12px 0; }
 .listeners-controls label { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 13px; }
