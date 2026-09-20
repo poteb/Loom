@@ -372,6 +372,8 @@ the session" a thing to be careful about rather than a thing that cannot happen.
 > `viewOfPath(location.pathname) !== undefined` **and** `leavingIsSafe(storage, notice,
 > weaveKey(lobbyWeaveId))` is true at the moment of the click.
 
+**Amended 2026-09-20 (found in the second plan review):** the handler belongs to the mount that owns it and is **dead once that mount has unmounted** — `key={reloadKey}` retires `WeaveMount` on a join while the view state and its setter stay with `WeaveSession`, which survives, so an `onView` captured before the join still holds a live setter and a ref that stopped updating when it was retired; it therefore checks its own liveness (a `mounted` ref cleared in an effect cleanup) **first**, before the change test below, before `leavingIsSafe`, and before any `pushState` or `setView`.
+
 **Amended 2026-09-20 (found in plan review):** a push is made only when the requested view actually **changes** — `onView` is also `ThreadList`'s `onPick` (§3.4), called on every Thread selection and every successful creation, so an unguarded handler would push a duplicate `/lobby` for ordinary Thread navigation with the directory closed; the handler therefore compares `next` with the **current** requested view, read through a ref rather than from the render that created it (the same render that must not be trusted for `leavingIsSafe`, since `onPick` runs after an `await`), and where they are equal it pushes nothing and changes nothing.
 
 Both halves are re-read per click, and the push is made **in `WeaveMount`**, which already computes
