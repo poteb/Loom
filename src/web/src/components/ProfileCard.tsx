@@ -1,5 +1,4 @@
 import type { Participant, Profile } from "@loom/client";
-import type { SessionState } from "../session.js";
 
 /** `serves` is either a policy word or the list of owners the listener will work for. */
 function serves(profile: Profile): string {
@@ -12,8 +11,9 @@ export const modelSpecs = (profile: Profile): string[] =>
   (profile.models ?? []).map((m) => [m.model, m.effort].filter(Boolean).join("/"));
 
 /**
- * What a Lobby participant says it can do. Rendered only where there is a profile: everywhere but
- * the Lobby `capabilities` is null, and there it is null until the listener sets one.
+ * What a Lobby participant says it can do. Rendered only where there is a profile, and there is
+ * exactly one place that has them to render: the listeners directory, whose rows carry the profile
+ * beside the participant (spec §2.1). `getWeave` carries none at all, in the Lobby or out of it.
  */
 export function ProfileCard({ participant }: { participant: Participant }) {
   const profile = participant.capabilities;
@@ -30,19 +30,5 @@ export function ProfileCard({ participant }: { participant: Participant }) {
         <dt>serves</dt><dd class="profile-serves">{serves(profile)}</dd>
       </dl>
     </div>
-  );
-}
-
-/** The Lobby's roster: everyone standing there who has said what they can do. */
-export function ProfileCards({ state }: { state: SessionState }) {
-  if (!state.lobby || state.lobby.weaveId !== state.weave?.id) return null;
-  const listeners = state.participants.filter((p) => p.capabilities);
-  return (
-    <section class="profiles">
-      <div class="profiles-head">Listeners</div>
-      {listeners.length === 0
-        ? <p class="muted">Nobody has declared a profile yet.</p>
-        : listeners.map((p) => <ProfileCard key={p.id} participant={p} />)}
-    </section>
   );
 }

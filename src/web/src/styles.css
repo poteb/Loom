@@ -66,9 +66,16 @@ button { font: inherit; padding: 6px 10px; border-radius: 6px; border: 1px solid
 button.danger { color: var(--danger); } button.link { border: none; background: none; color: var(--accent); padding: 0 4px; font-size: 12px; }
 button:disabled { opacity: .5; cursor: default; }
 input { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
-/* --- Lobby: requests panel and profile cards ------------------------------- */
-.requests, .profiles { padding: 8px; border-top: 1px solid var(--line); }
-.requests-head, .profiles-head { display: flex; justify-content: space-between; align-items: center; font-weight: 600; margin-bottom: 8px; }
+/* --- Lobby: requests panel, the listeners line and the cards it links to ----- */
+.requests, .listeners-line { padding: 8px; border-top: 1px solid var(--line); }
+.requests-head { display: flex; justify-content: space-between; align-items: center; font-weight: 600; margin-bottom: 8px; }
+/* The sidebar's way into the directory (§5.1), reading as a section heading like the ones above it
+   — a link, or the button that stands in for it on a browser that would lose its credential to a
+   page load (§3.1). Same words and same weight either way; only the element differs. */
+.listeners-line { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; font-size: 13px; }
+.listeners-line-link { font-weight: 600; color: var(--accent); }
+button.listeners-line-link { padding: 0; border: 0; background: none; font: inherit; font-weight: 600; color: var(--accent); text-decoration: underline; cursor: pointer; }
+.listeners-line .muted { font-size: 12px; }
 .request-list, .offers, .closed-requests ul { list-style: none; margin: 0; padding: 0; }
 .request { border: 1px solid var(--line); border-radius: 6px; padding: 6px; margin-bottom: 8px; }
 .request-head { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }

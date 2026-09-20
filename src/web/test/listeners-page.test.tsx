@@ -3,7 +3,9 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/preact";
 import { LoomClient, type Listener, type ListenersPage } from "@loom/client";
 import { App, routeOf } from "../src/app.js";
+import { ListenersLink } from "../src/components/ListenersLink.js";
 import { ListenersRoute } from "../src/components/listeners/ListenersRoute.js";
+import type { SessionState } from "../src/session.js";
 import { memoryStorage, type KeyValueStorage } from "../src/storage.js";
 import { createPersistenceNotice, type PersistenceNotice } from "../src/persistence.js";
 import { createWeavesSignal } from "../src/weaves-signal.js";
@@ -965,5 +967,185 @@ describe("the way out of the directory (spec §5.3)", () => {
     mountApp({ storage: joined() });
     await settle();
     expect(screen.getByRole("link", { name: "Loom" }).getAttribute("href")).toBe("/");
+  });
+});
+
+/**
+ * The Lobby sidebar's line (spec §5.1), where `ProfileCards` used to stack a card per listener.
+ * Most of these hand the component a state, because the four states §5.1 words differently are
+ * facts about two state cells and nothing else; the ones about *which element* the line is mount
+ * the real page, because that answer comes from the storage this browser holds.
+ */
+describe("the Lobby sidebar's listeners line (spec §5.1)", () => {
+  const WEAVE = { id: LOBBY.weaveId, title: "Lobby", createdAt: "", archivedAt: null, lastSeq: 0, guidelines: "" };
+  /**
+   * A loaded Lobby page's state, in the shapes the session actually produces: `getWeave` carries no
+   * Lobby profile at all now (spec §3.1), so every participant here has `capabilities: null` and
+   * the count beside the line is the only thing that knows how many listeners there are.
+   */
+  const lobbyState = (over: Partial<SessionState> = {}): SessionState => ({
+    status: "ready", weave: WEAVE, lobby: LOBBY,
+    threads: [], participants: [JOINED.participant], events: [],
+    me: { participant: JOINED.participant, token: "participant-token" },
+    connection: "open", needsName: false, instanceGuidelines: "",
+    invitesForMe: new Set(), invited: {}, requests: {}, requestsLoaded: true, closedRequestsPage: 25,
+    ...over,
+  });
+  /** The line's whole text, so "and nothing else" is assertable. */
+  const line = (container: Element) => container.textContent ?? "";
+
+  it("shows how many listeners the Lobby holds", () => {
+    const { container } = render(<ListenersLink state={lobbyState({ listenerCount: 3 })} />);
+    expect(line(container)).toBe("Listeners (3)");
+  });
+
+  // Before the first answer: no number, and not a word about a failure that has not happened.
+  it("reads Listeners, with nothing beside it, before the first count answers", () => {
+    const { container } = render(<ListenersLink state={lobbyState()} />);
+    expect(line(container)).toBe("Listeners");
+  });
+
+  it("says the count is unavailable when the read failed and there is no number", () => {
+    const { container } = render(<ListenersLink state={lobbyState({ listenerCountError: true })} />);
+    expect(line(container)).toBe("Listenerscount unavailable");
+  });
+
+  // The rule that makes the whole thing worth having: an absent count is an absent number.
+  it("never invents a zero for a count that failed", () => {
+    const { container } = render(<ListenersLink state={lobbyState({ listenerCountError: true })} />);
+    expect(line(container)).not.toContain("(0)");
+  });
+
+  it("keeps the last known number when a later count read fails, and says nothing beside it", () => {
+    const { container } = render(<ListenersLink state={lobbyState({ listenerCount: 7, listenerCountError: true })} />);
+    expect(line(container)).toBe("Listeners (7)");
+  });
+
+  it("drops that note again when a later count answers", () => {
+    const { container } = render(<ListenersLink state={lobbyState({ listenerCount: 9, listenerCountError: false })} />);
+    expect(line(container)).toBe("Listeners (9)");
+  });
+
+  // A zero the server actually answered is a number like any other: what §5.1 forbids is inventing
+  // one, not reporting one.
+  it("shows a zero the Lobby really answered", () => {
+    const { container } = render(<ListenersLink state={lobbyState({ listenerCount: 0, listenerCountError: false })} />);
+    expect(line(container)).toBe("Listeners (0)");
+  });
+
+  // A 401 on the own-profile read of a secret-link visit leaves the page ready with no `me` at all
+  // (spec §3.3). The line needs none: it describes the Lobby, not the reader.
+  it("works on a page that has fallen back to the Weave link and has no identity", () => {
+    const { container } = render(
+      <ListenersLink state={lobbyState({ me: undefined, readOnlyReason: "secret-fallback", listenerCount: 4 })} />,
+    );
+    expect(line(container)).toBe("Listeners (4)");
+  });
+
+  it("renders nothing on a Weave that is not the Lobby", () => {
+    const { container } = render(
+      <ListenersLink state={lobbyState({ weave: { ...WEAVE, id: "22222222-2222-4222-8222-222222222222" }, listenerCount: 3 })} />,
+    );
+    expect(container.innerHTML).toBe("");
+  });
+
+  // A reload keeps the Weave and the pointer on screen while it runs, and neither count cell is
+  // cleared by it: a page that is not actually showing the Lobby has no directory to offer.
+  it("renders nothing while the page is loading, Lobby or not", () => {
+    const { container } = render(<ListenersLink state={lobbyState({ status: "loading", listenerCount: 3 })} />);
+    expect(container.innerHTML).toBe("");
+  });
+
+  it("is a link to the directory when this browser may leave the page", () => {
+    render(<ListenersLink state={lobbyState({ listenerCount: 3 })} />);
+    expect(screen.getByRole("link", { name: "Listeners (3)" }).getAttribute("href")).toBe("/lobby/listeners");
+  });
+
+  // Never an anchor with a handler: an anchor can be middle-clicked or opened in a new tab, and
+  // either one is the full page load that loses an in-memory credential.
+  it("is a button carrying no href when it may not", () => {
+    render(<ListenersLink state={lobbyState({ listenerCount: 3 })} openListenersInPlace={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "Listeners (3)" }).getAttribute("href")).toBeNull();
+  });
+
+  it("renders the directory here when that button is clicked", () => {
+    const openListenersInPlace = vi.fn();
+    render(<ListenersLink state={lobbyState({ listenerCount: 3 })} openListenersInPlace={openListenersInPlace} />);
+    fireEvent.click(screen.getByRole("button", { name: "Listeners (3)" }));
+    expect(openListenersInPlace.mock.calls.length).toBe(1);
+  });
+});
+
+/**
+ * The same line on the real Lobby page: which element it is comes from the storage this browser
+ * holds, and it is asked on every render (`WeaveRoute`'s `canLeave`), so a later durable write puts
+ * the ordinary link back.
+ */
+describe("the listeners line on the Lobby page (spec §5.1)", () => {
+  /** Everything a Lobby page reads, the two side reads included; an unstubbed path is a test bug. */
+  const LOBBY_PAGE: Routes = {
+    [`${BASE}/api/weaves/${LOBBY.weaveId}/events`]: () => json({ events: [] }),
+    [`${BASE}/api/weaves/${LOBBY.weaveId}`]: () => json({
+      weave: { id: LOBBY.weaveId, title: "Lobby", createdAt: "", archivedAt: null, lastSeq: 0, guidelines: "" },
+      threads: [{ id: "g1", weaveId: LOBBY.weaveId, name: "General", isGeneral: true, createdBy: "p-dana", createdAt: "", closedAt: null, url: null }],
+      // The shape `getWeave` really answers with in the Lobby now: the profile per participant is
+      // exactly what stopped travelling (spec §3.1), which is why this sidebar counts instead.
+      participants: [JOINED.participant],
+    }),
+    [`${BASE}/api/guidelines`]: () => json({ guidelines: "" }),
+    [`${BASE}/api/requests`]: () => json({ requests: [] }),
+    [`${BASE}/api/lobby/participants/me`]: () => json(JOINED.participant),
+  };
+  /** A Lobby that answers a count of its own, so the number on screen names this test. */
+  const counted: Routes = { [LISTENERS]: () => json(directory([], { total: 12 })) };
+  const mountLobby = (opts: MountOpts = {}) =>
+    mountApp({ ...opts, path: "/lobby", routes: { ...LOBBY_PAGE, ...opts.routes } });
+
+  it("is in the Lobby's sidebar, carrying the number the Lobby answered", async () => {
+    const v = mountLobby({ storage: joined(), routes: counted });
+    await settle();
+    expect(v.container.querySelector(".sidebar")!.textContent).toContain("Listeners (12)");
+  });
+
+  // The removal itself: the sidebar used to stack a card per listener, and there is no card and no
+  // section left to hold one.
+  it("stacks no profile card there any more", async () => {
+    const v = mountLobby({ storage: joined() });
+    await settle();
+    expect([!!v.container.querySelector(".profiles"), !!v.container.querySelector(".profile-card")])
+      .toEqual([false, false]);
+  });
+
+  it("is a link for a browser whose credential would survive leaving the page", async () => {
+    mountLobby({ storage: joined(), routes: counted });
+    await settle();
+    expect(screen.getByRole("link", { name: "Listeners (12)" }).getAttribute("href")).toBe("/lobby/listeners");
+  });
+
+  it("is a button for one whose credential lives only in this JS context", async () => {
+    mountLobby({ storage: joinedInMemory(), routes: counted });
+    await settle();
+    expect(!!screen.queryByRole("button", { name: "Listeners (12)" })).toBe(true);
+  });
+
+  it("renders the directory here when that button is clicked", async () => {
+    const v = mountLobby({ storage: joinedInMemory(),
+      routes: { [LISTENERS]: () => json(directory([listener("ada", "ada@example.com")], { total: 12 })) } });
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Listeners (12)" }));
+    await settle();
+    expect([v.heading(), v.names()]).toEqual([true, ["ada"]]);
+  });
+
+  it("leaves the address bar alone when it does", async () => {
+    const push = vi.spyOn(history, "pushState");
+    const replace = vi.spyOn(history, "replaceState");
+    mountLobby({ storage: joinedInMemory(), routes: counted });
+    await settle();
+    push.mockClear();
+    replace.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Listeners (12)" }));
+    await settle();
+    expect([location.pathname, push.mock.calls.length, replace.mock.calls.length]).toEqual(["/lobby", 0, 0]);
   });
 });

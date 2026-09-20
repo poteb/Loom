@@ -736,6 +736,8 @@ describe("the way back to the main page from a Weave page (spec §3.1)", () => {
 const GUIDELINES_URL = `${BASE}/api/guidelines`;
 const LOBBY_WEAVE_URL = `${BASE}/api/weaves/${LOBBY.weaveId}`;
 const OPEN_REQUESTS_URL = `${BASE}/api/requests?status=open&limit=1000`;
+/** The cheap count the listener line comes from: one `count(*)`, no rows and no facet pass (§5.1). */
+const LISTENERS_URL = `${BASE}/api/lobby/listeners?limit=0&facets=false`;
 const LEGACY_LOOKUP = `${BASE}/api/weaves/${SECRET}/lookup`;
 
 /** The request headers the stub was called with for one URL — how "read with the stored token" is
@@ -834,13 +836,18 @@ describe("the instance guidelines (spec §4.3)", () => {
 });
 
 describe("the Lobby summary (spec §4.4)", () => {
-  /** Three participants, two of them carrying a profile — the "listeners" of §4.4. */
-  const people = (n: number, listeners: number) => Array.from({ length: n }, (_, i) => ({
-    ...JOINED.participant, id: `p${i}`, name: `p${i}`, capabilities: i < listeners ? { runtime: "claude-code" } : null,
+  /**
+   * Three participants as `getWeave` really answers for the Lobby now: **every** profile blanked,
+   * this browser's own included (spec §3.1). How many of them are listeners is not a question this
+   * answer can be asked any more, which is why the number comes from the directory query instead.
+   */
+  const people = (n: number) => Array.from({ length: n }, (_, i) => ({
+    ...JOINED.participant, id: `p${i}`, name: `p${i}`, capabilities: null,
   }));
   const COUNTS: Routes = {
-    [LOBBY_WEAVE_URL]: () => json({ ...weaveInfo(LOBBY.weaveId, "Lobby"), participants: people(3, 2) }),
+    [LOBBY_WEAVE_URL]: () => json({ ...weaveInfo(LOBBY.weaveId, "Lobby"), participants: people(3) }),
     [OPEN_REQUESTS_URL]: () => json({ requests: [{ id: "r1" }] }),
+    [LISTENERS_URL]: () => json({ total: 2, matched: 2, listeners: [] }),
   };
   function mountSummary(opts: { routes?: Routes; storage?: KeyValueStorage } = {}) {
     const fetchStub = stubFetch(opts.routes ?? {});
@@ -887,6 +894,58 @@ describe("the Lobby summary (spec §4.4)", () => {
     const v = mountSummary({ storage: joinedStorage(), routes: COUNTS });
     await settle();
     expect(headersOf(v.fetchStub, LOBBY_WEAVE_URL)["authorization"]).toBe("Bearer participant-token");
+  });
+
+  // A "listener" is a participant carrying a capability profile, and `getWeave` carries none for
+  // the Lobby any more (spec §3.1): the number comes from the directory's own cheap count.
+  it("takes the listener count from the directory query, asking for no rows and no facets", async () => {
+    const v = mountSummary({ storage: joinedStorage(), routes: COUNTS });
+    await settle();
+    expect(v.fetchStub.mock.calls.filter((c) => String(c[0]) === LISTENERS_URL).length).toBe(1);
+  });
+
+  /**
+   * The independence rule (Global Constraint: a read whose failure costs only its own line is not
+   * folded into a rejecting `Promise.all`). Inside one, this count's failure would take the two
+   * counts this section has always shown down with it.
+   */
+  const brokenCount: Routes = { ...COUNTS, [LISTENERS_URL]: () => json({ code: "internal", message: "boom" }, 500) };
+
+  it("keeps the participant and open-request counts when only the listener count fails", async () => {
+    const v = mountSummary({ storage: joinedStorage(), routes: brokenCount });
+    await settle();
+    expect([...v.container.querySelectorAll(".lobby-counts li")].map((li) => li.textContent))
+      .toEqual(["3 participants", "1 open request"]);
+  });
+
+  // No zero, and no error line either: the section's one error line is for a failure that cost it
+  // everything, and this one cost it a line.
+  it("says nothing at all about the listeners it could not count", async () => {
+    const v = mountSummary({ storage: joinedStorage(), routes: brokenCount });
+    await settle();
+    expect([v.container.textContent?.includes("listener"), !!v.container.querySelector(".error")])
+      .toEqual([false, false]);
+  });
+
+  // This component has no credential rule of its own — that is the session's job, and My Weaves' —
+  // and all three reads use the same stored token, so a dead one is reported by `getWeave` below.
+  it("treats a refused listener count as any other failure of that one line", async () => {
+    const v = mountSummary({ storage: joinedStorage(), routes: {
+      ...COUNTS, [LISTENERS_URL]: () => json({ code: "invalid_token", message: "Credential is not valid" }, 401) } });
+    await settle();
+    expect([[...v.container.querySelectorAll(".lobby-counts li")].map((li) => li.textContent),
+      !!v.container.querySelector(".error")])
+      .toEqual([["3 participants", "1 open request"], false]);
+  });
+
+  // The half that must *not* become independent: the reads this section is *about* still fail it
+  // whole, with the one error line it has always had.
+  it("still loses every count, behind one error line, when the Weave read fails", async () => {
+    const v = mountSummary({ storage: joinedStorage(), routes: {
+      ...COUNTS, [LOBBY_WEAVE_URL]: () => json({ code: "internal", message: "boom" }, 500) } });
+    await settle();
+    expect([v.container.querySelector(".error")?.textContent, !!v.container.querySelector(".lobby-counts")])
+      .toEqual(["boom", false]);
   });
 });
 

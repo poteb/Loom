@@ -11,7 +11,7 @@ import { NamePrompt } from "./NamePrompt.js";
 import { InviteBanner } from "./InviteBanner.js";
 import { GuidelinesPanel } from "./GuidelinesPanel.js";
 import { RequestsPanel } from "./RequestsPanel.js";
-import { ProfileCards } from "./ProfileCard.js";
+import { ListenersLink } from "./ListenersLink.js";
 
 /**
  * One Weave page, whichever route reached it (spec §2.7). It takes the session rather than building
@@ -125,7 +125,7 @@ export function WeaveView({ session, state, banner, noCredential, openMainInPlac
           <GuidelinesPanel state={state} session={session} onError={reportError} />
           {/* Both render nothing away from the Lobby, so every other Weave's sidebar is unchanged. */}
           <RequestsPanel state={state} session={session} onError={reportError} />
-          <ProfileCards state={state} />
+          <ListenersLink state={state} openListenersInPlace={openListenersInPlace} />
         </aside>
         <div class="main">
           {archived && <div class="banner">This Weave is archived and read-only.</div>}
