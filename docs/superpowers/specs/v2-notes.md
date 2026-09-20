@@ -240,6 +240,19 @@ recorded here. Two cosmetic things seen in passing and left for that session: a 
 the sidebar is default dark blue on the dark background, and the sidebar's **Listeners (N)** line has
 none of the heading or padding its neighbouring sections have.
 
+**The next slice: the directory becomes a view inside the Lobby (2026-09-20).** Findings 1, 2, 3 and
+5 above are specified in
+[2026-09-20-loom-lobby-listeners-view-design.md](2026-09-20-loom-lobby-listeners-view-design.md): the
+Lobby's header and sidebar stay on screen and only the main area swaps, the session is never
+remounted, `/lobby/listeners` becomes the Lobby route with an initial view and the app's first
+`pushState` (so Back and Forward mean what a human means by them), and one credential owner — the
+session — serves the directory through a new `session.listListeners`. It amends spec §5.1–§5.5 and
+deletes `ListenersRoute`, `openListenersInPlace` and the page's own wordmark and **Back to the
+Lobby**. Finding 4 and all visual design are deliberately left to the owner's separate design
+session. **Spec and plan approved 2026-09-20, implementation next** — the plan is
+[2026-09-20-loom-lobby-listeners-view.md](../plans/2026-09-20-loom-lobby-listeners-view.md), six
+tasks on `feat/lobby-listeners-view`; no implementation yet.
+
 ## Deferred from v1
 
 Listed as out of scope in the v1 spec or recorded during implementation:
