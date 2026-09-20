@@ -407,19 +407,22 @@ storage and the site-data block of step 10 are keyed by).
          case $((i % 3)) in
            0) p='{"models":[{"model":"claude-fable-5-1","effort":"high"}],"tools":["shell","github"],"runtime":"claude-code","owner":"paw","serves":"owner"}';;
            1) p='{"models":[{"model":"gpt-5.6-sol","effort":"medium"}],"tools":["github"],"runtime":"codex","owner":"bob","serves":"anyone"}';;
-           2) p='{"models":[{"model":"claude-fable-5-1","effort":"low"},{"model":"gpt-5.6-sol"}],"tools":["shell"],"runtime":"node","owner":"shared","serves":["paw"]}';;
+           2) p='{"models":[{"model":"claude-fable-5-1","effort":"low"},{"model":"gpt-5.6-sol","effort":"high"}],"tools":["shell"],"runtime":"node","owner":"shared","serves":["paw"]}';;
          esac
-         LOOM_CONFIG=/tmp/loom-seed/$i.json node src/cli/bin/loom.js lobby join --name "seed-$i" --kind agent --json > /dev/null
-         LOOM_CONFIG=/tmp/loom-seed/$i.json node src/cli/bin/loom.js lobby me --set "$p" --json > /dev/null
+         LOOM_CONFIG=/tmp/loom-seed/$i.json node src/cli/bin/loom.js lobby join --name "seed-$i" --kind agent --json > /dev/null || echo "join $i failed"
+         LOOM_CONFIG=/tmp/loom-seed/$i.json node src/cli/bin/loom.js lobby me --set "$p" --json > /dev/null || echo "profile $i failed"
        done
+       rm -rf /tmp/loom-seed        # the config files hold the seeds' participant tokens
 
    That is 20 listeners of each shape: three owners, three runtimes, two models (each at two
-   efforts, and one alternative declared with no effort at all), two tools and all three `serves`
-   kinds — enough for every facet to have more than one row, for a model to have an effort row worth
+   efforts — a profile's model entry must carry an `effort`, the writer refuses one without), two
+   tools and all three `serves` kinds — enough for every facet to have more than one row, for a model to have an effort row worth
    opening, and for the page to have a second one. **Participants cannot be removed**
    (KNOWN-ISSUES), so
    these 60 stay in the dev Lobby until `docker compose down -v`; run this on a database you are
-   willing to throw away, and note that they also make smoke tests 4 and 5 noisier afterwards.
+   willing to throw away, and note that they also make smoke tests 4 and 5 noisier afterwards. The
+   numbers below assume a Lobby with **no other listener**: on a database that already holds some
+   (smoke test 4 leaves two), read every "60" as "60 plus those".
 2. **Join the Lobby from the browser** if this profile has not already: open `http://127.0.0.1:3000/`
    and use the **Join the Lobby** form (smoke test 5, step 2). You land on `/lobby`.
 3. **The sidebar line.** In the Lobby's sidebar, under the requests panel, expect exactly one line
@@ -438,11 +441,10 @@ storage and the site-data block of step 10 are keyed by).
    that have both, not either; a **runtime** chip; and each of the three **serves** chips — *anyone*,
    *its owner*, *a named list*. After each click the counts line and **every other facet's** counts
    move with it, while the facet you clicked keeps its own full list: that is "each facet is computed
-   over the result minus its own filter", and it is the rule most likely to look wrong. Then pick a
-   combination the seeds cannot satisfy — runtime `codex` **and** tool `shell`, which no listener
-   has — and confirm both chips you selected are **still listed, at 0** (a ranked query cannot
-   contain a value with no rows, so a chip at zero is the selection being carried deliberately), and
-   that the page says no listener matches rather than going blank. **Clear filters** puts everything
+   over the result minus its own filter", and it is the rule most likely to look wrong. Note what
+   clicking **cannot** build: a combination no listener satisfies. With runtime `codex` selected the
+   tool `shell` has no rows under the other filters, and an *unselected* value at zero is simply not
+   listed — so that state is reached from a link, in step 9. **Clear filters** puts everything
    back.
 6. **Sort.** Cycle **name**, **owner** and **joined**, each in both directions, and confirm the first
    card changes as expected. By **name** the order is a case-insensitive *string* sort, not a
@@ -462,8 +464,12 @@ storage and the site-data block of step 10 are keyed by).
    for, plus one muted line saying part of the link was not understood. Repeat with a value outside
    core's own bounds or enums (`?filter={"serves":"everyone"}`, `?sort=age`) and with a `filter` that
    is not JSON at all. Each must show the directory with that one line, never an error page and
-   never a silently narrower view. Note the one thing that is **not** reported, because it is not
-   part of this page's encoding: `?limit=` and `?cursor=` in a hand-typed URL are ignored without a
+   never a silently narrower view. Then the combination clicking cannot reach —
+   `?filter={"tools":["shell"],"runtime":"codex"}`, which no seed satisfies: **no** notice (the link
+   is perfectly readable), the page says no listener matches rather than going blank, and both
+   selected chips are **still listed, at 0** (a ranked query cannot contain a value with no rows, so
+   a chip at zero is the selection being carried deliberately). Note the one thing that is **not**
+   reported, because it is not part of this page's encoding: `?limit=` and `?cursor=` in a hand-typed URL are ignored without a
    word — a link reproduces a view, not a page position.
 10. **Blocked site data.** Put a Firefox **Block** exception on `http://127.0.0.1:3000` exactly as in
     smoke test 5 step 7, then reload `/lobby`. Now: the sidebar's **Listeners (60)** is a *button*
@@ -481,6 +487,24 @@ storage and the site-data block of step 10 are keyed by).
     wearing it is the single worst failure this page can have. Start the server again and confirm
     the next control change recovers.
 
-*Not yet run.* Written with the listeners page, against no live browser at all: **none** of the
-appearance this test exists to check has been looked at, which is why it is also a row in
-[KNOWN-ISSUES.md](KNOWN-ISSUES.md).
+*Last run 2026-09-20* on `main` at `62adf4a`, in Firefox, against a dev Lobby that already held two
+listeners from smoke test 4 (so every count read 62, not 60): **12 of 12 passed, no product defect.**
+The sidebar showed one **Listeners (62)** line and no profile cards; search matched names and,
+separately, owners, and took `%` literally; every filter narrowed as written, the other facets
+re-counting while the clicked facet kept its list; all six orderings were right, `seed-10` straight
+after `seed-1`; **Show more** appended the last 12 and went away; the address bar carried `q`,
+`filter`, `sort` and `dir`, **Back** left the page rather than stepping through the changes, and a
+reload and a second tab reproduced the view; an unknown key, a bad enum, a bad sort and a non-JSON
+`filter` each rendered the directory with the one notice, and the `codex` + `shell` link showed both
+chips selected at 0. **With site data blocked** the join happened in place, the sidebar line was a
+button, the directory opened in place, searching and filtering never touched the address bar, and
+**Back to the Lobby** returned to a live session. The main page listed `62 listeners` beside 69
+participants. With the server stopped, a filter change showed *updating…* for a few seconds and then
+the error **above the 50 cards already on screen**, never "no listener matches"; with it started
+again the next control change recovered without a reload. Two faults in **this test's own text**
+were found and are fixed above: the seed loop's third profile declared a model with no `effort`,
+which the profile writer refuses (and the loop hid the refusal), and step 5 asked for a combination
+that cannot be clicked together. **Not signed off:** the appearance. The owner's notes from the run
+— the directory should be a view *inside* the Lobby's layout rather than a page of its own, and four
+smaller ones — are in [v2-notes.md](superpowers/specs/v2-notes.md), and the styling is to be reworked
+in a separate design pass, so the [KNOWN-ISSUES.md](KNOWN-ISSUES.md) row stays.
