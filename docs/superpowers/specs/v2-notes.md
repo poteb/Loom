@@ -220,6 +220,25 @@ runtime is entered** — the Open-a-request form and a listener's own profile �
 is one click and an unusual one is still typeable. How **new** models are introduced is undecided
 ("we'll figure that out later"): a facet only knows what somebody has already registered, so the
 first listener to run a new model must type it, and a typo becomes a facet row that looks official.
+**From the first run in a real browser (Paw, 2026-09-20 — manual smoke test 6, 12 of 12 passed).**
+Behaviour is right; these are changes to what was specified, for the next slice:
+
+1. **The directory is a view inside the Lobby, not a page of its own.** Keep the Lobby's header and
+   sidebar on screen and swap only the chat area for the listeners view. That keeps the session
+   mounted, turns "Back to the Lobby" into "back to the Thread", and makes the wordmark-beside-the-
+   headline oddity (3) disappear; `/lobby/listeners` can stay as a deep link into that view. This
+   reopens spec §5.2's route design.
+2. The counts line should read `Showing 11 of 11 matches (out of 62 listeners)`.
+3. The **Loom** home wordmark sits jammed against the **Listeners** headline. Solved by (1).
+4. Selecting a model opens its effort row under the chip and pushes the next model chip far to the
+   right; the nested effort row needs a different layout.
+5. **Clear filters** should always be visible, and should also reset sort and direction to their
+   defaults — spec §5.3 keeps the sort today, so this is a spec change.
+
+The visual design as a whole is to be reworked in a separate design session, so no styling nits are
+recorded here. Two cosmetic things seen in passing and left for that session: a Thread's URL link in
+the sidebar is default dark blue on the dark background, and the sidebar's **Listeners (N)** line has
+none of the heading or padding its neighbouring sections have.
 
 ## Deferred from v1
 

@@ -91,9 +91,10 @@ re-report them, but do say if you think one is under-rated:
    Pre-existing; only the *read* side is closed. The read side rejects a NUL and nothing else — PR
    #20 review round 1 narrowed it from the whole C0 range, which had made the directory refuse its
    own cursors and facet values.
-7. **Nothing on this branch has been seen in a browser.** Manual smoke test 6 in
-   [TESTING.md](TESTING.md) is written and unrun, so the appearance of the grid, the chips, the
-   counts line and the sidebar line is unverified.
+7. **The appearance is not signed off.** Manual smoke test 6 in [TESTING.md](TESTING.md) was run on
+   2026-09-20 and all twelve behaviours passed, but the look of the grid, the chips, the counts line
+   and the sidebar line was deliberately left for a separate design pass, and the owner wants the
+   directory moved inside the Lobby's layout ([v2-notes.md](superpowers/specs/v2-notes.md)).
 
 **Where to look first on this branch**, in order: `src/core/src/lobby/listeners-input.ts` (the
 bounds, and the normalisation rule that only an *empty array* means "no filter"),
