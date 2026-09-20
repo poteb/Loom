@@ -6,7 +6,7 @@
 
 **Architecture:** `Route` loses its `listeners` kind; `/lobby/listeners` becomes `{ kind: "lobby", view: "listeners" }`, so `App` renders **one** element for both of the Lobby's addresses and a view flip is a prop change rather than a remount. The view lives in `WeaveSession` above `key={reloadKey}`; `WeaveView` multiplies it with the Lobby gate **once** into `showListeners`, which is the only thing any rendering branch reads. `ListenersRoute` — a second Lobby resolver, a second credential pick, a second join fork — is deleted whole: the session owns the credential and serves the directory through `session.listListeners(query)`, with a recovery authorised only by the view through `session.reportCredentialFailure(e, issue)`. `WeaveMount` makes the app's first `pushState`, under one condition.
 
-**Tech Stack:** TypeScript 5.9 strict ESM (`.js` import suffixes), pnpm 10 workspace, Preact 10 + `@preact/preset-vite`, Vite 7, Vitest 4 (node environment against real Postgres and a real server; happy-dom 20 via a `// @vitest-environment happy-dom` docblock for DOM tests), `@testing-library/preact` 3. No core, server or client change.
+**Tech Stack:** TypeScript 5.9 strict ESM (`.js` import suffixes), pnpm 10 workspace, Preact 10 + `@preact/preset-vite`, Vite 7, Vitest 4 (node environment against real Postgres and a real server; happy-dom 20 via a `// @vitest-environment happy-dom` docblock for DOM tests), `@testing-library/preact` 3. One file is both — Task 2's `lobby-view-live.test.tsx`, happy-dom by docblock over a real server, because a claim about live updates needs a live stream. No core, server or client change.
 
 **Spec:** `docs/superpowers/specs/2026-09-20-loom-lobby-listeners-view-design.md` (read it whole, §16 included, before any task). It **amends** `docs/superpowers/specs/2026-09-19-loom-lobby-listeners-design.md`, which is still the governing text for everything it does not touch. Conventions: `CONTRIBUTING.md`, `docs/TESTING.md`.
 
@@ -59,7 +59,7 @@ Every task's requirements implicitly include this section. The quoted rules are 
 - **A handler owned by a keyed mount dies with it.** The ref of the rule above keeps a handler *reading* current values; it does not stop a **retired** handler from *acting*. `WeaveSession`'s `key={reloadKey}` rebuilds `WeaveMount` on a join while the view state and its setter stay with the parent, which survives — so a callback captured before the join still reaches the live page, holding a ref that stopped updating the moment its mount unmounted. A handler that owns a side effect therefore carries a **lifetime guard**: a `mounted` ref set false in an effect cleanup, checked **first** — before any equality test, before `leavingIsSafe`, before any `pushState` or `setView`. One guard, at the mount that owns the effects; the callers below it report that something happened and decide nothing, so none of them gets a second mechanism to keep in step.
 - **A test may only press what its script has rendered.** Every `fireEvent` in this plan names a control, and a control is on screen only because some scripted answer put it there: a **chip** exists only where an answer carried `facets`, **Show more** only where one carried a `nextCursor`, **Clear filters** is pressable only where the view is off its defaults, the **sidebar line** only where the Lobby gate is true, the **composer** only where the page is writable, the **join form's fields** only where the session settled at `no-credential`, and a **send** or a **save** only where the path it posts to has a row of its own. Where every scripted answer is a rejection there are no facets and no rows, so a test that presses a chip in that state is testing nothing — `getByRole` throws before the rule is reached. Each test below says, for every state it acts in, which control it presses and why that control is on screen at that moment.
 - **No test asserts an exact number of writes or requests across a reload or a refresh.** A credential recovery's `doLoad()` writes the Weave entry again through `saveWeaveEntry` (`session.ts:707`) and makes the Lobby's two side reads again (`readLobbySides`, `session.ts:376`), so `expect(set).toHaveBeenCalledTimes(1)` after a recovery fails on **correct** behaviour. Every such assertion takes one shape: let the round trip settle (`waitFor` the state it ends in), **snapshot** the counters, act, then assert the snapshot has not moved — and assert what was actually meant, "the entry was invalidated once", by its **content** (`identity: "invalid"`, the secret kept), which no later no-op write can fake. An absolute count is allowed only where the harness makes further requests impossible and the plan says why.
-- **Tests:** test-first, RED captured before GREEN, **one rule per test**, pristine output, exact expectations never loosened to pass. No mocks below the fetch seam. DOM tests speak to `https://loom.test` (`http://loom.test` is refused by the client's own URL policy; http is allowed on loopback only). Intermediate states are reached with **gated promises, never sleeps**.
+- **Tests:** test-first, RED captured before GREEN, **one rule per test**, pristine output, exact expectations never loosened to pass. No mocks below the fetch seam. DOM tests speak to `https://loom.test` (`http://loom.test` is refused by the client's own URL policy; http is allowed on loopback only), with **one** exception named where it lives: `lobby-view-live.test.tsx` (Task 2 Step 3b) speaks to a **real** server at `http://127.0.0.1:<port>`, which the same policy allows because it is loopback and the client is built `allowInsecure: true` (`src/client/src/url.ts:3`, `:11-13`). A test that stubs `fetch` uses the fake host; a test that needs a live stream needs a live server; there is no third kind. Intermediate states are reached with **gated promises, never sleeps**.
 - **Build before a package's tests:** `pnpm --filter @loom/core build && pnpm --filter @loom/client build && pnpm --filter @loom/server build`. Run one web file with `cd src/web && npx vitest run test/<file>`.
 - **TOOLING TRAP.** The Edit/Write tools decode `\uXXXX` escapes in tool input into literal bytes. `listeners-query.ts` carries a NUL-matching regular expression written as a unicode escape (`NUL_RE`, `listeners-query.ts:25`), and `listeners-page.test.tsx` has a fixture whose tool name carries a tab (`:449-451`) — re-typing either one turns the escape into the byte itself. Writing **this plan** hit it: the sentence you are reading had to be written twice. After every commit run `git diff --cached --stat` (or `git show --stat HEAD`) and check for a `Bin` row: a text file reported as binary means an escape was decoded into a control byte. Fix it before moving on.
 - **The two side reads, and the pathname they share.** Every refresh of a Lobby page makes two side reads: `GET /api/lobby/listeners?limit=0&facets=false` and `GET /api/lobby/participants/me`. The directory's own query now hits **the same pathname** as the count read, so any stub or counter that pins "exactly N requests" must tell them apart **by query string** (`limit=0` is the count, `limit=50` is the directory). A table keyed on the pathname alone answers the session's side read with the directory's script and wrecks every `inTurn` numbering in the file.
@@ -86,6 +86,7 @@ Every task's requirements implicitly include this section. The quoted rules are 
 | `src/web/test/session.test.ts` (modify) | The two entry points and who may authorise a recovery |
 | `src/web/test/listeners-query.test.ts` (modify) | `viewOfPath` / `pathForView` units; `writeSearch`'s `inPlace` test deleted |
 | `src/web/test/listeners-page.test.tsx` (modify) | The harness re-homed onto the Lobby page; every directory block re-mounted through it; the new view, history, gate and credential tests |
+| `src/web/test/lobby-view-live.test.tsx` (new) | The one DOM test with a **real** server behind it: the directory open over a live stream, an event from a second client, and the directory's query count across it (spec §12.13's fourth clause) |
 | `src/web/test/components.test.tsx` | Unchanged — its `routeOf` table and its `WeaveView` renders must stay green, which is why `view`/`viewKey`/`onView` are optional props |
 | docs | ARCHITECTURE §9/§12, TESTING (smoke test 6 and the totals), KNOWN-ISSUES, `src/web/README.md`, REVIEW-BRIEF, v2-notes, and the dated "superseded by" notes in the predecessor spec |
 
@@ -176,7 +177,7 @@ Spec §3 (the whole section), §4.1 (`routeOf` and the module), §4.3 (seeding, 
 
 **This task carries spec §12 tests 1, 2, 3, 6, 9, 13, 14b, 15, 16, 17, 19 and 20, and every re-homed block.** It is the largest task in the plan and it is one task for the reason stated under the File structure table.
 
-**Files:** Create `src/web/src/lobby-view.ts`; Modify `src/web/src/app.tsx`, `src/web/src/components/WeaveRoute.tsx`, `src/web/src/components/WeaveView.tsx`, `src/web/src/components/ListenersLink.tsx`, `src/web/src/components/ThreadList.tsx`, `src/web/src/components/listeners/ListenersPage.tsx`, `src/web/src/components/listeners/listeners-query.ts`, `src/web/src/styles.css`; **Delete** `src/web/src/components/listeners/ListenersRoute.tsx`; Test `src/web/test/listeners-page.test.tsx`, `src/web/test/listeners-query.test.ts`.
+**Files:** Create `src/web/src/lobby-view.ts`; Modify `src/web/src/app.tsx`, `src/web/src/components/WeaveRoute.tsx`, `src/web/src/components/WeaveView.tsx`, `src/web/src/components/ListenersLink.tsx`, `src/web/src/components/ThreadList.tsx`, `src/web/src/components/listeners/ListenersPage.tsx`, `src/web/src/components/listeners/listeners-query.ts`, `src/web/src/styles.css`; **Delete** `src/web/src/components/listeners/ListenersRoute.tsx`; Test `src/web/test/listeners-page.test.tsx`, `src/web/test/listeners-query.test.ts`, and **create** `src/web/test/lobby-view-live.test.tsx`.
 
 **Interfaces:**
 - *Consumes:* `session.listListeners(query)` and `session.reportCredentialFailure(e, issue)` with `QueryIssue` (Task 1); `leavingIsSafe`, `weaveKey`, `useSession`, `JoinLobbyForm`, `HomeLink`, `PersistenceBar` unchanged; `EMPTY_VIEW`, `viewFromSearch`, `searchFromView`, `queryFromView`, `writeSearch`, `ListenersView` from `listeners-query.ts`; `ProfileCard`, `FacetChips`, `ModelChips`.
@@ -340,7 +341,7 @@ afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); history.replaceState
     3. **No secret to fall back to.** `storage: joined()` and `[LISTENERS]: INVALID` — every query refused. Again **no control is pressed**, which is what makes this state scriptable at all: with every answer a rejection there are no rows, no facets and therefore no chips, and the only thing on screen is the join fork (`screen.queryByRole("heading", { name: "Join the Lobby" })`) with the layout gone.
     4. **A second refused query writes nothing more.** The one case that presses something, so the script gives it something to press: `[LISTENERS]: inTurn(INVALID, () => json(directory([listener("ada", "a")])), INVALID)`. Query 1 is refused and recovers; query 2 is the re-mounted directory's, and it answers a full page — **rows and `facets`**, which is what puts the chips on screen; only then is there a chip to press, and pressing it makes query 3, which is refused again. So: let the recovery finish — `await settle()`, then assert the rows are there (`v.names()` is `["ada"]`), which is the state that proves the fresh query landed on the secret; this file settles with `settle()` and has no `waitFor` import, and none is added for it — **then** install `const set = vi.spyOn(storage, "set")`, press the `shell` chip, `await settle()`, and assert `set` was **not called**: reading with the secret, a 401 is an ordinary query error with nothing left to retire. Three answers and no more — a fourth query is a test bug, and `inTurn` says so loudly rather than quietly handing back the last answer again. **An earlier draft of this test scripted every query `INVALID` and then pressed a chip**: with no answer ever carrying facets, `FacetChips` renders nothing (`FacetChips.tsx:30`), `getByRole` throws on a button that was never drawn, and the rule was never reached. What this test deliberately does **not** do is count writes across the recovery — the recovery's own `doLoad()` writes the entry again through `saveWeaveEntry` (`session.ts:707`), so `toHaveBeenCalledTimes(1)` would fail on correct behaviour, and "invalidated exactly once" is asserted by the entry's **content** here and by the snapshot-and-compare of Task 1's test 14a against a real server (spec §12.9: the store assertions live there).
   - **Test 13 — picking a Thread, and the composer.** `mountLobby({ path: "/lobby" })` and `await v.toggle()`, because the rule is the transition. **Three** tests, and the controls they press are the sidebar's own, which `INSTANCE` puts there: the `General` thread's button comes from the weave row's one thread, **New thread** from `ThreadList`'s own head, and the composer from `JOINED.participant` being an ordinary writable member. Pressing a thread button closes the directory; a successful **Create** closes it — `routes: { [THREADS]: () => json(thread) }`, the answer shaped like the `General` row `INSTANCE`'s `getWeave` carries, since `createThread` selects what it made (`session.ts:826-831`); while the directory is open `v.composerSlot()!.hasAttribute("hidden")` is `true` and the slot still contains a `textarea` (mounted, not drawn — assert the attribute, **not** `queryByRole("textbox")`: happy-dom's handling of the UA `[hidden]` rule is not something this suite should depend on).
-    **Spec §12.13's fourth clause — "an event arriving while it is open still updates the Thread list" — is not written, and this is where that is recorded rather than left to be noticed.** Events reach the session through the stream (`onEvent`), and this harness has no stream on purpose: the `ws-ticket` row answers a **fatal** 403 (`:98-100`) precisely so that no socket and no reconnect timer outlive a test, and there is no other door — a refresh is scheduled by mutations this member cannot make, and the one sidebar mutation that does update the Thread list (a Create) closes the directory by §3.4, which is the test above. Writing it anyway would mean a test that dispatches nothing and asserts what the previous test already proved. What it was after is covered: **test 2** shows the session is the same one, unremounted, behind the open directory, by counting requests, and **test 16** shows the sidebar's controls are live there and their failures reach the shared bar.
+    **Spec §12.13's fourth clause — "an event arriving while it is open still updates the Thread list" — is not one of these three, and it cannot be**: events reach the session through the stream (`onEvent`), and this harness has none on purpose, its `ws-ticket` row answering a **fatal** 403 (`:98-100`) precisely so that no socket and no reconnect timer outlive a test. It is written all the same, against a live stream, in a file of its own — **Steps 3a and 3b** below. Nothing here changes for it: every test in `listeners-page.test.tsx` keeps the fatal-403 stub. And test 2 is not its substitute, which is why both exist: an unchanged request count proves the session was not **remounted**, and that is a different claim from the session being **connected** — a page whose socket died on the first flip would satisfy test 2 exactly as well as a healthy one.
   - **Test 14b — a 401 that lands too late.** The default deep-link mount, whose one query is the gated one; the directory is closed by pressing the sidebar line, which in this task changes the view and writes no history. Two tests, both with a gated `INVALID`: released **after** the directory was closed, and released after the whole `<App>` was unmounted (`v.unmount()`). Each snapshots `storage.get(weaveKey(LOBBY.weaveId))` before the release and asserts it is byte-identical after, and that no join fork appeared.
   - **Test 15 — the draft survives the round trip.** `mountLobby({ path: "/lobby" })`. Three tests: type into the composer, open the directory, come back — the textarea still holds the text and `selectionStart` is where it was; the send that follows posts **exactly that text** (assert the `POST` body, read off `fetchStub.mock.calls` for `MESSAGES`, the row Step 1 adds — without it the send reaches an unstubbed path and the assertion is about a throw); and switching Threads still carries the draft across, which this test pins so the next change cannot move it by accident. That third test is the one that needs something the shared table does not have: **two** Threads. `INSTANCE`'s weave row carries one `General`, and a switch cannot be made against a list of one, so this test overrides `[WEAVE]` with the same body plus a second row — `{ id: "t2", weaveId: LOBBY.weaveId, name: "Design", isGeneral: false, createdBy: "p-dana", createdAt: "", closedAt: null, url: null }` — and presses that.
   - **Test 16 — a mutation failure is visible while the directory is open.** `mountLobby({ path: "/lobby" })` and `await v.toggle()`. Two tests, two channels, and the second one has to be **made** reachable: a failed `createThread` from the sidebar (`[THREADS]: fail("internal", "boom", 500)`, pressed through **New thread**, which every participant has), and a failed guidelines save — which needs a **keeper**, because `GuidelinesPanel` renders its **Edit** button only for `session.canModerate()` and that is `role === "keeper"` (`session.ts:917`), while `JOINED.participant` is an ordinary `member`. So that test alone overrides two things: the `[WEAVE]` row's `participants` become `[{ ...JOINED.participant, role: "keeper" }]`, which is what `doLoad` builds `state.me` from, and `[`${WEAVE}/guidelines`]` — the **PUT** path (`client.ts:99`), which is not the `/api/guidelines` row the Lobby is read through and therefore needs no `inTurn` to tell a read from a write — answers `fail("internal", "boom", 500)`. Press **Edit**, type into the `Weave guidelines` textarea (which is also what enables **Save**, disabled while unchanged), press **Save**. Each test asserts its message in `.error-bar` with the directory still on screen.
@@ -349,10 +350,232 @@ afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); history.replaceState
   - **Test 17 — a rejoin restores the view.** Moved here from Task 3 on the re-verification below: it pins the state living **above** `key={reloadKey}`, which is this task's rule, and it exercises no history code at all — nothing in it pushes, in this task or in the finished feature. Twice, and both halves script the directory's query as `inTurn(INVALID, () => json(directory([listener("ada", "a")])))` — **refused once, answered after the join**. That is the whole state machine of this test and it has to be scripted that way: a row that answered `INVALID` to *every* query would refuse the credential the join has just written too, the rebuilt session would fall straight back to `no-credential` with nothing to fall back on, and what "comes back" would be the join fork again — the test would be asserting the directory against a page that cannot render one. Durable: `mountLobby({ path: "/lobby/listeners", storage: joined() })` **and no secret stored**, so the first query's 401 settles the session at `no-credential` and `WeaveRoute`'s join fork replaces the page; `await v.joinAs("dana")` — its fields are on screen because that is the state the page is in, and they are the only control this test presses; the directory is what comes back, and `location.pathname` read `/lobby/listeners` throughout. Memory-only: the same from `path: "/lobby"` with `joinedInMemory()`, opened with `await v.toggle()` (the query that follows the toggle is the refused one) — the open never touched the URL, the address bar never left `/lobby`, and the view is still `listeners` after the join, which is the only record there is. (Task 3's test 18 is what pins *why* the URL did not move there once pushing exists; here it simply never does.)
   - **The re-homed blocks**, all of which keep their bodies and change only their mount: `describe("the directory grid and its counts")`, `"the controls and the query string"`, `"a control pressed while the typing has not settled"`, `"one query at a time"`, `"Show more"`, `"a control change drops the cursor"`, `"the controls stop at core's bounds"`, `"a cursor the Lobby refuses"`, `"a failed query is never an empty directory"`, `"the chips"`, `"the list changed while you were reading it"`, `"the states this page says out loud"`. Each `mountApp({…})` and each `mountRoute({…})` becomes `mountLobby({…})` and **nothing else changes**: every one of these blocks is about the directory and not about reaching it, `mountLobby`'s default path is the `/lobby/listeners` these bodies already assumed, and the ones that seeded from a link keep their `path: "/lobby/listeners?…"` verbatim. **No re-homed test presses the sidebar line**, which is what keeps them green in this task: the query-string rules they assert (`writeSearch`'s exact-path test, and the seeding of §4.3) are true from the first render on a page that was *loaded* at `/lobby/listeners`, and would be false — correctly — on a `/lobby` whose directory was toggled open before Task 3 taught the app to push. The fake-timer blocks among them (`"a control pressed while the typing has not settled"` and the two debounce tests) keep `settleFake()` throughout and, having no `toggle()` to make, never await a real-timer helper on a stopped clock. Every one of them was also read against the rule that a test may press only what its script rendered, and none of them moves: the controls they press are `ListenersPage`'s own — chips, **Show more**, the two selects, the search box and **Reload the list** — each already put on screen by that block's own scripted answer (the chips by its `facets`, **Show more** by its `nextCursor`), and the Lobby wrapper around them adds no button of the same accessible name to collide with.
   - **Deleted with the code they covered**, each named so a reviewer can tick it off: the four `routeOf` tests above (replaced); the whole route-level block `describe("the listeners page (spec §5.5)")` (`:216-312`) — credential resolution, the join form, "navigates nowhere to do it", "renders the directory in place for a browser whose join reached memory alone", "says so on that browser", "keeps its reader across a re-render", and the two `getLobby` cards, which `LobbyRoute`'s own tests already cover; the three `inPlace` tests in `describe("the controls and the query string")` (`:401-431`); the whole `describe("a Lobby secret the instance refuses (spec §5.5)")` (`:983-1026`) — §6.2 gives the refused secret **no** replacement, it is an ordinary query error; the whole `describe("the way out of the directory (spec §5.3)")` (`:1068-1101`) — the `listeners-head` block with its wordmark and **Back to the Lobby** is deleted; and `ListenersLink`'s three link-versus-button tests (`:1185-1202`) plus the two in `describe("the listeners line on the Lobby page")` (`:1245-1255`), replaced by test 3.
+- [ ] **Step 3a: Settle the transport, before writing a line of Step 3b.** Step 3b is the only test in this repo that renders a DOM **and** talks to a real server, so which `fetch` and which `WebSocket` it gets are questions about vitest's happy-dom environment that nothing here answers yet. What **was** settled by reading is written down below so that nobody re-derives it; what was not could not be probed either, because the worktree this plan was written in has no `node_modules`. So it is probed here, once, in the branch, and the file is deleted again.
+  **Read, and true whichever branch this lands on:** `LoomClientOptions` is `{ baseUrl, token?, allowInsecure?, fetch? }` (`src/client/src/client.ts:10`) — `fetch` is injectable and there is **no** WebSocket option; `request` falls back to `globalThis.fetch` when none is given (`src/client/src/http.ts:33`); `session.ts:735` calls `reader.stream(weaveId, { since, onEvent, onStatus })` and passes **no** `WebSocketImpl`, so `openStream` takes `globalThis.WebSocket` (`src/client/src/stream.ts:13`, `:20`) — which is exactly why `session.test.ts:444-457` can count a session's sockets by swapping that global.
+```ts
+// src/web/test/transport-probe.test.ts — THROWAWAY. Delete it before this task's commit.
+// @vitest-environment happy-dom
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { LoomClient } from "@loom/client";
+import { startTestServer, type TestServer } from "../../server/test/helpers.js";
+
+let s: TestServer;
+beforeAll(async () => { s = await startTestServer(); });
+afterAll(async () => { await s.close(); });
+
+describe("what happy-dom gives a test that wants a real server", () => {
+  it("reaches it with the ambient fetch", async () => {
+    const guidelines = await new LoomClient({ baseUrl: s.baseUrl, allowInsecure: true }).getInstanceGuidelines();
+    expect(typeof guidelines).toBe("string");
+  });
+
+  it("opens a stream to it with the ambient WebSocket", async () => {
+    const anon = new LoomClient({ baseUrl: s.baseUrl, allowInsecure: true });
+    const r = await anon.createWeave({ title: "T", opener: "hello", creator: { name: "Paw", kind: "human" } });
+    const ticket = await anon.withToken(r.token).wsTicket();
+    const ws = new WebSocket(`${s.wsUrl}/api/weaves/${r.weave.id}/stream?since=0&ticket=${encodeURIComponent(ticket)}`);
+    // Four outcomes, told apart on purpose: "open" is the answer this file needs; "closed" is a
+    // server that answered and refused; "error" is an implementation that could not get there at
+    // all; "nothing" is one that silently did nothing, which a bare `await` would have hung on.
+    const what = await new Promise<string>((done) => {
+      ws.onopen = () => done("open");
+      ws.onclose = () => done("closed");
+      ws.onerror = () => done("error");
+      setTimeout(() => done("nothing"), 5_000);
+    });
+    ws.close();
+    expect(what).toBe("open");
+  });
+});
+```
+  Run: `pnpm --filter @loom/core build && pnpm --filter @loom/client build && pnpm --filter @loom/server build && cd src/web && npx vitest run test/transport-probe.test.ts`. The two questions are independent and so are the two fallbacks: take each branch on its own probe's answer, and record in the task's commit body which two were taken, so the reviewer reads the result rather than re-deriving it.
+  - **Fetch, green** (the first `it` passes): Step 3b's one transport line is `const transportFetch: typeof fetch = globalThis.fetch;` and nothing else is needed.
+  - **Fetch, red** (happy-dom's `fetch` refuses the origin, or cannot reach `127.0.0.1`): the line becomes `const transportFetch: typeof fetch = nodeFetch;`, with this adapter above it. `@loom/client` reads exactly four members off the answer — `status`, `ok`, `statusText` and `text()` (`http.ts:44-62`) — and sends exactly a method, a header bag and an optional string body, so this is the whole of it:
+```ts
+import { request as httpRequest } from "node:http";
+
+/**
+ * Node's own HTTP, dressed as the four members of `Response` that `@loom/client` reads
+ * (`src/client/src/http.ts:44-62`). It exists only because the probe found happy-dom's `fetch`
+ * cannot reach a loopback server. `redirect` and `signal` are ignored: nothing in this file
+ * redirects, and nothing in it aborts.
+ */
+const nodeFetch = ((url: string | URL, init: RequestInit = {}) => new Promise((resolve, reject) => {
+  const body = init.body === undefined || init.body === null ? undefined : String(init.body);
+  const req = httpRequest(String(url),
+    { method: init.method ?? "GET", headers: (init.headers as Record<string, string> | undefined) ?? {} },
+    (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (c: Buffer) => chunks.push(c));
+      res.on("end", () => {
+        const status = res.statusCode ?? 0;
+        resolve({
+          status, ok: status >= 200 && status < 300, statusText: res.statusMessage ?? "",
+          text: () => Promise.resolve(Buffer.concat(chunks).toString("utf8")),
+        });
+      });
+    });
+  req.on("error", reject);
+  if (body !== undefined) req.write(body);
+  req.end();
+})) as unknown as typeof fetch;
+```
+  - **WebSocket, green** (the second `it` passes): nothing to do. The session takes the global, and the global works.
+  - **WebSocket, red**: add `"ws": "8.21.3"` and `"@types/ws": "8.18.1"` to `src/web`'s `devDependencies` — the two versions `@loom/server` already pins (`src/server/package.json:21`, `:25`), so the lockfile gains a link and not a new version — run `pnpm install`, commit `pnpm-lock.yaml` with this task, and swap the global for the life of the file:
+```ts
+/** Where a test chooses the session's socket, because the session does not offer the choice:
+ *  `session.ts:735` passes no `WebSocketImpl` and `stream.ts:20` falls back to this global.
+ *  `session.test.ts:444-457` already swaps it the same way. `ws` implements every member
+ *  `openStream` touches and no more is needed: `new WS(url)`, `onopen`, `onmessage` with a string
+ *  `data`, `onerror`, `onclose` and `close()` (`stream.ts:67-110`). */
+const ambientWebSocket = globalThis.WebSocket;
+beforeAll(async () => { globalThis.WebSocket = (await import("ws")).WebSocket as unknown as typeof WebSocket; });
+afterAll(() => { globalThis.WebSocket = ambientWebSocket; });
+```
+  Then `git rm src/web/test/transport-probe.test.ts` (or delete it — it is never committed either way).
+- [ ] **Step 3b: Write the failing tests** in a new file, `src/web/test/lobby-view-live.test.tsx`. **A file of its own, not a block inside `listeners-page.test.tsx`**: that file's instance is a table of stubbed answers with a deliberately fatal `ws-ticket` row, and threading a real server through it would either hand every test in it a socket or grow a second harness inside the first. Three facts make a real server safe in this package, each read rather than assumed: `vitest.config.ts` runs `../core/test/global-setup.ts` as the **package's** global setup, so a real Postgres (a testcontainer, or the compose server's `loom_test` database as its fallback) is already the prerequisite of every file here — it is what `session.test.ts` runs on, and this file adds none; `fileParallelism: false` in the same config means no other file is running while this one holds a server; and `stubFetch` is **per client** — `listeners-page.test.tsx:118` hands it to `new LoomClient({ fetch })` and touches no global, with `vi.restoreAllMocks()` in its own `afterEach` (`:196`) — so nothing that file does can reach this one, and nothing this one does can reach that.
+  The build prerequisite is the one every real-server run has: `pnpm --filter @loom/core build && pnpm --filter @loom/client build && pnpm --filter @loom/server build` before `npx vitest run`.
+```tsx
+// @vitest-environment happy-dom
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/preact";
+import { LoomClient } from "@loom/client";
+import { startTestServer, type TestServer } from "../../server/test/helpers.js";
+import { App } from "../src/app.js";
+import { memoryStorage } from "../src/storage.js";
+import { setIdentity } from "../src/weaves-store.js";
+import { createPersistenceNotice } from "../src/persistence.js";
+import { createWeavesSignal } from "../src/weaves-signal.js";
+
+/** The `fetch` every client here is built on. Step 3a decides which of its two values this is. */
+const transportFetch: typeof fetch = globalThis.fetch;
+
+let s: TestServer;
+beforeAll(async () => { s = await startTestServer(); await s.core.ensureLobby(); });
+afterAll(async () => { await s.close(); });
+
+/**
+ * The file's own poller, copied from `session.test.ts:21-27` rather than imported (that file exports
+ * nothing). Real timers throughout, and this file never calls `vi.useFakeTimers()`: a state change
+ * made from **outside** Preact's `act` — a WebSocket message is exactly that — has its effects
+ * flushed on the next animation frame, which is a timer too and would never come on a stopped clock.
+ */
+function waitFor(pred: () => boolean, ms = 5000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const t0 = Date.now();
+    const tick = () => { if (pred()) resolve(); else if (Date.now() - t0 > ms) reject(new Error("timeout")); else setTimeout(tick, 20); };
+    tick();
+  });
+}
+
+const MODEL = { model: "gpt-5.6-sol", effort: "high" };
+/** Names and owners are shared across the one Lobby, so every fixture takes a fresh one. */
+let fixtureN = 0;
+
+/**
+ * A real Lobby with three participants: **this browser** (a joined identity in a durable
+ * `memoryStorage()`, so nothing degrades the notice and no persistence bar rides the page), a
+ * **listener** with a profile, so the directory has a row of its own to still be showing, and a
+ * **second participant** whose client is the one that makes the event this file is about. Modelled
+ * on `session.test.ts`'s `lobbyFixture` (`:780-796`), minus the request board it has no use for.
+ */
+async function lobbyFixture() {
+  const n = ++fixtureN;
+  const anon = new LoomClient({ baseUrl: s.baseUrl, allowInsecure: true, fetch: transportFetch });
+  const { weaveId } = await anon.getLobby();
+  const me = await anon.joinLobby({ name: `Dana-${n}`, kind: "human" });
+  const listener = await anon.joinLobby({ name: `Helper-${n}`, kind: "agent" });
+  await anon.withToken(listener.token).setCapabilities({ models: [MODEL], tools: [], serves: "anyone", owner: `bob-${n}` });
+  const other = await anon.joinLobby({ name: `Other-${n}`, kind: "agent" });
+  const storage = memoryStorage();
+  setIdentity(storage, weaveId, { token: me.token, participantId: me.participant.id, name: me.participant.name });
+  // `createThread` asks only that the actor be a participant of the Weave (`core/src/threads.ts:58`),
+  // so this ordinary Lobby member may make the event, and it is made on a connection of its own.
+  return { weaveId, storage, listener: `Helper-${n}`, other: anon.withToken(other.token) };
+}
+
+/** The page as a browser loads it, with the real session and its real stream underneath. */
+function mountLobby(f: Awaited<ReturnType<typeof lobbyFixture>>) {
+  history.replaceState(null, "", "/lobby");
+  let asked = 0;
+  const client = new LoomClient({
+    baseUrl: s.baseUrl, allowInsecure: true,
+    // The **directory's** queries, told from the session's count read by `limit=0` exactly as the
+    // stubbed suite tells them apart (Step 1's `isCount`): they share a pathname, and a counter on
+    // the pathname alone would move on every refresh and prove nothing.
+    fetch: (input, init) => {
+      const url = new URL(typeof input === "string" ? input : String(input));
+      if (url.pathname === "/api/lobby/listeners" && url.searchParams.get("limit") !== "0") asked++;
+      return transportFetch(url.toString(), init);
+    },
+  });
+  const view = render(<App client={client} storage={f.storage} notice={createPersistenceNotice()} weaves={createWeavesSignal()} />);
+  return {
+    ...view,
+    asked: () => asked,
+    line: () => screen.queryByRole("button", { name: /^Listeners/ }),
+    /** The stream's own state as the header prints it (`Header.tsx:31`): the DOM's proof of a socket. */
+    connection: () => view.container.querySelector(".conn")?.textContent,
+    threads: () => [...view.container.querySelectorAll(".thread-pick")].map((e) => e.textContent),
+    rows: () => [...view.container.querySelectorAll(".profile-name")].map((e) => e.textContent),
+    directory: () => !!screen.queryByRole("heading", { level: 2, name: "Listeners" }),
+    composerSlot: () => view.container.querySelector(".composer-slot") as HTMLElement | null,
+  };
+}
+
+/**
+ * Loads the page, waits for the stream to be **open** — everything below is asserted against a live
+ * socket, which is this file's whole reason to exist — and opens the directory by pressing the
+ * sidebar line, which is the transition test 13 is about. The line is on screen because the Lobby
+ * gate is true on the real Lobby; the row is on screen because the fixture put a listener in it.
+ */
+async function openDirectory(f: Awaited<ReturnType<typeof lobbyFixture>>) {
+  const v = mountLobby(f);
+  await waitFor(() => v.connection() === "open");
+  fireEvent.click(v.line()!);
+  await waitFor(() => v.rows().length === 1);
+  return v;
+}
+
+describe("the directory over a live stream (spec §12.13)", () => {
+  it("leaves the stream open with the directory on screen", async () => {
+    const v = await openDirectory(await lobbyFixture());
+    expect([v.connection(), v.directory()]).toEqual(["open", true]);
+    v.unmount();
+  });
+
+  it("brings a Thread another client creates into the sidebar while the directory stays open", async () => {
+    const f = await lobbyFixture();
+    const v = await openDirectory(f);
+    expect(v.threads()).not.toContain("Design");        // it arrives on the stream, not with the page
+    await f.other.createThread(f.weaveId, "Design");
+    await waitFor(() => v.threads().includes("Design"));
+    // "while it stays open" is the other half of the rule, so it is asserted here and not elsewhere.
+    expect([v.directory(), v.rows(), v.composerSlot()!.hasAttribute("hidden")])
+      .toEqual([true, [f.listener], true]);
+    v.unmount();
+  });
+
+  it("costs the directory no query of its own to do it", async () => {
+    const f = await lobbyFixture();
+    const v = await openDirectory(f);
+    const before = v.asked();
+    await f.other.createThread(f.weaveId, "Design");
+    await waitFor(() => v.threads().includes("Design"));
+    // A **delta**, never an absolute count: `thread.created` schedules a refresh, and that refresh
+    // makes the Lobby's two side reads (`session.ts:376`), one of which shares this pathname. What
+    // must not move is the directory's own query — the directory did not remount and did not re-ask.
+    expect(v.asked()).toBe(before);
+    v.unmount();
+  });
+});
+```
+  **Teardown, and why `v.unmount()` as a plain last line is enough.** Unmounting runs `useSession`'s effect cleanup, which is `() => { off(); session.dispose(); }` (`useSession.ts:23-26`), and `dispose` closes the stream — so the socket is gone before `afterAll` stops the server. A test that fails before reaching that line is covered too: `test/dom-setup.ts` registers `@testing-library`'s `cleanup` in an `afterEach` for every DOM file, which unmounts whatever is still rendered and takes the same path.
+  **Its RED, honestly.** Against `main`'s code there is no directory inside the layout at all — `ListenersLink` is an anchor to `/lobby/listeners`, and no `<h2>Listeners</h2>` is rendered anywhere — so all three fail inside `openDirectory`, at `fireEvent.click(v.line()!)`, because `queryByRole("button", { name: /^Listeners/ })` is `null`. That is the right RED for the task whose code puts the directory in the layout. What it does **not** prove is that the transport works, which is precisely why Step 3a proves that separately, first, and against a file that has no feature code in it.
 - [ ] **Step 4: Run the tests to verify they fail**
 
-  Run: `cd src/web && npx vitest run test/listeners-page.test.tsx test/listeners-query.test.ts`
-  Expected: FAIL — `viewOfPath is not a function`, `routeOf("/lobby/listeners")` still `{ kind: "listeners" }`, and no `.composer-slot` in the document.
+  Run: `cd src/web && npx vitest run test/listeners-page.test.tsx test/listeners-query.test.ts test/lobby-view-live.test.tsx`
+  Expected: FAIL — `viewOfPath is not a function`, `routeOf("/lobby/listeners")` still `{ kind: "listeners" }`, no `.composer-slot` in the document, and `lobby-view-live.test.tsx` failing on a sidebar line that is not a button.
 - [ ] **Step 5: Write `src/web/src/lobby-view.ts`.** Its own module so `app.tsx` and `WeaveView` share it without `WeaveView` importing `app.tsx`, which would be an import cycle:
 ```ts
 /** Which of the Lobby page's two things the main area is showing (spec §3.1). A string union rather
@@ -492,7 +715,7 @@ git add -A src/web
 git commit
 # feat(web): the Lobby listeners directory is a view of the Lobby, not a page of its own
 ```
-  Then `git show --stat HEAD` and confirm no file is reported as `Bin`.
+  `-A src/web` covers the new `lobby-view-live.test.tsx`; if Step 3a's WebSocket fallback was taken, `git add pnpm-lock.yaml` as well, since the lockfile is the root's and `src/web/package.json` is not. Confirm `src/web/test/transport-probe.test.ts` is **not** in the commit — it is a probe, not a test. The commit body names which two Step 3a branches were taken. Then `git show --stat HEAD` and confirm no file is reported as `Bin`.
 
 ---
 
@@ -707,7 +930,7 @@ Spec §13, item by item.
 - [ ] **`docs/REVIEW-BRIEF.md`** — the web row of the layer table (`:70`) and the "where to look first" list (`:99-106`), which must now name `src/web/src/lobby-view.ts`, `WeaveRoute.tsx`'s view state and push, and `WeaveView.tsx`'s `showListeners`.
 - [ ] **`docs/superpowers/specs/v2-notes.md`** — the listeners section's 2026-09-20 entry moves from "spec approved 2026-09-20, plan written, awaiting review" to **built**, in the shape the Lobby and main-page entries use, naming the branch and the PR.
 - [ ] **`docs/superpowers/specs/2026-09-19-loom-lobby-listeners-design.md`** — a dated "superseded by" note on **§5.1, §5.2, §5.3, §5.4, §5.5 and §7**, each naming the section of the new spec that replaces it. The new spec's §2 table is the list; copy its verdicts (amended / superseded / unchanged) rather than inventing new ones.
-- [ ] Run `pnpm -r build && pnpm -r typecheck && pnpm --workspace-concurrency=1 -r test` and put the **real** totals (tests and files, per package) and the last code commit's hash into `docs/TESTING.md`'s "Current totals", against the recorded baseline of **1663 tests in 65 files** (core 485/24, web 712/13, server 178/9, claude-channel 139/9, cli 70/5, client 45/4, mcp-tools 34/1). Do not estimate them; only `web` should have moved, and `server`'s 178 in 9 is the proof that `static.test.ts` needed no edit.
+- [ ] Run `pnpm -r build && pnpm -r typecheck && pnpm --workspace-concurrency=1 -r test` and put the **real** totals (tests and files, per package) and the last code commit's hash into `docs/TESTING.md`'s "Current totals", against the recorded baseline of **1663 tests in 65 files** (core 485/24, web 712/13, server 178/9, claude-channel 139/9, cli 70/5, client 45/4, mcp-tools 34/1). Do not estimate them; only `web` should have moved, and `server`'s 178 in 9 is the proof that `static.test.ts` needed no edit. `web`'s **file** count moves too, from 13 to **14**: Task 2 Step 3b adds `lobby-view-live.test.tsx`, and it is the only file this plan creates — the probe of Step 3a is deleted before that task's commit, so a 15 means it was left behind.
 - [ ] **Commit**
 
 ```bash
@@ -728,9 +951,9 @@ git commit
 - **§6.1** the two entry points, both guards and the ticket-out-of-the-query rule → Task 1. **§6.2** the four forks → Task 2 (the join fork is `WeaveRoute`'s, the refused-secret card is deleted with its whole describe, the `getLobby` cards are `LobbyRoute`'s). **§6.3** the re-query after a recovery → Task 2 Step 11's effect keyed on `session`, with test 9 on screen and the store assertions in Task 1.
 - **§7** deleted / kept verbatim → Task 2 Steps 6, 8, 10, 11, 12, 13, each deletion named; the "kept, verbatim" list is exactly what the re-homed blocks still assert.
 - **§8** the sidebar line → Task 2 Step 10, test 3. **§9** wording → Task 4. **§10** no core/server/client change → Task 0's second check and Task 5's totals line. **§11** the deltas → Tasks 1, 2 (the error bar in both views, the two guards, what a switch destroys). **§13** docs → Task 5, item by item. **§14** order → followed with the one seam moved, argued under the File structure table.
-- **§12 test by test.** 1 → Task 2 (`routeOf`, plus the `viewOfPath`/`pathForView` units in `listeners-query.test.ts`). 2, 3, 6, 9, 13, 15, 16, 17, 19, 20 → Task 2. 4, 5, 7, 8, 18 → Task 3, together with its own 4b, 4c and 4d. 10 → Task 1. 11, 12 → Task 4. **One clause of §12.13 is deliberately not written** — "an event arriving while it is open still updates the Thread list" — and Task 2 Step 3's test 13 says why in full: this suite's `ws-ticket` row answers a fatal 403 so that no socket outlives a test, so there is no stream to deliver an event on, and the rule's substance is covered by test 2 and test 16. It is named here rather than left as a silent omission. **Test 17 sits in Task 2 rather than in §14's history step**, on the check Task 3 Step 1 sets out: it passes on Task 2's code, for the reason it claims, and Step 3 does not change it. **Test 14 is the one numbered test split across two tasks, and the spec splits it itself**: §12 puts 14a and 14c in `session.test.ts` and 14b in the DOM suite, and 14b cannot exist before the view does — so 14a and 14c are Task 1 and 14b is Task 2. Every deleted test file section is named in Task 2 Step 3's last bullet; every re-homed block is named in the bullet above it and says how it mounts now (`mountLobby`, whose signature is given once, in Task 2 Step 1).
+- **§12 test by test.** 1 → Task 2 (`routeOf`, plus the `viewOfPath`/`pathForView` units in `listeners-query.test.ts`). 2, 3, 6, 9, 13, 15, 16, 17, 19, 20 → Task 2. 4, 5, 7, 8, 18 → Task 3, together with its own 4b, 4c and 4d. 10 → Task 1. 11, 12 → Task 4. **§12.13 is carried by two steps of Task 2, and every clause of it is written.** Its first three — picking a Thread closes the directory, creating one closes it, the composer is mounted under `hidden` — are Step 3's test 13, on the stubbed harness. Its fourth, "an event arriving while it is open still updates the Thread list", is Step 3b's own file, against a **real** server and a **real** stream, with the transport settled first by Step 3a's probe and its two named fallbacks. It is not folded into test 2 or test 16: those two prove the session was not remounted and that the sidebar's controls still report failures, and neither of them would notice a socket that died on the first view flip. **Test 17 sits in Task 2 rather than in §14's history step**, on the check Task 3 Step 1 sets out: it passes on Task 2's code, for the reason it claims, and Step 3 does not change it. **Test 14 is the one numbered test split across two tasks, and the spec splits it itself**: §12 puts 14a and 14c in `session.test.ts` and 14b in the DOM suite, and 14b cannot exist before the view does — so 14a and 14c are Task 1 and 14b is Task 2. Every deleted test file section is named in Task 2 Step 3's last bullet; every re-homed block is named in the bullet above it and says how it mounts now (`mountLobby`, whose signature is given once, in Task 2 Step 1).
 - **§15** nothing from "Later" is implemented: no rows cache, no scroll memory, no second view. **§16** all nineteen assumptions are implemented as stated; where one needed a concession to the existing tests it is named — assumption 4's `view`/`viewKey`/`onView` are **optional** props on `WeaveView` with the defaults `"thread"` / `0` / undefined, so that `components.test.tsx`'s bare `<WeaveView session state />` renders keep compiling and every non-Lobby page gets the right value without a prop of its own.
-- **Lessons carried**, each an explicit constraint, comment or step above: never `cb?.(write())` (Global Constraints; `recoverFromCredentialFailure` already writes into a variable and Task 1 adds no new write); the guard before any side effect on rejections as much as answers (Global Constraints, Task 1's two-call API, Task 2 Step 11's handler); every async continuation re-checks liveness **inside itself** (Task 2 Step 11's `live.current && n === gen.current`, and the session's own `disposed || issue.generation !== generation`); **a handler that can outlive an await reads its inputs through a ref**, the same lesson one step out from continuations to callbacks — Task 3 Step 3's `now` ref and its fresh `leavingIsSafe`, for the `onPick` that `ThreadList.tsx:26` calls after its `await`, with test 4c as its RED; **a handler called from more than one place answers "was this a change?" itself** (Task 3 Step 3's `next === now.current.view`, test 4b), and the one place that deliberately does **not** de-duplicate — `popstate`'s `popSeq` bump — says why (Global Constraints); **a handler owned by a keyed mount dies with it** — the third of this family and the one the ref alone does not give you, since a retired `WeaveMount`'s `onView` still holds a live `setView` belonging to the parent that survives `key={reloadKey}`: Task 3 Step 3's `mounted` ref, checked before every other line of the handler, with test 4d as its RED and the one-guard-at-the-owner argument beside it (`ThreadList` gets none, and the `popstate` listener needs none); **no exact write or request count across a reload or a refresh** (Global Constraints; Task 1's snapshot-and-compare in tests 10a, 14a and 14c, Task 2's test 9 and test 19, Task 3's test 5, with test 2's absolute triple the one exception and its reason given); one rule per test with RED captured before GREEN and pristine output (every task's Steps 2 and 4); gated promises, never sleeps (Task 2's tests 14b and 19, Task 3's test 5); `https://loom.test` (Global Constraints); the **TOOLING TRAP** of `\uXXXX` escapes decoded into bytes, with the `git show --stat` check after Task 2 (Global Constraints, Task 2 Step 15); the two side reads per refresh and the **shared pathname** the directory's query now collides with, told apart by `limit=0` (Global Constraints, Task 2 Step 1's `COUNT` row and `queries()` filter — without which test 9 would be about the count read's 401 and every `inTurn` script would mis-number); happy-dom's `history`/`location` handling, with the exact `pop()` recipe, the `afterEach` reset and the rule that a push is asked of a **spy** and never of `history.length` (Global Constraints, Task 3 Step 1); `retryLobbyData`'s 250 ms first sleep, which is why test 19 needs fake timers, and the matching rule that **no helper hard-codes `settle()`** — `toggle(settling)` and `pop(to, settling)` take it, so a fake-timer test passes `settleFake` instead of hanging on a stopped clock (Global Constraints, Task 2 Step 1, Task 3 Step 1); **a test mounts where its own task can reach** — `mountLobby` deep-links by default, because the address bar does not move until Task 3 and `writeSearch`'s exact-path rule is true from the first render only on a page that was loaded at `/lobby/listeners` (Global Constraints, Task 2 Step 1's helper and its "which tests start where", Task 3 Step 1's last bullet); **a test may only press what its script has rendered** (Global Constraints, and the audit below); and build order before the web tests (Global Constraints, Task 1 Step 2).
-- **The test-script audit**, run over every test in every task after test 9 was found pressing a chip that its all-`INVALID` script could never have drawn. Each test was read for the pair "which control does this press, and what put it on screen in that state". **Re-scripted:** test 9's fourth case (a page with facets is scripted *before* the refused query, so there is a chip); test 17, both halves (`inTurn(INVALID, answer)` — a row refusing every query would refuse the join's fresh credential too and hand back the join fork instead of the directory); test 16's second case (a **keeper** in the `[WEAVE]` row, because `canModerate()` is keeper-only and a member's page has no **Edit** button to press); test 15's third case (a second Thread in the `[WEAVE]` row, because a switch needs two); tests 15, 19 and 20's sends (the `MESSAGES` row, a path this file never had); test 11's fourth and fifth cases (mounted on a link that is off the defaults, because **Clear filters** is `disabled` at them and a disabled button is not a control). **Dropped, with its reason recorded:** test 13's stream clause. **Read and found sound:** tests 1, 10a–10c, 14a and 14c (no DOM at all); 2, 3, 4, 4b, 4c, 4d, 5, 7, 8 and 18 (the sidebar line, the thread buttons, **New thread** and the chips, each drawn by `INSTANCE`'s weave row, by the Lobby gate, or by an answer carrying facets); 6 and 12 (nothing is pressed); 14b (the line, again); 19 and 20 (the composer, on screen because the gate is false and the Thread is whole); and the twelve re-homed blocks, which press `ListenersPage`'s own controls off their own scripted answers.
+- **Lessons carried**, each an explicit constraint, comment or step above: never `cb?.(write())` (Global Constraints; `recoverFromCredentialFailure` already writes into a variable and Task 1 adds no new write); the guard before any side effect on rejections as much as answers (Global Constraints, Task 1's two-call API, Task 2 Step 11's handler); every async continuation re-checks liveness **inside itself** (Task 2 Step 11's `live.current && n === gen.current`, and the session's own `disposed || issue.generation !== generation`); **a handler that can outlive an await reads its inputs through a ref**, the same lesson one step out from continuations to callbacks — Task 3 Step 3's `now` ref and its fresh `leavingIsSafe`, for the `onPick` that `ThreadList.tsx:26` calls after its `await`, with test 4c as its RED; **a handler called from more than one place answers "was this a change?" itself** (Task 3 Step 3's `next === now.current.view`, test 4b), and the one place that deliberately does **not** de-duplicate — `popstate`'s `popSeq` bump — says why (Global Constraints); **a handler owned by a keyed mount dies with it** — the third of this family and the one the ref alone does not give you, since a retired `WeaveMount`'s `onView` still holds a live `setView` belonging to the parent that survives `key={reloadKey}`: Task 3 Step 3's `mounted` ref, checked before every other line of the handler, with test 4d as its RED and the one-guard-at-the-owner argument beside it (`ThreadList` gets none, and the `popstate` listener needs none); **no exact write or request count across a reload or a refresh** (Global Constraints; Task 1's snapshot-and-compare in tests 10a, 14a and 14c, Task 2's test 9, test 19 and Step 3b's third test, Task 3's test 5, with test 2's absolute triple the one exception and its reason given); **the absence of reloads is not the presence of a stream** — an unchanged request count says a component was not rebuilt and says nothing at all about a socket, so a claim about live updates needs a live stream in its own test, on a real server, with the event made by a second client (Task 2 Steps 3a and 3b, and the rewritten paragraph under test 13 that now points at them instead of recording a deviation); one rule per test with RED captured before GREEN and pristine output (every task's Steps 2 and 4); gated promises, never sleeps (Task 2's tests 14b and 19, Task 3's test 5); `https://loom.test` (Global Constraints); the **TOOLING TRAP** of `\uXXXX` escapes decoded into bytes, with the `git show --stat` check after Task 2 (Global Constraints, Task 2 Step 15); the two side reads per refresh and the **shared pathname** the directory's query now collides with, told apart by `limit=0` (Global Constraints, Task 2 Step 1's `COUNT` row and `queries()` filter — without which test 9 would be about the count read's 401 and every `inTurn` script would mis-number); happy-dom's `history`/`location` handling, with the exact `pop()` recipe, the `afterEach` reset and the rule that a push is asked of a **spy** and never of `history.length` (Global Constraints, Task 3 Step 1); `retryLobbyData`'s 250 ms first sleep, which is why test 19 needs fake timers, and the matching rule that **no helper hard-codes `settle()`** — `toggle(settling)` and `pop(to, settling)` take it, so a fake-timer test passes `settleFake` instead of hanging on a stopped clock (Global Constraints, Task 2 Step 1, Task 3 Step 1); **a test mounts where its own task can reach** — `mountLobby` deep-links by default, because the address bar does not move until Task 3 and `writeSearch`'s exact-path rule is true from the first render only on a page that was loaded at `/lobby/listeners` (Global Constraints, Task 2 Step 1's helper and its "which tests start where", Task 3 Step 1's last bullet); **a test may only press what its script has rendered** (Global Constraints, and the audit below); and build order before the web tests (Global Constraints, Task 1 Step 2).
+- **The test-script audit**, run over every test in every task after test 9 was found pressing a chip that its all-`INVALID` script could never have drawn. Each test was read for the pair "which control does this press, and what put it on screen in that state". **Re-scripted:** test 9's fourth case (a page with facets is scripted *before* the refused query, so there is a chip); test 17, both halves (`inTurn(INVALID, answer)` — a row refusing every query would refuse the join's fresh credential too and hand back the join fork instead of the directory); test 16's second case (a **keeper** in the `[WEAVE]` row, because `canModerate()` is keeper-only and a member's page has no **Edit** button to press); test 15's third case (a second Thread in the `[WEAVE]` row, because a switch needs two); tests 15, 19 and 20's sends (the `MESSAGES` row, a path this file never had); test 11's fourth and fifth cases (mounted on a link that is off the defaults, because **Clear filters** is `disabled` at them and a disabled button is not a control). **Given a stream rather than dropped:** §12.13's fourth clause, which no stubbed script in this suite can deliver an event for, so it moved to a real server in Step 3b — where the only control pressed is the sidebar line, drawn by the real Lobby's own gate, the one row in the directory is a listener the fixture joined, and the event is made by a second client and pressed by nobody. **Read and found sound:** tests 1, 10a–10c, 14a and 14c (no DOM at all); 2, 3, 4, 4b, 4c, 4d, 5, 7, 8 and 18 (the sidebar line, the thread buttons, **New thread** and the chips, each drawn by `INSTANCE`'s weave row, by the Lobby gate, or by an answer carrying facets); 6 and 12 (nothing is pressed); 14b (the line, again); 19 and 20 (the composer, on screen because the gate is false and the Thread is whole); and the twelve re-homed blocks, which press `ListenersPage`'s own controls off their own scripted answers.
 - **Placeholder scan.** No "TBD", no "implement later", no "add appropriate error handling", no "similar to Task N", no "write tests for the above". Every code step carries the code; every deleted thing is named by file and line; every test is described by its rule and its assertion.
 - **Type and name consistency**, each symbol grepped for one definition and one spelling everywhere: `MainArea`, `viewOfPath(pathname)` and `pathForView(view)` are defined once in Task 2's `lobby-view.ts` and consumed by `app.tsx`, `WeaveRoute.tsx` and `ListenersPage.tsx`; `QueryIssue`, `listListeners(query): { issue, page }` and `reportCredentialFailure(e, issue)` are defined once in Task 1 and consumed only by Task 2's `ListenersPage`; `Route.lobby.view` is written by `routeOf` and read only by `App`, which hands it on as `initialView`; `initialView` has that one spelling in `WeaveRoute`, `LobbyRoute` and `WeaveSession`; `view` / `viewKey` / `onView` have those three spellings on `WeaveView` in Tasks 2 and 3 and nowhere else, and `setView` never leaves `WeaveRoute.tsx`; `showListeners` is computed once, in `WeaveView`, and passed to `ListenersLink` as `active` and to the composer slot as `hidden`; `onToggle` and `onPick` are the two new callback props, on `ListenersLink` and `ThreadList` respectively; `writeSearch(view)` has one signature after Task 2 and one caller; `ListenersPage({ session })` takes exactly that and nothing else. `ListenersRoute`, `openListenersInPlace`, `RouteDeps.openListenersInPlace`, `Route.listeners`, `ListenersPageProps` and `writeSearch`'s `inPlace` appear in **no** task except Task 2's deletions. The test-side names are as few and as singly-spelled: `fromCall` is added once, in Task 1 Step 1, beside the file's `onCall`; `mountLobby`, its `toggle(settling = settle)`, `WEAVE` / `EVENTS` / `TICKET` / `THREADS` and the `COUNT` row are defined once, in Task 2 Step 1, and `pop(to, settling = settle)` once in Task 3 Step 1; `now` is the only ref Task 3 adds, in `WeaveMount`, and `setView` still never leaves `WeaveRoute.tsx`. Every symbol a task consumes is produced by an earlier task's **Produces** block or exists in the code today at the line cited.
