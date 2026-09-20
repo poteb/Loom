@@ -3,8 +3,8 @@ import { resolveBaseUrl } from "./url.js";
 import { openStream, type StreamHandle, type StreamOptions } from "./stream.js";
 import type {
   AcceptResult, Agent, AgentFilter, CreateWeaveInput, CreateWeaveResult, FoundAgent, InboxItem, InvitationResult, InviteResult,
-  JoinResult, Keeper, Kind, Lobby, LoomEvent, LoomRequest, Offer, OpenRequestInput, Participant, Profile, RequestStatus,
-  Role, Settings, Thread, Weave, WeaveInfo,
+  JoinResult, Keeper, Kind, ListenersPage, ListenersQuery, Lobby, LoomEvent, LoomRequest, Offer, OpenRequestInput,
+  Participant, Profile, RequestStatus, Role, Settings, Thread, Weave, WeaveInfo,
 } from "./types.js";
 
 export type LoomClientOptions = { baseUrl: string; token?: string; allowInsecure?: boolean; fetch?: typeof fetch };
@@ -120,6 +120,27 @@ export class LoomClient {
   async findAgents(filter: AgentFilter = {}): Promise<FoundAgent[]> {
     const r = await this.call<{ agents: FoundAgent[] }>("GET", `/api/lobby/agents?filter=${encodeURIComponent(JSON.stringify(filter))}`);
     return r.agents;
+  }
+  /** The Lobby's listeners — every participant carrying a capability profile — searched, filtered,
+   *  sorted and paged, with facet counts for the four filters. `{ limit: 0, facets: false }` asks
+   *  for the counts alone, which is how a page shows "Listeners (N)" without downloading a profile. */
+  async listListeners(query: ListenersQuery = {}): Promise<ListenersPage> {
+    const { models, tools, runtime, serves, ...rest } = query;
+    const q = new URLSearchParams();
+    const filter = { models, tools, runtime, serves };
+    // The structured half travels as one JSON parameter, the scalars as plain ones. An absent value
+    // is left out entirely rather than sent empty: core reads absence and nothing else as "no value".
+    if (Object.values(filter).some((v) => v !== undefined)) q.set("filter", JSON.stringify(filter));
+    for (const k of ["q", "sort", "dir", "cursor"] as const) if (rest[k] !== undefined) q.set(k, rest[k]!);
+    if (rest.limit !== undefined) q.set("limit", String(rest.limit));
+    if (rest.facets === false) q.set("facets", "false");
+    const qs = q.toString();
+    return this.call("GET", `/api/lobby/listeners${qs ? `?${qs}` : ""}`);
+  }
+  /** This client's own Lobby participant, profile included — `getWeave` carries none in the Lobby.
+   *  A Weave secret and an instance keeper own no participant row, so neither may ask. */
+  getMyLobbyParticipant(): Promise<Participant> {
+    return this.call("GET", "/api/lobby/participants/me");
   }
 
   // --- Requests ----------------------------------------------------------
