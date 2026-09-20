@@ -291,12 +291,23 @@ of its own. One shape, one set of messages, no drift.
 >   `validateRequirements` is the rule this section states, and reusing it means inheriting its
 >   messages; renaming them would have meant a second copy of the schema, which is the drift this
 >   paragraph exists to prevent. The row above now says what the code says.
-> - **C0 control characters are rejected**, in `q`, in every filter string and in a text cursor key.
->   A NUL cannot travel in a Postgres text parameter or in `jsonb`, so forwarding one turns a
->   hand-edited link into SQLSTATE `22021` — a 500 for a value that came out of the address bar. The
->   rest of C0 names no model, tool, runtime or owner. (The *write* paths — `validateProfile` and
->   `validateRequirements` — still accept them; that is a pre-existing hole, now a row in
+> - **A NUL is rejected** — and nothing else — in `q`, in every filter string and in a text cursor
+>   key. A NUL cannot travel in a Postgres text parameter or in `jsonb`, so forwarding one turns a
+>   hand-edited link into SQLSTATE `22021` (`22P05` inside a jsonb parameter) — a 500 for a value
+>   that came out of the address bar. (The *write* paths — `validateProfile` and
+>   `validateRequirements` — still accept a NUL; that is a pre-existing hole, now a row in
 >   KNOWN-ISSUES, deliberately not fixed inside a read-only change.)
+>
+>   **Amendment, 2026-09-20 (PR #20 review round 1).** This rule was first built as the **whole C0
+>   range**, U+0000 to U+001F, on the assumption that the rest of C0 "names no model, tool, runtime
+>   or owner". That assumption was wrong, and it made the directory refuse its own output.
+>   `validateProfile` accepts a tab or a newline inside an `owner`, a tool, a runtime, a model or an
+>   effort, and a live Postgres carries every C0 character *but* NUL through `ILIKE`, through `@>`
+>   containment and through a text cursor key. Two listeners owned by `"a\nb"` and
+>   `"zzz"`, sorted by owner, therefore produced a `nextCursor` this validator then refused —
+>   Show more died at that page boundary (§2.5) — and a stored tool `"a\tb"` appeared as a
+>   facet chip that could not be clicked (§5.3). The rule is now NUL alone, in core and in
+>   the page's own codec.
 > - A **non-object query** is `validation`. `listListeners(db, actor, 5)` and
 >   `listListeners(db, actor, null)` are not "no query"; only `undefined` is.
 >
@@ -1617,9 +1628,12 @@ So the rule here is precise, and narrower than "no history API":
   validation — the page refuses in the browser exactly what core would refuse on the wire — plus
   three rules found in implementation. **Unknown keys are reported**, not ignored: core rejects a
   key its query does not have, so `{"owner":"ada"}` is asking for something this page cannot do, and
-  honouring the half it understood would answer a wider question than the link asked. **C0 control
-  characters are dropped and reported** rather than forwarded, for the reason §2.3's amendment
-  gives: forwarding one turns a hand-edited link into a 500. And the **`limit`/`cursor` pair is
+  honouring the half it understood would answer a wider question than the link asked. **A NUL is
+  dropped and reported** rather than forwarded, for the reason §2.3's amendment gives: forwarding
+  one turns a hand-edited link into a 500. (Amended 2026-09-20, PR #20 review round 1: this too was
+  first built as the whole C0 range. A tab or a newline inside a value is something core accepts and
+  the directory hands out on a facet chip, so a link carrying one is very often a link this page
+  wrote; dropping it lost the filter *and* accused a good link of not being understood.) And the **`limit`/`cursor` pair is
   deliberately not part of this encoding at all** — a link reproduces a view, not a page position —
   so a hand-typed one is ignored without a notice (a row in KNOWN-ISSUES).
 - **Amendment, 2026-09-20 (as built): Show more sends `facets: false`, and forgets a refused

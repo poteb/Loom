@@ -87,8 +87,10 @@ re-report them, but do say if you think one is under-rated:
 4. The Lobby page makes **two extra requests per refresh** — the count and my own profile — where
    both used to fall out of the one snapshot.
 5. `q` has **no** index; the search is `ILIKE` over one Weave's participants.
-6. `validateProfile` / `validateRequirements` still accept C0 control characters (a 500 on the write
-   paths). Pre-existing; only the *read* side was closed here.
+6. `validateProfile` / `validateRequirements` still accept a **NUL** (a 500 on the write paths).
+   Pre-existing; only the *read* side is closed. The read side rejects a NUL and nothing else — PR
+   #20 review round 1 narrowed it from the whole C0 range, which had made the directory refuse its
+   own cursors and facet values.
 7. **Nothing on this branch has been seen in a browser.** Manual smoke test 6 in
    [TESTING.md](TESTING.md) is written and unrun, so the appearance of the grid, the chips, the
    counts line and the sidebar line is unverified.
@@ -292,7 +294,7 @@ Also:
   [TESTING.md](TESTING.md): `pnpm -r build`, `pnpm -r typecheck`, and `pnpm --workspace-concurrency=1 -r test`
   (the serial run — tests must not run concurrently across packages, and they need Docker for the
   Postgres testcontainer or a reachable compose Postgres). Give the totals you saw; on this branch
-  they should be **1638 tests in 65 files** (core 468/24, web 705/13, server 177/9, claude-channel
+  they should be **1663 tests in 65 files** (core 485/24, web 712/13, server 178/9, claude-channel
   139/9, cli 70/5, client 45/4, mcp-tools 34/1), with `pnpm -r typecheck` clean.
 - **Explicitly state anything you could not verify** — a suite you could not run, a path you could only
   read, a claim in SECURITY.md you could not exercise. An unverified assumption stated as fact is
