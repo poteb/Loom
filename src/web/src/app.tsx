@@ -43,7 +43,7 @@ export type AppDeps = {
   client: LoomClient; storage: KeyValueStorage; notice: PersistenceNotice; weaves: WeavesSignal;
 };
 
-/** What every route is handed: the app-owned trio, plus the two ways to change the view in place. */
+/** What every route is handed: the app-owned trio, plus the three ways to change the view in place. */
 export type RouteDeps = {
   client: LoomClient; storage: KeyValueStorage; notice: PersistenceNotice;
   /** Renders a Weave here, in this JS context, without touching the URL (spec §3.1). */

@@ -155,7 +155,14 @@ describe("the listeners page (spec §5.5)", () => {
     const v = mountApp();
     await settle();
     await v.joinAs("dana");
-    expect([v.heading(), v.calls(LISTENERS)]).toEqual([true, 1]);
+    expect(v.heading()).toBe(true);
+  });
+
+  it("asks for its first page once that join lands, and once only", async () => {
+    const v = mountApp();
+    await settle();
+    await v.joinAs("dana");
+    expect(v.calls(LISTENERS)).toBe(1);
   });
 
   it("navigates nowhere to do it: this route is the destination", async () => {
@@ -166,6 +173,39 @@ describe("the listeners page (spec §5.5)", () => {
     await v.joinAs("dana");
     expect([location.pathname, pushed.mock.calls.length, replaced.mock.calls.length])
       .toEqual(["/lobby/listeners", 0, 0]);
+  });
+
+  // The test above runs on a durable store, where navigating away would have been safe anyway. This
+  // is the browser the in-place rule exists for: the identity it just wrote reached this tab's
+  // memory and nothing else, so a navigation would have left with the only copy of it.
+  it("renders the directory in place for a browser whose join reached memory alone", async () => {
+    const v = mountApp({ storage: memoryStorage({ durable: false }) });
+    const pushed = vi.spyOn(history, "pushState");
+    const replaced = vi.spyOn(history, "replaceState");
+    await settle();
+    await v.joinAs("dana");
+    expect([v.heading(), pushed.mock.calls.length, replaced.mock.calls.length]).toEqual([true, 0, 0]);
+  });
+
+  it("says so on that browser: the not-persisting bar rides the directory", async () => {
+    const v = mountApp({ storage: memoryStorage({ durable: false }) });
+    await settle();
+    await v.joinAs("dana");
+    expect(!!screen.queryByRole("button", { name: "Dismiss" })).toBe(true);
+  });
+
+  // `client.withToken` builds a *new* `LoomClient` every call, so a reader rebuilt on every render
+  // is a new object every render and re-fires every effect keyed on it. Dismissing the bar above is
+  // a render this page already has, and it must not cost a second query.
+  it("keeps its reader across a re-render, so dismissing the bar is not a second query", async () => {
+    const notice = createPersistenceNotice();
+    const v = mountApp({ storage: joined(), notice });
+    await settle();
+    notice.note("memory");
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    await settle();
+    expect(v.calls(LISTENERS)).toBe(1);
   });
 
   it("says so when the instance has no Lobby, with the way back to the main page", async () => {

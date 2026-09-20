@@ -1,8 +1,8 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useMemo, useState } from "preact/hooks";
 import { LoomClientError, type Lobby, type LoomClient } from "@loom/client";
 import type { RouteDeps } from "../../app.js";
 import { leavingIsSafe } from "../../persistence.js";
-import { readWeaveEntry, readerFor, weaveKey } from "../../weaves-store.js";
+import { hasIdentity, readWeaveEntry, readerFor, weaveKey } from "../../weaves-store.js";
 import { HomeLink } from "../HomeLink.js";
 import { PersistenceBar } from "../PersistenceBar.js";
 import { JoinLobbyForm } from "../main/JoinLobbyForm.js";
@@ -69,7 +69,7 @@ export function ListenersRoute(props: RouteDeps & { inPlace?: boolean }) {
   // The §6 notice belongs to the page, and this page can be reached by a transition that raised it:
   // `openListenersInPlace` exists for exactly the browser that is keeping nothing. It rides every
   // state, as `WeaveView`'s banner does, because the join card is one of them.
-  return <>{<PersistenceBar notice={notice} />}{body}</>;
+  return <><PersistenceBar notice={notice} />{body}</>;
 }
 
 /**
@@ -84,7 +84,18 @@ export function ListenersRoute(props: RouteDeps & { inPlace?: boolean }) {
 function ListenersMount({ client, storage, notice, openMainInPlace, lobby, inPlace }:
   RouteDeps & { lobby: Lobby; inPlace?: boolean }) {
   const [reloadKey, setReloadKey] = useState(0);
-  const choice = readerFor(client, readWeaveEntry(storage, lobby.weaveId));
+  const entry = readWeaveEntry(storage, lobby.weaveId);
+  // `client.withToken` builds a **new** `LoomClient` on every call, so a `readerFor` recomputed on
+  // every render hands the page below a reader whose *identity* changes each time — and every effect
+  // keyed on it re-fires. Dismissing the bar above is a render this page already has, and it must not
+  // cost a second query. The credential is what a reader is made of, so it is what the memo is keyed
+  // on: which credential, and which kind it is (a token and a secret build different readers, and a
+  // token that happened to equal a secret must not read as a hit). The hooks sit above every
+  // conditional return, so the order is the same on the join fork as on the directory fork.
+  const credential = hasIdentity(entry) ? `token:${entry.token}` : entry?.secret ? `secret:${entry.secret}` : "none";
+  // `entry` is deliberately not a dependency: it is a fresh object every render, and `credential` is
+  // the whole of what `readerFor` reads out of it.
+  const choice = useMemo(() => readerFor(client, entry), [client, credential]);
   if (!choice) {
     // The same fork `WeaveRoute` renders for an unjoined Lobby, and with a way home of its own for
     // the same reason: this card replaces the page whole, header included, so without one there is
