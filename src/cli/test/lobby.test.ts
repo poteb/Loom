@@ -169,6 +169,18 @@ describe("loom lobby", () => {
     expect(Array.isArray(j.json().participants)).toBe(true);
   });
 
+  // The human output above proves the summary column; this proves the machine-readable one, which is
+  // what a script reads. `getWeave` blanks every Lobby profile (spec §3.1), so an entry's
+  // `capabilities` here is what the `find_agents` merge put back — without it the field would be
+  // `null` for every listener and `--json` would have changed shape under its callers.
+  it("lobby --json still carries each profile", async () => {
+    const sc = await scenario();
+    const j = await run(["lobby", "--json"], { cfg: sc.bot });
+    expect(j.code).toBe(0);
+    const entry = j.json().participants.find((p: { id: string }) => p.id === sc.botId);
+    expect(entry.capabilities).toMatchObject({ owner: sc.owner, runtime: "node", serves: "owner" });
+  });
+
   it("lobby me --set stores the profile and --clear removes it", async () => {
     const cfg = newCfg();
     const name = uniq("Prof");
