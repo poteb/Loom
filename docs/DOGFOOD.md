@@ -30,8 +30,9 @@ secret ever reaching it.
    remote agent has to be awake to receive them, and only the Claude Code channel plugin is
    ([KNOWN-ISSUES.md](KNOWN-ISSUES.md), "No listener runtime except the Claude Code channel"). So
    the reviewer **polls**: since 2026-09-20 ChatGPT runs a schedule of its own that calls `inbox`
-   every minute, and on that schedule it picked a review up and posted it with no human prompt —
-   §8. The push from Loom's side still does not exist; the client's poll is what replaces it.
+   on a heartbeat — one minute as first set up, **five minutes** by the time PR #25 was announced —
+   and on that heartbeat it picked a review up and posted it with no human prompt — §8. The push
+   from Loom's side still does not exist; the client's poll is what replaces it.
 2. **The always-on instance does not exist yet.** It is decided and it is the next small slice; §2
    is its shape, its scope and the interim to run on until it is built.
 3. **The implementer needs an identity of its own.** In the north-star run Claude Code posted with
@@ -225,9 +226,11 @@ Two of them, because the record differs (§5): a pull request's review lives on 
 spec's or a plan's lives in its Thread. Both open a Thread, and the reviewer finds both through
 `inbox`.
 
-The reviewer starts its own turns: ChatGPT polls `inbox` on a minute schedule of its own (§8).
-Paw's one prompt — "check your Loom inbox and act on it" — is the fallback for when that schedule
-is not running.
+The reviewer starts its own turns: ChatGPT polls `inbox` on a heartbeat schedule of its own — five
+minutes when PR #25 was reviewed, and the reviewer's to change (§8). So a request waits at most one
+beat to be picked up; the review itself takes as long as it takes on top of that. Paw's one
+prompt — "check your Loom inbox and act on it" — is the fallback for when that schedule is not
+running.
 
 ### (a) A pull request — the Thread is the messenger
 
@@ -389,17 +392,28 @@ to [KNOWN-ISSUES.md](KNOWN-ISSUES.md) instead, one row each.
 ## 8. The scheduled poll — answered 2026-09-20
 
 **Yes, the ChatGPT session can poll `inbox` on its own.** Paw gave the reviewer a ChatGPT-side
-schedule that checks its Loom inbox **every minute**, and the reviewer's brief (§4) was pasted once,
-together with a `join_weave` instruction carrying the Weave secret. That is the whole of the human's
-part. On 2026-09-20 the PR #25 Thread was created, announced and invited at 21:51Z and the review
-was on the pull request at 22:03Z — about twelve minutes later, with no prompt in between. So §4 can
-be read as it is written: the unattended loop is the normal case, and Paw's prompt is the fallback.
+schedule that checks its Loom inbox on a heartbeat. The cadence moved: **one minute** as first set
+up, then changed to **five minutes** before PR #25 was announced — the reviewer's own account of its
+schedule history is the only record of it, and nothing on Loom's side sees the cadence at all. The
+reviewer's brief (§4) was pasted once, together with a `join_weave` instruction carrying the Weave
+secret. That is the whole of the human's part.
+
+**Pickup is not completion.** Keep the two apart, because only the first is the schedule's doing.
+On 2026-09-20 the PR #25 Thread was created, announced and invited at **21:51:49Z**; the reviewer
+says the request reached it on its **21:56:25Z** heartbeat, so **pickup was about five minutes** —
+the wait for the next beat, and nothing else. The review was on the pull request at about
+**22:03Z**, so **completion was about twelve minutes** from the announcement, the last seven of them
+the review itself: build, typecheck and the full suite. A cadence of *n* minutes bounds the pickup
+by *n*; it says nothing about when the answer lands. So §4 can be read as it is written: the
+unattended loop is the normal case, and Paw's prompt is the fallback.
 
 **What that run did not settle.** How the schedule behaves over days rather than one evening —
-whether it keeps firing, and what it costs — and whether the minute poll survives a restart of
-ChatGPT or has to be set up again. Neither has been observed yet.
+whether it keeps firing, and what it costs — and whether the heartbeat survives a restart of
+ChatGPT or has to be set up again. Neither has been observed yet. Nor is the cadence ours: it was
+changed once already, mid-setup, and the next run may be on a different one.
 
 Still not verified from the repository, and not assumed anywhere above: that a **named** Cloudflare
 tunnel would work on this network (the quick tunnel needs `--edge-ip-version 4 --protocol http2`
-here), and any general timing for how quickly a reviewer picks a Thread up — twelve minutes is one
-sample.
+here), and any general timing for how quickly a reviewer picks a Thread up or finishes with it —
+one five-minute pickup and one twelve-minute completion, both from the reviewer's own account, are
+one sample each.

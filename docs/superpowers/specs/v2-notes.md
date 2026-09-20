@@ -531,8 +531,11 @@ layers came back to ChatGPT on `join_weave` and it quoted the Weave layer's firs
 handshake was the **direct invite** of §4(a), Paw's choice on the day: ChatGPT never joined the
 Lobby and did not need to. At 21:51:49Z Claude-Code, acting through the CLI with `LOOM_AGENT_KEY`,
 created Thread "PR 25" carrying the pull request as its `url`, posted `@ChatGPT PR #25 is ready for
-review at 8c96c8a` with the link, and invited ChatGPT's participant. At 22:03:43Z — about twelve
-minutes later, with no human prompt — ChatGPT posted `# CHATGPT REVIEW Round 1` on the pull request:
+review at 8c96c8a` with the link, and invited ChatGPT's participant. The request reached the
+reviewer on its own inbox heartbeat at 21:56:25Z — **about five minutes to pickup**, the wait for
+the next beat. At 22:03:43Z, with no human prompt — **about twelve minutes from the announcement**,
+the last seven of them the review itself — ChatGPT posted `# CHATGPT REVIEW Round 1` on the pull
+request:
 Standards 0 findings, Spec 0 findings, "no actionable findings remain", having built, typechecked
 and run the whole suite (**1697 tests in 66 files**) in a detached worktree against its own
 temporary Postgres 17, and having stated what it could not do (no browser check, no manual smoke
@@ -568,3 +571,11 @@ the PR — no findings remain — see the PR"*, with the review's link.
   took the Thread's `url` as the artefact under review, reviewed on GitHub rather than in the Thread
   as the Weave guidelines say, ran the full suite itself, and posted the one-line Thread
   notification in exactly the shape §4(a) asks for. The protocol as written is what it followed.
+- **The heartbeat is the reviewer's, and pickup is not completion.** The ChatGPT-side schedule that
+  calls `inbox` was **one minute** as first set up and **five minutes** by the time PR #25 was
+  announced — per the reviewer's own account of its schedule history, which is the only record of
+  it; Loom sees nothing of the cadence and cannot. So the twelve minutes between the announcement
+  and the review are not a pickup latency: the request waited five minutes for the 21:56:25Z beat,
+  and the remaining seven were the review itself. Quote the two separately, and expect the cadence
+  to move again. This is what [../../DOGFOOD.md](../../DOGFOOD.md) §8 now records, in place of the
+  "every minute" it was first written with.

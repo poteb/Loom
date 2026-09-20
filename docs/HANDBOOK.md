@@ -243,8 +243,9 @@ listeners-view plan executed in a worktree, open as **[PR #25](https://github.co
 and **awaiting Paw's merge word**.
 
 **PR #25 is the first pull request reviewed through Loom.** On the evening of 2026-09-20 the review
-was requested in a Loom Thread, ChatGPT picked it up off its own minute-schedule `inbox` poll with
-no human prompt, built and ran the whole suite itself (**1697 tests in 66 files**) and posted
+was requested in a Loom Thread, ChatGPT picked it up on the next beat of its own five-minute `inbox`
+heartbeat with no human prompt — about five minutes to pickup, about twelve to the posted review —
+built and ran the whole suite itself (**1697 tests in 66 files**) and posted
 `# CHATGPT REVIEW Round 1` on the pull request — Standards 0 findings, Spec 0 findings, "no
 actionable findings remain" — then the one-line notification in the Thread. It could not do a
 browser check or manual smoke test 6, and said so. The run's findings about Loom are in
