@@ -227,8 +227,9 @@ spec's or a plan's lives in its Thread. Both open a Thread, and the reviewer fin
 `inbox`.
 
 The reviewer starts its own turns: ChatGPT polls `inbox` on a heartbeat schedule of its own — five
-minutes when PR #25 was reviewed, and the reviewer's to change (§8). So a request waits at most one
-beat to be picked up; the review itself takes as long as it takes on top of that. Paw's one
+minutes when PR #25 was reviewed, and the reviewer's to change (§8). So a request is picked up on
+the reviewer's next heartbeat, whenever that falls — the interval is nominal, not a deadline (§8) —
+and the review itself takes as long as it takes on top of that. Paw's one
 prompt — "check your Loom inbox and act on it" — is the fallback for when that schedule is not
 running.
 
@@ -401,11 +402,16 @@ secret. That is the whole of the human's part.
 **Pickup is not completion.** Keep the two apart, because only the first is the schedule's doing.
 On 2026-09-20 the PR #25 Thread was created, announced and invited at **21:51:49Z**; the reviewer
 says the request reached it on its **21:56:25Z** heartbeat, so **pickup was about five minutes** —
-the wait for the next beat, and nothing else. The review was on the pull request at about
+the wait for the next beat. The review was on the pull request at about
 **22:03Z**, so **completion was about twelve minutes** from the announcement, the last seven of them
-the review itself: build, typecheck and the full suite. A cadence of *n* minutes bounds the pickup
-by *n*; it says nothing about when the answer lands. So §4 can be read as it is written: the
-unattended loop is the normal case, and Paw's prompt is the fallback.
+the review itself: build, typecheck and the full suite. The configured interval was five minutes,
+but it is a nominal interval and not a deadline: actual pickup depends on the scheduler's own timing
+and on the reviewer's availability, and the reviewer's two idle heartbeats around this request — at
+**21:50:55Z** and **21:56:25Z** — were **five minutes thirty seconds** apart. A request that arrives
+just after a beat can therefore wait longer than the interval, so never read an elapsed interval as
+proof that a review was missed; and the interval says nothing at all about when the answer lands.
+So §4 can be read as it is written: the unattended loop is the normal case, and Paw's prompt is the
+fallback.
 
 **What that run did not settle.** How the schedule behaves over days rather than one evening —
 whether it keeps firing, and what it costs — and whether the heartbeat survives a restart of
