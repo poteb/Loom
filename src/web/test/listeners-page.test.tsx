@@ -449,6 +449,60 @@ describe("the controls and the query string (spec §5.4)", () => {
   });
 });
 
+/**
+ * The debounce is a *delay on the search box*, not a delayed snapshot of the whole page. A chip, a
+ * sort or Clear filters pressed inside the 250 ms window is the newer intent: it supersedes the
+ * keystroke that has not fired yet and carries its text along, rather than being quietly reverted
+ * when the timer wakes up holding the view as it was before the click.
+ */
+describe("a control pressed while the typing has not settled (spec §5.3)", () => {
+  /** Types `fab` without letting the window close, does `act`, then lets the clock run past it. */
+  async function typingThen(act: () => void, opts: MountOpts = {}) {
+    vi.useFakeTimers();
+    const v = mountApp({ storage: joined(), ...opts });
+    await settleFake();
+    fireEvent.input(screen.getByLabelText("Search"), { target: { value: "fab" } });
+    act();
+    await settleFake();                  // 600 ms: well past the window the keystroke asked for
+    return v;
+  }
+
+  it("keeps the chip's filter once that window closes", async () => {
+    const v = await typingThen(() => fireEvent.click(chip(/^shell/)));
+    expect(v.queries().at(-1)!.get("filter")).toBe('{"tools":["shell"]}');
+  });
+
+  it("carries the typed text in the chip's own query", async () => {
+    const v = await typingThen(() => fireEvent.click(chip(/^shell/)));
+    expect(v.queries().at(-1)!.get("q")).toBe("fab");
+  });
+
+  it("asks once for the two of them together, not twice", async () => {
+    const v = await typingThen(() => fireEvent.click(chip(/^shell/)));
+    expect(v.calls(LISTENERS)).toBe(2);
+  });
+
+  it("leaves the filter in the address bar too", async () => {
+    await typingThen(() => fireEvent.click(chip(/^shell/)));
+    expect(new URLSearchParams(location.search).get("filter")).toBe('{"tools":["shell"]}');
+  });
+
+  it("supersedes it with a sort change the same way", async () => {
+    const v = await typingThen(() =>
+      fireEvent.change(screen.getByLabelText("sort"), { target: { value: "owner" } }));
+    const last = v.queries().at(-1)!;
+    expect([last.get("sort"), last.get("q"), v.calls(LISTENERS)]).toEqual(["owner", "fab", 2]);
+  });
+
+  it("lets Clear filters cancel it rather than be undone by it 250 ms later", async () => {
+    const v = await typingThen(
+      () => fireEvent.click(screen.getByRole("button", { name: "Clear filters" })),
+      { path: `/lobby/listeners?${FILTERED}`, routes: { [LISTENERS]: () => json(directory([], { total: 5, matched: 0 })) } });
+    const last = v.queries().at(-1)!;
+    expect([last.has("filter"), last.has("q"), v.calls(LISTENERS)]).toEqual([false, false, 2]);
+  });
+});
+
 describe("one query at a time (spec §7)", () => {
   /** Two control changes with the answers held: the older is released last, and must not paint. */
   async function twoInFlight(older: () => Response) {

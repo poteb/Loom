@@ -63,6 +63,12 @@ export function ListenersPage({
   const opened = useMemo(() => viewFromSearch(location.search), []);
   const [view, setView] = useState<ListenersView>(opened.view);
   const [draft, setDraft] = useState(opened.view.q);
+  // The view and the draft are also held in refs, because the debounce timer and every control read
+  // them from a callback that outlives the render it was created in. A `setTimeout` closing over a
+  // render's `view` fires 250 ms later holding the page **as it was before** whatever was clicked in
+  // between, and writes it back over the top.
+  const viewRef = useRef(view);
+  const draftRef = useRef(draft);
   const [state, setState] = useState<PageState>({ status: "loading", rows: [] });
   const [changed, setChanged] = useState(false);
   // One generation for the page: every query takes the next number and applies its answer — or its
@@ -125,40 +131,69 @@ export function ListenersPage({
     history.replaceState(null, "", s ? `${location.pathname}?${s}` : location.pathname);
   };
 
-  /** The one way a control changes the page: new state, new URL, and — through the effect — one
-   *  fresh query with no cursor. */
-  const apply = (next: ListenersView) => { setView(next); writeUrl(next); };
+  /**
+   * The one way a control changes the page: new state, new URL, and — through the effect — one
+   * fresh query with no cursor.
+   *
+   * It takes an **updater** rather than a finished view, because the base it updates is not always
+   * the one the caller could see. A control pressed inside the debounce window is the newer intent
+   * and supersedes the keystroke that has not fired yet: the pending timer is cancelled and the
+   * draft's trimmed text folded into the base, so the typed text rides along in **this one query**
+   * instead of coming back 250 ms later as a second one carrying a stale view.
+   */
+  const apply = (update: (v: ListenersView) => ListenersView) => {
+    let base = viewRef.current;
+    if (debounce.current) {
+      clearTimeout(debounce.current);
+      debounce.current = undefined;
+      base = { ...base, q: draftRef.current.trim() };
+    }
+    const next = update(base);
+    viewRef.current = next;
+    setView(next);
+    writeUrl(next);
+  };
 
   const type = (value: string) => {
     // The box is never disabled while a request is in flight, and a keystroke never fires one: the
     // request is what the typing *stopping* means (spec §5.3).
     setDraft(value);
+    draftRef.current = value;
     if (debounce.current) clearTimeout(debounce.current);
-    debounce.current = setTimeout(() => apply({ ...view, q: value.trim() }), DEBOUNCE_MS);
+    debounce.current = setTimeout(() => {
+      // Cleared first, so `apply` does not read this timer as one it has to supersede.
+      debounce.current = undefined;
+      apply((v) => ({ ...v, q: draftRef.current.trim() }));
+    }, DEBOUNCE_MS);
   };
 
-  const toggleModel = (model: string) => apply({ ...view,
-    models: view.models.some((m) => m.model === model)
-      ? view.models.filter((m) => m.model !== model)
-      : [...view.models, { model }] });
-  const toggleEffort = (model: string, effort: string) => apply({ ...view,
-    models: view.models.map((m) => m.model !== model ? m : m.effort === effort ? { model } : { model, effort }) });
-  const toggleTool = (tool: string) => apply({ ...view,
-    tools: view.tools.includes(tool) ? view.tools.filter((t) => t !== tool) : [...view.tools, tool] });
-  const toggleRuntime = (runtime: string) => apply({ ...view, runtime: view.runtime === runtime ? undefined : runtime });
-  const toggleServes = (serves: string) => apply({ ...view,
-    serves: view.serves === serves ? undefined : serves as ServesKind });
+  const toggleModel = (model: string) => apply((v) => ({ ...v,
+    models: v.models.some((m) => m.model === model)
+      ? v.models.filter((m) => m.model !== model)
+      : [...v.models, { model }] }));
+  const toggleEffort = (model: string, effort: string) => apply((v) => ({ ...v,
+    models: v.models.map((m) => m.model !== model ? m : m.effort === effort ? { model } : { model, effort }) }));
+  const toggleTool = (tool: string) => apply((v) => ({ ...v,
+    tools: v.tools.includes(tool) ? v.tools.filter((t) => t !== tool) : [...v.tools, tool] }));
+  const toggleRuntime = (runtime: string) => apply((v) => ({ ...v, runtime: v.runtime === runtime ? undefined : runtime }));
+  const toggleServes = (serves: string) => apply((v) => ({ ...v,
+    serves: v.serves === serves ? undefined : serves as ServesKind }));
 
   const anySet = view.q !== "" || view.models.length > 0 || view.tools.length > 0
     || view.runtime !== undefined || view.serves !== undefined;
   const clear = () => {
+    // The pending keystroke is cancelled *before* `apply`, not folded into it: Clear filters empties
+    // the box too, so there is no text left for it to carry, and a timer left running would have
+    // typed it back in 250 ms after the click.
+    if (debounce.current) { clearTimeout(debounce.current); debounce.current = undefined; }
     setDraft("");
-    apply({ q: "", models: [], tools: [], runtime: undefined, serves: undefined, sort: view.sort, dir: view.dir });
+    draftRef.current = "";
+    apply((v) => ({ q: "", models: [], tools: [], runtime: undefined, serves: undefined, sort: v.sort, dir: v.dir }));
   };
   /** What the "the list has changed" line offers: this view again, with the new count as the
    *  baseline. Never `location.reload()` — a full page load is exactly what an in-place browser
    *  cannot survive. */
-  const reload = () => { firstTotal.current = undefined; setChanged(false); apply({ ...view }); };
+  const reload = () => { firstTotal.current = undefined; setChanged(false); apply((v) => ({ ...v })); };
   const showMore = () => { if (state.nextCursor && !state.appending) run(view, state.nextCursor); };
 
   // One question, one answer, for both ways off this page: may this browser leave this JS context
@@ -199,13 +234,15 @@ export function ListenersPage({
         </label>
         <label>sort
           <select value={view.sort}
-            onChange={(e) => apply({ ...view, sort: (e.target as HTMLSelectElement).value as ListenersSort })}>
+            onChange={(e) => { const s = (e.target as HTMLSelectElement).value as ListenersSort;
+                               apply((v) => ({ ...v, sort: s })); }}>
             {SORTS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
           </select>
         </label>
         <label>direction
           <select value={view.dir}
-            onChange={(e) => apply({ ...view, dir: (e.target as HTMLSelectElement).value as "asc" | "desc" })}>
+            onChange={(e) => { const d = (e.target as HTMLSelectElement).value as "asc" | "desc";
+                               apply((v) => ({ ...v, dir: d })); }}>
             <option value="asc">asc</option>
             <option value="desc">desc</option>
           </select>
