@@ -99,7 +99,10 @@ The three Lobby tables and the three added columns are migration
 `drizzle/0003_steep_dracula.sql`; it is purely additive. `drizzle/0004_furry_captain_stacy.sql` adds
 `participants_capabilities_idx`, a partial `jsonb_path_ops` GIN index on `participants.capabilities`
 (`WHERE capabilities IS NOT NULL`) — the index behind the listeners query's containment predicates,
-which is why every one of them names `capabilities` itself rather than a path into it.
+which is why every one of them names `capabilities` itself rather than a path into it. It is built
+non-concurrently, so the one boot that applies the migration takes a brief write lock on
+`participants`; at this scale that is a moment, and a `CONCURRENTLY` build cannot run inside the
+migration's transaction.
 
 `actor` on an event is a participant id, or `keeper:<keeperId>` when an instance keeper acted.
 

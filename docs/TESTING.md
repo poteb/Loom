@@ -118,12 +118,12 @@ guarded by `typeof document !== "undefined"` because the package runs Vitest wit
 
 ## Current totals
 
-As of the Lobby listeners page on `feat/lobby-listeners` (last code commit `6fbc15e`):
-**1619 tests in 65 files** — core 460 in 24, web 695 in 13, server 176 in 9, claude-channel 139 in 9,
+As of the Lobby listeners page on `feat/lobby-listeners` (last code commit `0a1b165`):
+**1638 tests in 65 files** — core 468 in 24, web 705 in 13, server 177 in 9, claude-channel 139 in 9,
 cli 70 in 5, client 45 in 4, mcp-tools 34 in 1 — from `pnpm -r build` then
 `pnpm --workspace-concurrency=1 -r test`, with `pnpm -r typecheck` clean.
 The previous figure was 1208 in 60 (core 305/22, web 484/10, server 141/9, claude-channel 139/9,
-cli 68/5, client 37/4, mcp-tools 34/1), so the listeners work added 411 tests and five files.
+cli 68/5, client 37/4, mcp-tools 34/1), so the listeners work added 430 tests and five files.
 Counts change with every feature; run the suites to see current numbers.
 
 ## Manual smoke tests

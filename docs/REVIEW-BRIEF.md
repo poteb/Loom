@@ -292,7 +292,7 @@ Also:
   [TESTING.md](TESTING.md): `pnpm -r build`, `pnpm -r typecheck`, and `pnpm --workspace-concurrency=1 -r test`
   (the serial run — tests must not run concurrently across packages, and they need Docker for the
   Postgres testcontainer or a reachable compose Postgres). Give the totals you saw; on this branch
-  they should be **1619 tests in 65 files** (core 460/24, web 695/13, server 176/9, claude-channel
+  they should be **1638 tests in 65 files** (core 468/24, web 705/13, server 177/9, claude-channel
   139/9, cli 70/5, client 45/4, mcp-tools 34/1), with `pnpm -r typecheck` clean.
 - **Explicitly state anything you could not verify** — a suite you could not run, a path you could only
   read, a claim in SECURITY.md you could not exercise. An unverified assumption stated as fact is
