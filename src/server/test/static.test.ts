@@ -79,10 +79,19 @@ describe("static web hosting", () => {
       expect(await page.text(), p).toContain('<div id=app>');
     }
   });
+  it("serves index.html for /lobby/listeners and its trailing slash", async () => {
+    for (const p of ["/lobby/listeners", "/lobby/listeners/"]) {
+      const page = await fetch(`${baseUrl}${p}`);
+      expect(page.status, p).toBe(200);
+      expect(page.headers.get("content-type"), p).toContain("text/html");
+      expect(await page.text(), p).toContain('<div id=app>');
+    }
+  });
   it("keeps JSON 404 for unknown routes and API errors", async () => {
     // Enumerated routes, not an SPA catch-all: a near miss of a web path — and any API path — stays
     // the API's JSON 404 rather than becoming an HTML page.
-    for (const p of ["/nope", "/api/nope", "/weave", `/weave/${WEAVE_ID}/extra`, "/lobbyx"]) {
+    for (const p of ["/nope", "/api/nope", "/weave", `/weave/${WEAVE_ID}/extra`, "/lobbyx",
+      "/lobby/listenersx", "/lobby/listeners/extra"]) {
       const r = await fetch(`${baseUrl}${p}`);
       expect(r.status, p).toBe(404);
       expect((await r.json()).code, p).toBe("not_found");
@@ -92,7 +101,8 @@ describe("static web hosting", () => {
   });
   it("an app built without webDist serves no UI: every web path is a JSON 404", async () => {
     const secret = "c".repeat(43);
-    const paths = ["/", "/lobby", "/lobby/", `/weave/${WEAVE_ID}`, `/weave/${WEAVE_ID}/`, `/w/${secret}`, `/w/${secret}/`];
+    const paths = ["/", "/lobby", "/lobby/", "/lobby/listeners", "/lobby/listeners/",
+      `/weave/${WEAVE_ID}`, `/weave/${WEAVE_ID}/`, `/w/${secret}`, `/w/${secret}/`];
     for (const p of [...paths, "/assets/app.js"]) {
       const r = await fetch(`${apiOnlyUrl}${p}`);
       expect(r.status, p).toBe(404);

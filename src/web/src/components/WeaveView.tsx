@@ -25,7 +25,7 @@ import { ProfileCards } from "./ProfileCard.js";
  * composer until that join lands (§2.6) — the composer would otherwise promise a write this
  * credential cannot make.
  */
-export function WeaveView({ session, state, banner, noCredential, openMainInPlace }: {
+export function WeaveView({ session, state, banner, noCredential, openMainInPlace, openListenersInPlace }: {
   session: Session; state: SessionState;
   /** Rendered above the Weave: the persistence bar, and nothing else today. */
   banner?: JSX.Element | null;
@@ -39,6 +39,13 @@ export function WeaveView({ session, state, banner, noCredential, openMainInPlac
    * ordinary links without it.
    */
   openMainInPlace?: () => void;
+  /**
+   * The same rule for the sidebar's way into `/lobby/listeners` (spec §5.1): given only when leaving
+   * this JS context would lose what this page holds, and then the line is a button that renders the
+   * directory here rather than an `<a href>` a middle click could turn into a full page load. The
+   * Lobby's sidebar is the one place it is read.
+   */
+  openListenersInPlace?: () => void;
 }) {
   const [pending, setPending] = useState<string | null>(null);   // message waiting for a name
   const [draft, setDraft] = useState<string | undefined>();      // text handed back to the composer

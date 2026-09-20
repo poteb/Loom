@@ -5,9 +5,12 @@ import type { PersistenceNotice } from "./persistence.js";
 import type { WeavesSignal } from "./weaves-signal.js";
 import { MainPage } from "./components/main/MainPage.js";
 import { WeaveRoute } from "./components/WeaveRoute.js";
+import { ListenersRoute } from "./components/listeners/ListenersRoute.js";
 
 export type Route =
   | { kind: "main" } | { kind: "lobby" }
+  /** `inPlace` is set only by `openListenersInPlace`, and is what keeps that render off the URL. */
+  | { kind: "listeners"; inPlace?: boolean }
   | { kind: "weave"; weaveId: string } | { kind: "secret"; secret: string } | { kind: "unknown" };
 
 const SECRET_RE = /^\/w\/([A-Za-z0-9_-]{43})\/?$/;
@@ -20,6 +23,9 @@ const WEAVE_RE = /^\/weave\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
  */
 export function routeOf(pathname: string): Route {
   if (pathname === "/") return { kind: "main" };
+  // Before `/lobby`, which is an exact-match comparison and therefore shadows nothing: the order is
+  // for the reader, who checks the longer path first.
+  if (pathname === "/lobby/listeners" || pathname === "/lobby/listeners/") return { kind: "listeners" };
   if (pathname === "/lobby" || pathname === "/lobby/") return { kind: "lobby" };
   const w = WEAVE_RE.exec(pathname);
   if (w) return { kind: "weave", weaveId: w[1]! };
@@ -48,6 +54,13 @@ export type RouteDeps = {
    * reason it is on the way in — a pushed `/` would be an address that comes back empty-handed.
    */
   openMainInPlace: () => void;
+  /**
+   * The third mirror of `openInPlace`: renders the Lobby's listeners here, for a page whose
+   * credentials would not survive leaving this JS context (spec §5.1). The URL is left alone for the
+   * same reason it is on the other two — and the page reached this way leaves it alone afterwards
+   * as well, rewriting no query string of its own (spec §5.4).
+   */
+  openListenersInPlace: () => void;
 };
 
 export function App({ client, storage, notice, weaves }: AppDeps) {
@@ -58,12 +71,14 @@ export function App({ client, storage, notice, weaves }: AppDeps) {
   const [route, setRoute] = useState<Route>(() => routeOf(location.pathname));
   const openInPlace = (weaveId: string) => setRoute({ kind: "weave", weaveId });
   const openMainInPlace = () => setRoute({ kind: "main" });
-  const deps: RouteDeps = { client, storage, notice, openInPlace, openMainInPlace };
+  const openListenersInPlace = () => setRoute({ kind: "listeners", inPlace: true });
+  const deps: RouteDeps = { client, storage, notice, openInPlace, openMainInPlace, openListenersInPlace };
   switch (route.kind) {
     // `weaves` goes to the main page only: it is the one place a list of stored Weaves stays on
     // screen while something writes to storage. A Weave page never renders one.
     case "main":   return <MainPage {...deps} weaves={weaves} />;
     case "lobby":  return <WeaveRoute {...deps} lobbyRoute />;
+    case "listeners": return <ListenersRoute {...deps} inPlace={route.inPlace} />;
     case "weave":  return <WeaveRoute {...deps} target={{ kind: "id", weaveId: route.weaveId }} />;
     case "secret": return <WeaveRoute {...deps} target={{ kind: "secret", secret: route.secret }} />;
     default:       return <div class="center"><h1>Loom</h1><p>No such page. <a href="/">Go to the main page</a>.</p></div>;

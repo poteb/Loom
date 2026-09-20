@@ -30,7 +30,9 @@ async function main() {
   const tickets = new TicketStore();
   const defaultWebDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
   const webDist = config.webDist ?? (existsSync(path.join(defaultWebDist, "index.html")) ? defaultWebDist : undefined);
-  console.log(webDist ? `serving web UI from ${webDist}` : "web UI not built; the web pages are disabled");
+  console.log(webDist
+    ? `serving web UI from ${webDist}`
+    : "web UI not built; /, /lobby, /lobby/listeners, /weave/<id> and /w/<secret> are disabled");
   const { app, stop: stopSweep } = buildApp({ core, tickets, webDist });
   const server = serve({ fetch: app.fetch, port: config.port, hostname: config.host }, (info) => {
     console.log(`loom server listening on http://${config.host}:${info.port}`);
