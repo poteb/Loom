@@ -331,6 +331,37 @@ describe("GET /api/lobby/listeners", () => {
     expect(r.json).toMatchObject({ code: "validation", message: "limit must be an integer between 0 and 1000" });
   });
 
+  it("reads a blank limit as no limit rather than as the number zero", async () => {
+    const d = await directory();
+    const r = await api(s.baseUrl, "GET", "/api/lobby/listeners?limit=", undefined, d.ada.token);
+    expect(r.status).toBe(200);
+    // `Number("")` is 0, so an unread blank would answer the count with no rows at all — a page
+    // nobody asked for. Absent means core's default page, which has rows in it.
+    expect(r.json.listeners.length).toBeGreaterThan(0);
+  });
+
+  it("reads a whitespace-only limit as no limit either", async () => {
+    const d = await directory();
+    const r = await api(s.baseUrl, "GET", "/api/lobby/listeners?limit=%20", undefined, d.ada.token);
+    expect(r.status).toBe(200);
+    expect(r.json.listeners.length).toBeGreaterThan(0);
+  });
+
+  it("lets the real limit parameter win over one smuggled inside the filter", async () => {
+    const d = await directory();
+    const r = await api(s.baseUrl, "GET",
+      listenersUrl({ filter: JSON.stringify({ limit: 5 }), limit: "1" }), undefined, d.ada.token);
+    expect(r.status).toBe(200);
+    expect(r.json.listeners).toHaveLength(1);
+  });
+
+  it("ignores a limit smuggled inside the filter when no real one is given", async () => {
+    const d = await directory();
+    const r = await api(s.baseUrl, "GET", listenersUrl({ filter: JSON.stringify({ limit: 0 }) }), undefined, d.ada.token);
+    expect(r.status).toBe(200);
+    expect(r.json.listeners.length).toBeGreaterThan(0);
+  });
+
   it("hands an unknown sort to core", async () => {
     const d = await directory();
     const r = await api(s.baseUrl, "GET", listenersUrl({ sort: "sideways" }), undefined, d.ada.token);
@@ -454,8 +485,28 @@ describe("GET /api/lobby/participants/me", () => {
     expect(r.json.code).toBe("forbidden");
   });
 
+  it("refuses a credential that belongs to another Weave", async () => {
+    const t = await targetWeave();
+    const r = await mine(t.keeper);
+    expect(r.status).toBe(403);
+    expect(r.json.code).toBe("forbidden");
+  });
+
+  it("refuses an agent key whose agent has not joined the Lobby", async () => {
+    const a = await agentKey(uniq("Stranger"));
+    const r = await mine(a.key);
+    expect(r.status).toBe(403);
+    expect(r.json.code).toBe("forbidden");
+  });
+
   it("refuses a caller with no credential", async () => {
     const r = await mine();
+    expect(r.status).toBe(401);
+    expect(r.json.code).toBe("invalid_token");
+  });
+
+  it("refuses an unknown credential", async () => {
+    const r = await mine("not-a-credential");
     expect(r.status).toBe(401);
     expect(r.json.code).toBe("invalid_token");
   });

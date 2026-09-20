@@ -77,9 +77,16 @@ const typed = (got: Note[], type: string) => got.find((g) => g.meta.type === typ
  * The profile the Lobby carries for a participant, or null when it carries none. Read through
  * `find_agents`: `getWeave` carries no Lobby profile at all now (core spec §3.1), and `find_agents`
  * lists only participants that have one, so an absent entry is a cleared profile.
+ *
+ * …*provided the participant is still there*. An absent `find_agents` entry would otherwise read
+ * the same for a listener that had vanished altogether, which is not what leaving promises, so the
+ * row itself is asserted first: `getWeave` still lists every Lobby participant, minus their
+ * profiles.
  */
 async function profileOf(credential: string, participantId: string): Promise<unknown> {
   const actor = await s!.core.resolveCredential(credential);
+  const info = await s!.core.getWeave(actor, await lobbyId());
+  expect(info.participants.some((p) => p.id === participantId)).toBe(true);
   return (await s!.core.findAgents(actor, {})).find((a) => a.participant.id === participantId)?.capabilities ?? null;
 }
 

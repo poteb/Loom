@@ -243,6 +243,24 @@ describe("Lobby wrappers", () => {
     return { t, tool, model, runtime, ada: await one("Ada", "high", "owner"), bo: await one("Bo", "low", "anyone") };
   }
 
+  /**
+   * A client whose calls go to the real server and whose URLs are recorded, so a test can pin the
+   * query string the wrapper builds rather than only the answer it happens to get back.
+   */
+  function capturing(token: string): { client: LoomClient; urls: string[] } {
+    const urls: string[] = [];
+    const fetchImpl = ((url: string, init?: RequestInit) => {
+      urls.push(url);
+      return globalThis.fetch(url, init);
+    }) as unknown as typeof fetch;
+    return { client: new LoomClient({ baseUrl: srv().baseUrl, token, allowInsecure: true, fetch: fetchImpl }), urls };
+  }
+
+  /** The query the last recorded call carried. */
+  const queryOf = (urls: string[]) => new URL(urls.at(-1)!).searchParams;
+
+  // This one asks for page 1 of the default 50 over a Lobby every test in this file has joined, so
+  // it asserts containment, not the whole page.
   it("lists the listeners on the bare path when it is given no query at all", async () => {
     const d = await directory();
     const page = await d.ada.client.listListeners();
@@ -285,6 +303,30 @@ describe("Lobby wrappers", () => {
     expect(page.listeners).toEqual([]);
     expect(page.facets).toBeUndefined();
     expect(page.total).toBeGreaterThanOrEqual(2);
+  });
+
+  it("sends an empty tools array as a filter rather than dropping it", async () => {
+    const d = await directory();
+    const cap = capturing(d.ada.client.token!);
+    // `[]` is falsy-looking but present: the wrapper tests for `undefined`, not for truthiness, so
+    // "filter on tools, with an empty list" reaches core — which is where "empty means no filter"
+    // is decided. Dropped here, the parameter would never get the chance to say so.
+    const page = await cap.client.listListeners({ tools: [] });
+    expect(queryOf(cap.urls).get("filter")).toBe('{"tools":[]}');
+    expect(page.matched).toBe(page.total);
+  });
+
+  it("sends no facets parameter unless they are switched off, and sends limit 0 as a value", async () => {
+    const d = await directory();
+    const cap = capturing(d.ada.client.token!);
+    // `?facets=false` is the only thing the route reads; `true` and absence are the same request.
+    await cap.client.listListeners({ facets: true, limit: 0 });
+    expect(queryOf(cap.urls).has("facets")).toBe(false);
+    // …and 0 is a supplied page size, not an absent one: it asks for the counts alone.
+    expect(queryOf(cap.urls).get("limit")).toBe("0");
+    await cap.client.listListeners({ limit: 0 });
+    expect(queryOf(cap.urls).has("facets")).toBe(false);
+    expect(queryOf(cap.urls).get("limit")).toBe("0");
   });
 
   it("reads the caller's own Lobby participant, profile included", async () => {

@@ -49,6 +49,7 @@ export function lobbyRoutes(core: Core) {
   r.get("/listeners", async (c) => {
     const actor = await requireActor(c, core);
     const raw = c.req.query("filter");
+    const limit = c.req.query("limit");
     let filter: unknown = {};
     if (raw !== undefined && raw !== "") {
       // Only that it is JSON is decided here; what a legal filter contains is core's rule.
@@ -68,8 +69,11 @@ export function lobbyRoutes(core: Core) {
       // which core normalises to absent — the whole Lobby, not nothing.
       q: c.req.query("q"), sort: c.req.query("sort"), dir: c.req.query("dir"),
       // `Number("soon")` is `NaN`, which core rejects with the message a CLI caller would get. The
-      // adapter deliberately does not pre-validate it (`paging.ts:20-22`).
-      limit: c.req.query("limit") === undefined ? undefined : Number(c.req.query("limit")),
+      // adapter deliberately does not pre-validate it (`paging.ts:20-22`). A *blank* one is not a
+      // number at all: `Number("")` and `Number(" ")` are both 0, which would answer "no rows,
+      // counts only" for a page size nobody supplied. Blank is absent here, as it is for `filter`
+      // and for `q` — an empty parameter is a parameter the caller did not fill in.
+      limit: limit === undefined || limit.trim() === "" ? undefined : Number(limit),
       cursor: c.req.query("cursor"),
       // The one boolean in the query string. `?facets=false` is the only way to turn them off;
       // everything else, including absence, leaves core's default alone.
