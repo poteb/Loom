@@ -284,7 +284,7 @@ appearance row has been narrowed to exactly that — the structure is settled, t
 
 **Two things the branch review raised and Paw decided on 2026-09-20**, both now on the branch. (1)
 The open directory **scrolls inside the layout**: putting a full-height region into the Lobby's
-`height: 100vh` grid made the *document* scroll instead, taking the header, the identity and the
+`height: 100vh` flex layout made the *document* scroll instead, taking the header, the identity and the
 connection indicator off the screen — the one thing the spec's success scenario promises will not
 happen, seen in a browser at roughly 1,960px of page scroll. One rule settles it,
 `.listeners-view { flex: 1; min-height: 0; overflow-y: auto; }`, beside `.messages`, which does the

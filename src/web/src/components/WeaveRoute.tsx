@@ -221,10 +221,11 @@ function WeaveMount({ client, storage, notice, openMainInPlace, target, lobby, o
       ? (
         <div class="page-join">
           {/* Why the form is here, when there is a reason. This element replaces the generic
-              no-credential card whole, and that card is the only other place `state.error` is drawn
-              (`WeaveView.tsx`), so without this line a Lobby identity retired mid-page — by a query
-              refused 401, or by a write that reached only memory — would leave a human staring at a
-              join form that appeared for no stated reason. */}
+              no-credential card whole, and the two generic cards in `WeaveView.tsx` (the error card
+              and the no-credential card) are the only other places `state.error` is drawn, so
+              without this line a Lobby identity retired mid-page — by a query refused 401, or by a
+              write that reached only memory — would leave a human staring at a join form that
+              appeared for no stated reason. */}
           {state.error && <p class="error page-join-invalid">{state.error}</p>}
           <JoinLobbyForm client={client} storage={storage} notice={notice}
             lobby={{ weaveId: here.weaveId, title: here.title }}
