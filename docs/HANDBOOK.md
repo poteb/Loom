@@ -41,11 +41,11 @@ Enough to speak the language; [ARCHITECTURE.md](ARCHITECTURE.md) §4, §6 and §
 
 ## 2. The people and the agents
 
-**Paw** owns the project and is the only one who decides. Paw does **black-box vibe coding**: he
-does not read the code, he reads behaviour, screenshots and summaries. So every report to him is
-about what the software now does, what it cost and what he must decide — extremely concise,
-grammar sacrificed for concision, no code unless he asks. He runs the manual smoke tests himself,
-in Firefox, and he runs a **separate design session** for visuals.
+**Paw** owns the project and is the only one who decides. Paw does **black-box vibe coding**: Paw
+does not read the code but behaviour, screenshots and summaries. So every report to Paw is
+about what the software now does, what it cost and what Paw must decide — extremely concise,
+grammar sacrificed for concision, no code unless asked. Paw runs the manual smoke tests personally,
+in Firefox, and runs a **separate design session** for visuals.
 
 **The controller** is the main Claude Code session — this one. It brainstorms, writes the spec and
 the plan, dispatches every implementer, reviews every diff itself, opens the PR, answers review
@@ -155,7 +155,7 @@ does not name.
 - **Review every subagent diff yourself before pushing or dispatching the next task.** A subagent's
   report is its own account of its work; the diff is the evidence.
 - **Merge authorisation is per PR.** Ask for it, for that PR, every time.
-- **If Docker is down, ask Paw to start Docker Desktop.** He said "I'll start docker" after a
+- **If Docker is down, ask Paw to start Docker Desktop.** Paw said "I'll start docker" after a
   session tried to launch it; bringing the project's containers up once the daemon is running is
   fine.
 - **Hand-run steps go one at a time, with the real ids and secrets already substituted**, then wait
@@ -168,7 +168,7 @@ does not name.
 - **Approved docs never sit on an unpushed branch.** A cleanup deleted the worktree and every local
   branch but `main` while an approved spec was unpushed; it was recovered from the object store.
   Push the docs branch as soon as it exists.
-- **Reports to Paw are extremely concise.** What changed, what it cost, what he must decide.
+- **Reports to Paw are extremely concise.** What changed, what it cost, what Paw must decide.
 
 ## 5. Traps learned
 
@@ -204,7 +204,7 @@ enforced; this is the index.
   branch's base and take the branch's.
 - **`git worktree remove` can leave `node_modules` behind on Windows** — finish with PowerShell
   `Remove-Item -LiteralPath "\\?\<path>" -Recurse -Force`.
-- **Paw's browser is Firefox and it refuses Caddy's local certificate** — give him
+- **Paw's browser is Firefox and it refuses Caddy's local certificate** — give Paw
   `http://127.0.0.1:3000`, which is still a secure context, so the clipboard API works.
 - **The dev Lobby holds 60 `seed-N` listeners** left by smoke test 6 (62 listeners / 69
   participants); participants cannot be removed, so expected counts on the dev database are not the
@@ -235,5 +235,5 @@ becomes a view inside the Lobby layout), has an **approved spec and an approved 
 `docs/superpowers/specs/2026-09-20-loom-lobby-listeners-view-design.md` and
 `docs/superpowers/plans/2026-09-20-loom-lobby-listeners-view.md`, six tasks.
 
-**Paw has said not to start development until he says so.** Do not cut `feat/lobby-listeners-view`
+**Paw has said not to start development until told.** Do not cut `feat/lobby-listeners-view`
 and do not execute the plan before that word.

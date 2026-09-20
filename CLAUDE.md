@@ -1,14 +1,14 @@
 # Loom — how this project is run
 
-Paw owns this project and decides everything. He does black-box vibe coding: he reads behaviour and
-summaries, not code. Report in a few lines — what changed, what it cost, what he must decide.
+Paw owns this project and decides everything. Paw does black-box vibe coding: reads behaviour and
+summaries, not code. Report in a few lines — what changed, what it cost, what Paw must decide.
 
 ## Every turn
 
 - **Subagents** run `model: "opus"`, always, and plans are executed by them — never inline.
 - **Read every subagent's diff yourself** before you push, merge, or dispatch the next task.
 - **Merge on Paw's explicit word, given for that PR.** A past yes is not a standing yes.
-- **Hand-run steps go to Paw one at a time**, real ids and secrets already filled in; wait for his
+- **Hand-run steps go to Paw one at a time**, real ids and secrets already filled in; wait for the
   result before the next one.
 - **Ideas, decisions and notes belong in the repo** — `docs/superpowers/specs/v2-notes.md` — because
   Paw works from several Claude accounts and cannot see one account's memory from another.
@@ -52,5 +52,5 @@ Everything else is in `package.json` and `--help`.
     pnpm --workspace-concurrency=1 -r test   # serial; needs Docker for the Postgres testcontainer
     run.cmd                                  # Postgres + Caddy in Docker, server on the host
 
-Paw's browser is Firefox and it refuses Caddy's local certificate — give him
+Paw's browser is Firefox and it refuses Caddy's local certificate — give Paw
 `http://127.0.0.1:3000`, not `https://localhost`.
