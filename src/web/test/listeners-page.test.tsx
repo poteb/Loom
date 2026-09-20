@@ -1120,15 +1120,11 @@ describe("the Lobby sidebar's listeners line (spec §5.1)", () => {
     expect(line(container)).toBe("Listeners");
   });
 
-  it("says the count is unavailable when the read failed and there is no number", () => {
+  // The whole text, so the rule that makes this worth having is asserted in the same breath: an
+  // absent count is an absent number, never an invented `(0)`.
+  it("says the count is unavailable when the read failed, and invents no zero", () => {
     const { container } = render(<ListenersLink state={lobbyState({ listenerCountError: true })} />);
     expect(line(container)).toBe("Listenerscount unavailable");
-  });
-
-  // The rule that makes the whole thing worth having: an absent count is an absent number.
-  it("never invents a zero for a count that failed", () => {
-    const { container } = render(<ListenersLink state={lobbyState({ listenerCountError: true })} />);
-    expect(line(container)).not.toContain("(0)");
   });
 
   it("keeps the last known number when a later count read fails, and says nothing beside it", () => {

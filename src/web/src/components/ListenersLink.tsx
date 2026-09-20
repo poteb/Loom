@@ -30,14 +30,16 @@ export function ListenersLink({ state, openListenersInPlace }: {
   const label = state.listenerCount !== undefined
     ? `Listeners (${state.listenerCount.toLocaleString()})`
     : "Listeners";
+  // A `div`, not a `section`: a region with no accessible name is one more thing to step through on
+  // the way past a single line, and the name a `section` would want is already on the control.
   return (
-    <section class="listeners-line">
+    <div class="listeners-line">
       {/* A button rather than an anchor with a handler: an anchor can be middle-clicked or opened
           in a new tab, and either one is the full page load that drops an in-memory credential. */}
       {openListenersInPlace
         ? <button type="button" class="listeners-line-link" onClick={() => openListenersInPlace()}>{label}</button>
         : <a class="listeners-line-link" href="/lobby/listeners">{label}</a>}
       {state.listenerCount === undefined && state.listenerCountError && <span class="muted">count unavailable</span>}
-    </section>
+    </div>
   );
 }

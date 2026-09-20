@@ -18,10 +18,12 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
  * (spec §4.4).
  *
  * The line this component exists to hold: **no new public read**. `GET /api/lobby` gives the title
- * anonymously and that is all an unjoined visitor sees; the counts come from `getWeave` and
- * `listRequests`, both behind `assertCanRead`, and are asked for with the **stored participant
- * token** or not at all. A stored *secret* is deliberately not used here either — the Lobby's secret
- * belongs to an instance keeper, and this section is not the place to spend one.
+ * anonymously and that is all an unjoined visitor sees; the three counts come from `getWeave`,
+ * `listRequests` and `listListeners` — all three behind `assertCanRead`, and all three asked for
+ * with the **stored participant token** or not at all. The third is caught on its own so its
+ * failure costs only its own line, which changes what is shown and not who may see it. A stored
+ * *secret* is deliberately not used here either — the Lobby's secret belongs to an instance keeper,
+ * and this section is not the place to spend one.
  *
  * The pointer itself is the page's cell, not this one's: `lobby` is the answer, `error` is what went
  * wrong reading it, and `noLobby` is the instance saying it has none — which is an answer rather than

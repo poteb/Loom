@@ -986,7 +986,7 @@ describe("session requests", () => {
   });
 
   // Where the Lobby is is a public read like any other, and it can fail. Taken for "this instance
-  // has no Lobby" it hides the requests panel and the profile cards for the life of the page: every
+  // has no Lobby" it hides the requests panel and the listeners line for the life of the page: every
   // one of them gates on `state.lobby`, and nothing else ever reads the pointer again.
   it("retries a failed Lobby discovery instead of hiding the panels for good", async () => {
     const f = await lobbyFixture();
