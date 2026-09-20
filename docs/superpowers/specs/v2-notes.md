@@ -181,7 +181,7 @@ Lobby from a browser at all — the Lobby is joined without a secret, but nothin
 offers that. It needs a token-based session load path (the browser holds a participant token rather
 than a Weave secret) plus a landing page that lists what this instance has and offers the join.
 
-### Lobby listeners page (Paw, 2026-09-19) — **built on `feat/lobby-listeners`**
+### Lobby listeners page (Paw, 2026-09-19) — **built on `feat/lobby-listeners`** ([PR #20](https://github.com/poteb/Loom/pull/20))
 
 Spec: [2026-09-19-loom-lobby-listeners-design.md](2026-09-19-loom-lobby-listeners-design.md); plan:
 [2026-09-19-loom-lobby-listeners.md](../plans/2026-09-19-loom-lobby-listeners.md). The
