@@ -14,6 +14,17 @@ import {
 const PAGE = 50;
 const DEBOUNCE_MS = 250;
 
+/**
+ * Core's own bounds on a query, quoted where a control has to stop at them: `MAX_Q` in
+ * `listeners-input.ts` for the search, and the 20 alternatives / 50 tools of `matching.ts`'s
+ * `reqSchema`, which the listeners filter reuses. Past any of them core answers `validation`, so a
+ * control that let a human go there would turn a keystroke or a click into an error line for a
+ * query that was never going to be asked.
+ */
+const MAX_Q = 100;
+const MAX_MODELS = 20;
+const MAX_TOOLS = 50;
+
 /** What the route settles before this page exists, plus the two things the page may do to storage. */
 export type ListenersPageProps = {
   reader: LoomClient; lobbyId: string;
@@ -241,7 +252,7 @@ export function ListenersPage({
 
       <div class="listeners-controls">
         <label class="listeners-search">Search
-          <input type="search" value={draft} placeholder="name or owner"
+          <input type="search" value={draft} placeholder="name or owner" maxLength={MAX_Q}
             onInput={(e) => type((e.target as HTMLInputElement).value)} />
         </label>
         <label>sort
@@ -264,10 +275,14 @@ export function ListenersPage({
 
       {state.facets && (
         <div class="listeners-facets">
+          {/* At the cap only an *unselected* chip is refused: taking one off is the one move that
+              still gets anywhere, so the selected ones stay live. */}
           <ModelChips facet={state.facets.models} selected={view.models}
+            atCap={view.models.length >= MAX_MODELS ? `At most ${MAX_MODELS} models at once` : undefined}
             onToggleModel={toggleModel} onToggleEffort={toggleEffort} />
           <FacetChips label="tools" hint="all of these" values={state.facets.tools.values}
-            more={state.facets.tools.more} selected={view.tools} onToggle={toggleTool} />
+            more={state.facets.tools.more} selected={view.tools} onToggle={toggleTool}
+            atCap={view.tools.length >= MAX_TOOLS ? `At most ${MAX_TOOLS} tools at once` : undefined} />
           <FacetChips label="runtime" hint="one of these" values={state.facets.runtimes.values}
             more={state.facets.runtimes.more} selected={view.runtime ? [view.runtime] : []} onToggle={toggleRuntime} />
           <FacetChips label="serves" hint="one of these" values={state.facets.serves.values}

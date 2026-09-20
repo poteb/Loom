@@ -11,7 +11,7 @@ import type { FacetValue, ModelFacet } from "@loom/client";
  * selection-inclusive for exactly this reason (§2.7). It is the filter that produced the empty
  * result, so hiding it would leave nothing to unclick, and it is the only chip that can show a zero.
  */
-export function FacetChips({ label, hint, values, more, selected, onToggle, labelOf }: {
+export function FacetChips({ label, hint, values, more, selected, onToggle, labelOf, atCap }: {
   label: string;
   /** "any of these", "all of these", "one of these": the row's semantics, said out loud. */
   hint: string;
@@ -22,6 +22,10 @@ export function FacetChips({ label, hint, values, more, selected, onToggle, labe
   onToggle: (value: string) => void;
   /** For `serves`, whose three stored words read better as a sentence than as an enum. */
   labelOf?: (value: string) => string;
+  /** Set when this row has as many values picked as core will accept, and says so: the sentence is
+   *  the disabled chip's `title`. Only the **unselected** chips are refused — at the cap, taking
+   *  one off is the only move that gets anywhere, so a picked chip stays live. */
+  atCap?: string;
 }) {
   if (values.length === 0) return null;
   return (
@@ -29,14 +33,18 @@ export function FacetChips({ label, hint, values, more, selected, onToggle, labe
       <span class="facet-label">{label}</span>
       <span class="facet-hint">{hint}</span>
       <ul class="chips">
-        {values.map((v) => (
+        {values.map((v) => {
+          const on = selected.includes(v.value);
+          return (
           <li key={v.value}>
-            <button type="button" class={`chip${selected.includes(v.value) ? " chip-on" : ""}`}
-              aria-pressed={selected.includes(v.value)} onClick={() => onToggle(v.value)}>
+            <button type="button" class={`chip${on ? " chip-on" : ""}`}
+              aria-pressed={on} onClick={() => onToggle(v.value)}
+              disabled={atCap !== undefined && !on} title={atCap !== undefined && !on ? atCap : undefined}>
               {labelOf ? labelOf(v.value) : v.value} <span class="chip-count">{v.count}</span>
             </button>
           </li>
-        ))}
+          );
+        })}
       </ul>
       {more && <span class="facet-more">20 most common</span>}
     </div>
@@ -49,11 +57,14 @@ export function FacetChips({ label, hint, values, more, selected, onToggle, labe
  * `{ model, effort }` (spec §5.3). `effort` is free text, so that row is bounded exactly like the
  * outer ones and says so when it was cut.
  */
-export function ModelChips({ facet, selected, onToggleModel, onToggleEffort }: {
+export function ModelChips({ facet, selected, onToggleModel, onToggleEffort, atCap }: {
   facet: { values: ModelFacet[]; more: boolean };
   selected: readonly { model: string; effort?: string }[];
   onToggleModel: (model: string) => void;
   onToggleEffort: (model: string, effort: string) => void;
+  /** As `FacetChips`' own: the sentence a chip refused at core's cap wears. An effort chip is never
+   *  refused — picking one narrows an alternative this view already has, it adds none. */
+  atCap?: string;
 }) {
   if (facet.values.length === 0) return null;
   return (
@@ -66,7 +77,8 @@ export function ModelChips({ facet, selected, onToggleModel, onToggleEffort }: {
           return (
             <li key={m.model}>
               <button type="button" class={`chip${pick ? " chip-on" : ""}`} aria-pressed={!!pick}
-                onClick={() => onToggleModel(m.model)}>
+                onClick={() => onToggleModel(m.model)}
+                disabled={atCap !== undefined && !pick} title={atCap !== undefined && !pick ? atCap : undefined}>
                 {m.model} <span class="chip-count">{m.count}</span>
               </button>
               {pick && m.efforts.length > 0 && (

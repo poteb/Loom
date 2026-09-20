@@ -167,6 +167,9 @@ button.listeners-back { padding: 0; border: 0; background: none; font: inherit; 
    so it stays on screen to be unclicked (§2.7). It must not read as an ordinary chip with a count. */
 .chip-on { border-color: var(--accent); background: var(--mention); font-weight: 600; }
 .chip-on .chip-count { color: inherit; }
+/* Refused because this row already holds as many values as core accepts. It has to read as out of
+   reach rather than as an ordinary chip that ignores a click; its `title` says why. */
+.chip:disabled { opacity: 0.5; cursor: not-allowed; }
 .chips-effort { flex-basis: 100%; margin-left: 16px; }
 .listeners-changed { margin: 8px 0; font-size: 13px; }
 .listeners-counts { margin: 8px 0; color: var(--muted); font-size: 13px; display: flex; gap: 8px; min-height: 1.45em; }

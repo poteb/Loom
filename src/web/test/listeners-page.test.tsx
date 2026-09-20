@@ -680,6 +680,78 @@ describe("a control change drops the cursor (spec §5.3)", () => {
 });
 
 /**
+ * Core's bounds are the page's bounds. A control that lets a human compose a query core will
+ * answer with `validation` turns an ordinary click or keystroke into an error line — so the box
+ * stops at `q`'s hundred characters and the chip rows stop at 20 model alternatives and 50 tools.
+ * A **selected** chip is never disabled: at the cap, taking one off is the only useful move left.
+ */
+describe("the controls stop at core's bounds", () => {
+  /** A directory whose one chip row is the named values, all at a count of one. */
+  const facetOf = (over: (f: NonNullable<ListenersPage["facets"]>) => NonNullable<ListenersPage["facets"]>) => {
+    const d = directory([listener("ada", "a")]);
+    return () => json({ ...d, facets: over(d.facets!) });
+  };
+  const modelNames = Array.from({ length: 21 }, (_, i) => `m${String(i).padStart(2, "0")}`);
+  const toolNames = Array.from({ length: 51 }, (_, i) => `t${String(i).padStart(2, "0")}`);
+  const withModels = (names: string[]) => facetOf((f) => ({ ...f,
+    models: { values: names.map((model) => ({ model, count: 1, efforts: [], moreEfforts: false })), more: false } }));
+  const withTools = (names: string[]) => facetOf((f) => ({ ...f,
+    tools: { values: names.map((value) => ({ value, count: 1 })), more: false } }));
+  const at = (filter: unknown, route: () => Response) => mountApp({ storage: joined(),
+    path: `/lobby/listeners?filter=${encodeURIComponent(JSON.stringify(filter))}`,
+    routes: { [LISTENERS]: route } });
+  const disabled = (label: RegExp) => (chip(label) as HTMLButtonElement).disabled;
+
+  it("bounds the search box at the hundred characters core accepts", async () => {
+    mountApp({ storage: joined() });
+    await settle();
+    expect((screen.getByLabelText("Search") as HTMLInputElement).maxLength).toBe(100);
+  });
+
+  it("stops offering a twenty-first model once twenty alternatives are picked", async () => {
+    at({ models: modelNames.slice(0, 20).map((model) => ({ model })) }, withModels(modelNames));
+    await settle();
+    expect(disabled(/^m20/)).toBe(true);
+  });
+
+  it("says why, rather than leaving a dead chip", async () => {
+    at({ models: modelNames.slice(0, 20).map((model) => ({ model })) }, withModels(modelNames));
+    await settle();
+    expect(chip(/^m20/).getAttribute("title")).toBeTruthy();
+  });
+
+  it("leaves a picked model removable at the cap", async () => {
+    at({ models: modelNames.slice(0, 20).map((model) => ({ model })) }, withModels(modelNames));
+    await settle();
+    expect(disabled(/^m00/)).toBe(false);
+  });
+
+  it("leaves every model clickable one short of the cap", async () => {
+    at({ models: modelNames.slice(0, 19).map((model) => ({ model })) }, withModels(modelNames));
+    await settle();
+    expect(disabled(/^m20/)).toBe(false);
+  });
+
+  it("stops offering a fifty-first tool once fifty are picked", async () => {
+    at({ tools: toolNames.slice(0, 50) }, withTools(toolNames));
+    await settle();
+    expect(disabled(/^t50/)).toBe(true);
+  });
+
+  it("leaves a picked tool removable at the cap", async () => {
+    at({ tools: toolNames.slice(0, 50) }, withTools(toolNames));
+    await settle();
+    expect(disabled(/^t00/)).toBe(false);
+  });
+
+  it("leaves every tool clickable one short of the cap", async () => {
+    at({ tools: toolNames.slice(0, 49) }, withTools(toolNames));
+    await settle();
+    expect(disabled(/^t50/)).toBe(false);
+  });
+});
+
+/**
  * Spec §7's last rule: core answers a malformed or stale-format cursor with `validation`, and a
  * cursor the server refuses must not wedge the page. Offering the button again would send the same
  * refused cursor for as long as the human keeps pressing it.
