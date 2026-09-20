@@ -26,8 +26,9 @@ summaries, not code. Report in a few lines — what changed, what it cost, what 
 - **Anything past a one-line answer** → `docs/HANDBOOK.md`: the roles, the development cycle step by
   step, Paw's standing rules with their reasons, the traps already paid for, and where the state of
   the project lives.
-- **Posting a PR review request into Loom itself, or standing up the instance that carries it** →
-  `docs/DOGFOOD.md`: what is proven, what is missing, the setup, and the per-PR protocol.
+- **Announcing a PR review round in Loom, running a spec or plan review through a Thread, or
+  standing up the live instance** → `docs/DOGFOOD.md`: what is proven, what is missing, the setup,
+  and the two review protocols.
 - **Reading the system for the first time, or changing how a mechanism works** →
   `docs/ARCHITECTURE.md`: packages, the layering invariant, the event log, credentials, the three
   ways in.

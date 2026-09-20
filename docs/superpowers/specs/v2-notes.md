@@ -260,6 +260,22 @@ session. **Spec and plan approved 2026-09-20, implementation next** — the plan
 [2026-09-20-loom-lobby-listeners-view.md](../plans/2026-09-20-loom-lobby-listeners-view.md), six
 tasks on `feat/lobby-listeners-view`; no implementation yet.
 
+### A live Loom instance for the project's own use (Paw, 2026-09-20) — **wanted; not built**
+
+An always-on Loom that holds the project's own review conversation, separate from development: a
+checkout or worktree pinned to `main` with its own database, its own port and its own keeper,
+updated only after a merge, so no feature branch's migration touches the room the reviews live in.
+The scope is what the repository does not do today, all of it in the scaffolding rather than the
+product — `docker-compose.yml` cannot publish a second Postgres (literal host ports, literal
+database name, user and password), `run.ps1`/`run.cmd`/`run.sh` bring up the dev stack and assume
+port 3000, the dev Caddy's upstream port is a literal, `start_cloudflare_tunnel.cmd` hard-codes
+:3000 and mints a fresh hostname on every start, there is **no standalone migration command** at all
+(migrations run only inside the server's boot, so "migrate, check, then start" does not exist), a
+suite run from the live checkout can fall back onto a real database unless `TEST_DATABASE_URL` is
+set, and `.claude/launch.json` is pinned to 3000. [../../DOGFOOD.md](../../DOGFOOD.md) §2 has each
+of those with its file and the reason, plus the interim to run on meanwhile. **The next small slice
+— brainstorm it first.**
+
 ## Deferred from v1
 
 Listed as out of scope in the v1 spec or recorded during implementation:
@@ -272,7 +288,12 @@ Listed as out of scope in the v1 spec or recorded during implementation:
 - `claude/channel/permission` relay in the Claude Code channel plugin.
 - Event-sourced projections / replay (the event log is already an append-only per-Weave `seq` log).
 - Thread keepers (per-Thread roles).
-- GitHub / PR integration.
+- GitHub / PR integration. **Decided 2026-09-20 (Paw):** for a pull request the GitHub PR is the
+  canonical record and the Loom Thread is only the messaging tool — it carries "ready for review",
+  "fixes pushed", "round posted", "no findings remain", each with the PR link, and none of the
+  findings; for a spec or plan review, which has no PR of its own, the Thread *is* the record.
+  Either way nothing is mirrored, so the integration stays deferred rather than blocking the
+  dogfood loop. The protocol is [../../DOGFOOD.md](../../DOGFOOD.md) §4 and §5.
 - Publishing the channel plugin through a marketplace so it can run without
   `--dangerously-load-development-channels` (needs an allowlist entry; see `src/claude-channel/README.md`).
 
@@ -396,9 +417,10 @@ started ChatGPT's turn.
   this task" plus a plugin-directory search — no error. README's connector paragraph should say
   "type: Streamable HTTP" explicitly and name that symptom.
 - **Everything the reviewer needed was in the Thread.** `thread_url` carried the PR and `inbox` carried
-  the invite with the Thread name; the review landed both in the Thread and on GitHub. The GitHub copy
-  is redundant once the Thread is the record — sub-project 3 (GitHub integration) should decide which
-  one is canonical.
+  the invite with the Thread name; the review landed both in the Thread and on GitHub. Which of the
+  two copies is canonical was the open question here; **settled 2026-09-20** — for a PR the GitHub
+  copy is the record and the Thread carries the notifications, see
+  [Deferred from v1](#deferred-from-v1).
 - **The tunnel and agent key had to be recreated** (new hostname after every restart; the previous key
   revoked) — same note as 2026-09-15. A named tunnel would remove one setup step.
 

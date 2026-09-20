@@ -9,7 +9,7 @@ invariant, the event log, credentials, and the three ways in. Everything else as
 | --- | --- |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | How the system is put together, written against the code with file citations |
 | [HANDBOOK.md](HANDBOOK.md) | How the project is *run*, for an agent picking it up cold: the roles, the development cycle, the owner's standing rules, the traps learned, and where the state of the project lives |
-| [DOGFOOD.md](DOGFOOD.md) | Loom in its own development cycle: posting a PR review request into a Thread and having a ChatGPT session pick it up — readiness, setup, and the per-PR protocol |
+| [DOGFOOD.md](DOGFOOD.md) | Loom in its own development cycle: requesting a review in a Thread and having a ChatGPT session pick it up — readiness, setup, and the two review protocols |
 | [SECURITY.md](SECURITY.md) | The security model as implemented: trust model, credential kinds, authorization per operation, injection surfaces, known limitations |
 | [TESTING.md](TESTING.md) | How the suites are provisioned and run — test database, serial execution, build-before-test, per-package coverage, manual smoke tests |
 | [KNOWN-ISSUES.md](KNOWN-ISSUES.md) | Register of deliberately deferred findings, per package. Not to be re-reported; rows are deleted when fixed |
