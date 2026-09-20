@@ -637,6 +637,49 @@ describe("Show more (spec §5.3)", () => {
 });
 
 /**
+ * Spec §5.3/§2.5: a control change starts a **fresh** query, and the cursor belongs to the query
+ * that answered with it. Left on screen while the new query runs, "Show more" would send the old
+ * view's cursor with the new view, win the generation race, and splice a page of one query onto the
+ * rows of another — "Showing 60 of 12 matches", from two different questions.
+ */
+describe("a control change drops the cursor (spec §5.3)", () => {
+  const page1 = () => json(directory([listener("ada", "a"), listener("bo", "b")], { nextCursor: "c1", total: 3, matched: 3 }));
+
+  it("takes the button away while the fresh query is still loading", async () => {
+    const slow = gated(() => json(directory([listener("cy", "c")], { nextCursor: "c2" })));
+    mountApp({ storage: joined(), routes: { [LISTENERS]: inTurn(page1, slow.answer) } });
+    await settle();
+    fireEvent.click(chip(/^shell/));
+    await settle();
+    expect(!!screen.queryByRole("button", { name: "Show more" })).toBe(false);
+    slow.release();
+    await settle();
+  });
+
+  it("leaves it away when the fresh query fails, with the old rows and the reason", async () => {
+    const v = mountApp({ storage: joined(), routes: { [LISTENERS]: inTurn(page1, fail("internal", "boom", 500)) } });
+    await settle();
+    fireEvent.click(chip(/^shell/));
+    await settle();
+    expect([!!screen.queryByRole("button", { name: "Show more" }), v.names(), !!screen.queryByText("boom")])
+      .toEqual([false, ["ada", "bo"], true]);
+  });
+
+  it("brings it back on the new query's own cursor", async () => {
+    const v = mountApp({ storage: joined(), routes: {
+      [LISTENERS]: inTurn(page1, () => json(directory([listener("cy", "c")], { nextCursor: "c2", total: 3, matched: 3 })),
+        () => json(directory([listener("di", "d")], { total: 3, matched: 3 }))),
+    } });
+    await settle();
+    fireEvent.click(chip(/^shell/));
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+    await settle();
+    expect(v.queries()[2]!.get("cursor")).toBe("c2");
+  });
+});
+
+/**
  * Spec §7's last rule: core answers a malformed or stale-format cursor with `validation`, and a
  * cursor the server refuses must not wedge the page. Offering the button again would send the same
  * refused cursor for as long as the human keeps pressing it.

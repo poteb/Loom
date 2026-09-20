@@ -95,7 +95,14 @@ export function ListenersPage({
     const n = ++gen.current;
     setState((s) => cursor
       ? { ...s, appending: true, moreError: undefined }
-      : { ...s, status: "loading", error: undefined, moreError: undefined, appending: false });
+      // A fresh query's first page is a different question, so the cursor the *old* one answered
+      // with is dropped the moment this one starts — not when it answers, and not at all if it
+      // fails (spec §5.3, §2.5). Left on screen, "Show more" would send the old view's cursor with
+      // the new view, take the newer generation with it, and append a page of one query onto the
+      // rows of another: "Showing 60 of 12 matches". The answer re-sets it; a failure leaves the
+      // rows and no button, which is the truthful state.
+      : { ...s, status: "loading", error: undefined, moreError: undefined, appending: false,
+          nextCursor: undefined });
     // The facets are asked for on every query but Show more's: they describe the *filters*, which
     // appending a page cannot change, and they are the most expensive read this query makes (§6).
     // The page keeps the ones it has (`page.facets ?? s.facets` below).
