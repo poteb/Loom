@@ -167,9 +167,10 @@ function WeaveMount({ client, storage, notice, openMainInPlace, target, lobby, o
   const canLeave = leavingIsSafe(storage, notice, weaveId === undefined ? undefined : weaveKey(weaveId));
 
   // What the handler below must read *now* rather than from the render that closed over it.
-  // `storage`, `notice` and `setView` are the same objects for the life of the page — `RouteDeps`
-  // hands one of each and `WeaveSession` owns the setter — so only the two render-varying values
-  // need a ref.
+  // `storage` and `notice` are the same objects for the life of the page — `RouteDeps` hands one of
+  // each. `setView` is a fresh closure on every render of `WeaveSession`, but it closes over nothing
+  // render-varying and updates the state functionally, so a stale one behaves like a live one and it
+  // needs no ref either. Only the two render-varying values do.
   const now = useRef({ view, weaveId });
   now.current = { view, weaveId };
   // This mount's own lifetime, because the handler below can outlive it. `WeaveSession`'s
@@ -219,6 +220,12 @@ function WeaveMount({ client, storage, notice, openMainInPlace, target, lobby, o
     : here && isLobby
       ? (
         <div class="page-join">
+          {/* Why the form is here, when there is a reason. This element replaces the generic
+              no-credential card whole, and that card is the only other place `state.error` is drawn
+              (`WeaveView.tsx`), so without this line a Lobby identity retired mid-page — by a query
+              refused 401, or by a write that reached only memory — would leave a human staring at a
+              join form that appeared for no stated reason. */}
+          {state.error && <p class="error page-join-invalid">{state.error}</p>}
           <JoinLobbyForm client={client} storage={storage} notice={notice}
             lobby={{ weaveId: here.weaveId, title: here.title }}
             onJoined={onJoined} onJoinedInPlace={onJoined} />

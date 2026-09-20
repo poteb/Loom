@@ -5,7 +5,7 @@ import type { PersistenceNotice } from "./persistence.js";
 import type { WeavesSignal } from "./weaves-signal.js";
 import { MainPage } from "./components/main/MainPage.js";
 import { WeaveRoute } from "./components/WeaveRoute.js";
-import type { MainArea } from "./lobby-view.js";
+import { viewOfPath, type MainArea } from "./lobby-view.js";
 
 export type Route =
   | { kind: "main" }
@@ -24,10 +24,13 @@ const WEAVE_RE = /^\/weave\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
  */
 export function routeOf(pathname: string): Route {
   if (pathname === "/") return { kind: "main" };
-  // Before `/lobby`, which is an exact-match comparison and therefore shadows nothing: the order is
-  // for the reader, who checks the longer path first.
-  if (pathname === "/lobby/listeners" || pathname === "/lobby/listeners/") return { kind: "lobby", view: "listeners" };
-  if (pathname === "/lobby" || pathname === "/lobby/") return { kind: "lobby" };
+  // The Lobby's addresses are `lobby-view.ts`'s table and nobody else's, so a further spelling is
+  // taught in one place. Two returns rather than one: `/lobby` answers `{ kind: "lobby" }` with no
+  // `view` key at all, because the field means "the area the page opened on" and the thread view is
+  // what a Lobby opens on anyway.
+  const v = viewOfPath(pathname);
+  if (v === "listeners") return { kind: "lobby", view: "listeners" };
+  if (v) return { kind: "lobby" };
   const w = WEAVE_RE.exec(pathname);
   if (w) return { kind: "weave", weaveId: w[1]! };
   const s = SECRET_RE.exec(pathname);

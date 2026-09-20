@@ -444,8 +444,8 @@ describe("a view that does not change is not a history entry (spec §4.2)", () =
  */
 describe("the permission is the one that holds when the handler runs (spec §4.2)", () => {
   async function degradedInsideTheAwait() {
-    const create = gated(() => json(DESIGN));
-    const v = mountLobby({ path: "/lobby", storage: joined(), routes: { [THREADS]: create.answer } });
+    const createAnswer = gated(() => json(DESIGN));
+    const v = mountLobby({ path: "/lobby", storage: joined(), routes: { [THREADS]: createAnswer.answer } });
     await settle();
     await v.toggle();                    // the one push this page was still allowed to make
     const s = spies();
@@ -453,7 +453,7 @@ describe("the permission is the one that holds when the handler runs (spec §4.2
     await settle();
     v.notice.note("memory");             // …and persistence fails while it is parked
     await settle();
-    create.release();
+    createAnswer.release();
     await settle();
     return { v, s };
   }
@@ -486,10 +486,10 @@ describe("the permission is the one that holds when the handler runs (spec §4.2
  */
 describe("a handler a join has retired does nothing at all (spec §4.2)", () => {
   async function retiredByAJoin() {
-    const create = gated(() => json(DESIGN));
+    const createAnswer = gated(() => json(DESIGN));
     const v = mountLobby({ path: "/lobby", storage: joined(), routes: {
       [LISTENERS]: inTurn(INVALID, () => json(directory([listener("ada", "a")]))),
-      [THREADS]: create.answer,
+      [THREADS]: createAnswer.answer,
     } });
     await settle();
     createThread("Design");              // parked, holding the old mount's `onPick`
@@ -497,7 +497,7 @@ describe("a handler a join has retired does nothing at all (spec §4.2)", () => 
     await v.toggle();                    // one push; the first query refuses, and there is no secret
     await v.joinAs("dana");              // the join retires that mount; the view crosses the key
     const s = spies();
-    create.release();                    // the old `await` resolves, into the old `onView("thread")`
+    createAnswer.release();              // the old `await` resolves, into the old `onView("thread")`
     await settle();
     return { v, s };
   }
@@ -662,13 +662,6 @@ describe("one history rule, in the two cases the path test alone got wrong (spec
  * `ThreadList`'s own head, and the composer from `JOINED.participant` being a writable member.
  */
 describe("picking a Thread, and the composer (spec §3.4, §3.5)", () => {
-  const create = (name: string) => {
-    fireEvent.click(screen.getByRole("button", { name: "New thread" }));
-    const box = screen.getByPlaceholderText("Thread name");
-    fireEvent.input(box, { target: { value: name } });
-    fireEvent.submit(box.closest("form")!);
-  };
-
   it("closes the directory when a Thread is picked", async () => {
     const v = mountLobby({ path: "/lobby" });
     await settle();
@@ -684,7 +677,7 @@ describe("picking a Thread, and the composer (spec §3.4, §3.5)", () => {
     const v = mountLobby({ path: "/lobby", routes: { [THREADS]: () => json(DESIGN) } });
     await settle();
     await v.toggle();
-    create("Design");
+    createThread("Design");
     await settle();
     expect(v.directory()).toBe(false);
   });
@@ -1642,12 +1635,15 @@ describe("a live 401 recovers, exactly once (spec §6.3)", () => {
   });
 
   // With every answer a rejection there are no rows, no facets and therefore no chips: the only
-  // thing on screen is the join fork, with the layout gone.
+  // thing on screen is the join fork, with the layout gone. The sentence is asserted with it,
+  // because a join form that appears unannounced is the failure this fork is drawn to avoid: it is
+  // the session's own `state.error`, the same one the generic no-credential card prints.
   it("settles at the join fork when there is no secret to fall back to", async () => {
     const v = mountLobby({ storage: joined(), routes: { [LISTENERS]: INVALID } });
     await settle();
-    expect([!!screen.queryByRole("heading", { name: "Join the Lobby" }), v.directory()])
-      .toEqual([true, false]);
+    expect([!!screen.queryByRole("heading", { name: "Join the Lobby" }), v.directory(),
+      !!screen.queryByText("Your identity in this Weave is no longer valid")])
+      .toEqual([true, false, true]);
   });
 
   it("reports a write it could not keep", async () => {

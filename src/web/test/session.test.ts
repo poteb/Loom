@@ -2317,6 +2317,11 @@ describe("reading the directory, and who may spend a recovery (spec §6.1)", () 
       const b = session.listListeners({ limit: 50 });                  // both issued before either is reported
       const ea = await a.page.then(() => undefined, (err: unknown) => err);
       const eb = await b.page.then(() => undefined, (err: unknown) => err);
+      // Both really are rejections. Without this, a script that numbered the two queries differently
+      // would leave one of them `undefined`, `isCredentialFailure` would refuse it, and the
+      // "nothing moved" assertion below would pass for the wrong reason.
+      expect(ea).toMatchObject({ code: "invalid_token" });
+      expect(eb).toMatchObject({ code: "invalid_token" });
       session.reportCredentialFailure(ea, a.issue);
       // The whole recovery, by the state it ends in and not by a number: invalidated, reloaded on
       // the secret, and settled again.
@@ -2326,8 +2331,11 @@ describe("reading the directory, and who may spend a recovery (spec §6.1)", () 
         onSecret: c.weaveReadsWith(f.secret) };
       session.reportCredentialFailure(eb, b.issue);
       await afterDelivery(second.delivered);
-      // No second write and no second reload: the recovery bumped the generation the second
-      // rejection was issued under, so the session refuses it.
+      // What this test proves is the rule, not which mechanism enforces it: two rejections of one
+      // generation cost exactly one invalidation — no second write, no second reload, and the
+      // session still `ready`. Several guards would each refuse the second report on their own, so
+      // this one cannot say which did; test 14c ("refuses an issue taken before a completed
+      // reload") is the one that isolates the generation guard.
       expect([storage.get(weaveKey(id)), verdicts.length, c.weaveReads(), c.weaveReadsWith(f.secret),
         session.getState().status])
         .toEqual([settled.entry, settled.writes, settled.reads, settled.onSecret, "ready"]);
