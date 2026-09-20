@@ -19,8 +19,8 @@ export function WeaveRoute(props: RouteDeps & (
   | { lobbyRoute?: false; target: SessionTarget })) {
   // Explicitly, not `{...props}`: the two route props below are this component's own business, and
   // spreading them onto children that ignore or overwrite them would say otherwise.
-  const { client, storage, notice, openInPlace, openMainInPlace } = props;
-  const deps: RouteDeps = { client, storage, notice, openInPlace, openMainInPlace };
+  const { client, storage, notice, openInPlace, openMainInPlace, openListenersInPlace } = props;
+  const deps: RouteDeps = { client, storage, notice, openInPlace, openMainInPlace, openListenersInPlace };
   if (props.lobbyRoute) return <LobbyRoute {...deps} />;
   return <WeaveSession {...deps} target={props.target} />;
 }
@@ -95,7 +95,7 @@ function WeaveSession(props: RouteDeps & { target: SessionTarget; lobby?: Lobby 
   return <WeaveMount key={reloadKey} {...props} onJoined={() => setReloadKey((n) => n + 1)} />;
 }
 
-function WeaveMount({ client, storage, notice, openMainInPlace, target, lobby, onJoined }:
+function WeaveMount({ client, storage, notice, openMainInPlace, openListenersInPlace, target, lobby, onJoined }:
   RouteDeps & { target: SessionTarget; lobby?: Lobby; onJoined: () => void }) {
   const { session, state } = useSession(target, { client, storage, onWrite: notice.note });
   // The notice is a plain page-scoped object, so a subscription is what turns a failed write —
@@ -160,6 +160,11 @@ function WeaveMount({ client, storage, notice, openMainInPlace, target, lobby, o
   // render, and a `/w/<secret>` load writes its own entry here (§10.9), so without this seam the one
   // warning the human needs would be latched and never drawn. `App` hands every route the same
   // notice and mounts one route at a time, so it stays one bar, and one dismissal, per page load.
+  //
+  // The sidebar's way into the directory is decided by the same `canLeave`, and for the same reason
+  // (spec §5.1): an anchor to `/lobby/listeners` can be middle-clicked, and on this browser that is
+  // the page load which drops the only copy of the credential. The view renders the answer.
   return <WeaveView session={session} state={state} banner={<PersistenceBar notice={notice} />}
-    noCredential={noCredential} openMainInPlace={canLeave ? undefined : openMainInPlace} />;
+    noCredential={noCredential} openMainInPlace={canLeave ? undefined : openMainInPlace}
+    openListenersInPlace={canLeave ? undefined : openListenersInPlace} />;
 }

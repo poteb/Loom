@@ -58,14 +58,18 @@ export function registerLobbyCommands(program: Command, ctx: () => CliContext, i
   lobby.action(async () => {
     const c = ctx();
     const { lobby: where, client } = await lobbyContext(c);
-    const info = await client.getWeave(where.weaveId);
-    emit(c, { lobby: where, participants: info.participants }, [
+    // `getWeave` no longer carries Lobby profiles (spec §3.1), so the summary column comes from
+    // `find_agents`, which does. Two bounded reads, one command, identical output.
+    const [info, agents] = await Promise.all([client.getWeave(where.weaveId), client.findAgents({})]);
+    const profiles = new Map(agents.map((a) => [a.participant.id, a.capabilities]));
+    const participants = info.participants.map((p) => ({ ...p, capabilities: profiles.get(p.id) ?? null }));
+    emit(c, { lobby: where, participants }, [
       `${where.title} (${where.weaveId})`,
       // Nobody created the Lobby, so nobody holds its secret: an instance keeper is the only caller
       // the server tells, and this is the one place the link to its web page can be read.
       ...(where.secret ? [`  web: ${c.baseUrl}/w/${where.secret}`] : []),
       "Participants:",
-      ...info.participants.map(participantLine),
+      ...participants.map(participantLine),
     ].join("\n"));
   });
 

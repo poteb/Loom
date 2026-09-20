@@ -265,7 +265,7 @@ in `listeners.ts`; the REST route parses the query string and hands the values o
 | Input | Rule | On violation |
 | --- | --- | --- |
 | `q` | trimmed; at most 100 characters after trimming; **empty or whitespace-only → absent**, not an error | `validation`: `q must be at most 100 characters` |
-| `models` | the **same** zod shape `Requirements.models` already uses: `[{ model: 1–100, effort?: 1–32 }]`, trimmed, strict keys, at most 20 entries — but **`[]` is normalised to absent** rather than rejected (see below) | `validation`, message prefixed `listeners.models…` |
+| `models` | the **same** zod shape `Requirements.models` already uses: `[{ model: 1–100, effort?: 1–32 }]`, trimmed, strict keys, at most 20 entries — but **`[]` is normalised to absent** rather than rejected (see below) | `validation`, message prefixed `requirements.models…` |
 | `tools` | `string[]`, each trimmed 1–64, at most 50; **`[]` is normalised to absent** | `validation` |
 | `runtime` | trimmed 1–64 | `validation` |
 | `serves` | one of `anyone` / `owner` / `list` | `validation`: `serves must be anyone, owner or list` |
@@ -283,6 +283,36 @@ schema is built by reusing `validateRequirements`
 ([`matching.ts:37`](../../../src/core/src/lobby/matching.ts)) over
 `{ models, tools, runtime }` and keeping `q`, `serves`, `sort`, `dir`, `limit`, `cursor` in a schema
 of its own. One shape, one set of messages, no drift.
+
+> **Amendment, 2026-09-20 (as built).** Three corrections to the table above, each found in
+> implementation:
+>
+> - The `models` message prefix is **`requirements.models…`**, not `listeners.models…`. Reusing
+>   `validateRequirements` is the rule this section states, and reusing it means inheriting its
+>   messages; renaming them would have meant a second copy of the schema, which is the drift this
+>   paragraph exists to prevent. The row above now says what the code says.
+> - **A NUL is rejected** — and nothing else — in `q`, in every filter string and in a text cursor
+>   key. A NUL cannot travel in a Postgres text parameter or in `jsonb`, so forwarding one turns a
+>   hand-edited link into SQLSTATE `22021` (`22P05` inside a jsonb parameter) — a 500 for a value
+>   that came out of the address bar. (The *write* paths — `validateProfile` and
+>   `validateRequirements` — still accept a NUL; that is a pre-existing hole, now a row in
+>   KNOWN-ISSUES, deliberately not fixed inside a read-only change.)
+>
+>   **Amendment, 2026-09-20 (PR #20 review round 1).** This rule was first built as the **whole C0
+>   range**, U+0000 to U+001F, on the assumption that the rest of C0 "names no model, tool, runtime
+>   or owner". That assumption was wrong, and it made the directory refuse its own output.
+>   `validateProfile` accepts a tab or a newline inside an `owner`, a tool, a runtime, a model or an
+>   effort, and a live Postgres carries every C0 character *but* NUL through `ILIKE`, through `@>`
+>   containment and through a text cursor key. Two listeners owned by `"a\nb"` and
+>   `"zzz"`, sorted by owner, therefore produced a `nextCursor` this validator then refused —
+>   Show more died at that page boundary (§2.5) — and a stored tool `"a\tb"` appeared as a
+>   facet chip that could not be clicked (§5.3). The rule is now NUL alone, in core and in
+>   the page's own codec.
+> - A **non-object query** is `validation`. `listListeners(db, actor, 5)` and
+>   `listListeners(db, actor, null)` are not "no query"; only `undefined` is.
+>
+> And one at the REST level (§4.1): a **blank `?limit=`** is an *absent* limit, not `Number("") === 0`
+> — which would have answered an empty directory to a link ending in `&limit=`.
 
 #### Normalisation: an empty filter is no filter, because that is what the matcher means
 
@@ -1422,6 +1452,12 @@ Listeners (1,204)          ← a link to /lobby/listeners
   §3. It already reads with the stored Lobby token and already makes two bounded calls there; the
   filter becomes a third, `listListeners({ limit: 0, facets: false }).total`, folded into the same
   `Promise.all`. Its "loading, not empty" rule and its one error line are unchanged.
+  > **Amendment, 2026-09-20 (as built).** The third call is **not** folded into the rejecting
+  > `Promise.all`; it is caught on its own. `Promise.all` says "all of these or none", which is right
+  > for the queries inside one `listListeners` call and wrong for three independent page cells: with
+  > the fold, a failed listener count would have taken the participant and open-request counts down
+  > with it. As built, a failed count removes its own `<li>` and nothing else — no zero, no error
+  > line — and the other two counts stand.
 - **In place for a memory-only session.** The link follows the same rule the header's home link
   follows on the smoke-test-5 fix branch: when this page's credentials would not survive leaving the
   JS context — `storage.isPending(weaveKey(weaveId))` **or** a degraded `PersistenceNotice` — the
@@ -1580,6 +1616,32 @@ So the rule here is precise, and narrower than "no history API":
   the established path, not a new one. A **lighter** rule was considered and rejected: leaving the
   dead token in storage would simply move the failure to the next `/lobby` load, and the page next
   door would then have to explain a credential this page already proved dead.
+  > **Amendment, 2026-09-20 (as built).** The rule above has a **terminal state** the spec did not
+  > script: "retry once with the stored secret" must mean *once*. As first written, a 401 on the
+  > retry invalidated again and bumped the reload key again, and a Lobby secret the server refuses
+  > looped for ever. As built, the retry is latched: if the stored secret is itself refused, the page
+  > stops at the join form saying **"The Lobby refused the link this browser holds."** — the wording
+  > is the implementation's; the spec scripts only the dead-identity line — and it carries the same
+  > way home the other forks carry.
+- **Amendment, 2026-09-20 (as built): the query string is validated against core's bounds, not
+  sniffed.** §5.4's "anything invalid is ignored with a one-line notice" is implemented as full
+  validation — the page refuses in the browser exactly what core would refuse on the wire — plus
+  three rules found in implementation. **Unknown keys are reported**, not ignored: core rejects a
+  key its query does not have, so `{"owner":"ada"}` is asking for something this page cannot do, and
+  honouring the half it understood would answer a wider question than the link asked. **A NUL is
+  dropped and reported** rather than forwarded, for the reason §2.3's amendment gives: forwarding
+  one turns a hand-edited link into a 500. (Amended 2026-09-20, PR #20 review round 1: this too was
+  first built as the whole C0 range. A tab or a newline inside a value is something core accepts and
+  the directory hands out on a facet chip, so a link carrying one is very often a link this page
+  wrote; dropping it lost the filter *and* accused a good link of not being understood.) And the **`limit`/`cursor` pair is
+  deliberately not part of this encoding at all** — a link reproduces a view, not a page position —
+  so a hand-typed one is ignored without a notice (a row in KNOWN-ISSUES).
+- **Amendment, 2026-09-20 (as built): Show more sends `facets: false`, and forgets a refused
+  cursor.** The facets describe the filters, which appending cannot change, and the facet pass is
+  the expensive half of the query (§6) — so the second and later pages skip it. And a Show more the
+  server refuses with `validation` **clears** the cursor it was refused, so the next control change
+  works instead of re-sending a cursor the server has already rejected (§7's "a cursor the server
+  refuses must not wedge the page").
 - **Live updates.** The directory opens **no WebSocket**. It has no session, and a stream that
   reshuffled a grid under a reading human is the thing Paw's design explicitly rules out. Instead:
   every query the page makes returns `total`, and when that `total` differs from the one the first

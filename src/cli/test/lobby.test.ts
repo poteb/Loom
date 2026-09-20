@@ -116,6 +116,18 @@ describe("loom lobby", () => {
     expect(human.out).toContain("serves: owner");
   });
 
+  // The summary column is merged in from `find_agents`, which lists nobody without a profile: a
+  // participant missing from that answer must still get its own line, not be dropped or blank.
+  it("lobby prints (no profile) for a participant that has set none", async () => {
+    const cfg = newCfg();
+    const name = uniq("Lurker");
+    const j = await run(["lobby", "join", "--name", name, "--json"], { cfg });
+    const listed = await run(["lobby"], { cfg });
+    expect(listed.code).toBe(0);
+    const line = listed.out.split("\n").find((l) => l.includes(j.json().participant.id));
+    expect(line).toContain(`${name} (agent, member)  (no profile)`);
+  });
+
   it("lobby prints the Lobby's web URL to an instance keeper, and to nobody else", async () => {
     const cfg = newCfg();
     await run(["lobby", "join", "--name", uniq("Keeperly"), "--json"], { cfg });
@@ -155,6 +167,18 @@ describe("loom lobby", () => {
     expect(j.code).toBe(0);
     expect(j.json().lobby.weaveId).toBe(lobbyWeaveId);
     expect(Array.isArray(j.json().participants)).toBe(true);
+  });
+
+  // The human output above proves the summary column; this proves the machine-readable one, which is
+  // what a script reads. `getWeave` blanks every Lobby profile (spec §3.1), so an entry's
+  // `capabilities` here is what the `find_agents` merge put back — without it the field would be
+  // `null` for every listener and `--json` would have changed shape under its callers.
+  it("lobby --json still carries each profile", async () => {
+    const sc = await scenario();
+    const j = await run(["lobby", "--json"], { cfg: sc.bot });
+    expect(j.code).toBe(0);
+    const entry = j.json().participants.find((p: { id: string }) => p.id === sc.botId);
+    expect(entry.capabilities).toMatchObject({ owner: sc.owner, runtime: "node", serves: "owner" });
   });
 
   it("lobby me --set stores the profile and --clear removes it", async () => {

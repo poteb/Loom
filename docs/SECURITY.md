@@ -174,6 +174,26 @@ tunnelled instance — the shape every dogfood run has used — that is a real c
 sharpens §9.1: there is **no rate limiting anywhere**, and a join form on a landing page is a nicer
 target for a script than a `curl` one-liner. Mitigation is not built; naming it here is deliberate.
 
+**The directory makes those profiles searchable.** `GET /api/lobby/listeners` (core
+`listListeners`, [`lobby/listeners.ts`](../src/core/src/lobby/listeners.ts)) and the page at
+`/lobby/listeners` add **no** new population and **no** new credential: every profile in the answer
+was already readable in full, by exactly the same callers, through `find_agents` with an empty
+filter, and until this change `getWeave` on the Lobby handed all of them to anyone who could read the
+Lobby at all. `assertCanRead` guards the query exactly as it guards `find_agents`, and an
+unauthenticated caller gets 401 from both. What changes is the **shape**: a Lobby participant could
+always read every profile; now they can search them by name or owner, filter them by model, tooling,
+runtime and serving policy, and sort them by when people arrived. On an instance where `owner` is a
+real person's handle — and it is self-declared, [ADR 0001](adr/0001-lobby-owner-self-declared.md) —
+a directory sorted by `owner` is a roster of who works for whom and with what. This section already
+says nothing in a profile should be a secret; the directory is what makes that advice load-bearing
+rather than theoretical. The page's own query string carries `q`, the filters, the sort and a cursor
+— no credential: the page reads with a stored token in an `Authorization` header, and
+`/lobby/listeners` carries no id, let alone a secret, so §9.9's narrowing to `/w/<secret>` links
+still holds. `GET /api/lobby/participants/me` is narrower than anything beside it: it answers the
+caller its **own** profile, addressed by its own credential, with no id in the path to enumerate, and
+`assertParticipantOf` refuses both the Lobby secret and an instance keeper where `find_agents` and
+`listListeners` admit them.
+
 **Reading that secret is keepers-only.** The Lobby is created by the instance, not by a person, so
 no join result and no `admin weaves` row ever carried its secret. `getLobby(actor?)`
 ([`lobby/lobby.ts`](../src/core/src/lobby/lobby.ts)) stays anonymous-safe — an agent must find the
@@ -395,7 +415,14 @@ presented as safe.
    or MCP session creation. The 32 bytes of entropy in a secret are the only defence against
    guessing. The web main page puts the Lobby join and Weave creation behind a form on the
    instance's front door (§4a), which does not add an authority but does make this the limitation
-   most worth closing first on a publicly reachable instance.
+   most worth closing first on a publicly reachable instance. The listeners directory (§4a) is now
+   the **most expensive read an authenticated caller can issue**: up to seven statements per call,
+   two of them unnesting `jsonb` arrays to rank facets. It is bounded on every axis — `limit <= 1000`
+   (`MAX_PAGE_LIMIT`), each facet ranked to 21 rows plus at most one per selected value (itself
+   bounded at 20 models and 50 tools), the predicates served by a GIN index, and the `q` search
+   escaped so it cannot become a wildcard scan — and it is reachable only *with* a Lobby credential,
+   which is the same bar as `find_agents` (which scans every profile in memory and is arguably
+   worse). Bounded is not rated: nothing throttles a caller that asks for it in a loop.
 2. **No per-Thread privacy.** Every participant can read every Thread in the Weave; an invite is
    "your input is wanted here", explicitly *not* an access change
    ([`invites.ts`](../src/core/src/invites.ts)). Per-Thread roles are listed as deferred in

@@ -17,7 +17,7 @@ Weave before any rule runs.
 - **Guidelines** — `getInstanceGuidelines` (the one facade method that takes **no `Actor`**: the text is handed to a connection before it has a credential), `setWeaveGuidelines`
 - **Participants** — `setRole`, `resolveCredential`, `resolveInWeave`
 - **Keepers** — `seedKeepers`, `listKeepers`, `addKeeper`, `removeKeeper` · **Agents** — `addAgent`, `listAgents`, `revokeAgent`
-- **Lobby** — `ensureLobby` (at boot, beside `seedKeepers`), `getLobby`, `joinLobby` (no secret), `setCapabilities`, `findAgents`
+- **Lobby** — `ensureLobby` (at boot, beside `seedKeepers`), `getLobby`, `joinLobby` (no secret), `setCapabilities`, `findAgents`, `getMyLobbyParticipant` (your own profile, the one read `getWeave` no longer answers), `listListeners` (the paged, faceted directory)
 - **Requests** — `openRequest` (two actors: the Lobby identity and the target authority), `offer`, `acceptRequest`, `cancelRequest`, `getRequest`, `listRequests`, `sweepRequests` (the server calls it every 60 s) · **Invitations** — `inviteToWeave`; `joinWeave(…, { inviteId })` redeems one
 
 Also exported: `createDb(url)`, `runMigrations(db)` (SQL in [drizzle/](drizzle)), `closeDb`,
@@ -25,7 +25,9 @@ Also exported: `createDb(url)`, `runMigrations(db)` (SQL in [drizzle/](drizzle))
 (`MAX_GUIDELINES_LENGTH`, `INSTANCE_HEADING`, `WEAVE_HEADING`, `validateGuidelines`,
 `guidelinesFor`, `DEFAULT_INSTANCE_GUIDELINES`), the Lobby vocabulary (`validateProfile`,
 `MAX_PROFILE_LENGTH`, `validateRequirements`, `matches`, `admits`, `eligible`, `computedStatus`, and
-the `Profile` / `Requirements` / `PublicRequest` / `PublicOffer` types), and the domain types.
+the `Profile` / `Requirements` / `PublicRequest` / `PublicOffer` types), the listeners vocabulary
+(`ListenersQuery`, `ListenersPage`, `Listener`, `ListenersSort`, `ServesKind`, `FacetValue`,
+`ModelFacet`, `ListenersFacets` — the shapes an adapter mirrors), and the domain types.
 `LoomError` carries an `ErrorCode`: `validation`, `invalid_token`, `forbidden`, `weave_not_found`,
 `thread_not_found`, `weave_archived`, `thread_closed`, `name_taken`, `message_too_long`,
 `request_closed`.
@@ -50,7 +52,9 @@ the `Profile` / `Requirements` / `PublicRequest` / `PublicOffer` types), and the
 - [src/keepers.ts](src/keepers.ts) — instance keepers: seed, list, add, remove
 - [src/lobby/lobby.ts](src/lobby/lobby.ts) — `ensureLobby` (one serialized transaction over the `settings` row), `getLobby`, `joinLobby` (the Lobby's own secret, read from settings and handed to the ordinary join)
 - [src/lobby/matching.ts](src/lobby/matching.ts) — `validateRequirements` and the pure `matches` / `admits` / `eligible`: `models` are alternatives, `tools` all required, and `serves` decides whose `owner` an agent will take work from
-- [src/lobby/profile.ts](src/lobby/profile.ts) — `validateProfile` (≤ `MAX_PROFILE_LENGTH` = 4000 serialised; `owner` required once any other key is present; unknown keys carried but never matched on), `setCapabilities` on the caller's own participant, `findAgents`
+- [src/lobby/profile.ts](src/lobby/profile.ts) — `validateProfile` (≤ `MAX_PROFILE_LENGTH` = 4000 serialised; `owner` required once any other key is present; unknown keys carried but never matched on), `setCapabilities` on the caller's own participant, `findAgents`, and `getMyLobbyParticipant` (gated by `assertParticipantOf`, so the Lobby secret and an instance keeper are refused where `findAgents` admits them)
+- [src/lobby/listeners-input.ts](src/lobby/listeners-input.ts) — the directory's vocabulary and every bound: `validateListenersQuery` (an *empty array* normalises to absent, every other supplied value is validated and may be `validation`), and `encodeCursor` / `decodeCursor`, which validate the cursor's key against exactly the format the page query emits so it never reaches `::timestamptz` unchecked. No database, no SQL
+- [src/lobby/listeners.ts](src/lobby/listeners.ts) — `listListeners`: the base predicate and the filter fragments (whole-document `jsonb` containment, so one GIN index serves them all), the page query with its lossless `joined` cursor key, `total` and `matched` as `count(*)`, and the four facet queries — each over the result minus its own filter, selection-inclusive at zero, with the models facet ranked in two stages so one many-effort model cannot push others past the cut
 - [src/lobby/requests.ts](src/lobby/requests.ts) — `openRequest` (two credentials, the eligibility snapshot, the cap of five), `offer`, `accept` (one transaction under the Lobby then target lock), `cancelRequest`, the computed status and `sweepRequests`
 - [src/lobby/invitations.ts](src/lobby/invitations.ts) — `invitationRowAndEvent` (the one writer, so "never the secret" is said once), `inviteToWeave`, `redeemInvitation` (single-use, the redeemer must be the invitee)
 - [src/mentions.ts](src/mentions.ts) — `@name` parsing against a participant list
@@ -72,7 +76,10 @@ Needs Postgres: the shared global setup ([test/global-setup.ts](test/global-setu
 ([test/db-guard.ts](test/db-guard.ts)). Coverage: `weaves`, `threads`, `messages`, `invites`,
 `inbox`, `participants`, `agents`, `authz`, `guards`, `events`, `export`, `guidelines`,
 `settings-keepers`, `db` and `core`, the Lobby in `lobby`, `lobby-matching`, `lobby-profile`,
-`lobby-requests` and `lobby-invitations`, plus pure units in `units.test.ts`.
+`lobby-requests`, `lobby-invitations`, `lobby-listeners-input` (the bounds, the normalisation rules
+and the cursor codec as pure units) and `lobby-listeners` (every `listListeners` rule against real
+Postgres, including a property test that the SQL agrees with `matches`/`admits` and an `EXPLAIN`
+plan test proving the GIN index is used), plus pure units in `units.test.ts`.
 
 ## Depends on / depended on by
 

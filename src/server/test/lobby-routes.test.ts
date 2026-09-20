@@ -114,6 +114,31 @@ async function openRequest(f: Scenario, over: Record<string, unknown> = {}) {
 }
 
 const idsOf = (rows: { id: string }[]) => rows.map((r) => r.id);
+const listenerIds = (rows: { participant: { id: string } }[]) => rows.map((l) => l.participant.id);
+
+/**
+ * Three listeners of one fixture. They share a tag, a tool and a model name that no other test in
+ * this file can produce, so a filter naming either isolates them from the Lobby everybody joins.
+ */
+async function directory() {
+  const tag = uniq("dir");
+  const tool = `tool-${tag}`;
+  const model = `model-${tag}`;
+  const one = (name: string, owner: string, effort: string, runtime: string) =>
+    joinLobby(`${name}-${tag}`, { owner: `${owner}-${tag}`, tools: [tool], models: [{ model, effort }], runtime });
+  return {
+    tag, tool, model,
+    ada: await one("Ada", "ann", "high", "node"),
+    bo: await one("Bo", "bob", "low", "deno"),
+    cy: await one("Cy", "cid", "high", "node"),
+  };
+}
+
+/** The route's own encoding: `filter` carries the JSON, every other value is a plain param. */
+function listenersUrl(params: Record<string, string>): string {
+  const qs = new URLSearchParams(params).toString();
+  return `/api/lobby/listeners${qs ? `?${qs}` : ""}`;
+}
 
 describe("GET /api/lobby", () => {
   it("answers without a credential, and without the secret", async () => {
@@ -226,6 +251,281 @@ describe("GET /api/lobby/agents", () => {
     const r = await api(s.baseUrl, "GET", "/api/lobby/agents?filter=not-json", undefined, f.claude.token);
     expect(r.status).toBe(400);
     expect(r.json.code).toBe("validation");
+  });
+});
+
+describe("GET /api/lobby/listeners", () => {
+  it("hands the whole query string over: search, filter, sort, dir and limit", async () => {
+    const d = await directory();
+    const r = await api(s.baseUrl, "GET", listenersUrl({
+      q: d.tag,
+      filter: JSON.stringify({ models: [{ model: d.model, effort: "high" }], tools: [d.tool] }),
+      sort: "name", dir: "desc", limit: "1",
+    }), undefined, d.ada.token);
+    expect(r.status).toBe(200);
+    // The effort narrows three listeners to two, the sort and the limit pick which one is shown.
+    expect(r.json.matched).toBe(2);
+    expect(listenerIds(r.json.listeners)).toEqual([d.cy.id]);
+    expect(r.json.listeners[0].capabilities).toMatchObject({ owner: `cid-${d.tag}`, runtime: "node" });
+  });
+
+  it("takes the cursor it answered with back as the page after it", async () => {
+    const d = await directory();
+    const page = { q: d.tag, filter: JSON.stringify({ tools: [d.tool] }), sort: "name", dir: "desc", limit: "1" };
+    const first = await api(s.baseUrl, "GET", listenersUrl(page), undefined, d.ada.token);
+    expect(listenerIds(first.json.listeners)).toEqual([d.cy.id]);
+    const second = await api(s.baseUrl, "GET", listenersUrl({ ...page, cursor: first.json.nextCursor }), undefined, d.ada.token);
+    expect(second.status).toBe(200);
+    expect(listenerIds(second.json.listeners)).toEqual([d.bo.id]);
+  });
+
+  it("rejects a filter that is not JSON", async () => {
+    const d = await directory();
+    const r = await api(s.baseUrl, "GET", "/api/lobby/listeners?filter=not-json", undefined, d.ada.token);
+    expect(r.status).toBe(400);
+    expect(r.json).toMatchObject({ code: "validation", message: "filter must be JSON" });
+  });
+
+  // The three shapes that are JSON and are not a filter. `{ ...5 }` and `{ ...null }` spread
+  // nothing, so either would quietly become "no filter" and answer with the whole Lobby, and
+  // `{ ...[1,2] }` would smuggle in `{"0":1,"1":2}`.
+  it("rejects a filter that is a JSON array", async () => {
+    const d = await directory();
+    const r = await api(s.baseUrl, "GET", "/api/lobby/listeners?filter=%5B%5D", undefined, d.ada.token);
+    expect(r.status).toBe(400);
+    expect(r.json).toMatchObject({ code: "validation", message: "filter must be a JSON object" });
+  });
+
+  it("rejects a filter that is JSON null", async () => {
+    const d = await directory();
+    const r = await api(s.baseUrl, "GET", "/api/lobby/listeners?filter=null", undefined, d.ada.token);
+    expect(r.status).toBe(400);
+    expect(r.json).toMatchObject({ code: "validation", message: "filter must be a JSON object" });
+  });
+
+  it("rejects a filter that is a JSON number", async () => {
+    const d = await directory();
+    const r = await api(s.baseUrl, "GET", "/api/lobby/listeners?filter=5", undefined, d.ada.token);
+    expect(r.status).toBe(400);
+    expect(r.json).toMatchObject({ code: "validation", message: "filter must be a JSON object" });
+  });
+
+  it("reads an empty array inside a filter as no filter at all", async () => {
+    const d = await directory();
+    const r = await api(s.baseUrl, "GET", listenersUrl({ filter: JSON.stringify({ tools: [] }) }), undefined, d.ada.token);
+    expect(r.status).toBe(200);
+    expect(r.json.matched).toBe(r.json.total);
+  });
+
+  // The route spreads the filter into the query, so a key core did not read would be dropped in
+  // silence and the caller handed the whole Lobby — a filter that looks honoured and is not.
+  it("hands a filter carrying an unknown key to core, which refuses it", async () => {
+    const d = await directory();
+    const r = await api(s.baseUrl, "GET", listenersUrl({ filter: JSON.stringify({ owner: "ada" }) }), undefined, d.ada.token);
+    expect(r.status).toBe(400);
+    expect(r.json.code).toBe("validation");
+  });
+
+  it("hands a filter value that is not an empty array to core, which refuses it", async () => {
+    const d = await directory();
+    const r = await api(s.baseUrl, "GET", listenersUrl({ filter: JSON.stringify({ tools: {} }) }), undefined, d.ada.token);
+    expect(r.status).toBe(400);
+    expect(r.json.code).toBe("validation");
+  });
+
+  it("hands a non-numeric limit to core, so the message is core's", async () => {
+    const d = await directory();
+    const r = await api(s.baseUrl, "GET", listenersUrl({ limit: "soon" }), undefined, d.ada.token);
+    expect(r.status).toBe(400);
+    expect(r.json).toMatchObject({ code: "validation", message: "limit must be an integer between 0 and 1000" });
+  });
+
+  it("reads a blank limit as no limit rather than as the number zero", async () => {
+    const d = await directory();
+    const r = await api(s.baseUrl, "GET", "/api/lobby/listeners?limit=", undefined, d.ada.token);
+    expect(r.status).toBe(200);
+    // `Number("")` is 0, so an unread blank would answer the count with no rows at all — a page
+    // nobody asked for. Absent means core's default page, which has rows in it.
+    expect(r.json.listeners.length).toBeGreaterThan(0);
+  });
+
+  it("reads a whitespace-only limit as no limit either", async () => {
+    const d = await directory();
+    const r = await api(s.baseUrl, "GET", "/api/lobby/listeners?limit=%20", undefined, d.ada.token);
+    expect(r.status).toBe(200);
+    expect(r.json.listeners.length).toBeGreaterThan(0);
+  });
+
+  it("lets the real limit parameter win over one smuggled inside the filter", async () => {
+    const d = await directory();
+    const r = await api(s.baseUrl, "GET",
+      listenersUrl({ filter: JSON.stringify({ limit: 5 }), limit: "1" }), undefined, d.ada.token);
+    expect(r.status).toBe(200);
+    expect(r.json.listeners).toHaveLength(1);
+  });
+
+  it("ignores a limit smuggled inside the filter when no real one is given", async () => {
+    const d = await directory();
+    const r = await api(s.baseUrl, "GET", listenersUrl({ filter: JSON.stringify({ limit: 0 }) }), undefined, d.ada.token);
+    expect(r.status).toBe(200);
+    expect(r.json.listeners.length).toBeGreaterThan(0);
+  });
+
+  it("hands an unknown sort to core", async () => {
+    const d = await directory();
+    const r = await api(s.baseUrl, "GET", listenersUrl({ sort: "sideways" }), undefined, d.ada.token);
+    expect(r.status).toBe(400);
+    expect(r.json).toMatchObject({ code: "validation", message: "sort must be name, owner or joined" });
+  });
+
+  it("answers limit=0 with the counts and the facets and no rows", async () => {
+    const d = await directory();
+    const r = await api(s.baseUrl, "GET", listenersUrl({ limit: "0" }), undefined, d.ada.token);
+    expect(r.status).toBe(200);
+    expect(r.json.listeners).toEqual([]);
+    expect(r.json.total).toBeGreaterThanOrEqual(3);
+    expect(r.json.facets.serves.values).toHaveLength(3);
+  });
+
+  it("omits the facets key entirely for facets=false", async () => {
+    const d = await directory();
+    const r = await api(s.baseUrl, "GET", listenersUrl({ limit: "0", facets: "false" }), undefined, d.ada.token);
+    expect(r.status).toBe(200);
+    expect("facets" in r.json).toBe(false);
+    expect(r.json.total).toBeGreaterThanOrEqual(3);
+  });
+
+  it("reads a blank q as no search rather than as a value nothing matches", async () => {
+    const d = await directory();
+    const r = await api(s.baseUrl, "GET", "/api/lobby/listeners?q=", undefined, d.ada.token);
+    expect(r.status).toBe(200);
+    expect(r.json.matched).toBe(r.json.total);
+  });
+
+  it("refuses a q carrying a NUL as validation, not as a crash", async () => {
+    const d = await directory();
+    const r = await api(s.baseUrl, "GET", "/api/lobby/listeners?q=%00", undefined, d.ada.token);
+    expect(r.status).toBe(400);
+    expect(r.json.code).toBe("validation");
+  });
+
+  // Every other control character is one a stored `owner` really can carry, so the route has to
+  // carry it too: this is the search a facet chip or a pasted link makes (PR #20 review round 1).
+  it("answers a q carrying a tab", async () => {
+    const d = await directory();
+    const r = await api(s.baseUrl, "GET", "/api/lobby/listeners?q=a%09b", undefined, d.ada.token);
+    expect(r.status).toBe(200);
+  });
+});
+
+describe("the GET /api/lobby/listeners auth matrix", () => {
+  /** The cheapest call the route makes: one count, no page, no facets. */
+  const listeners = (token?: string) =>
+    api(s.baseUrl, "GET", "/api/lobby/listeners?limit=0&facets=false", undefined, token);
+
+  it("answers a Lobby participant's own token", async () => {
+    const me = await joinLobby(uniq("Reader"));
+    expect((await listeners(me.token)).status).toBe(200);
+  });
+
+  it("answers the Lobby's own Weave secret", async () => {
+    expect((await listeners(await lobbySecret())).status).toBe(200);
+  });
+
+  it("answers an instance keeper", async () => {
+    expect((await listeners(KEEPER)).status).toBe(200);
+  });
+
+  it("answers an agent key whose agent has joined the Lobby", async () => {
+    const a = await agentKey(uniq("ChatGPT"));
+    expect((await api(s.baseUrl, "POST", "/api/lobby/join", { kind: "agent" }, a.key)).status).toBe(201);
+    expect((await listeners(a.key)).status).toBe(200);
+  });
+
+  it("refuses an agent key whose agent has not joined the Lobby", async () => {
+    const a = await agentKey(uniq("Stranger"));
+    const r = await listeners(a.key);
+    expect(r.status).toBe(403);
+    expect(r.json.code).toBe("forbidden");
+  });
+
+  it("refuses a credential that belongs to another Weave", async () => {
+    const t = await targetWeave();
+    const r = await listeners(t.keeper);
+    expect(r.status).toBe(403);
+    expect(r.json.code).toBe("forbidden");
+  });
+
+  it("refuses a caller with no credential", async () => {
+    const r = await listeners();
+    expect(r.status).toBe(401);
+    expect(r.json.code).toBe("invalid_token");
+  });
+
+  it("refuses an unknown credential", async () => {
+    const r = await listeners("not-a-credential");
+    expect(r.status).toBe(401);
+    expect(r.json.code).toBe("invalid_token");
+  });
+});
+
+describe("GET /api/lobby/participants/me", () => {
+  const mine = (token?: string) => api(s.baseUrl, "GET", "/api/lobby/participants/me", undefined, token);
+
+  it("answers the caller's own participant with its profile", async () => {
+    const me = await joinLobby(uniq("Claude"), { owner: "paw", tools: ["github"] });
+    const r = await mine(me.token);
+    expect(r.status).toBe(200);
+    expect(r.json).toMatchObject({ id: me.id, capabilities: { owner: "paw", tools: ["github"] } });
+  });
+
+  it("answers the participant an agent key owns", async () => {
+    const a = await agentKey(uniq("ChatGPT"));
+    const j = await api(s.baseUrl, "POST", "/api/lobby/join", { kind: "agent" }, a.key);
+    await api(s.baseUrl, "PUT", "/api/lobby/participants/me/capabilities", { owner: "bob" }, a.key);
+    const r = await mine(a.key);
+    expect(r.status).toBe(200);
+    expect(r.json).toMatchObject({ id: j.json.participant.id, capabilities: { owner: "bob" } });
+  });
+
+  // The two rows where this route deliberately differs from /listeners: both read the Lobby, and
+  // neither is anybody's participant.
+  it("refuses the Lobby's own secret", async () => {
+    const r = await mine(await lobbySecret());
+    expect(r.status).toBe(403);
+    expect(r.json.code).toBe("forbidden");
+  });
+
+  it("refuses an instance keeper", async () => {
+    const r = await mine(KEEPER);
+    expect(r.status).toBe(403);
+    expect(r.json.code).toBe("forbidden");
+  });
+
+  it("refuses a credential that belongs to another Weave", async () => {
+    const t = await targetWeave();
+    const r = await mine(t.keeper);
+    expect(r.status).toBe(403);
+    expect(r.json.code).toBe("forbidden");
+  });
+
+  it("refuses an agent key whose agent has not joined the Lobby", async () => {
+    const a = await agentKey(uniq("Stranger"));
+    const r = await mine(a.key);
+    expect(r.status).toBe(403);
+    expect(r.json.code).toBe("forbidden");
+  });
+
+  it("refuses a caller with no credential", async () => {
+    const r = await mine();
+    expect(r.status).toBe(401);
+    expect(r.json.code).toBe("invalid_token");
+  });
+
+  it("refuses an unknown credential", async () => {
+    const r = await mine("not-a-credential");
+    expect(r.status).toBe(401);
+    expect(r.json.code).toBe("invalid_token");
   });
 });
 

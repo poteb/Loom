@@ -3,12 +3,13 @@ import { eq } from "drizzle-orm";
 import { freshDb, closeTestDb, keeperToken } from "./helpers.js";
 import { EventBus } from "../src/bus.js";
 import { LoomError } from "../src/errors.js";
-import { weaves } from "../src/db/schema.js";
+import { participants, weaves } from "../src/db/schema.js";
 import { createWeave } from "../src/weaves.js";
 import { readEvents } from "../src/events.js";
 import { resolveCredential } from "../src/actors.js";
+import { seedKeepers } from "../src/keepers.js";
 import { ensureLobby, joinLobby } from "../src/lobby/lobby.js";
-import { validateProfile, setCapabilities, findAgents } from "../src/lobby/profile.js";
+import { validateProfile, setCapabilities, findAgents, getMyLobbyParticipant } from "../src/lobby/profile.js";
 import { createCore, type Core } from "../src/index.js";
 import type { Db } from "../src/db/index.js";
 import type { Profile } from "../src/lobby/matching.js";
@@ -170,6 +171,76 @@ describe("setCapabilities", () => {
     await expect(setCapabilities(db, bus, actor, { runtime: "codex" })).rejects.toMatchObject({ code: "validation" });
     const [found] = await findAgents(db, actor, {});
     expect(found!.capabilities).toEqual(chatgpt);
+  });
+});
+
+describe("getMyLobbyParticipant", () => {
+  it("returns the caller's own participant with its profile", async () => {
+    const { join, actor } = await lobbyWith("ChatGPT", chatgpt);
+    const me = await getMyLobbyParticipant(db, actor);
+    expect(me).toEqual({ ...join.participant, capabilities: chatgpt });
+  });
+
+  // The Actor carries the participant as it was when the credential resolved; a profile another
+  // client set a second ago is on the row and not on that copy.
+  it("reads the row rather than the actor's copy", async () => {
+    const { join, actor } = await lobbyWith("ChatGPT", chatgpt);
+    const secondClient = await resolveCredential(db, join.token);
+    await setCapabilities(db, bus, secondClient, { owner: "ada" });
+    expect((await getMyLobbyParticipant(db, actor)).capabilities).toEqual({ owner: "ada" });
+  });
+
+  it("answers null for a participant that has set no profile", async () => {
+    const { actor } = await lobbyWith("Lurker");
+    expect((await getMyLobbyParticipant(db, actor)).capabilities).toBeNull();
+  });
+
+  it("refuses the Lobby secret: a secret owns no participant row", async () => {
+    const { lobbyId } = await lobbyWith("ChatGPT", chatgpt);
+    const [w] = await db.select({ secret: weaves.secret }).from(weaves).where(eq(weaves.id, lobbyId));
+    const reader = await resolveCredential(db, w!.secret);
+    await expect(getMyLobbyParticipant(db, reader)).rejects.toMatchObject({ code: "forbidden" });
+  });
+
+  it("refuses an instance keeper: a keeper owns no profile", async () => {
+    await lobbyWith("ChatGPT", chatgpt);
+    await seedKeepers(db, [keeperToken("k")]);
+    const keeper = await resolveCredential(db, keeperToken("k"));
+    await expect(getMyLobbyParticipant(db, keeper)).rejects.toMatchObject({ code: "forbidden" });
+  });
+
+  it("refuses a credential of another Weave", async () => {
+    await lobbyWith("ChatGPT", chatgpt);
+    const other = await createWeave(db, bus, { title: "Elsewhere", opener: "hi", creator: { name: "Paw", kind: "human" } });
+    const outsider = await resolveCredential(db, other.token);
+    await expect(getMyLobbyParticipant(db, outsider)).rejects.toMatchObject({ code: "forbidden" });
+  });
+
+  // The credential resolved, so the actor is a participant — but the identity it names is gone.
+  it("is invalid_token when the participant row has been deleted", async () => {
+    const { join, actor } = await lobbyWith("ChatGPT", chatgpt);
+    await db.delete(participants).where(eq(participants.id, join.participant.id));
+    await expect(getMyLobbyParticipant(db, actor)).rejects.toMatchObject({ code: "invalid_token" });
+  });
+
+  it("works on the facade with an agent key that has joined", async () => {
+    const core: Core = createCore(db);
+    await core.seedKeepers([keeperToken("k")]);
+    const { key } = await core.addAgent(await core.resolveCredential(keeperToken("k")), "ChatGPT");
+    const agent = await core.resolveCredential(key);
+    await core.ensureLobby();
+    const joined = await core.joinLobby({ kind: "agent" }, agent);
+    await core.setCapabilities(agent, chatgpt);
+    const me = await core.getMyLobbyParticipant(agent);
+    expect(me).toEqual({ ...joined.participant, capabilities: chatgpt });
+  });
+
+  it("refuses an agent key that has not joined the Lobby", async () => {
+    const core: Core = createCore(db);
+    await core.seedKeepers([keeperToken("k")]);
+    const { key } = await core.addAgent(await core.resolveCredential(keeperToken("k")), "Stranger");
+    await core.ensureLobby();
+    await expect(core.getMyLobbyParticipant(await core.resolveCredential(key))).rejects.toMatchObject({ code: "forbidden" });
   });
 });
 

@@ -8,7 +8,11 @@ export type Thread = {
 };
 export type Participant = {
   id: string; weaveId: string; name: string; kind: Kind; role: Role; joinedAt: string; agentId: string | null;
-  /** The Lobby capability profile. Null everywhere but the Lobby, and there until one is set. */
+  /**
+   * The Lobby capability profile. Null everywhere but the Lobby — and null from `getWeave` **in**
+   * the Lobby too: read a listener's profile with `listListeners` or `findAgents`, and your own
+   * with `getMyLobbyParticipant`.
+   */
   capabilities: Profile | null;
 };
 
@@ -69,6 +73,56 @@ export type Requirements = {
 /** A `requirements` filter, plus the owner whose requests the agent would have to serve. */
 export type AgentFilter = Requirements & { owner?: string };
 export type FoundAgent = { participant: Participant; capabilities: Profile };
+
+/** One directory entry. Shaped like `FoundAgent` on purpose: the same pair, the same order. */
+export type Listener = { participant: Participant; capabilities: Profile };
+
+export type ListenersSort = "name" | "owner" | "joined";
+export type ServesKind = "anyone" | "owner" | "list";
+
+export type FacetValue = { value: string; count: number };
+/** `efforts` is the model's top 10; `moreEfforts` says there are others. */
+export type ModelFacet = { model: string; count: number; efforts: FacetValue[]; moreEfforts: boolean };
+
+export type ListenersFacets = {
+  models: { values: ModelFacet[]; more: boolean };
+  tools: { values: FacetValue[]; more: boolean };
+  runtimes: { values: FacetValue[]; more: boolean };
+  /** Always the three kinds, always in this order, zeros included. `more` is always false. */
+  serves: { values: FacetValue[]; more: boolean };
+};
+
+/** Every bound, default and normalisation behind these is core's; this is the shape alone. */
+export type ListenersQuery = {
+  /** Case-insensitive substring of the participant's name OR the profile's `owner`. */
+  q?: string;
+  /** Any-of, with an optional effort per alternative — the same shape as `Requirements.models`. */
+  models?: { model: string; effort?: string }[];
+  /** All-of. */
+  tools?: string[];
+  /** Equality. */
+  runtime?: string;
+  serves?: ServesKind;
+  sort?: ListenersSort;          // default "name"
+  dir?: "asc" | "desc";          // default "asc"
+  limit?: number;                // default 50, 0..1000
+  cursor?: string;               // opaque; from a previous answer's nextCursor
+  /** Default true. `false` skips the four facet queries for a caller that only wants the counts. */
+  facets?: boolean;
+};
+
+export type ListenersPage = {
+  /** Every listener in the Lobby, ignoring `q` and every filter. What the sidebar counts. */
+  total: number;
+  /** After the search and the filters. What the header counts. */
+  matched: number;
+  listeners: Listener[];
+  /** Absent when this is the last page, and always absent when `limit` is 0. */
+  nextCursor?: string;
+  /** Absent only when the caller asked for `facets: false`. */
+  facets?: ListenersFacets;
+};
+
 export type Lobby = {
   weaveId: string; title: string;
   /** The Lobby's own Weave secret — the read credential for `/w/<secret>`. Only an instance keeper's

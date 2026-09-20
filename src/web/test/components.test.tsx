@@ -8,11 +8,15 @@ import { GuidelinesPanel, GUIDELINES_MAX } from "../src/components/GuidelinesPan
 import { RequestsPanel } from "../src/components/RequestsPanel.js";
 import { ProfileCard } from "../src/components/ProfileCard.js";
 import { WeaveView } from "../src/components/WeaveView.js";
-import { routeOf } from "../src/app.js";
+import { App, routeOf } from "../src/app.js";
 import { MAX_GUIDELINES_LENGTH } from "@loom/core";
-import type { Offer } from "@loom/client";
+import { LoomClient, type Offer } from "@loom/client";
 import { CLOSED_REQUESTS_PAGE, type Session, type SessionState } from "../src/session.js";
 import type { VersionedRequest } from "../src/requests-state.js";
+import { memoryStorage, type KeyValueStorage } from "../src/storage.js";
+import { createPersistenceNotice } from "../src/persistence.js";
+import { createWeavesSignal } from "../src/weaves-signal.js";
+import { setIdentity } from "../src/weaves-store.js";
 
 const me = { id: "p1", weaveId: "w1", name: "Paw", kind: "human" as const, role: "member" as const, joinedAt: "", agentId: null, capabilities: null };
 const bot = { id: "p2", weaveId: "w1", name: "Bot", kind: "agent" as const, role: "member" as const, joinedAt: "", agentId: "a1", capabilities: null };
@@ -298,6 +302,96 @@ describe("RequestsPanel", () => {
       title: "Review PR 15", requirements: { models: [{ model: "claude-fable-5-1", effort: "high" }], tools: ["github", "npm"] },
       wanted: 1, timeoutMs: 3_600_000, targetWeaveId: "w2", targetThreadId: "t2", targetCredential: "target-token",
     });
+  });
+});
+
+/**
+ * The Offer form on the Lobby's own routes (spec §3.3). What gates it is `me.capabilities`, and
+ * `getWeave` carries none any more: the session reads the profile beside the page, with `me`'s own
+ * token rather than with the page's reader. That is a rule about the *session*, so these mount the
+ * real one over a stubbed instance instead of handing a state object in — on `/w/<lobby secret>`,
+ * where the page reader owns no participant row at all, most of all.
+ */
+describe("the Offer form on the Lobby's routes (spec §3.3)", () => {
+  const BASE = "https://loom.test";                 // http is refused off loopback by the client's own URL policy
+  const LOBBY_ID = "11111111-1111-4111-8111-111111111111";
+  const SECRET = "s".repeat(43);
+  const ME = { id: "p-me", weaveId: LOBBY_ID, name: "dana", kind: "agent" as const, role: "member" as const,
+    joinedAt: "", agentId: null, capabilities: null };
+  const REQUESTER = { ...ME, id: "p-other", name: "Paw", kind: "human" as const };
+  const MY_PROFILE = `${BASE}/api/lobby/participants/me`;
+
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+  type Routes = Record<string, (url: URL) => Response>;
+  /** Everything a Lobby page reads, the two side reads included; an unstubbed path is a test bug. */
+  const lobby = (over: Routes = {}): Routes => ({
+    [`${BASE}/api/lobby`]: () => json({ weaveId: LOBBY_ID, title: "Lobby" }),
+    [`${BASE}/api/weaves/${SECRET}/lookup`]: () => json({ weaveId: LOBBY_ID }),
+    [`${BASE}/api/weaves/${LOBBY_ID}/events`]: () => json({ events: [] }),
+    [`${BASE}/api/weaves/${LOBBY_ID}`]: () => json({
+      weave: { id: LOBBY_ID, title: "Lobby", createdAt: "", archivedAt: null, lastSeq: 0, guidelines: "" },
+      threads: [general, reqThread], participants: [ME, REQUESTER],
+    }),
+    [`${BASE}/api/guidelines`]: () => json({ guidelines: "" }),
+    [`${BASE}/api/requests`]: (url) => json({ requests: url.searchParams.get("status") === "open" ? [open] : [] }),
+    // The stream is deliberately fatal here: a forbidden ticket leaves no socket and no reconnect
+    // timer behind, so nothing of this page outlives the test that mounted it.
+    [`${BASE}/api/auth/ws-ticket`]: () => json({ code: "forbidden", message: "no stream in tests" }, 403),
+    [`${BASE}/api/lobby/listeners`]: () => json({ total: 1, matched: 1, listeners: [] }),
+    [MY_PROFILE]: () => json({ ...ME, capabilities: PROFILE }),
+    ...over,
+  });
+  /** An open request this browser is eligible for, with long enough left to be offered on. */
+  const open = request({ requesterId: REQUESTER.id, eligible: [ME.id], expiresAt: "2099-01-01T00:00:00.000Z" });
+
+  /** What a browser that has joined the Lobby holds: the identity, and the link beside it. */
+  const joined = (): KeyValueStorage => {
+    const storage = memoryStorage();
+    setIdentity(storage, LOBBY_ID, { token: "participant-token", participantId: ME.id, name: "dana" }, { secret: SECRET });
+    return storage;
+  };
+
+  function mount(path: string, routes: Routes) {
+    history.replaceState(null, "", path);
+    const fetchStub = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      const route = routes[`${url.origin}${url.pathname}`];
+      if (!route) throw new Error(`no stub for ${url.pathname}`);
+      return route(url);
+    });
+    const client = new LoomClient({ baseUrl: BASE, allowInsecure: true, fetch: fetchStub as unknown as typeof fetch });
+    return render(<App client={client} storage={joined()} notice={createPersistenceNotice()} weaves={createWeavesSignal()} />);
+  }
+
+  /** Several macrotask turns: the lookup, the backfill, the metadata, the board and the side reads. */
+  const settle = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0)); };
+
+  for (const [label, path] of [["opened by its secret link", `/w/${SECRET}`], ["on /lobby", "/lobby"]] as const) {
+    it(`offers the form to an eligible listener on the Lobby ${label}`, async () => {
+      mount(path, lobby());
+      await settle();
+      expect(screen.getByLabelText("Model")).toBeTruthy();
+    });
+
+    it(`offers none to a participant that has declared no profile, ${label}`, async () => {
+      mount(path, lobby({ [MY_PROFILE]: () => json({ ...ME, capabilities: null }) }));
+      await settle();
+      expect(screen.queryByLabelText("Model")).toBeNull();
+    });
+  }
+
+  // The identity is dead but the page is reading perfectly well with the link, so the Weave stays
+  // on screen and the way back is a join (spec §3.3, the sibling rule).
+  it("loses the form, and says the identity is no longer valid, when that read is refused", async () => {
+    const { container } = mount(`/w/${SECRET}`,
+      lobby({ [MY_PROFILE]: () => json({ code: "invalid_token", message: "Credential is not valid" }, 401) }));
+    await settle();
+    expect(screen.queryByLabelText("Model")).toBeNull();
+    expect(screen.getByRole("button", { name: "Join" })).toBeTruthy();
+    // Still the Weave, read with the link: the thread list and the board are where they were.
+    expect([!!container.querySelector(".threads"), !!container.querySelector(".request-list")]).toEqual([true, true]);
   });
 });
 

@@ -12,8 +12,9 @@ way a bot connects to a chat service. Work happens in **Weaves** — rooms, each
 (typically a pull request, whose URL the Thread carries). A Weave is an append-only event log:
 messages and system events share one monotonic `seq`, so any client can catch up by asking for
 everything after the last `seq` it saw. The current state is v1, plus v2 sub-project 1 (thread URLs,
-invites, `inbox`, agent keys), sub-project 2 (keeper-written **guidelines**, §11) and sub-project 3
-(the **Lobby**: agent discovery and cross-Weave requests, §12) — see
+invites, `inbox`, agent keys), sub-project 2 (keeper-written **guidelines**, §11), sub-project 3
+(the **Lobby**: agent discovery and cross-Weave requests, §12), sub-project 4 (the web **main
+page**, §9) and sub-project 5 (the Lobby **listeners directory**, §9 and §12) — see
 [../README.md](../README.md) and
 [superpowers/specs/2026-09-10-loom-v1-design.md](superpowers/specs/2026-09-10-loom-v1-design.md) §1.
 
@@ -30,7 +31,7 @@ TypeScript throughout, one pnpm workspace ([../pnpm-workspace.yaml](../pnpm-work
 | `@loom/mcp-tools` | [../src/mcp-tools](../src/mcp-tools) | The MCP tool definitions, registered against a `LoomToolBackend` interface, shared by the remote MCP server and the channel plugin. |
 | `@loom/cli` | [../src/cli](../src/cli) | The `loom` command (commander), `--json` everywhere. |
 | `@loom/claude-channel` | [../src/claude-channel](../src/claude-channel) | Claude Code channel plugin: a stdio MCP server that also pushes Weave events into the session. |
-| `@loom/web` | [../src/web](../src/web) | Preact SPA served at `/`, `/lobby`, `/weave/<id>` and `/w/<secret>`. |
+| `@loom/web` | [../src/web](../src/web) | Preact SPA served at `/`, `/lobby`, `/lobby/listeners`, `/weave/<id>` and `/w/<secret>`. |
 
 Dependency direction (runtime `dependencies` in each `package.json`):
 
@@ -66,7 +67,8 @@ Rule families, all in `src/core/src`:
 | Name validation | `names.ts` — `NAME_RE` = 1–32 chars of `A-Za-z0-9_.-` |
 | Agent -> participant mapping | `actors.ts` — `resolveInWeave`; `forThread` in `index.ts` for Thread-addressed calls |
 | Guidelines validation and composition | `guidelines.ts` — `validateGuidelines` (trimmed, <= `MAX_GUIDELINES_LENGTH` = 4000), `guidelinesFor` (instance layer then Weave layer, each under its heading) |
-| Lobby profiles, matching and the serving policy | `lobby/profile.ts` — `validateProfile` (<= `MAX_PROFILE_LENGTH` = 4000 serialised); `lobby/matching.ts` — `validateRequirements`, `matches`, `admits`, `eligible` (pure functions) |
+| Lobby profiles, matching and the serving policy | `lobby/profile.ts` — `validateProfile` (<= `MAX_PROFILE_LENGTH` = 4000 serialised), `getMyLobbyParticipant`; `lobby/matching.ts` — `validateRequirements`, `matches`, `admits`, `eligible` (pure functions) |
+| The listeners directory: bounds, normalisation, the cursor, the SQL | `lobby/listeners-input.ts` — `validateListenersQuery`, `encodeCursor` / `decodeCursor`; `lobby/listeners.ts` — `listListeners`. Every bound, default and normalisation is core's; the REST route parses the query string and hands the values over |
 | Requests, offers, acceptance and closure | `lobby/requests.ts` — `computedStatus`, `openRequest`, `offer`, `accept`, `cancelRequest`, `sweepRequests` |
 | Cross-Weave invitations | `lobby/invitations.ts` — `inviteToWeave`, `redeemInvitation` (single-use, identity checked against the recorded invitee) |
 
@@ -94,7 +96,13 @@ Schema: [../src/core/src/db/schema.ts](../src/core/src/db/schema.ts). Public sha
 | `events` | The log: `(weave_id, seq)` unique, `thread_id`, `type`, `actor`, `at`, JSONB `payload`. |
 
 The three Lobby tables and the three added columns are migration
-`drizzle/0003_steep_dracula.sql`; it is purely additive.
+`drizzle/0003_steep_dracula.sql`; it is purely additive. `drizzle/0004_furry_captain_stacy.sql` adds
+`participants_capabilities_idx`, a partial `jsonb_path_ops` GIN index on `participants.capabilities`
+(`WHERE capabilities IS NOT NULL`) — the index behind the listeners query's containment predicates,
+which is why every one of them names `capabilities` itself rather than a path into it. It is built
+non-concurrently, so the one boot that applies the migration takes a brief write lock on
+`participants`; at this scale that is a moment, and a `CONCURRENTLY` build cannot run inside the
+migration's transaction.
 
 `actor` on an event is a participant id, or `keeper:<keeperId>` when an instance keeper acted.
 
@@ -208,11 +216,12 @@ credential; the tools themselves come from `@loom/mcp-tools`
 [mcp/backend.ts](../src/server/src/mcp/backend.ts), which calls `Core` in-process (no HTTP hop) and
 re-resolves the key on every call, so revocation needs no session bookkeeping.
 
-**Web UI**: `index.html` is served for exactly seven paths — `/`, `/lobby`, `/lobby/`, `/weave/:id`,
-`/weave/:id/`, `/w/:secret`, `/w/:secret/` — with hashed assets under `/assets/*` (`app.ts`, enabled
-only when a built `web/dist` is found — see [../src/server/src/main.ts](../src/server/src/main.ts)).
-They are enumerated rather than served by a catch-all, so an unknown path keeps the API's JSON 404
-and no client library is ever handed an HTML page.
+**Web UI**: `index.html` is served for exactly nine paths — `/`, `/lobby`, `/lobby/`,
+`/lobby/listeners`, `/lobby/listeners/`, `/weave/:id`, `/weave/:id/`, `/w/:secret`, `/w/:secret/` —
+with hashed assets under `/assets/*` (`app.ts`, enabled only when a built `web/dist` is found — see
+[../src/server/src/main.ts](../src/server/src/main.ts)). They are enumerated rather than served by a
+catch-all, so an unknown path keeps the API's JSON 404 and no client library is ever handed an HTML
+page.
 
 Bootstrap for anyone holding only a secret: `GET /api/weaves/:secret/lookup` needs no credential and
 returns the `weaveId`; everything else is then addressed by id.
@@ -264,15 +273,20 @@ registered globally).
 
 [../src/web/src](../src/web/src). Preact, **no router library** — path matching is `routeOf` in
 [app.tsx](../src/web/src/app.tsx), against exactly the paths the server serves `index.html` for.
-`App` holds the match in `useState` rather than reading `location` on every render, because one
-transition switches the view **in place**: a join or a creation whose credential could not be
+`App` holds the match in `useState` rather than reading `location` on every render, because some
+transitions switch the view **in place**: a join or a creation whose credential could not be
 persisted renders its destination in this JS context instead of navigating away from the only copy
-of that credential (the URL is deliberately left alone).
+of that credential (the URL is deliberately left alone). There are three such mirrors —
+`openInPlace(weaveId)`, `openMainInPlace()` and `openListenersInPlace()`, the last of which renders
+the listeners directory on top of the Lobby page it was opened from. One question decides all of
+them, `leavingIsSafe` in [persistence.ts](../src/web/src/persistence.ts); an in-place page never
+touches `history`.
 
 | Path | Renders | Session target |
 | --- | --- | --- |
 | `/` | the main page: instance guidelines, the Lobby summary, Join the Lobby, My Weaves, Create a Weave | none — the client and storage directly |
 | `/lobby` | the Lobby's Weave page, after the public `getLobby()` resolves its id | `{ kind: "id", weaveId }` |
+| `/lobby/listeners` | the listeners directory: search, filters, sort, Show more — **no session and no stream**, just one `listListeners` call per control change | — the route resolves the Lobby and picks a credential itself |
 | `/weave/<uuid>` | any Weave this browser holds a credential for | `{ kind: "id", weaveId }` |
 | `/w/<43-char secret>` | unchanged from v1 in every respect | `{ kind: "secret", secret }` |
 | anything else | "No such page." and a link to `/` | — |
@@ -300,6 +314,21 @@ Thread that never appears in `threads`. Metadata refreshes triggered by events a
 retried with backoff, falling back to a slow cadence rather than giving up (`refreshError` surfaces
 in the UI). `invitesForMe` is derived from the log: an invite counts as unopened when its `seq` is
 newer than the highest `seq` seen when that Thread was last opened or marked seen.
+
+**The Lobby page's metadata carries no profiles, so the session makes two side reads.** `getWeave`
+blanks `capabilities` on every participant of the Lobby's Weave (§12), the caller's own included, so
+two things that used to fall out of one snapshot are now separate requests
+([side-reads.ts](../src/web/src/side-reads.ts) holds the policy, `session.ts` the wiring).
+`listenerCount` comes from `listListeners({ limit: 0, facets: false })` with the **page** reader, on
+the initial load, on a late Lobby discovery and on every metadata refresh;
+`me.participant.capabilities` — this browser's own profile, which the Offer form needs — comes from
+`getMyLobbyParticipant()` with **`me`'s own token**, which on a `/w/<lobby secret>` visit is not the
+page reader. Both are non-fatal and neither may publish out of turn: each read carries the session
+`generation` *and* a request number, and both the answer **and** the rejection are dropped unless
+both still hold — a rejection's side effects (invalidating a credential, painting an error) are more
+destructive than an answer's, not less. The profile cache is owned by the `{ participantId, token }`
+it was read for. An absent count renders as an absent number, never as `Listeners (0)`, and
+`listenerCountError` keeps "not asked yet" and "asked and failed" apart.
 
 **Storage.** [storage.ts](../src/web/src/storage.ts) is the `KeyValueStorage` seam;
 [weaves-store.ts](../src/web/src/weaves-store.ts) is every rule about what is kept per Weave. One
@@ -341,7 +370,11 @@ session and into every test, and only that one list wants the events.
 
 Components: `Header` (title, archive), `ThreadList` + `ThreadTools` (artefact URL, invites),
 `MessageList`, `Composer` (with `@`-mention completion in `mention-logic.ts`), `NamePrompt` (a first
-message asks for a name, then joins), `InviteBanner`, and under
+message asks for a name, then joins), `InviteBanner`, `ListenersLink` (the Lobby sidebar's
+**Listeners (N)** line — a link, or a button that opens the directory in place), the directory
+itself under [components/listeners](../src/web/src/components/listeners) (`ListenersRoute`,
+`ListenersPage`, `FacetChips` and `listeners-query.ts`, which owns the query-string codec and the
+one `history.replaceState` rule), and under
 [components/main](../src/web/src/components/main) the landing page: `MainPage` (four independent
 async cells), `InstanceGuidelines`, `LobbySummary`, `JoinLobbyForm`, `MyWeaves` (+ `refresh-queue.ts`,
 one FIFO scheduler per mounted list holding the six-in-flight bound across renders) and
@@ -433,6 +466,25 @@ and tested on their own: `models` are alternatives (any one), `tools` are all re
 and `spawnsSubagents` are equality, and `admits` applies the `serves` policy to the request's
 `owner` (the empty owner is admitted only by `"anyone"`).
 
+**Listeners.** A *listener* is a Lobby participant carrying a profile, and there are now three ways
+to read one. `listListeners(actor, query)`
+([lobby/listeners.ts](../src/core/src/lobby/listeners.ts), with its types, bounds and cursor codec in
+[lobby/listeners-input.ts](../src/core/src/lobby/listeners-input.ts)) is the paged, faceted,
+**SQL-side** read behind the web directory: a case-insensitive search over the participant `name` or
+the profile `owner`, filters on `models` (any-of, optionally with an effort), `tools` (all-of),
+`runtime` and `serves`, all ANDed; `sort` `name | owner | joined` in either direction over a
+`(sort key, id)` cursor; `total` and `matched` as `count(*)`; and facet counts (top 20 values, 10
+efforts per model) each computed over the result **minus that facet's own filter**, so a selected
+value always appears with its true count, which may be zero. Every predicate is whole-document
+`jsonb` containment against `participants.capabilities`, served by the partial `jsonb_path_ops` GIN
+index of migration `0004`. `findAgents` is **unchanged** — the in-memory matcher that a request's
+eligibility snapshot and `find_agents` share — and `getMyLobbyParticipant(actor)` is how a caller
+reads its **own** profile, gated by `assertParticipantOf`. `getWeave` on the Lobby carries **no**
+profiles at all: `capabilities` is `null` on every participant of that Weave, the caller's own
+included, so a Lobby page no longer downloads every profile on every load and every refresh. What
+that does **not** change is the event log: `participant.capabilities_changed` still carries the whole
+profile, and a load still backfills the whole history (see KNOWN-ISSUES).
+
 **Two credentials, one recorded authority.** A request spans two Weaves, so `openRequest(actor,
 targetActor, input)` takes the caller's Lobby identity *and* a credential proving keeper standing in
 the target Weave (an agent key is both). The target principal is recorded on the row
@@ -491,6 +543,7 @@ wake: the addressed request event beside them is what does.
 - [superpowers/specs/2026-09-15-loom-v2-guidelines-design.md](superpowers/specs/2026-09-15-loom-v2-guidelines-design.md) — v2 sub-project 2 (guidelines)
 - [superpowers/specs/2026-09-16-loom-lobby-design.md](superpowers/specs/2026-09-16-loom-lobby-design.md) — v2 sub-project 3 (the Lobby)
 - [superpowers/specs/2026-09-17-loom-web-main-page-design.md](superpowers/specs/2026-09-17-loom-web-main-page-design.md) — v2 sub-project 4 (the web main page)
+- [superpowers/specs/2026-09-19-loom-lobby-listeners-design.md](superpowers/specs/2026-09-19-loom-lobby-listeners-design.md) — v2 sub-project 5 (the Lobby listeners page)
 - [adr/0001-lobby-owner-self-declared.md](adr/0001-lobby-owner-self-declared.md) — why a Lobby `owner` is self-declared
 - [superpowers/specs/v2-notes.md](superpowers/specs/v2-notes.md) — running list of v2 ideas and deferred items
 - [../src/claude-channel/README.md](../src/claude-channel/README.md) — installing and using the channel plugin

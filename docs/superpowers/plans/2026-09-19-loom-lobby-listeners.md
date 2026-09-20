@@ -664,6 +664,7 @@ export function queryFromView(view: ListenersView, extra: { limit?: number; curs
   - `queryFromView` passes `limit: 50` by default and the cursor when given, and omits every absent filter, including an empty `q` (`q: ""` is a cleared box, not a search).
 - [ ] **Step 2: Failing tests** in `src/web/test/listeners-page.test.tsx`, using the harness from Task 5. Where an intermediate state is asserted, the route's response is a **gated** promise the test releases by hand:
   - Renders one `ProfileCard` per listener from a single stubbed answer, and the counts line reads `Showing 2 of 2 matches`; with `matched < total` it reads `Showing 50 of 87 matches (1,204 listeners)`.
+    > **Correction, 2026-09-20 (as built).** Two errors in that line. `matched === total` **collapses** to `Showing 2 of 2 listeners` — spec §5.3's wording, which governs where the plan and the spec disagree. And the numbers go through `toLocaleString()`, so the two-number form is asserted as `` `Showing 50 of 87 matches (${(1204).toLocaleString()} listeners)` ``: pinning the literal `1,204` would pin one locale, and this machine renders it `1.204`.
   - **Debounce:** three `input` events inside 250 ms produce **one** request, carrying the last value (fake timers; advance 250 ms once).
   - **Query string → controls:** mounting at `?q=fable&filter={…}&sort=owner&dir=desc` seeds the search box, the chips and both selects, and the first request carries all of them.
   - **Controls → query string:** clicking a chip calls `history.replaceState` (spied) with the new query and **never** `pushState`, and the next request carries the filter.
@@ -897,6 +898,7 @@ export function isCurrent(stamp: Stamp, now: Now): boolean {
     … // unchanged from here: invalidate, retriedWithSecret = true, reload with the secret or no-credential
   };
 ```
+  > **Correction, 2026-09-20 (as built).** The sketch's first line is wrong: `retriedWithSecret` is the **page reader's** one-fallback latch (spec §3.3), and testing it before the `failed`/`readingWithToken` branches lets it block the sibling branch — a credential that branch neither spends nor is entitled to. As built the order is: bail on a non-credential failure; then the `!readingWithToken` branches (`failed === "page"` returns, `failed === "identity"` runs the sibling rule); and only then `if (retriedWithSecret) return undefined` on the page path, where it belongs. Both pre-existing callers are byte-identical under either order, which is why the defect was unreachable through the public session API — and why the next reader of that line would have had to prove it again.
 - [ ] **Step 8: Implement the count.** `SessionState.listenerCount?: number` and `listenerCountError?: boolean`, its own counter, and three call sites:
 ```ts
   const countReads = createCounter();

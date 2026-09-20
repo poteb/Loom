@@ -83,7 +83,8 @@ export function buildApp(deps: AppDeps): LoomApp {
     );
     // Every path the web UI routes; deliberately enumerated rather than a catch-all, so an unknown
     // path stays the API's JSON 404 (a client library must not be handed an HTML page).
-    for (const p of ["/", "/lobby", "/lobby/", "/weave/:id", "/weave/:id/", "/w/:secret", "/w/:secret/"]) {
+    for (const p of ["/", "/lobby", "/lobby/", "/lobby/listeners", "/lobby/listeners/",
+      "/weave/:id", "/weave/:id/", "/w/:secret", "/w/:secret/"]) {
       app.get(p, (c) => c.html(indexHtml));
     }
   }

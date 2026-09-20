@@ -96,13 +96,13 @@ missing — `dist`.
 
 | Package | Test files | Coverage |
 | --- | --- | --- |
-| `core` | 22 | Every domain rule, against a real database: weaves, threads (creation, close, URL), messages and mentions, participants and roles, invites, inbox, agents and agent keys, export, settings and keepers, event seq under the weave lock, the uuid/authority guards, guidelines (validation, both layers, composition, the idempotent `seq: null`, in-lock authority, archived/member/unknown-Weave refusals, the migration default and the export rendering), the Lobby (five files: `lobby` bootstrap and secret-less join, `lobby-matching` as pure units, `lobby-profile` validation and `find_agents`, `lobby-requests` open/offer/accept/cancel/sweep with the two-credential contract, the recorded target authority re-checked in-lock, the rollback and the Lobby→target lock order, and `lobby-invitations` issue/redeem plus the scan proving no secret reaches the Lobby log), and the pure units (ids, names, errors) |
-| `client` | 4 | The typed HTTP wrappers (including the public `getInstanceGuidelines`, `setWeaveGuidelines` and every Lobby and request wrapper, round-tripped against a real Lobby), base-URL/WS-URL resolution, the `signal` an aborted request honours, and the reconnecting event stream — against a real server started by the server test helpers |
+| `core` | 24 | Every domain rule, against a real database: weaves, threads (creation, close, URL), messages and mentions, participants and roles, invites, inbox, agents and agent keys, export, settings and keepers, event seq under the weave lock, the uuid/authority guards, guidelines (validation, both layers, composition, the idempotent `seq: null`, in-lock authority, archived/member/unknown-Weave refusals, the migration default and the export rendering), the Lobby (seven files: `lobby` bootstrap and secret-less join, `lobby-matching` as pure units, `lobby-profile` validation, `find_agents` and `getMyLobbyParticipant` with its auth matrix, `lobby-requests` open/offer/accept/cancel/sweep with the two-credential contract, the recorded target authority re-checked in-lock, the rollback and the Lobby→target lock order, `lobby-invitations` issue/redeem plus the scan proving no secret reaches the Lobby log, and the **listeners directory** in two files: `lobby-listeners-input.ts` for the bounds, the normalisation rules and the cursor codec as pure units, and `lobby-listeners.ts` for every `listListeners` rule against real Postgres — each filter and the `serves` default, AND, the literal-wildcard search, six sorts, paging and cursor stability, the stale/malformed/mismatched cursor and the unparseable `joined` key that must be `validation` rather than a 500, the microsecond cursor key, `total`/`matched`, facets minus their own filter, selection-inclusive at zero, the staged model ranking, the auth matrix, the property test that the SQL agrees with `matches`/`admits`, and an `EXPLAIN` plan test over 3,000 seeded profiles), and the pure units (ids, names, errors). `db.test.ts` also asserts that `participants_capabilities_idx` exists, is partial and is `jsonb_path_ops` |
+| `client` | 4 | The typed HTTP wrappers (including the public `getInstanceGuidelines`, `setWeaveGuidelines`, every Lobby and request wrapper and the two new ones — `listListeners` round-tripped against a real Lobby and asserted at the URL level through a capturing `fetch`, and `getMyLobbyParticipant`), base-URL/WS-URL resolution, the `signal` an aborted request honours, and the reconnecting event stream — against a real server started by the server test helpers |
 | `mcp-tools` | 1 | Tool registration and wiring over an in-memory MCP transport against a fake `LoomToolBackend`, asserted against `LOOM_TOOL_NAMES` (34 tools), plus the three resources (`loom://guidelines`, the per-Weave guidelines template and `loom://lobby/requests`) and each `resourceCredential` outcome; the only suite with no database |
-| `server` | 9 | REST routes (including the public `GET /api/guidelines` and `PUT /api/weaves/:id/guidelines`), auth and admin, the Lobby and request routes with their full auth matrix (`lobby-routes.test.ts`: secret-less join, capabilities, `find_agents`, the two-credential open, offers, accept, cancel, `POST /api/weaves/:id/invitations`, the secret-less `POST /api/weaves/join`, `request_closed` → 409, computed status, and the injected 60 s sweep), remote MCP at `/mcp` (including agent keys, `join_weave({ inviteId })`, the `loom://lobby/requests` resource and the instructions carrying the instance guidelines), the WebSocket stream (tickets, replay, mid-stream auth re-check), static hosting (`static.test.ts`: `index.html` for all seven web paths — `/`, `/lobby`, `/weave/<id>` and `/w/<secret>` with and without a trailing slash — immutable `/assets/*`, the JSON 404 kept for everything else, and every one of the seven answering that 404 in an app built without `webDist`), config loading, log redaction, and one end-to-end scenario |
-| `cli` | 5 | Every command run in-process through `runCli()` against a live test server with a temp config file, asserting output, JSON shape and exit codes; the guidelines commands including the `-`-reads-stdin path; the Lobby and request commands (`lobby.test.ts`: `lobby join\|me\|find`, `request open\|list\|show\|offer\|accept\|cancel`, `invite-weave`, `join --invite`, and how `read` renders each Lobby event); plus the config store |
-| `claude-channel` | 9 | The channel end-to-end as a spawned `dist/server.js` (tools, streaming, stderr redaction), the lock-free `ChannelState`, event formatting and wake rules — including every Lobby event type in **both** wake modes, the whole opening and closing sequences, and the `requests` preference — the Lobby end-to-end (`lobby.test.ts`: two stored tokens as the requester's credentials, `offer` with `"stored"`, the `weave.invited` wake, `join_weave({ inviteId })` storing and streaming the new Weave, and the two-step leave that clears the profile first), the startup fetch under its deadline and the mechanics-only fallback, the guidelines preamble on the first woken event per Weave per session, the client-backed tool backend, and log redaction |
-| `web` | 10 | Session lifecycle against a real server (including the guidelines watermark in both directions — a stale snapshot and a replayed older event — the Lobby requests the session derives from events plus snapshots, a Weave loaded from a stored participant token, and the §2.6 invalid-identity table: a 401/403 clears the identity, keeps the secret, falls back to it read-only, and a rejoin self-heals), storage on its own (`storage.test.ts`: the `durable`/`memory` verdict including a store that accepts `setItem` and keeps nothing, and the pending-override/tombstone precedence), the per-Weave entry rules (`weaves-store.test.ts`: `setIdentity` as one write, `invalidateIdentity` keeping the secret, the `mergeLegacy` and `readerFor` tables, lazy migration that drops the legacy key only on a durable write), the refresh scheduler (`refresh-queue.test.ts`: the limit held across enqueues, FIFO order, a rejecting `run`, `dispose`), the one-storage-instance guard beside the notice and change-signal units, the request reducer (`requests-state.test.ts`: the per-request `lastEventSeq` watermark, monotonic terminal states, an `accepted` set that never shrinks, derived expiry from the clock), markdown rendering, mention-composer logic, and DOM tests of the Preact components — `components.test.tsx` (the Guidelines panel: read for everyone, edit for keepers, the counter, archived read-only; the requests panel: requester Accept/Cancel, the Offer form for an eligible listener, the countdown, read-only for everyone else; `routeOf` and the `WeaveView` branches) and `main-page.test.tsx` (the main page's four independent cells, the Join-the-Lobby form with its name rule and `name_taken` suggestion, the durable-versus-in-place branch on both the join and the creation, My Weaves' row states, the total in-flight bound over a 32-row fixture, the change-signal and reported-write cases, and the save-this-link panel in both its variants) |
+| `server` | 9 | REST routes (including the public `GET /api/guidelines` and `PUT /api/weaves/:id/guidelines`), auth and admin, the Lobby and request routes with their full auth matrix (`lobby-routes.test.ts`: secret-less join, capabilities, `find_agents`, the two-credential open, offers, accept, cancel, `POST /api/weaves/:id/invitations`, the secret-less `POST /api/weaves/join`, `request_closed` → 409, computed status, the injected 60 s sweep, and the two new routes — `GET /listeners` with its parse-only rules, a blank `?limit=` read as absent and a smuggled non-object `filter` refused, and `GET /participants/me` with its eight-row auth matrix), remote MCP at `/mcp` (including agent keys, `join_weave({ inviteId })`, the `loom://lobby/requests` resource and the instructions carrying the instance guidelines), the WebSocket stream (tickets, replay, mid-stream auth re-check), static hosting (`static.test.ts`: `index.html` for all nine web paths — `/`, `/lobby`, `/lobby/listeners`, `/weave/<id>` and `/w/<secret>` with and without a trailing slash — immutable `/assets/*`, the JSON 404 kept for everything else, and every one of the nine answering that 404 in an app built without `webDist`), config loading, log redaction, and one end-to-end scenario |
+| `cli` | 5 | Every command run in-process through `runCli()` against a live test server with a temp config file, asserting output, JSON shape and exit codes; the guidelines commands including the `-`-reads-stdin path; the Lobby and request commands (`lobby.test.ts`: `lobby join\|me\|find`, `request open\|list\|show\|offer\|accept\|cancel`, `invite-weave`, `join --invite`, how `read` renders each Lobby event, and that `loom lobby` still prints a profile summary per listener and still carries each profile in `--json` now that `getWeave` blanks them); plus the config store |
+| `claude-channel` | 9 | The channel end-to-end as a spawned `dist/server.js` (tools, streaming, stderr redaction), the lock-free `ChannelState`, event formatting and wake rules — including every Lobby event type in **both** wake modes, the whole opening and closing sequences, and the `requests` preference — the Lobby end-to-end (`lobby.test.ts`: two stored tokens as the requester's credentials, `offer` with `"stored"`, the `weave.invited` wake, `join_weave({ inviteId })` storing and streaming the new Weave, and the two-step leave that clears the profile first — read through `findAgents` rather than `getWeave`, which no longer carries a Lobby profile, and asserting the participant row still exists so "gone" and "profile cleared" cannot be confused), the startup fetch under its deadline and the mechanics-only fallback, the guidelines preamble on the first woken event per Weave per session, the client-backed tool backend, and log redaction |
+| `web` | 13 | Session lifecycle against a real server (including the guidelines watermark in both directions — a stale snapshot and a replayed older event — the Lobby requests the session derives from events plus snapshots, a Weave loaded from a stored participant token, and the §2.6 invalid-identity table: a 401/403 clears the identity, keeps the secret, falls back to it read-only, and a rejoin self-heals), storage on its own (`storage.test.ts`: the `durable`/`memory` verdict including a store that accepts `setItem` and keeps nothing, and the pending-override/tombstone precedence), the per-Weave entry rules (`weaves-store.test.ts`: `setIdentity` as one write, `invalidateIdentity` keeping the secret, the `mergeLegacy` and `readerFor` tables, lazy migration that drops the legacy key only on a durable write), the refresh scheduler (`refresh-queue.test.ts`: the limit held across enqueues, FIFO order, a rejecting `run`, `dispose`), the one-storage-instance guard beside the notice and change-signal units, the request reducer (`requests-state.test.ts`: the per-request `lastEventSeq` watermark, monotonic terminal states, an `accepted` set that never shrinks, derived expiry from the clock), markdown rendering, mention-composer logic, and DOM tests of the Preact components — `components.test.tsx` (the Guidelines panel: read for everyone, edit for keepers, the counter, archived read-only; the requests panel: requester Accept/Cancel, the Offer form for an eligible listener, the countdown, read-only for everyone else; `routeOf` and the `WeaveView` branches) and `main-page.test.tsx` (the main page's four independent cells, the Join-the-Lobby form with its name rule and `name_taken` suggestion, the durable-versus-in-place branch on both the join and the creation, My Weaves' row states, the total in-flight bound over a 32-row fixture, the change-signal and reported-write cases, and the save-this-link panel in both its variants). The listeners directory adds three files and touches three: `side-reads.test.ts` holds the sequencing and identity-ownership rules as pure units (`createCounter`, the monotonic watermark, `isCurrent`, the profile cache owned by a participant id **and** a token); `listeners-query.test.ts` round-trips `ListenersView` ⇄ query string both ways, with one case per validated value and one per class of silently-dropped input, each of which must set `partial`; `listeners-page.test.tsx` (happy-dom) drives the route, the page and the sidebar line over a path-keyed `fetch` stub — credential resolution and the join form, the 401 rule and the refused-secret terminal state, search and every filter with its chips, sort, Show more and its local error, the four status branches with "an error is never an empty directory", the superseded answer **and** the superseded rejection, the single `replaceState`, and the link's four count states beside the removal of the profile cards; `session.test.ts` gains the two side reads with their triggers, their ordering and ownership races and their stale rejections, `main-page.test.tsx` the Lobby summary's third read caught on its own, and `components.test.tsx` the Offer form on all three Lobby routes |
 
 The web DOM tests use **happy-dom**, selected per file by a docblock on the first line of
 `src/web/test/components.test.tsx`:
@@ -118,15 +118,17 @@ guarded by `typeof document !== "undefined"` because the package runs Vitest wit
 
 ## Current totals
 
-As of the smoke test 5 fixes on `fix/blank-opener-and-home-link` (last code commit `fa9536f`):
-**1208 tests in 60 files** — core 305 in 22, web 484 in 10, server 141 in 9, claude-channel 139 in 9,
-cli 68 in 5, client 37 in 4, mcp-tools 34 in 1 — from `pnpm -r build` then
+As of the Lobby listeners page on `feat/lobby-listeners` (last code commit `d70817c`):
+**1663 tests in 65 files** — core 485 in 24, web 712 in 13, server 178 in 9, claude-channel 139 in 9,
+cli 70 in 5, client 45 in 4, mcp-tools 34 in 1 — from `pnpm -r build` then
 `pnpm --workspace-concurrency=1 -r test`, with `pnpm -r typecheck` clean.
+The previous figure was 1208 in 60 (core 305/22, web 484/10, server 141/9, claude-channel 139/9,
+cli 68/5, client 37/4, mcp-tools 34/1), so the listeners work added 455 tests and five files.
 Counts change with every feature; run the suites to see current numbers.
 
 ## Manual smoke tests
 
-Five things the automated suites cannot cover, because they need a live Claude Code session, a live
+Six things the automated suites cannot cover, because they need a live Claude Code session, a live
 third-party connector, or a real browser with its own storage settings. All are run by hand before
 calling a release done; the commands come from the [README](../README.md) and
 `src/claude-channel/README.md`.
@@ -383,3 +385,102 @@ looked at deliberately — and, added after the run and so never on screen at al
 **Loom** wordmark (`.home-link`) and the "Go to the main page" control on the cards that replace a
 Weave (`.home-back` in its in-place form, and its placement under the join form on a
 credential-less Lobby page, `.page-join-home`).
+
+**6. The Lobby listeners directory in a real browser.** What is being checked is the two things
+`listeners-page.test.tsx` cannot reach: how the page **looks** — the card grid, the facet chips, the
+counts line, the sidebar line — and how it behaves in a browser that will not keep what the page
+writes. Everything else is covered by the automated suites; the point of running it by hand is the
+appearance and steps 9 and 10. Half an hour, no agent and no tunnel needed.
+
+    run.cmd                      # Postgres + Caddy in Docker, the web bundle built, server on the host
+
+Use `http://127.0.0.1:3000/` throughout, for the same reason as smoke test 5 (the origin is what
+storage and the site-data block of step 10 are keyed by).
+
+1. **Seed enough listeners to page.** The Lobby needs more than 50 of them, and there is no bulk
+   tool — `loom lobby join` is one participant per config file, which is exactly what a loop can
+   give it. In Git Bash from the repository root:
+
+       mkdir -p /tmp/loom-seed
+       export LOOM_URL=http://127.0.0.1:3000 LOOM_ALLOW_INSECURE=1
+       for i in $(seq 1 60); do
+         case $((i % 3)) in
+           0) p='{"models":[{"model":"claude-fable-5-1","effort":"high"}],"tools":["shell","github"],"runtime":"claude-code","owner":"paw","serves":"owner"}';;
+           1) p='{"models":[{"model":"gpt-5.6-sol","effort":"medium"}],"tools":["github"],"runtime":"codex","owner":"bob","serves":"anyone"}';;
+           2) p='{"models":[{"model":"claude-fable-5-1","effort":"low"},{"model":"gpt-5.6-sol"}],"tools":["shell"],"runtime":"node","owner":"shared","serves":["paw"]}';;
+         esac
+         LOOM_CONFIG=/tmp/loom-seed/$i.json node src/cli/bin/loom.js lobby join --name "seed-$i" --kind agent --json > /dev/null
+         LOOM_CONFIG=/tmp/loom-seed/$i.json node src/cli/bin/loom.js lobby me --set "$p" --json > /dev/null
+       done
+
+   That is 20 listeners of each shape: three owners, three runtimes, two models (each at two
+   efforts, and one alternative declared with no effort at all), two tools and all three `serves`
+   kinds — enough for every facet to have more than one row, for a model to have an effort row worth
+   opening, and for the page to have a second one. **Participants cannot be removed**
+   (KNOWN-ISSUES), so
+   these 60 stay in the dev Lobby until `docker compose down -v`; run this on a database you are
+   willing to throw away, and note that they also make smoke tests 4 and 5 noisier afterwards.
+2. **Join the Lobby from the browser** if this profile has not already: open `http://127.0.0.1:3000/`
+   and use the **Join the Lobby** form (smoke test 5, step 2). You land on `/lobby`.
+3. **The sidebar line.** In the Lobby's sidebar, under the requests panel, expect exactly one line
+   reading **Listeners (60)** — the 60 seeds, and *not* 61: a listener is a participant **with** a
+   profile, and the identity you joined under in step 2 has none. Expect **no profile cards**
+   anywhere on the page. Follow the line: the address bar reads `/lobby/listeners`.
+4. **Search.** Type `seed-4` into the search box: the grid narrows to the names that contain it and
+   the counts line reads `Showing <on screen> of <matched> matches (60 listeners)` — three numbers,
+   because `matched` is now below `total`. Clear it, then search `bob` —
+   that matches nothing in a name and everything whose **owner** is `bob`, which is the half of the
+   search a reader is most likely to doubt. Search `%` and confirm it finds nothing rather than
+   everything: the search is literal, not a wildcard.
+5. **Each filter, with its chips.** One at a time, clearing between: a **model** chip
+   (`claude-fable-5-1`), then its nested **effort** row (`high`) and confirm the count drops again;
+   two **tools** chips together (`shell` **and** `github`) and confirm the result is the listeners
+   that have both, not either; a **runtime** chip; and each of the three **serves** chips — *anyone*,
+   *its owner*, *a named list*. After each click the counts line and **every other facet's** counts
+   move with it, while the facet you clicked keeps its own full list: that is "each facet is computed
+   over the result minus its own filter", and it is the rule most likely to look wrong. Then pick a
+   combination the seeds cannot satisfy — runtime `codex` **and** tool `shell`, which no listener
+   has — and confirm both chips you selected are **still listed, at 0** (a ranked query cannot
+   contain a value with no rows, so a chip at zero is the selection being carried deliberately), and
+   that the page says no listener matches rather than going blank. **Clear filters** puts everything
+   back.
+6. **Sort.** Cycle **name**, **owner** and **joined**, each in both directions, and confirm the first
+   card changes as expected. By **name** the order is a case-insensitive *string* sort, not a
+   numeric one, so `seed-10` comes straight after `seed-1` and well before `seed-2` — that is right,
+   and worth reading twice before reporting it. **joined** ascending starts with whoever joined
+   first, which with the loop above is `seed-1`.
+7. **Show more.** With no filter, the grid holds 50 cards and a **Show more** button. Press it: the
+   remaining listeners are **appended** below the first 50 (the page does not jump or re-order), the
+   button disappears on the last page, and the counts line still says 60. Then change a filter and
+   confirm the grid starts again from the first page rather than appending to what was there.
+8. **The URL carries the view.** With a search, two filters and a non-default sort applied, look at
+   the address bar: it carries `q`, `filter`, `sort` and `dir`, and the browser's **Back** button
+   does *not* step through the changes (this page only ever replaces its own query string). Reload:
+   the same view comes back. Copy the URL into a second tab and confirm it renders the same thing.
+9. **A hand-edited link.** Edit the address bar to add a filter key that does not exist — e.g.
+   `?filter={"tools":["shell"],"nope":1}` — and load it. Expect the listeners the *valid* part asked
+   for, plus one muted line saying part of the link was not understood. Repeat with a value outside
+   core's own bounds or enums (`?filter={"serves":"everyone"}`, `?sort=age`) and with a `filter` that
+   is not JSON at all. Each must show the directory with that one line, never an error page and
+   never a silently narrower view. Note the one thing that is **not** reported, because it is not
+   part of this page's encoding: `?limit=` and `?cursor=` in a hand-typed URL are ignored without a
+   word — a link reproduces a view, not a page position.
+10. **Blocked site data.** Put a Firefox **Block** exception on `http://127.0.0.1:3000` exactly as in
+    smoke test 5 step 7, then reload `/lobby`. Now: the sidebar's **Listeners (60)** is a *button*
+    rather than a link; pressing it renders the directory **in place**, with the address bar still
+    reading `/lobby`; searching and filtering there work and the address bar **never changes**; and
+    **Back to the Lobby** on the page returns you to the Lobby in place, with the session still
+    live. Remove the exception afterwards.
+11. **The main page's count.** Go back to `/`: the Lobby summary lists the listener count beside the
+    participant and open-request counts, and it agrees with the sidebar's.
+12. **A failing read is not an empty directory.** Open `/lobby/listeners` again and leave it on
+    screen, then stop the server (`Ctrl-C` in the `run.cmd` window) and change a filter. Do **not**
+    reload — with the server down the browser never gets the page at all, which tests nothing. The
+    page must show what went wrong, above the rows it already had, and must **not** say "no listener
+    matches these filters": that sentence is for a successful read returning nothing, and an error
+    wearing it is the single worst failure this page can have. Start the server again and confirm
+    the next control change recovers.
+
+*Not yet run.* Written with the listeners page, against no live browser at all: **none** of the
+appearance this test exists to check has been looked at, which is why it is also a row in
+[KNOWN-ISSUES.md](KNOWN-ISSUES.md).

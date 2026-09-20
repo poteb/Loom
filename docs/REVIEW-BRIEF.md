@@ -1,8 +1,12 @@
 # Review brief
 
 For an external reviewer (ChatGPT, acting as two independent lenses — **Standards** and **Spec**)
-doing a full-codebase review of the branch `feat/v2-lobby`. Read this first; it says what to review,
-what to ignore, and what a finding must contain.
+doing a review of a branch. Read this first; it says what to review, what to ignore, and what a
+finding must contain.
+
+**This branch is `feat/lobby-listeners`: the Lobby listeners page (v2 sub-project 5).** Everything
+below §1 describes the codebase as a whole, because the review is against all of `src/`; §1a says
+what *this* branch changed and where to look first.
 
 ## 1. What Loom is, and where it stands
 
@@ -14,14 +18,18 @@ artefact (typically a pull request, whose URL the Thread carries). Everything is
 workspace: `core` holds every rule, and `server`, `client`, `mcp-tools`, `cli`, `claude-channel` and
 `web` are adapters over it.
 
-Current state: **v1 plus v2 sub-projects 1 and 2 on `main`, plus sub-project 3 — the Lobby — on this
-branch.** Sub-project 1 added Thread URLs, Thread invites, `inbox`, and instance-level agent keys.
+Current state: **v1 plus v2 sub-projects 1 to 4 on `main`, plus sub-project 5 — the Lobby listeners
+page — on this branch.** Sub-project 1 added Thread URLs, Thread invites, `inbox`, and instance-level agent keys.
 Sub-project 2 added **guidelines**: two layers of keeper-written Markdown (instance-wide on
 `settings`, per-Weave on `weaves`), composed and handed to every agent on connect, with a
 `weave.guidelines_changed` event, `set_weave_guidelines`, the public `GET /api/guidelines`, two MCP
 resources, CLI commands and a web panel.
 
-**Sub-project 3, the Lobby, is what this branch adds and what most of your attention should go to.**
+Sub-project 3 added **the Lobby**, and sub-project 4 **the web main page** at `/` with its
+token-based session load, the `/weave/<id>` and `/lobby` routes, per-Weave browser storage and the
+"a write says whether it persisted" rule. Both are on `main` and already reviewed.
+
+**Sub-project 3, the Lobby**, is the context the current branch sits in.
 One system Weave per instance, created at boot (`ensureLobby`, serialized under the settings row) and
 joinable with no secret at all. An agent standing there declares a capability **profile** (`models`,
 `tools`, `runtime`, `spawnsSubagents`, plus an `owner` and a `serves` policy); a requester opens a
@@ -45,6 +53,58 @@ every Lobby event is addressed.
 | cli | `lobby`, `lobby join/me/find`, `request open/list/show/offer/accept/cancel`, `invite-weave`, `join --invite` |
 | web | the requests panel (per-request `lastEventSeq` watermark), profile cards, the open-request form |
 
+## 1a. What **this** branch changes, and the one promise it does not make
+
+`feat/lobby-listeners` builds the Lobby's listener column properly. The Lobby sidebar used to stack
+every listener's full profile card, and `getWeave` shipped every profile on every load and every
+refresh — an unreadable column and a large answer once an instance has more than a handful of
+agents.
+
+| Layer | What the listeners page added |
+| --- | --- |
+| core | `lobby/listeners-input.ts` (types, bounds, normalisation, the cursor codec) and `lobby/listeners.ts` (`listListeners`: two counts, the page, four facet queries); `getMyLobbyParticipant` beside `setCapabilities`; `getWeave` blanks `capabilities` for every participant of the Lobby's Weave; migration `0004`, a partial `jsonb_path_ops` GIN index on `participants.capabilities` |
+| server | `GET /api/lobby/listeners` and `GET /api/lobby/participants/me`; two more enumerated static paths (`/lobby/listeners`, with and without a trailing slash — **nine** now) |
+| client | `listListeners` and `getMyLobbyParticipant`, with the listeners types mirrored by hand |
+| cli | `loom lobby` merges `findAgents({})` back in, so its output — human **and** `--json` — is unchanged. No new command |
+| mcp-tools | the `get_weave` description says the Lobby's profiles are not in it. **No new tool** |
+| web | `/lobby/listeners` (`ListenersRoute`, `ListenersPage`, `FacetChips`, `listeners-query.ts`), the sidebar's `ListenersLink`, `side-reads.ts`, `listenerCount` / `listenerCountError` and the own-profile read in `session.ts`, `LobbySummary` re-pointed; `ProfileCards` deleted |
+
+**The promise it makes, exactly.** It removes the repeated profile **snapshot** from `getWeave`
+metadata. **Profiles still travel over the event log** —
+`participant.capabilities_changed` carries the whole profile and a loading page still backfills the
+whole history. That is stated in the spec's §11 and is a row in [KNOWN-ISSUES.md](KNOWN-ISSUES.md).
+If you find a comment, doc sentence or commit message on this branch that claims otherwise, that
+**is** a finding.
+
+**The trade-offs taken on purpose**, all recorded in [KNOWN-ISSUES.md](KNOWN-ISSUES.md) — do not
+re-report them, but do say if you think one is under-rated:
+
+1. The seven queries of one `listListeners` call are **not** one snapshot: independent reads, no
+   surrounding transaction, so a page can disagree with its counts by one while someone edits a
+   profile. The page's "list changed — reload" hint is the answer.
+2. Each facet CTE materialises the **whole** profile document before unnesting the one key it wants.
+3. `getWeave` now reads the single `settings` row **twice** (the Lobby-id check, then the guidelines).
+4. The Lobby page makes **two extra requests per refresh** — the count and my own profile — where
+   both used to fall out of the one snapshot.
+5. `q` has **no** index; the search is `ILIKE` over one Weave's participants.
+6. `validateProfile` / `validateRequirements` still accept a **NUL** (a 500 on the write paths).
+   Pre-existing; only the *read* side is closed. The read side rejects a NUL and nothing else — PR
+   #20 review round 1 narrowed it from the whole C0 range, which had made the directory refuse its
+   own cursors and facet values.
+7. **Nothing on this branch has been seen in a browser.** Manual smoke test 6 in
+   [TESTING.md](TESTING.md) is written and unrun, so the appearance of the grid, the chips, the
+   counts line and the sidebar line is unverified.
+
+**Where to look first on this branch**, in order: `src/core/src/lobby/listeners-input.ts` (the
+bounds, and the normalisation rule that only an *empty array* means "no filter"),
+`src/core/src/lobby/listeners.ts` (the predicates, the lossless `joined` cursor key, the facet
+folds), `src/core/src/weaves.ts:119-124` (the blanking), `src/server/src/routes/lobby.ts` (parse
+only — it must never narrow), `src/web/src/session.ts` with `src/web/src/side-reads.ts` (the
+generation guard, the request numbers, and that the **rejection** paths carry the same guard as the
+success paths, before any side effect), and
+`src/web/src/components/listeners/` (the page's own generation, and `listeners-query.ts`, which owns
+the single `history.replaceState` rule and the "nothing is dropped silently" rule).
+
 The north-star scenario these serve (from
 [superpowers/specs/v2-notes.md](superpowers/specs/v2-notes.md)): a Weave is a working session; each PR
 gets its own Thread; a reviewing agent is invited into that Thread, reads the diff from the Thread's
@@ -54,10 +114,20 @@ Loom is meant to host.
 
 ## 2. Scope
 
-- **All of `src/` as it stands on `feat/v2-lobby`** — the seven packages, their tests, their
-  configuration. The Lobby diff against `main` is the new work; the rest is already-reviewed code you
-  should still judge where the Lobby changed it (`joinWeave`, `inbox`, `archiveWeave`, `settings`).
-- **The four specs are the binding requirements:**
+- **All of `src/` as it stands on this branch** — the seven packages, their tests, their
+  configuration. The diff against `main` is the new work; the rest is already-reviewed code you
+  should still judge where this branch changed it (`getWeave`, `loom lobby`, `LobbySummary`, the
+  channel's Lobby assertions, the static path list).
+- **The specs are the binding requirements**, the last one first:
+  - [superpowers/specs/2026-09-19-loom-lobby-listeners-design.md](superpowers/specs/2026-09-19-loom-lobby-listeners-design.md)
+    — **the spec for this branch**, with
+    [superpowers/plans/2026-09-19-loom-lobby-listeners.md](superpowers/plans/2026-09-19-loom-lobby-listeners.md)
+    beside it. Both carry dated **amendment** blocks written after implementation (spec §2.3, §5.1,
+    §5.5; plan Tasks 6 and 7): those blocks are the requirement where they contradict the text above
+    them, and are not drift.
+  - [superpowers/specs/2026-09-17-loom-web-main-page-design.md](superpowers/specs/2026-09-17-loom-web-main-page-design.md)
+    — sub-project 4, which this branch extends: its §2.4a (one storage instance), §2.6
+    (invalid-identity handling) and the in-place transition rule all govern the new page too.
   - [superpowers/specs/2026-09-10-loom-v1-design.md](superpowers/specs/2026-09-10-loom-v1-design.md)
   - [superpowers/specs/2026-09-12-loom-v2-review-loop-design.md](superpowers/specs/2026-09-12-loom-v2-review-loop-design.md)
   - [superpowers/specs/2026-09-15-loom-v2-guidelines-design.md](superpowers/specs/2026-09-15-loom-v2-guidelines-design.md)
@@ -67,7 +137,7 @@ Loom is meant to host.
     event's own tag) instead of sending a separate `type="weave.guidelines"` turn. The folded form
     is the requirement; do not report it as drift.
   - [superpowers/specs/2026-09-16-loom-lobby-design.md](superpowers/specs/2026-09-16-loom-lobby-design.md)
-    — sub-project 3, **the spec for this branch**, together with its decision record
+    — sub-project 3, together with its decision record
     [adr/0001-lobby-owner-self-declared.md](adr/0001-lobby-owner-self-declared.md) (`owner` is
     self-declared and never authenticated; the upgrade path is in the ADR, not a finding).
 
@@ -86,6 +156,13 @@ Loom is meant to host.
     `participant.capabilities_changed`, `request.opened|offered|accepted|closed`, `weave.invited`.
   - A Weave may now exist that nobody created and nobody keeps: the Lobby. It cannot be archived, it
     has no founding participant and no opener message, and joining it needs no secret.
+  - A Weave created with a **blank opener** is born with two events, not three: `thread.created` and
+    `participant.joined`, `lastSeq` 2. Seq and event-count expectations follow that.
+  - `getWeave` on **the Lobby** answers `capabilities: null` for every participant, the caller's own
+    included. The Lobby spec's own text still describes it carrying profiles; the listeners spec §3.1
+    supersedes that, and the three consumers were re-pointed (`loom lobby` merges `findAgents`,
+    `LobbySummary` counts with `listListeners`, the web session reads its own with
+    `getMyLobbyParticipant`).
 - **[../CONTRIBUTING.md](../CONTRIBUTING.md) is the standards document.** It is descriptive — it was
   written from the current source — so judge the code against it, and if a rule it states is not
   actually held by the code, that is a finding (say whether the code or the document is wrong).
@@ -140,6 +217,22 @@ the row and the argument. Do not smuggle it in as a new finding.
    9. A requester is not woken by the `request.closed` its own `accept` caused — the own-actor rule,
       and it already holds the accept result.
 
+6. **The deliberate deviations of *this* branch**, each argued where it is implemented:
+   1. The counts line collapses to `Showing 2 of 2 listeners` when `matched === total` (spec §5.3),
+      not the plan's `… matches`; numbers go through `toLocaleString()`.
+   2. `serves` chips read as prose — *anyone* / *its owner* / *a named list* — while the URL and the
+      request carry the three stored words.
+   3. **One** "Clear filters" control, in the controls row, not the two places §5.3 lists it.
+   4. `ListenersLink` takes `{ state, openListenersInPlace? }`: the presence of the callback *is* the
+      `leavingIsSafe` answer, computed once in `WeaveRoute`, as `HomeLink` already does.
+   5. `ListenersPage` holds two fields the plan's shape does not list, `moreError` and `appending`, so
+      a failed **Show more** stays beside its button instead of painting above the rows.
+   6. The "list changed" line offers **Reload the list** — it re-runs the current view — rather than
+      `location.reload()`, which is exactly what an in-place page cannot survive.
+   7. Core exports the listeners public types from `src/index.ts` so an adapter has one import point.
+   8. The `EXPLAIN` plan test seeds 3,000 padded profiles and asserts a bitmap scan on
+      `participants_capabilities_idx` (not `BitmapAnd`, which the planner need not choose).
+
 Anything *not* listed in those places is fair game, including things the docs describe as
 intentional: if a documented design choice is unsafe or unsound, say so as a finding and reference the
 line that documents it.
@@ -157,12 +250,12 @@ secret-less join, `owner` as data rather than authority, the two credentials and
 | 1 | [ARCHITECTURE.md](ARCHITECTURE.md) | The map: package graph, the layering invariant, the event log, credential kinds |
 | 2 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | The standards you judge against |
 | 3 | [SECURITY.md](SECURITY.md) | The claims you verify |
-| 4 | `core` ([../src/core/README.md](../src/core/README.md)) | `src/core/src/actors.ts` (credential resolution, every authority check, `resolveInWeave`), `src/core/src/events.ts` (`withWeaveLock`, `withWeaveLocks`, `appendInTx`, seq), then `weaves.ts`, `threads.ts`, `invites.ts`, `inbox.ts`, `guidelines.ts`, and **the Lobby**: `lobby/matching.ts` (the pure `matches` / `admits` / `eligible`), `lobby/profile.ts`, `lobby/lobby.ts` (`ensureLobby`, `getLobby` and who is told the secret), `lobby/requests.ts` (open, offer, accept, cancel, sweep, the computed status, the recorded target authority), `lobby/invitations.ts` (mint and redeem), `index.ts` (the facade, `forThread`, `resolveInLobby`) |
+| 4 | `core` ([../src/core/README.md](../src/core/README.md)) | `src/core/src/actors.ts` (credential resolution, every authority check, `resolveInWeave`), `src/core/src/events.ts` (`withWeaveLock`, `withWeaveLocks`, `appendInTx`, seq), then `weaves.ts` (**including `getWeave`'s Lobby blanking**), `threads.ts`, `invites.ts`, `inbox.ts`, `guidelines.ts`, and **the Lobby**: `lobby/matching.ts` (the pure `matches` / `admits` / `eligible`), `lobby/profile.ts` (`findAgents`, `getMyLobbyParticipant`), `lobby/listeners-input.ts` and `lobby/listeners.ts` (**this branch's core work**), `lobby/lobby.ts` (`ensureLobby`, `getLobby` and who is told the secret), `lobby/requests.ts` (open, offer, accept, cancel, sweep, the computed status, the recorded target authority), `lobby/invitations.ts` (mint and redeem), `index.ts` (the facade, `forThread`, `resolveInLobby`) |
 | 5 | `server` ([../src/server/README.md](../src/server/README.md)) | `src/server/src/ws.ts` (ticket redeem, replay/live handoff, mid-stream re-auth), `src/server/src/mcp/index.ts` + `mcp/backend.ts` (session identity, per-call re-resolve), `src/server/src/auth.ts` (bearer + `?agent=`), `routes/lobby.ts` and `routes/requests.ts` (the two-credential open), the rest of `routes/*`, and `main.ts` / `app.ts` (boot `ensureLobby`, the sweep interval) |
 | 6 | `mcp-tools` ([../src/mcp-tools/README.md](../src/mcp-tools/README.md)) and `client` ([../src/client/README.md](../src/client/README.md)) | `src/mcp-tools/src/tools.ts` (all **34** tools, `defaultCredential`, the **three** resources — `loom://guidelines`, `loom://weaves/{weaveId}/guidelines`, `loom://lobby/requests` — and `LOBBY_MECHANICS`), `src/client/src/client.ts` and `src/client/src/stream.ts` |
 | 7 | `cli` ([../src/cli/README.md](../src/cli/README.md)) | `src/cli/src/cli.ts` (arg handling, exit codes), `src/cli/src/context.ts` (credential precedence), `src/cli/src/config.ts` |
 | 8 | `claude-channel` ([../src/claude-channel/README.md](../src/claude-channel/README.md)) | `src/claude-channel/src/state.ts` (lock-free versioned CAS), `src/claude-channel/src/streams.ts` (delivery chain, cursors), `src/claude-channel/src/format.ts` (`shouldWake`, `safe()`), `src/claude-channel/src/backend.ts` + `stored.ts` |
-| 9 | `web` ([../src/web/README.md](../src/web/README.md)) | `src/web/src/session.ts` (load order, backfill, derived invites, the Lobby branch), `src/web/src/requests-state.ts` (the per-request `lastEventSeq` watermark), `src/web/src/markdown.ts`, `src/web/src/components/ThreadList.tsx` and `components/RequestsPanel.tsx` |
+| 9 | `web` ([../src/web/README.md](../src/web/README.md)) | `src/web/src/session.ts` (load order, backfill, derived invites, the Lobby branch, and **the two side reads** with `src/web/src/side-reads.ts`), `src/web/src/requests-state.ts` (the per-request `lastEventSeq` watermark), `src/web/src/markdown.ts`, `src/web/src/components/ThreadList.tsx`, `components/RequestsPanel.tsx`, and **the directory**: `components/listeners/ListenersRoute.tsx`, `ListenersPage.tsx`, `FacetChips.tsx`, `listeners-query.ts` and `components/ListenersLink.tsx` |
 
 ## 5. What we want back
 
@@ -200,7 +293,9 @@ Also:
 - A **"Verification"** section stating what you actually built and ran. The commands are in
   [TESTING.md](TESTING.md): `pnpm -r build`, `pnpm -r typecheck`, and `pnpm --workspace-concurrency=1 -r test`
   (the serial run — tests must not run concurrently across packages, and they need Docker for the
-  Postgres testcontainer or a reachable compose Postgres). Give the totals you saw.
+  Postgres testcontainer or a reachable compose Postgres). Give the totals you saw; on this branch
+  they should be **1663 tests in 65 files** (core 485/24, web 712/13, server 178/9, claude-channel
+  139/9, cli 70/5, client 45/4, mcp-tools 34/1), with `pnpm -r typecheck` clean.
 - **Explicitly state anything you could not verify** — a suite you could not run, a path you could only
   read, a claim in SECURITY.md you could not exercise. An unverified assumption stated as fact is
   worse to us than a gap you name.
@@ -263,6 +358,42 @@ Derived from the code and the docs; answer them even if the answer is "yes, it h
     TypeScript form and `listRequests` carries a SQL form of the same rule — do they agree for every
     status, and can a caller act on a stale `open` through any path (`offer`, `accept`, `cancel`, the
     open-request cap, the `loom://lobby/requests` resource, the web panel's countdown)?
+
+For **this branch** specifically:
+
+13. **Does the SQL agree with `matches` / `admits` for every input both accept?** There is a
+    property test over profiles × filters, and the rule most likely to be lost in a
+    re-implementation is `serves: "owner"` admitting a profile with **no** `serves` key. Find an
+    input where the predicate and the pure matcher disagree — an empty array, a missing key, a model
+    alternative with no effort, a `tools` filter against a profile with no `tools`.
+14. **Can a value out of a URL reach the database unchecked, or be dropped in silence?** Two halves:
+    the cursor's `k` is validated by the decoder against exactly the format the page query emits
+    (a rubbish `joined` key must be `validation`, never `"not-a-date"::timestamptz` and a 500); and
+    the page validates every supplied value against core's own bounds and sets `partial` for every
+    one it discards, **entries of an array included**. Find a value that reaches SQL unvalidated, or
+    one the page narrows without saying so.
+15. **Is the ordering discipline of the two side reads complete on the *failure* path?** Each read
+    carries the session generation **and** a request number, and the rule is that the guard runs
+    **before any side effect** — because a stale rejection deletes a credential, which cannot be
+    undone, while a stale answer is merely wrong. Find a path in `session.ts` where a rejection
+    writes to storage, reports a `WriteResult`, clears the cache or calls `set()` before it has
+    proved it still owns the identity and the generation. The same question for the page's own
+    generation: does a superseded **rejection** paint an error?
+16. **Is `recoverFromCredentialFailure`'s return value acted on at every call site?** It performs the
+    invalidation and then reports whether the caller must switch readers. A caller that takes it for
+    its side effect alone keeps reading with a credential the helper has just retired.
+17. **Is the blanking complete, and is anything still relying on the old shape?** `getWeave` on the
+    Lobby must blank **every** participant, the caller's own included, as `capabilities: null` and
+    never as an absent key. Find a consumer — in any package, tests included — that still reads a
+    Lobby profile off Weave metadata, or a fixture that pretends one is there.
+18. **Are the facet rules right at the edges?** Each facet is computed over the result **minus its
+    own filter**; a selected value is always present, with its true count under the *other* filters,
+    which may be `0`; models are ranked one row per model before efforts are ranked within them. Find
+    a filter combination where a selected chip vanishes, a count is wrong, or one many-effort model
+    pushes another past the top-20 cut.
+19. **Is the promise of §1a kept in the text?** Search the branch's comments, docs and commit
+    messages for any sentence claiming profiles no longer reach clients, or that the event log was
+    slimmed. Only the metadata **snapshot** was removed.
 
 ## 7. How findings will be handled
 

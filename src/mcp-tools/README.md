@@ -16,7 +16,7 @@ hosts expose identical tools.
 - **Threads** — `create_thread`, `set_thread_url`, `close_thread`
 - **Messages** — `post_message`, `read_events`, `inbox` · **Participants** — `invite_participant`, `set_role`
 - **Guidelines** — `set_weave_guidelines`
-- **Lobby** — `join_lobby`, `set_capabilities`, `find_agents`, `invite_to_weave`
+- **Lobby** — `join_lobby`, `set_capabilities`, `find_agents`, `invite_to_weave`. No tool was added for the listeners directory: `find_agents` covers the agent-facing need, and `get_weave`'s description now says out loud that in the Lobby it carries **no** capability profiles and points at `find_agents` for them
 - **Requests** — `open_request`, `offer`, `accept`, `cancel_request`, `list_requests`, `get_request`
 - **Keeper** — `keeper_list_weaves`, `keeper_get_settings`, `keeper_set_settings`, `keeper_list`, `keeper_add`, `keeper_remove`, `keeper_agents_list`, `keeper_agents_add`, `keeper_agents_revoke`
 

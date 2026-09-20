@@ -222,4 +222,119 @@ describe("Lobby wrappers", () => {
     const other = await f.keeper.inviteToWeave(f.target.weave.id, f.claudeId, f.thread.id);
     expect((await f.claude.joinByInvite(other.invitationId, `Helper-${f.t}`)).participant.name).toBe(`Helper-${f.t}`);
   });
+
+  /**
+   * Two listeners for the directory wrappers. Their tool, model and runtime names are unique to the
+   * call, so an exact-match filter over any of the three isolates them from the Lobby every other
+   * test in this file has joined — `q`, a substring search, could not.
+   */
+  async function directory() {
+    await srv().core.ensureLobby();
+    const t = ++tag;
+    const tool = `tool-${t}`;
+    const model = `model-${t}`;
+    const runtime = `runtime-${t}`;
+    const one = async (name: string, effort: string, serves: "owner" | "anyone") => {
+      const j = await anon.joinLobby({ name: `${name}-${t}`, kind: "agent" });
+      const c = anon.withToken(j.token);
+      await c.setCapabilities({ owner: `${name.toLowerCase()}-${t}`, tools: [tool], models: [{ model, effort }], runtime, serves });
+      return { id: j.participant.id, client: c };
+    };
+    return { t, tool, model, runtime, ada: await one("Ada", "high", "owner"), bo: await one("Bo", "low", "anyone") };
+  }
+
+  /**
+   * A client whose calls go to the real server and whose URLs are recorded, so a test can pin the
+   * query string the wrapper builds rather than only the answer it happens to get back.
+   */
+  function capturing(token: string): { client: LoomClient; urls: string[] } {
+    const urls: string[] = [];
+    const fetchImpl = ((url: string, init?: RequestInit) => {
+      urls.push(url);
+      return globalThis.fetch(url, init);
+    }) as unknown as typeof fetch;
+    return { client: new LoomClient({ baseUrl: srv().baseUrl, token, allowInsecure: true, fetch: fetchImpl }), urls };
+  }
+
+  /** The query the last recorded call carried. */
+  const queryOf = (urls: string[]) => new URL(urls.at(-1)!).searchParams;
+
+  // This one asks for page 1 of the default 50 over a Lobby every test in this file has joined, so
+  // it asserts containment, not the whole page.
+  it("lists the listeners on the bare path when it is given no query at all", async () => {
+    const d = await directory();
+    const page = await d.ada.client.listListeners();
+    expect(page.total).toBe(page.matched);
+    expect(page.listeners.map((l) => l.participant.id)).toEqual(expect.arrayContaining([d.ada.id, d.bo.id]));
+  });
+
+  it("sends the filter as JSON and the scalars as plain params", async () => {
+    const d = await directory();
+    const page = await d.ada.client.listListeners({
+      models: [{ model: d.model, effort: "high" }], tools: [d.tool], sort: "name", dir: "desc", limit: 50,
+    });
+    expect(page.matched).toBe(1);
+    expect(page.listeners.map((l) => l.participant.id)).toEqual([d.ada.id]);
+  });
+
+  it("brings the facets back with the page", async () => {
+    const d = await directory();
+    const page = await d.ada.client.listListeners({ tools: [d.tool] });
+    // Each facet minus its own filter: `tools` is what was filtered on, so the other three describe
+    // exactly these two listeners.
+    expect(page.facets!.runtimes).toEqual({ values: [{ value: d.runtime, count: 2 }], more: false });
+    expect(page.facets!.serves.values).toEqual([
+      { value: "anyone", count: 1 }, { value: "owner", count: 1 }, { value: "list", count: 0 },
+    ]);
+  });
+
+  it("carries nextCursor through as an opaque page position", async () => {
+    const d = await directory();
+    const page = { tools: [d.tool], sort: "name" as const, dir: "asc" as const, limit: 1, facets: false };
+    const first = await d.ada.client.listListeners(page);
+    expect(first.listeners.map((l) => l.participant.id)).toEqual([d.ada.id]);
+    const second = await d.ada.client.listListeners({ ...page, cursor: first.nextCursor });
+    expect(second.listeners.map((l) => l.participant.id)).toEqual([d.bo.id]);
+  });
+
+  it("asks for the count alone with limit 0 and facets off", async () => {
+    const d = await directory();
+    const page = await d.ada.client.listListeners({ limit: 0, facets: false });
+    expect(page.listeners).toEqual([]);
+    expect(page.facets).toBeUndefined();
+    expect(page.total).toBeGreaterThanOrEqual(2);
+  });
+
+  it("sends an empty tools array as a filter rather than dropping it", async () => {
+    const d = await directory();
+    const cap = capturing(d.ada.client.token!);
+    // `[]` is falsy-looking but present: the wrapper tests for `undefined`, not for truthiness, so
+    // "filter on tools, with an empty list" reaches core — which is where "empty means no filter"
+    // is decided. Dropped here, the parameter would never get the chance to say so.
+    const page = await cap.client.listListeners({ tools: [] });
+    expect(queryOf(cap.urls).get("filter")).toBe('{"tools":[]}');
+    expect(page.matched).toBe(page.total);
+  });
+
+  it("sends no facets parameter unless they are switched off, and sends limit 0 as a value", async () => {
+    const d = await directory();
+    const cap = capturing(d.ada.client.token!);
+    // `?facets=false` is the only thing the route reads; `true` and absence are the same request.
+    await cap.client.listListeners({ facets: true, limit: 0 });
+    expect(queryOf(cap.urls).has("facets")).toBe(false);
+    // …and 0 is a supplied page size, not an absent one: it asks for the counts alone.
+    expect(queryOf(cap.urls).get("limit")).toBe("0");
+    await cap.client.listListeners({ limit: 0 });
+    expect(queryOf(cap.urls).has("facets")).toBe(false);
+    expect(queryOf(cap.urls).get("limit")).toBe("0");
+  });
+
+  it("reads the caller's own Lobby participant, profile included", async () => {
+    const d = await directory();
+    const me = await d.bo.client.getMyLobbyParticipant();
+    expect(me.id).toBe(d.bo.id);
+    expect(me.capabilities).toEqual({
+      owner: `bo-${d.t}`, tools: [d.tool], models: [{ model: d.model, effort: "low" }], runtime: d.runtime, serves: "anyone",
+    });
+  });
 });

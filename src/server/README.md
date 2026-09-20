@@ -69,8 +69,15 @@ now touches the database.
 client needs before it can join; with an instance keeper's bearer it also answers `secret`, the
 Lobby's own Weave secret, which is the read credential for its web page `/w/<secret>` and is in no
 other answer (the route passes the credential straight to core, which decides who counts as a
-keeper). `POST /api/lobby/join` takes no secret (core reads the Lobby's own),
-and `POST /api/requests` is the one route that carries **two** credentials: the bearer is the
+keeper). `POST /api/lobby/join` takes no secret (core reads the Lobby's own).
+`GET /api/lobby/listeners` is the directory read — `?q=&filter=<json>&sort=&dir=&limit=&cursor=&facets=false`,
+where `filter` carries `{ models?, tools?, runtime?, serves? }` — and the route **parses only**: it
+turns the query string into values and hands them to core, which owns every bound, default and
+normalisation, so a blank `?limit=` is an absent limit and a `filter` that is not a JSON object is
+`validation` rather than something spread into the query. `GET /api/lobby/participants/me` answers
+the caller its own Lobby participant, profile included, and is gated by `assertParticipantOf` — the
+Lobby secret and an instance keeper are refused there, where `GET /api/lobby/agents` and
+`/api/lobby/listeners` admit them. `POST /api/requests` is the one route that carries **two** credentials: the bearer is the
 caller's Lobby identity and `targetCredential` in the body proves keeper standing in the Weave the
 helpers will be invited into (optional when the bearer is an agent key). `main.ts` calls
 `ensureLobby` at boot beside the keeper seeding and logs `lobby: created  /w/<secret>` on the boot
@@ -88,13 +95,14 @@ once a credential is revoked). `ALL /mcp` serves Streamable HTTP MCP, one `McpSe
 session, idle-evicted after 30 minutes.
 
 **The web UI.** With `webDist`, `/assets/*` is served immutable and the SPA shell (`index.html`, read
-once at `buildApp` time) is returned for exactly seven paths: `/`, `/lobby`, `/lobby/`, `/weave/:id`,
-`/weave/:id/`, `/w/:secret`, `/w/:secret/`. They are **enumerated rather than a catch-all**, so an
-unknown path still gets the API's `{ code: "not_found" }` 404 — a client library must never be handed
-an HTML page — and the shell's own path validation is the web app's business, not the server's
-(`/weave/not-a-uuid` is served the shell, which renders "No such page"). Without `webDist` all seven
-answer that same JSON 404, and `main.ts` says which it is at boot: `serving web UI from <dist>`, or
-`web UI not built; the web pages are disabled`.
+once at `buildApp` time) is returned for exactly nine paths: `/`, `/lobby`, `/lobby/`,
+`/lobby/listeners`, `/lobby/listeners/`, `/weave/:id`, `/weave/:id/`, `/w/:secret`, `/w/:secret/`.
+They are **enumerated rather than a catch-all**, so an unknown path still gets the API's
+`{ code: "not_found" }` 404 — a client library must never be handed an HTML page — and the shell's
+own path validation is the web app's business, not the server's (`/weave/not-a-uuid` is served the
+shell, which renders "No such page"). Without `webDist` all nine answer that same JSON 404, and
+`main.ts` says which it is at boot: `serving web UI from <dist>`, or
+`web UI not built; /, /lobby, /lobby/listeners, /weave/<id> and /w/<secret> are disabled`.
 
 Env ([src/config.ts](src/config.ts), [src/main.ts](src/main.ts)):
 `DATABASE_URL` (required), `PORT` (3000), `LOOM_HOST` (`127.0.0.1`), `LOOM_KEEPER_TOKENS`
@@ -117,7 +125,7 @@ Env ([src/config.ts](src/config.ts), [src/main.ts](src/main.ts)):
 - [src/routes/agents.ts](src/routes/agents.ts) — `/api/admin/agents`
 - [src/routes/auth.ts](src/routes/auth.ts) — `/api/auth/ws-ticket`
 - [src/routes/guidelines.ts](src/routes/guidelines.ts) — `/api/guidelines`, the one public read
-- [src/routes/lobby.ts](src/routes/lobby.ts) — `/api/lobby`: where it is, joining it, profiles, `find_agents`
+- [src/routes/lobby.ts](src/routes/lobby.ts) — `/api/lobby`: where it is, joining it, profiles, `find_agents`, the listeners directory and your own participant
 - [src/routes/requests.ts](src/routes/requests.ts) — `/api/requests`: open, list, read, offer, accept, cancel
 - [src/mcp/index.ts](src/mcp/index.ts) — `mountMcp`, `buildMcpServer`, per-session transports
 - [src/mcp/backend.ts](src/mcp/backend.ts) — `CoreToolBackend`: `LoomToolBackend` straight onto core
@@ -130,8 +138,10 @@ Postgres comes from the shared global setup in [`@loom/core`](../core/test/globa
 (testcontainer, or the `loom_test` fallback); build the workspace first, since `@loom/core` resolves
 to its `dist/`. `test/helpers.ts` starts a real server per suite. Coverage: `routes.test.ts`,
 `scenario.test.ts`, `ws.test.ts`, `mcp.test.ts`, `lobby-routes.test.ts` (every Lobby and request
-route with its auth matrix, the two-credential open, `request_closed` → 409, the computed status and
-the injected sweep), `static.test.ts`, `config.test.ts`, `foundation.test.ts`, `log.test.ts`.
+route with its auth matrix, the two-credential open, `request_closed` → 409, the computed status,
+the injected sweep, and the two directory routes — the parse-only rules of `GET /listeners` and the
+eight-row matrix of `GET /participants/me`), `static.test.ts` (all nine shell paths, with and
+without `webDist`), `config.test.ts`, `foundation.test.ts`, `log.test.ts`.
 
 ## Depends on / depended on by
 

@@ -7,7 +7,9 @@ import { hasIdentity, readWeaveEntry } from "../../weaves-store.js";
  *  cursor, so one bounded page *is* the count (spec §4.4, and the KNOWN-ISSUES row behind it). */
 const PAGE = 1000;
 
-type Counts = { participants: number; listeners: number; open: number };
+/** `listeners` is optional because its own read is allowed to fail on its own: absent means the
+ *  line is not rendered at all, never that the Lobby holds none (spec §5.1). */
+type Counts = { participants: number; listeners?: number; open: number };
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
@@ -16,10 +18,12 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
  * (spec §4.4).
  *
  * The line this component exists to hold: **no new public read**. `GET /api/lobby` gives the title
- * anonymously and that is all an unjoined visitor sees; the counts come from `getWeave` and
- * `listRequests`, both behind `assertCanRead`, and are asked for with the **stored participant
- * token** or not at all. A stored *secret* is deliberately not used here either — the Lobby's secret
- * belongs to an instance keeper, and this section is not the place to spend one.
+ * anonymously and that is all an unjoined visitor sees; the three counts come from `getWeave`,
+ * `listRequests` and `listListeners` — all three behind `assertCanRead`, and all three asked for
+ * with the **stored participant token** or not at all. The third is caught on its own so its
+ * failure costs only its own line, which changes what is shown and not who may see it. A stored
+ * *secret* is deliberately not used here either — the Lobby's secret belongs to an instance keeper,
+ * and this section is not the place to spend one.
  *
  * The pointer itself is the page's cell, not this one's: `lobby` is the answer, `error` is what went
  * wrong reading it, and `noLobby` is the instance saying it has none — which is an answer rather than
@@ -44,17 +48,25 @@ export function LobbySummary({ client, storage, lobby, error, noLobby }: {
     if (!weaveId || !token) return;                  // no identity: the title, and not one request
     let live = true;
     const reader = client.withToken(token);
-    // The same two reads the Lobby page itself makes, and both of them bounded.
-    Promise.all([reader.getWeave(weaveId), reader.listRequests("open", { limit: PAGE })]).then(
-      ([info, open]) => {
+    // The same three reads the Lobby page itself makes, and all of them bounded.
+    Promise.all([
+      reader.getWeave(weaveId),
+      reader.listRequests("open", { limit: PAGE }),
+      // A "listener" is a participant carrying a capability profile. `getWeave` no longer carries
+      // profiles for the Lobby (spec §3.1), so the count comes from the directory query itself —
+      // one `count(*)`, no rows, no facet pass.
+      //
+      // **Its own failure costs only its own line.** Inside the `Promise.all` it would reject the
+      // whole tuple, and the two counts this section has always shown would disappear behind one
+      // error line — the opposite of the rule next door (a cell with a credential and no answer yet
+      // is loading, not empty) and of the state the same failure leaves the Lobby's own sidebar in.
+      // Nothing is hidden by catching it: all three reads use the same stored token, so a dead one
+      // is still reported by `getWeave` rejecting, exactly as it is today.
+      reader.listListeners({ limit: 0, facets: false }).then((p) => p.total, () => undefined),
+    ]).then(
+      ([info, open, listeners]) => {
         if (!live) return;
-        setCounts({
-          participants: info.participants.length,
-          // A "listener" is a participant carrying a capability profile — an agent something can
-          // actually be asked of, as against a human here to watch.
-          listeners: info.participants.filter((p) => p.capabilities !== null).length,
-          open: open.length,
-        });
+        setCounts({ participants: info.participants.length, listeners, open: open.length });
       },
       (e: unknown) => { if (live) setCountsError(e instanceof Error ? e.message : String(e)); },
     );
@@ -80,7 +92,9 @@ export function LobbySummary({ client, storage, lobby, error, noLobby }: {
                     ? (
                       <ul class="lobby-counts">
                         <li>{plural(counts.participants, "participant")}</li>
-                        <li>{plural(counts.listeners, "listener")}</li>
+                        {/* Only when it is a number: a count that failed says nothing rather than
+                            claiming a zero nobody counted (spec §5.1). */}
+                        {counts.listeners !== undefined && <li>{plural(counts.listeners, "listener")}</li>}
                         <li>{plural(counts.open, "open request")}</li>
                       </ul>
                     )

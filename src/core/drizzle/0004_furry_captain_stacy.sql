@@ -1,0 +1,1 @@
+CREATE INDEX "participants_capabilities_idx" ON "participants" USING gin ("capabilities" jsonb_path_ops) WHERE "participants"."capabilities" IS NOT NULL;

@@ -11,7 +11,7 @@ import { NamePrompt } from "./NamePrompt.js";
 import { InviteBanner } from "./InviteBanner.js";
 import { GuidelinesPanel } from "./GuidelinesPanel.js";
 import { RequestsPanel } from "./RequestsPanel.js";
-import { ProfileCards } from "./ProfileCard.js";
+import { ListenersLink } from "./ListenersLink.js";
 
 /**
  * One Weave page, whichever route reached it (spec §2.7). It takes the session rather than building
@@ -25,7 +25,7 @@ import { ProfileCards } from "./ProfileCard.js";
  * composer until that join lands (§2.6) — the composer would otherwise promise a write this
  * credential cannot make.
  */
-export function WeaveView({ session, state, banner, noCredential, openMainInPlace }: {
+export function WeaveView({ session, state, banner, noCredential, openMainInPlace, openListenersInPlace }: {
   session: Session; state: SessionState;
   /** Rendered above the Weave: the persistence bar, and nothing else today. */
   banner?: JSX.Element | null;
@@ -39,6 +39,13 @@ export function WeaveView({ session, state, banner, noCredential, openMainInPlac
    * ordinary links without it.
    */
   openMainInPlace?: () => void;
+  /**
+   * The same rule for the sidebar's way into `/lobby/listeners` (spec §5.1): given only when leaving
+   * this JS context would lose what this page holds, and then the line is a button that renders the
+   * directory here rather than an `<a href>` a middle click could turn into a full page load. The
+   * Lobby's sidebar is the one place it is read.
+   */
+  openListenersInPlace?: () => void;
 }) {
   const [pending, setPending] = useState<string | null>(null);   // message waiting for a name
   const [draft, setDraft] = useState<string | undefined>();      // text handed back to the composer
@@ -118,7 +125,7 @@ export function WeaveView({ session, state, banner, noCredential, openMainInPlac
           <GuidelinesPanel state={state} session={session} onError={reportError} />
           {/* Both render nothing away from the Lobby, so every other Weave's sidebar is unchanged. */}
           <RequestsPanel state={state} session={session} onError={reportError} />
-          <ProfileCards state={state} />
+          <ListenersLink state={state} openListenersInPlace={openListenersInPlace} />
         </aside>
         <div class="main">
           {archived && <div class="banner">This Weave is archived and read-only.</div>}
