@@ -6,7 +6,7 @@ import { isCredentialFailure, weaveKey } from "../../weaves-store.js";
 import { ProfileCard } from "../ProfileCard.js";
 import { FacetChips, ModelChips } from "./FacetChips.js";
 import {
-  queryFromView, searchFromView, viewFromSearch, type ListenersView,
+  queryFromView, viewFromSearch, writeSearch, type ListenersView,
 } from "./listeners-query.js";
 
 /** Spec §5.3: one page of 50, and "Show more" appends the next. */
@@ -120,17 +120,6 @@ export function ListenersPage({
   // credential changes. The cursor is dropped by construction here — only "Show more" carries one.
   useEffect(() => { run(view); }, [view, reader]);
 
-  const writeUrl = (next: ListenersView) => {
-    // Rewriting this page's own query string names the same page, which is what the no-pushState
-    // rule is about (spec §5.4). Rendered in place, the URL is left entirely alone: the address
-    // would name a page this browser could not load again. The path is compared exactly — a
-    // `startsWith` would rewrite the query string of some other page that begins the same way.
-    if (inPlace) return;
-    if (location.pathname !== "/lobby/listeners" && location.pathname !== "/lobby/listeners/") return;
-    const s = searchFromView(next);
-    history.replaceState(null, "", s ? `${location.pathname}?${s}` : location.pathname);
-  };
-
   /**
    * The one way a control changes the page: new state, new URL, and — through the effect — one
    * fresh query with no cursor.
@@ -151,7 +140,7 @@ export function ListenersPage({
     const next = update(base);
     viewRef.current = next;
     setView(next);
-    writeUrl(next);
+    writeSearch(next, inPlace);
   };
 
   const type = (value: string) => {

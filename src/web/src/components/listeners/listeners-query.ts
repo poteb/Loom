@@ -119,6 +119,31 @@ export function searchFromView(view: ListenersView): string {
 }
 
 /**
+ * The **one** place this feature touches the history API (spec §5.4), kept beside the codec that
+ * writes the string rather than inside the component that happens to call it.
+ *
+ * `replaceState`, never `pushState`: ten keystrokes' worth of filtering must not become ten
+ * back-button steps, and the back button leaving the directory is what a human means by it here.
+ *
+ * Three conditions, each for its own reason:
+ * - **not `inPlace`.** A page rendered here rather than navigated to (`openListenersInPlace`) leaves
+ *   the address bar entirely alone: the URL would name a view this browser could not load again.
+ * - **the path is exactly this page's**, either spelling the server serves. Rewriting the query
+ *   string of the page you are already on names the same page, which is the whole argument for
+ *   being allowed to do it; a `startsWith` would rewrite some other page that begins the same way.
+ * - **the string would actually change.** A no-op `replaceState` is still a history write.
+ */
+export function writeSearch(view: ListenersView, inPlace?: boolean): void {
+  if (inPlace) return;
+  const path = location.pathname;
+  if (path !== "/lobby/listeners" && path !== "/lobby/listeners/") return;
+  const search = searchFromView(view);
+  const next = search ? `${path}?${search}` : path;
+  if (next === `${path}${location.search}`) return;
+  history.replaceState(null, "", next);
+}
+
+/**
  * What the view asks core for. Absent is `undefined` and nothing else — an empty chip row and a
  * cleared search box are **no filter**, not a filter matching nothing, so neither is sent (the
  * client would otherwise put `"tools":[]` on the wire, which core reads as no filter anyway but

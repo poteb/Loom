@@ -1,6 +1,9 @@
-import { describe, it, expect } from "vitest";
+// @vitest-environment happy-dom
+// The codec itself is pure, but the one `replaceState` rule lives beside it (the plan's
+// file-structure table) and it is a rule about `location` and `history`, so the file needs a window.
+import { describe, it, expect, vi, afterEach } from "vitest";
 import {
-  EMPTY_VIEW, queryFromView, searchFromView, viewFromSearch, type ListenersView,
+  EMPTY_VIEW, queryFromView, searchFromView, viewFromSearch, writeSearch, type ListenersView,
 } from "../src/components/listeners/listeners-query.js";
 
 /** A view with every control set, used for the round trip and as the base of the bound cases. */
@@ -225,5 +228,64 @@ describe("the query a view asks core for (spec §5.3)", () => {
   it("leaves out an empty chip row: no chips is no filter, not a filter matching nothing", () => {
     const q = queryFromView({ ...EMPTY_VIEW, runtime: "node" }, {});
     expect(["models" in q, "tools" in q]).toEqual([false, false]);
+  });
+});
+
+/**
+ * The one place the directory touches the history API (spec §5.4, and the plan's file-structure
+ * table, which puts this rule beside the codec that writes the string). It is narrow on purpose:
+ * rewriting the query string of the page you are already on names the same page, and every other
+ * case — another path, an in-place render — names one this browser might not be able to load again.
+ */
+describe("the one replaceState rule (spec §5.4)", () => {
+  const NODE = { ...EMPTY_VIEW, runtime: "node" };
+  const at = (url: string) => history.replaceState(null, "", url);
+  const filterOf = () => new URLSearchParams(location.search).get("filter");
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it("rewrites the query string of the page it is on", () => {
+    at("/lobby/listeners");
+    const replaced = vi.spyOn(history, "replaceState");
+    writeSearch(NODE);
+    expect([replaced.mock.calls.length, filterOf()]).toEqual([1, '{"runtime":"node"}']);
+  });
+
+  it("rewrites it with the trailing slash too, as the server serves both", () => {
+    at("/lobby/listeners/");
+    const replaced = vi.spyOn(history, "replaceState");
+    writeSearch(NODE);
+    expect([replaced.mock.calls.length, location.pathname]).toEqual([1, "/lobby/listeners/"]);
+  });
+
+  // An exact comparison, not a `startsWith`: the query string of some other page that merely begins
+  // the same way is not this page's to rewrite.
+  it("leaves another page's query string alone", () => {
+    at("/lobby/listenersx");
+    const replaced = vi.spyOn(history, "replaceState");
+    writeSearch(NODE);
+    expect([replaced.mock.calls.length, location.search]).toEqual([0, ""]);
+  });
+
+  it("leaves the address bar entirely alone for a page rendered in place", () => {
+    at("/lobby/listeners");
+    const replaced = vi.spyOn(history, "replaceState");
+    writeSearch(NODE, true);
+    expect([replaced.mock.calls.length, location.search]).toEqual([0, ""]);
+  });
+
+  it("writes nothing when the string it would write is the one already there", () => {
+    at("/lobby/listeners");
+    writeSearch(NODE);
+    const replaced = vi.spyOn(history, "replaceState");
+    writeSearch(NODE);
+    expect(replaced.mock.calls.length).toBe(0);
+  });
+
+  it("never pushes a history entry: ten keystrokes are not ten back-button steps", () => {
+    at("/lobby/listeners");
+    const pushed = vi.spyOn(history, "pushState");
+    writeSearch(NODE);
+    writeSearch(EMPTY_VIEW);
+    expect(pushed.mock.calls.length).toBe(0);
   });
 });
