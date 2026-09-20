@@ -43,8 +43,10 @@ human means by it.
    bar reads `/lobby/listeners`.
 3. He searches `bob` and picks two tool chips. The address bar gains `?q=bob&filter=…` — by
    `replaceState`, so those four control changes are **not** four Back steps.
-4. He presses **Back** once. The address bar reads `/lobby`, the directory closes, the General
-   thread is where he left it — same session, nothing reloaded.
+4. He presses **Back** once. The address bar reads `/lobby`, the directory closes and the General
+   thread is back — same session, nothing reloaded, and the half-written message he had left in the
+   composer is still in it (§3.5). The message list is scrolled to the newest message, which is the
+   one thing the round trip does not put back (§11).
 5. **Forward** returns him to `/lobby/listeners?q=bob&filter=…` with the search box and both chips
    seeded from that URL.
 6. He sends the link to a colleague, who opens it cold: the Lobby loads with the directory already
@@ -68,8 +70,8 @@ human means by it.
 | §5.1 the sidebar line | **Amended.** The count, its four states and its Lobby gate are unchanged. The line stops being a link-or-button pair: it is **always a button**, and it now toggles a view rather than opening a page (§8). `openListenersInPlace` and its whole in-place argument are gone. |
 | §5.2 the route | **Superseded by §4.** `Route` loses the `listeners` kind; `/lobby/listeners` becomes the Lobby route with an initial view. The server's static paths are unchanged. |
 | §5.3 the page | **Amended in three places** (§3.3, §9): the page header — wordmark, `<h1>Listeners</h1>`, **Back to the Lobby** — is deleted; the counts line is reworded; **Clear filters** is always rendered and now resets the sort. Everything else — search with its debounce, the four facet controls, sort, the grid, Show more, the empty/loading/error states — stands verbatim. |
-| §5.4 the query string | **Amended by §4.** The codec and the `replaceState`-only rule stand word for word; the `inPlace` half of the rule is subsumed by the path test, and `pushState` becomes legal for the **view** change under one precise condition, which §5.4's own reasoning already permits. |
-| §5.5 credentials | **Superseded by §6.** The route's own resolver, join form, 401 rule and refused-secret terminal state are deleted; the session owns all four. The "list changed" hint and the not-persisting bar are unchanged. |
+| §5.4 the query string | **Amended by §4.** The codec stands word for word. The rule around it is restated as one promise — **never push** unless leaving is safe — under which the page's own query string may be rewritten whenever the path is `/lobby/listeners` (§4.5); `writeSearch` loses its `inPlace` parameter with it (§4.3), and `pushState` becomes legal for the **view** change alone, under one precise condition (§4.2). |
+| §5.5 credentials | **Superseded by §6.** The route's own resolver, join form, 401 rule and refused-secret terminal state are deleted; the session owns all four — but a recovery is still **authorised by the view**, which is the only thing that knows whether the failed query is still wanted (§6.1). The "list changed" hint and the not-persisting bar are unchanged. |
 | §5.5 amendments (query-string validation, Show more's `facets: false` and refused cursor) | **Unchanged**, all three. |
 | §7 state and error handling | **Unchanged**, except that the page's "four independent cells" become three: the Lobby pointer and the credential are the session's, not the view's. |
 
@@ -78,8 +80,6 @@ Each of these gets a dated "superseded by" note in the predecessor spec itself (
 ## 3. The view
 
 ### 3.1 Where the state lives, and its type
-
-In [`WeaveView`](../../../src/web/src/components/WeaveView.tsx), as one `useState`:
 
 ```ts
 // src/web/src/lobby-view.ts
@@ -90,22 +90,53 @@ A string union rather than a boolean, because the main area is one slot showing 
 reads better at every call site than `listenersOpen`; and rather than an object, because there is
 nothing else to carry. It is **not** put in `App`'s route state: the route is what the URL says, the
 view is what is on screen, and on a browser that may not write history those two are allowed to
-differ (§4.4).
+differ (§4.5).
 
-`WeaveView` gains two props, both optional and both absent on every non-Lobby page:
+It lives in [`WeaveSession`](../../../src/web/src/components/WeaveRoute.tsx) — the component that
+owns `reloadKey` — as one `useState`, **above** the `key` that rebuilds the page after a join:
 
-| Prop | Meaning |
-| --- | --- |
-| `initialView?: MainArea` | which view this page opened on, derived from the path by `routeOf` and handed down unchanged by `WeaveRoute`. Defaults to `"thread"`. |
-| `canLeave?: boolean` | the positive form of the answer `WeaveMount` already computes with `leavingIsSafe` for `openMainInPlace`. Read on every render; §4.2 is its only consumer. |
+```tsx
+const [reloadKey, setReloadKey] = useState(0);
+// Above the key, deliberately: a join rebuilds everything below it, and which part of the page the
+// human was looking at is not the join's to reset.
+const [main, setMain] = useState<{ view: MainArea; popSeq: number }>(
+  () => ({ view: initialView ?? "thread", popSeq: 0 }));
+return <WeaveMount key={reloadKey} {...props} view={main.view} … />;
+```
 
-It loses one: `openListenersInPlace` (§7).
+**Why above the `key`, and not inside `WeaveView`.** `WeaveView` is the obvious home and it is the
+wrong one. Open `/lobby`, press **Listeners**, and then let the stored token die with no secret
+behind it: the session settles at `no-credential`, the visitor joins, and `reloadKey` remounts
+everything under it ([`WeaveRoute.tsx:93-96`](../../../src/web/src/components/WeaveRoute.tsx)). A
+view held below that key is gone with it, and what comes back is the value the page *opened* on —
+on a durable browser, the Thread, with the address bar still reading `/lobby/listeners`; on a
+memory-only one, where the open never touched the URL, the directory closing itself for no reason a
+human could see. Held in `WeaveSession` the view is neither derived from the URL nor rebuilt: it is
+the same state before and after the join, which is right in both cases and needs no second rule for
+the browser that has no URL to be read back from.
 
-`initialView` is an **initial** value and is never re-read. It cannot go stale: the only remount of
-`WeaveView` inside one page load is `WeaveSession`'s `key={reloadKey}` bump after a join
-([`WeaveRoute.tsx:93-96`](../../../src/web/src/components/WeaveRoute.tsx)), and a join is only
-reachable from the `no-credential` fork, which renders no sidebar and therefore no way to have
-changed the view first (§5).
+(An earlier draft of this spec argued the remount was harmless because the `no-credential` fork
+renders no sidebar, so the view could not have been changed first. That is false: the view is
+changed while the page is perfectly healthy, and it is the credential that dies afterwards.)
+
+`popSeq` sits in the same state object because it has the same owner and the same lifetime: it is
+the directory's `key` (§4.4), bumped only by `popstate`, and the `popstate` listener is registered
+here too — above the join remount, so Back still flips the view after a rejoin.
+
+`WeaveSession` is on every Weave route, not only the Lobby's, and that costs nothing: away from the
+Lobby `initialView` is absent, the gate of §5 is false, and the value is never read.
+
+The props that carry it:
+
+| Where | Prop | Meaning |
+| --- | --- | --- |
+| `WeaveRoute` → `LobbyRoute` → `WeaveSession` | `initialView?: MainArea` | which view this page opened on, derived from the path by `routeOf` and handed down unchanged. Defaults to `"thread"`, absent on every non-Lobby page, and read **once** — to seed the state above, never again. |
+| `WeaveSession` → `WeaveMount` | `setView: (next: MainArea) => void` | the raw setter. |
+| `WeaveMount` → `WeaveView` | `view: MainArea` | what the main area renders. |
+| `WeaveMount` → `WeaveView` | `viewKey: number` | the directory's `key` (§4.4). |
+| `WeaveMount` → `WeaveView` | `onView: (next: MainArea) => void` | the one way the view changes. `WeaveMount` wraps `setView` with §4.2's push, because `WeaveMount` is where `canLeave` already is — so the history permission needs **no new prop**, and nothing below it has a history decision of its own. |
+
+`WeaveView` loses one prop: `openListenersInPlace` (§7).
 
 ### 3.2 The session does not remount
 
@@ -114,10 +145,13 @@ This is the whole point of the change, so it is stated as an invariant with its 
 - `App` renders **one** element for both of the Lobby's addresses (`<WeaveRoute lobbyRoute …/>`), so
   a view flip changes a prop and never the component at that position. Had `listeners` stayed a route
   kind, `App`'s `switch` would return a different element and Preact would unmount the subtree.
-- The view state lives **below** `useSession`, in `WeaveView`; `WeaveMount`'s `useSession` is
-  memoised on `[key, client, storage]` ([`useSession.ts:20`](../../../src/web/src/useSession.ts)) and
-  none of the three changes.
-- No `key` in the chain from `App` to `WeaveView` is a function of the view.
+- The view state is **not part of any key**. It lives in `WeaveSession`, above the session's mount,
+  so a flip re-renders `WeaveMount` at the same position, with the same type and the same
+  `key={reloadKey}` — which is an update, not a remount — and `WeaveMount`'s `useSession` is
+  memoised on `[key, client, storage]` ([`useSession.ts:20`](../../../src/web/src/useSession.ts)),
+  none of which is a function of the view.
+- No `key` in the chain from `App` to `WeaveView` is a function of the view: `reloadKey` is bumped
+  by a join and by nothing else, and `popSeq` is the directory's own key, below the session.
 
 A test asserts it by counting requests, not by inspecting internals (§12).
 
@@ -135,16 +169,38 @@ A test asserts it by counting requests, not by inspecting internals (§12).
 └────────────┴──────────────────────────────────────────────────────┘
 ```
 
-Inside `<div class="main">`, three groups:
+Inside `<div class="main">`, four groups — and **one question** decides which group an element is
+in: *does anything that stays live in the directory view feed it, and does not drawing it destroy
+something?* An element may be thread-view-only only when both answers are no — when it is derived
+from session state that is still there when the Thread comes back, and when nothing that is still on
+screen and still clickable reports through it.
 
 - **Always, in both views** — the `archived` banner, the read-only/`secret-fallback` banner with its
-  **Join**, and the `refreshError` warn bar. Each describes the page or the Weave, not the Thread.
-- **Thread view only** — `InviteBanner`, `MessageList`, the mutation `error` bar and `Composer`. The
-  composer is not rendered in the directory: there is nothing on screen it would post to.
+  **Join**, the `refreshError` warn bar, and the mutation **`error` bar**. The first three describe
+  the page or the Weave, not the Thread. The error bar is in this group for a harder reason:
+  `WeaveView`'s `reportError` is the failure channel of `Header`, `ThreadList`, `GuidelinesPanel`
+  and `RequestsPanel` ([`WeaveView.tsx:121-127`](../../../src/web/src/components/WeaveView.tsx)),
+  every one of which is in the **header or the sidebar** and stays live while the directory is open.
+  Drawn only in the thread view, a failed thread creation, a failed guidelines save, a refused offer
+  or a failed archive would fail **silently** — the button would simply do nothing. The bar belongs
+  to the layout, not to the Thread.
+- **Thread view only** — `InviteBanner` and `MessageList`. Both are pure functions of session state:
+  every line of the invite banner is derived from `state.invitesForMe`, so nothing is destroyed by
+  not drawing it and the same lines are back, unchanged, the moment the Thread is. Nothing reports a
+  failure through either, and the banner's one control — its dismiss, `session.markSeen` — cannot
+  fail. Nor is an invite arriving while the directory is open lost: `ThreadList`'s `invited` badge is
+  in the sidebar, on screen in **both** views, fed by the same `invitesForMe` and cleared by the same
+  `markSeen`. The banner is an invitation to go and read the Thread below it; with no Thread below
+  it there is nothing for it to point at.
+- **Mounted in both, drawn in one** — `Composer`, which keeps what was typed (§3.5).
 - **Directory view only** — `ListenersPage`, under an `<h2>Listeners</h2>`. Demoted from `<h1>`
   because the page's `<h1>` is the Weave title in the header; this is the heading of one region of
   it. The class hook stays `listeners` so the existing selectors keep working, and the deleted
   `listeners-head` block takes the wordmark and **Back to the Lobby** with it (§7).
+
+`NamePrompt` is outside `<div class="main">` altogether, at the foot of the layout, and stays
+exactly where it is: the read-only banner's **Join** is on screen in both views, so the prompt it
+opens has to be too.
 
 The header is **unchanged in both views**: it names the Weave, which is what the page is, and saying
 "Listeners" there would be a second headline for the region below it — the CR3 complaint, moved
@@ -159,8 +215,8 @@ close a deep-linked directory the moment the Lobby became ready. So the intent i
 
 > `ThreadList` gains `onPick?: () => void`, called **after** `session.selectThread(id)` in the thread
 > button's handler and **after** a successful `session.createThread(…)`. `WeaveView` passes a
-> callback that switches to the thread view through the same function the sidebar line uses (§4.2),
-> so picking a Thread pushes `/lobby` exactly as pressing the line pushes `/lobby/listeners`.
+> callback that calls the same `onView` the sidebar line calls (§3.1), so picking a Thread pushes
+> `/lobby` exactly as pressing the line pushes `/lobby/listeners`, under §4.2's one condition.
 
 Creating a Thread closes the directory too, because it selects the new Thread
 ([`session.ts:831`](../../../src/web/src/session.ts)) and leaving the human on the directory would
@@ -170,6 +226,50 @@ hide what they just made.
 and un-marks nothing: `seenUpTo` moves only in `selectThread` and `markSeen`. A message arriving while
 the directory is open updates the Thread list exactly as it does today, and the directory — which has
 no stream and no live updates by design — ignores it.
+
+### 3.5 The composer keeps what was typed
+
+[`Composer`](../../../src/web/src/components/Composer.tsx) holds the message text, the caret, the
+in-flight `busy` flag and its mention state in its own `useState`
+([`Composer.tsx:6-11`](../../../src/web/src/components/Composer.tsx)). Unmounting it in the
+directory view would therefore do the one thing this whole change exists to stop: throw away
+something a human made. Typing half a message, opening the directory to look up who to @-mention,
+and coming back is not an exotic path — it is the **reason** the directory is a view and not a page.
+
+So the composer is **mounted in both views and drawn in one**:
+
+> `WeaveView` renders it exactly where it does today, wrapped in one element that carries the
+> `hidden` attribute while the directory is open:
+>
+> ```tsx
+> {!archived && !readOnly && (
+>   <div class="composer-slot" hidden={view === "listeners"}>
+>     <Composer state={state} onSend={send} draft={draft} />
+>   </div>
+> )}
+> ```
+>
+> `hidden`, and not a class of our own, because it is the one way of being off the page that also
+> takes the textarea out of the accessibility tree and out of the tab order: a hidden composer
+> cannot be typed into by a keyboard that wandered into it, and a screen reader is not offered a
+> message box for a Thread that is not on screen. `composer-slot` is a hook for the design session,
+> and **no rule may give it a `display`** — that would defeat the UA's `[hidden]`.
+
+**Why not lift the text into `WeaveView`.** It is the larger change and it buys less. The text would
+survive; the caret, the `busy` flag of a send in flight, the mention list's highlight and its
+`dismissed` latch would not, and each would have to be lifted in turn or quietly reset. And it would
+force a decision this spec has no business making: today the composer is **not** keyed on
+`state.currentThreadId`, so a draft typed in one Thread follows the human into the next one. Whether
+that is right is a question for another day; lifting the state would answer it as a side effect —
+either reproducing it (one draft for the page) or changing it (a draft per Thread) — in a change
+about the directory. Leaving the component mounted moves nothing: **switching Threads behaves
+exactly as it does today, because nothing about the composer's lifetime has changed.**
+
+**The `draft` prop is untouched.** A send that failed after a join is still handed back through it
+([`WeaveView.tsx:104`](../../../src/web/src/components/WeaveView.tsx)), and the effect that restores
+it still fires on `[draft]`. It may now land in a composer that is hidden — the read-only banner's
+**Join**, and the prompt it opens, are on screen in either view (§3.3) — and the text is waiting,
+with the caret at its end exactly as today, when the Thread comes back.
 
 ## 4. The address bar
 
@@ -209,9 +309,12 @@ the session" a thing to be careful about rather than a thing that cannot happen.
 > `viewOfPath(location.pathname) !== undefined` **and** `leavingIsSafe(storage, notice,
 > weaveKey(lobbyWeaveId))` is true at the moment of the click.
 
-Both halves are re-read per click, the second through the `canLeave` prop `WeaveMount` already
-computes for `openMainInPlace`
-([`WeaveRoute.tsx:134-135`](../../../src/web/src/components/WeaveRoute.tsx)). What is pushed is
+Both halves are re-read per click, and the push is made **in `WeaveMount`**, which already computes
+that second half as `canLeave` for `openMainInPlace`
+([`WeaveRoute.tsx:134-135`](../../../src/web/src/components/WeaveRoute.tsx)): it wraps the setter
+`WeaveSession` handed it and gives `WeaveView` the wrapped `onView` (§3.1). The permission therefore
+needs no new prop, and the one component that knows it is the one component that writes history.
+What is pushed is
 `pathForView(next)` with **no query string**: `/lobby/listeners` on open, `/lobby` on close. The push
 happens **before** the state change, in the same handler, so the view mounts with `location` already
 reading the new path — which is what makes §4.3's seeding rule a single rule with no special case.
@@ -243,19 +346,31 @@ Unchanged from listeners spec §5.4, minus one dead parameter:
   today.
 - **Writing.** [`writeSearch`](../../../src/web/src/components/listeners/listeners-query.ts) keeps
   its body verbatim — `replaceState` only, the exact path test, and the no-op guard — and **loses its
-  `inPlace` parameter**. That parameter existed because a page rendered in place sat on some other
-  path; now the path test *is* the whole rule, and on a browser whose push was skipped the path is
-  `/lobby` and nothing is written. One rule, one condition, stated once.
+  `inPlace` parameter**. What replaces that parameter is not the path test quietly standing in for
+  it: it is the narrower promise of §4.5. The parameter existed because a page rendered in place sat
+  on **another page's path**, and a query string written there would have hung this page's filters
+  off an address that names something else. The path test refuses exactly that, and it refuses
+  nothing else — which is the point: `replaceState` onto the path the browser is **already on** adds
+  no entry, loads nothing, and takes away no address this browser could otherwise have survived.
+  The permission to *leave* is not consulted, because nothing is being left (§4.5).
+- **The directory reads the query string exactly where it writes it.** One condition,
+  `viewOfPath(location.pathname) === "listeners"`, governs both halves, so there is no browser that
+  seeds itself from an address it then refuses to keep up to date — which is the state that leaves
+  an address bar actively lying about what is on screen.
 - Ten keystrokes' worth of filtering are still not ten Back steps, and Back still leaves the
-  directory. That is now literally true: the entry Back returns to is the `/lobby` the open pushed.
+  directory. That is literally true wherever the open was allowed to push: the entry Back returns to
+  is the `/lobby` that push wrote.
 
 ### 4.4 `popstate`
 
-`WeaveView` registers one `popstate` listener in an effect with an empty dependency list, **only**
-when `viewOfPath(location.pathname)` is defined at mount, and removes it on unmount. Registration
-deliberately does **not** depend on `canLeave`: storage can degrade after a push, and a listener torn
-down mid-life would leave Back changing the URL without changing the view. A `popstate` the page never
-caused is harmless — it sets the view to what the URL already says.
+`WeaveSession` registers one `popstate` listener in an effect with an empty dependency list,
+**only** when `viewOfPath(location.pathname)` is defined at mount, and removes it on unmount. It is
+registered there, beside the state it writes and above the join remount (§3.1), so a Back pressed
+after a rejoin still flips the view; nothing is missed by mounting late, since `WeaveSession` is on
+screen before any control that could have pushed. Registration deliberately does **not** depend on
+`canLeave`: storage can degrade after a push, and a listener torn down mid-life would leave Back
+changing the URL without changing the view. A `popstate` the page never caused is harmless — it sets
+the view to what the URL already says.
 
 On each event:
 
@@ -271,16 +386,46 @@ therefore returns to the filtered listeners entry — view flips, filters come b
 string, one fresh query — and Forward returns to the bare `/lobby`, which carries no query string of
 its own and flips to the thread. The filters stay on the entry that owns them. The directory's rows
 and its in-flight query are **not** preserved across a close: the view unmounts, and its seed is
-always the URL.
+always §4.3's one rule.
 
-### 4.5 Where history is never touched
+### 4.5 Where history is never pushed — and the one thing that is still written
 
-On `/weave/<lobbyId>`, on `/w/<secret>`, and on any Lobby page whose `leavingIsSafe` says no: the
-view switches, the URL does not move, filtering rewrites nothing, and no `popstate` listener does
-anything. The URL and the view may then disagree — the same trade `openListenersInPlace` made, minus
-its machinery — and the page already says why: the not-persisting bar is on screen in exactly that
-case. A filtered view cannot be copied as a link there, which is the consequence listeners spec §12.7
-already recorded and accepted.
+**The promise, in one sentence.** This app **never pushes** a history entry unless `leavingIsSafe`
+says the address it would push is one this browser could load again (§4.2). That is the whole of the
+Global Constraint's claim on this feature, and it holds on `/weave/<lobbyId>`, on `/w/<secret>`, on
+any Lobby rendered in place, and on any Lobby page whose storage is degraded: the view switches and
+the URL does not move.
+
+**The exception, stated once and narrowly.** The directory rewrites **its own page's query string**
+whenever `location.pathname` is `/lobby/listeners` — either spelling — whatever `leavingIsSafe`
+says. `replaceState` onto the path the browser is already sitting on adds no entry, loads nothing,
+and leaves reachable exactly the addresses that were reachable a moment before: the entry it
+rewrites is the one the human is on, and a reload of `/lobby/listeners` costs a memory-only browser
+its identity with or without `?q=bob` on the end. There is no version of that URL this browser
+survives, so a query string on it takes nothing away.
+
+This has to be said rather than assumed, because a browser that may not push can be standing on that
+path in two ordinary ways:
+
+1. **A deep link.** `/lobby/listeners` is a public address; anyone may open it cold and then join
+   into a browser that persists nothing (§5). No push ever happened, and the path is still this
+   page's.
+2. **Persistence lost afterwards.** A durable `/lobby` pushes `/lobby/listeners`, and the notice
+   latches later on a failed write. From then on `canLeave` is false: closing the directory no
+   longer pushes `/lobby`, and the address bar stays at `/lobby/listeners` while the Thread is on
+   screen.
+
+In both, filtering keeps the address bar honest about what the directory is showing. The alternative
+— refusing the write — leaves the stale query string of the link the page was opened with on an
+address that names **this** page, which is worse than no query string at all: it is a URL that is
+wrong about the screen it belongs to, and the page would also be seeding itself from an address it
+had decided not to maintain (§4.3).
+
+**What is given up.** Where no push is allowed, the URL and the view may disagree — the same trade
+`openListenersInPlace` made, minus its machinery — and the page already says why: the not-persisting
+bar is on screen in exactly that case. On `/weave/<lobbyId>` and `/w/<secret>` the path is not this
+page's at all, so nothing whatever is written and a filtered view cannot be copied as a link there,
+which is the consequence listeners spec §12.7 already recorded and accepted.
 
 ## 5. The Lobby gate, and every state the page can be in
 
@@ -297,59 +442,127 @@ moment `retryLobbyData` settles it — no second flag, no pending-open state.
 
 | Situation on `/lobby/listeners` | What happens |
 | --- | --- |
-| discovery pending | `LobbyRoute` renders its existing "Loading…" card. `WeaveView` is not mounted yet; the initial view is still in the route. |
+| discovery pending | `LobbyRoute` renders its existing "Loading…" card. `WeaveSession` is not mounted yet; the initial view is still in the route, and nothing can have pushed. |
 | discovery fails | `LobbyRoute`'s existing error card, with its way home. The directory's own duplicate of this card is deleted (§7). |
 | `weave_not_found` — no Lobby | `LobbyRoute`'s existing "This instance has no Lobby yet." |
-| session `loading` | `WeaveView`'s existing "Loading…"; `WeaveView` stays mounted, so the initial view survives and the directory opens on ready. |
+| session `loading` | `WeaveView`'s existing "Loading…". The view state is above it (§3.1) and untouched by a load, so the directory opens on ready — which is also what happens after a credential recovery (§6.3). |
 | session `error` | `WeaveView`'s existing error card. |
-| session `no-credential` — an unjoined visitor | `WeaveRoute`'s existing unjoined-Lobby fork: `JoinLobbyForm` with its own way home. On success `reloadKey` remounts `WeaveMount`, `initialView` is still `"listeners"`, and the visitor lands **in the directory** — the brainstorm's rule, with no code of its own. |
+| session `no-credential` — an unjoined visitor | `WeaveRoute`'s existing unjoined-Lobby fork: `JoinLobbyForm` with its own way home. On success `reloadKey` remounts `WeaveMount`, and the view comes back **as it was**, because it is held above that key (§3.1): a visitor who deep-linked the directory lands in it — the brainstorm's rule — and so does one who opened it here and then lost the credential, including on a browser that was never allowed to put it in the URL. |
 | ready, gate true | the directory. |
 | ready, gate false (pointer unsettled, or not the Lobby) | the Thread; the sidebar line is not rendered either. |
 
-## 6. Credentials: one owner
+## 6. Credentials: one owner, and who may spend a recovery
 
-### 6.1 `session.listListeners(query)`
-
-```ts
-listListeners(query: ListenersQuery): Promise<ListenersPage>;
-```
-
-on the [`Session`](../../../src/web/src/session.ts) object, beside `targets()`. It is a thin wrapper
-with exactly one rule of its own:
+### 6.1 Reading, and spending the credential: two entry points
 
 ```ts
-async listListeners(query) {
-  const myGeneration = generation;
-  try { return await reader.listListeners(query); }
-  catch (e) {
-    // The guard first, and before any side effect: a rejection from a retired generation must not
-    // spend the page's credential recovery, which is the most destructive act on this page.
-    if (disposed || myGeneration !== generation) throw e;
-    const recovered = recoverFromCredentialFailure(e);
-    if (recovered?.reload) void doLoad();
-    throw e;                                  // the caller still has a query that failed to render
-  }
-}
+/** What a query was issued under — which reader asked. Opaque to the view: it exists to be handed back. */
+export type QueryIssue = { readonly generation: number };
+
+listListeners(query: ListenersQuery): { issue: QueryIssue; page: Promise<ListenersPage> };
+/** Told of a rejection by a caller that has **already** established the query is still wanted. */
+reportCredentialFailure(e: unknown, issue: QueryIssue): void;
 ```
+
+on the [`Session`](../../../src/web/src/session.ts) object, beside `targets()`. **Two entry points,
+not one**, and that split is the whole of this section: reading the directory is not the same act as
+spending the page's one credential recovery, and only the second needs an owner.
+
+```ts
+listListeners(query) {
+  // Both read before the request leaves, in one synchronous step: `issue` names the very reader
+  // this asks with. No guard on the answer, because there is nothing to guard — the session does
+  // nothing with it. The page is the view's, and the view's own guard decides whether it is wanted.
+  const issue = { generation };
+  return { issue, page: reader.listListeners(query) };
+},
+reportCredentialFailure(e, issue) {
+  // The reader this query was issued under is not the one the session holds now: a newer load has
+  // replaced it, or the session is disposed. Recovering here would retire a credential on the
+  // strength of a request that proves nothing about the one in hand.
+  if (disposed || issue.generation !== generation) return;
+  const recovered = recoverFromCredentialFailure(e);
+  if (recovered?.reload) void doLoad();
+},
+```
+
+and the call site, which is the other half of the rule and is not optional:
+
+```ts
+const { issue, page } = session.listListeners(queryFromView(next, { limit: PAGE, cursor, facets: cursor === undefined }));
+page.then(onAnswer, (e: unknown) => {
+  if (!live.current || n !== gen.current) return;   // the view's guard, first, as on the answer
+  session.reportCredentialFailure(e, issue);        // only a LIVE query may authorise a recovery
+  /* …then render the failure exactly as any other query failure (§6.2)… */
+});
+```
+
+**Why not one method that recovers for itself.** Because it cannot know whether anybody is still
+waiting. A `listListeners` that caught its own 401 would run the recovery **inside** the session,
+before the view's `n === gen.current` guard ever ran: query B supersedes A, A comes back 401, and the
+page invalidates its identity and reloads on the strength of an answer nobody wanted. Worse, the
+session outlives the view — the same 401 landing after the directory was closed, or after
+`WeaveView` itself was replaced, would still spend the one fallback there is. This is the defect the
+predecessor work fixed three times, on the own-profile read, on the count read and on the
+directory's own rejection handler, and each time the fix was the same sentence: **the guard comes
+before any side effect, on rejections as much as on answers**
+([`session.ts:323`](../../../src/web/src/session.ts),
+[`session.ts:359-363`](../../../src/web/src/session.ts)). A rejection cannot be trusted to guard
+itself; only the thing that is waiting for it knows whether it still is.
+
+**Why the ticket comes out of the query, and not from a getter.** `issue` is handed back by the call
+that made the request, so it cannot be captured a moment too late. A `session.currentGeneration()`
+the view read *after* its await would return the generation of the reader that **replaced** the one
+the query used, and would authorise precisely the recovery this rule exists to refuse.
+
+**The two guards answer different questions, and both are needed.**
+
+- The **view's** guard answers *is anyone waiting for this?* — is this still the newest query this
+  directory asked, and is the directory still mounted. The session cannot answer it: `gen.current`
+  and `live.current` are the view's.
+- The **session's** guard answers *is this evidence about the credential I hold?* — a view can be
+  perfectly live and still be holding a rejection from a reader the session has since replaced. It
+  is the same question, and the same counter, that `readListenerCount` asks on its own rejection
+  ([`session.ts:363`](../../../src/web/src/session.ts)). `generation` is the right name for "which
+  reader": it is bumped by `doLoad` **before** `reader` is reassigned
+  ([`session.ts:614`](../../../src/web/src/session.ts), `:630`), by the retirement inside
+  `recoverFromCredentialFailure` ([`session.ts:201`](../../../src/web/src/session.ts)) and by
+  `dispose`, and by nothing else — so a live generation *is* the reader the query went out with.
+
+**Every rejection, and what it does.**
+
+| The rejection | What happens |
+| --- | --- |
+| Query A superseded by B; A returns 401 | The **view's** guard drops it. `reportCredentialFailure` is never reached; nothing is read, written or reported. |
+| A 401 landing after the directory was closed, or after `WeaveView` unmounted | The view's `live` ref drops it, for the same reason. The promise is handled either way, so there is no unhandled rejection. |
+| A 401 landing after the session has already fallen back to the secret | The view may be perfectly live — a newer mount with an older query still in flight — so the **session's** guard is what refuses it: `issue.generation` is the retired reader's. Nothing is invalidated a second time. |
+| Two queries of the same generation both 401 | The first recovers. Recovery bumps the generation **synchronously** — `doLoad` bumps before its first `await`, the no-credential branch bumps in place — so the second is refused by the session's guard. Exactly one recovery. |
+| A live 401 while reading with the **token**, a secret stored | `recoverFromCredentialFailure` invalidates the identity (keeping the secret), reports the `WriteResult`, answers `{ reload: true }`, and the session calls `doLoad()`, which re-picks the reader (§6.3). |
+| A live 401 while reading with the **token**, no secret | The same helper retires the stream and the generation and settles the session at `no-credential`; `WeaveRoute`'s join fork replaces the page (§5). |
+| A live 401 while reading with the **secret** | `undefined` — an ordinary query error (§6.2, row 3). |
+| A live failure that is not a credential failure at all | `undefined`, for the same reason: `isCredentialFailure` is asked **inside** the session, so the view never has to know what a credential failure looks like (§7). |
+
+Three notes on what did not change:
 
 - **The page reader**, `reader`, exactly as `readListenerCount` and `readRequests` use it
   ([`session.ts:350`](../../../src/web/src/session.ts)). The directory therefore reads with the
   credential the page next to it reads with — the token while the identity is usable, the stored
   secret when it is not. **One credential owner**, which is the whole of this section.
-- **The generation guard** is the count read's, for the count read's reason. `reader` is evaluated
-  before the `await`, so a reload landing mid-flight cannot change which credential this request was
-  made with.
-- **It re-throws.** The session's job is the credential; the query's answer and its failure belong to
-  the view, which already has a generation guard, an error cell and a "keep the rows" rule.
-- **Disposed** is the same as retired: re-throw without recovery. The view's own `live` ref drops the
-  rejection, as it does today.
+- `reader` is read before the request leaves, in the same step as `issue`, so a reload landing
+  mid-flight cannot change which credential this request was made with — and `issue` names that
+  reader and no other.
+- **The view still renders the failure.** The session's job is the credential; the query's answer and
+  its failure belong to the view, which already has a generation guard, an error cell and a "keep the
+  rows" rule. `reportCredentialFailure` returns nothing to branch on: where it recovered, `doLoad`
+  takes the page to `loading` and the directory unmounts under the error it has just painted (§6.3);
+  where it did not, that error is the only thing that happened.
 
 ### 6.2 What replaces each of `ListenersRoute`'s four forks
 
 | Old behaviour (listeners spec §5.5) | What replaces it |
 | --- | --- |
 | No credential at all → the route's own `JoinLobbyForm` | The session reaches `no-credential` and `WeaveRoute`'s unjoined-Lobby fork replaces the whole page (§5). The directory is not on screen. |
-| 401/403 while reading with the **token** → `invalidateIdentity` + `key` remount on the secret | `recoverFromCredentialFailure` does exactly this — invalidate (keeping the secret), report the `WriteResult`, answer `{ reload: true }` — and `doLoad()` re-picks the reader. |
+| 401/403 while reading with the **token** → `invalidateIdentity` + `key` remount on the secret | `recoverFromCredentialFailure` does exactly this — invalidate (keeping the secret), report the `WriteResult`, answer `{ reload: true }` — and `doLoad()` re-picks the reader. It is reached only through `reportCredentialFailure`, and only for a query that is still live under the reader that made it (§6.1). |
 | 401/403 while reading with the **secret** → the terminal "The Lobby refused the link this browser holds." card | **Nothing, deliberately.** `recoverFromCredentialFailure` answers `undefined` for a page-credential failure while not reading with a token, so it is an ordinary query error: the message goes above the rows that are on screen and the rows stay. The loop the amended §5.5 was written against cannot happen here — the session's `retriedWithSecret` latch is the same one-fallback-per-identity rule, and it is not the view's to spend. |
 | `getLobby()` failures | `LobbyRoute`'s, already (§5). |
 
@@ -358,12 +571,16 @@ async listListeners(query) {
 No new session state, and no signal to plumb: `doLoad()` sets `status: "loading"`
 ([`session.ts:626`](../../../src/web/src/session.ts)), `WeaveView` renders its loading card, the
 directory **unmounts**, and on ready it mounts again and makes its first query with the new
-credential. `WeaveView` itself is not unmounted, so the view stays open across the round trip.
+credential. The view state is above all of it (§3.1) and a load does not touch it, so the directory
+is what comes back — whether the round trip ended in a reload or in a join through the fork.
 
-The cost, stated: that remount re-seeds from the URL, so a durable browser keeps its filters (they
-are in the query string) and a memory-only browser loses them (they never were). Acceptable — a
-browser that cannot keep a credential has just had one replaced, and it could not have reloaded the
-page either.
+The cost, stated: that remount re-seeds from the URL, so the filters survive exactly where the
+address bar holds them — which by §4.5 is **every browser sitting on `/lobby/listeners`**, durable
+or not, the deep-linked memory-only one included. They are lost only where the path was never this
+page's: a Lobby rendered in place, `/weave/<lobbyId>`, `/w/<secret>`, and a `/lobby` whose open was
+not allowed to push. Acceptable — and it is the same round trip that makes closing and reopening the
+directory bring the filters back on a page whose URL holds them, because that URL is the only memory
+the directory has and §4.5 is what keeps it honest.
 
 ## 7. What is deleted, and what is kept verbatim
 
@@ -380,8 +597,10 @@ page either.
 - `ListenersPage`'s props `reader`, `lobbyId`, `inPlace`, `storage`, `notice`, `openInPlace`,
   `openMainInPlace`, `onCredentialFailure`; its whole `listeners-head` element — the `Loom` wordmark,
   `<h1>Listeners</h1>` and **Back to the Lobby** in both forms; and with them its `leavingIsSafe`
-  call and its `weaveKey`/`PersistenceNotice` imports. What is left is `{ session: Session }` — the
-  directory reads nothing from session state.
+  call and its `weaveKey`/`isCredentialFailure`/`PersistenceNotice` imports — "is this a credential
+  failure?" now has exactly one asker, inside the session (§6.1), and the view's failure path is one
+  branch shorter for it. What is left is `{ session: Session }` — the directory reads nothing from
+  session state.
 - `writeSearch`'s `inPlace` parameter (§4.3).
 - The tests that covered each of the above (§12).
 
@@ -464,9 +683,31 @@ Confirmed by reading the code, not assumed:
   failure in one still never blanks another.
 - **A failed listeners query never costs the page anything else.** It is not part of a refresh, not
   part of a `Promise.all`, and the session's only involvement is the credential rule of §6.1.
-- **A superseded query's 401 still writes nothing.** The view's generation guard runs before it calls
-  the session, exactly as it runs before it renders an answer, and the session's own guard is behind
-  it.
+- **A superseded query's 401 writes nothing, and two guards say so.** The view's
+  generation-and-mounted guard runs first, before the session is told anything at all — so the
+  session is never asked to recover for a query nobody is waiting for, nor for one whose owner has
+  unmounted. Behind it, `reportCredentialFailure` compares the generation the query was **issued**
+  under with the one the session holds now, so a rejection from a reader that has already been
+  replaced is refused even when the view asking is perfectly live. Reading and spending the
+  credential are two calls precisely so that the first cannot perform the second (§6.1).
+- **Nothing on the read path is authorised by the session alone.** `listListeners` performs no side
+  effect whatever — no write, no `onWrite`, no `set()`, no `doLoad` — on the answer or on the
+  rejection.
+- **A mutation failure is visible in both views.** `reportError` is the failure channel of the header
+  and of all three sidebar panels, every one of which stays live while the directory is open, so the
+  bar it feeds is rendered in both (§3.3). Nothing that can still be clicked reports into a bar that
+  is not on screen.
+- **What a view switch destroys, deliberately, and what it does not.** Destroyed: the directory's
+  rows, facets, "list changed" baseline and in-flight query when it closes (§4.4, §15), and the
+  message list's scroll position when the Thread comes back — `MessageList` holds no scroll state of
+  its own and its one effect scrolls to the newest message on mount
+  ([`MessageList.tsx:53`](../../../src/web/src/components/MessageList.tsx)), so a human who had
+  scrolled up is returned to the bottom. That is a smaller loss than today's, where opening the
+  directory tore the whole session down, and putting it back needs a scroll-position mechanism this
+  change does not have (§15). Not destroyed: the composer's text, caret and in-flight send (§3.5),
+  `ThreadList`'s open **New thread** form with both its fields, `ThreadTools`, `GuidelinesPanel`'s
+  open editor and its draft, and `RequestsPanel`'s open request form, its per-request offer notes,
+  its accept form and its countdown — every one of those is in the sidebar, which never unmounts.
 - **An error is still never an empty state**, and `updating…` still keeps the rows on screen. The
   rules the directory already passes are unchanged by the move.
 
@@ -506,28 +747,59 @@ instance refuses"; and `ListenersLink`'s link-versus-button tests.
    exactly one query carrying `q=ada`.
 7. `/weave/<lobbyId>` and `/w/<lobby secret>`: the directory opens and filters, and neither
    `pushState` nor `replaceState` is called.
-8. Memory-only `/lobby` (a degraded notice, and a pending storage key): same — the view switches,
-   filtering works, the address bar never changes.
-9. A 401 from a listeners query goes through the session: the identity is invalidated, the secret is
-   kept, the next query carries the secret, and the directory is still on screen. With no secret to
-   fall back to, the page settles at `no-credential` and the join fork replaces the layout. The store
-   assertions live in `session.test.ts` against a real server; what is on screen is asserted here.
-10. `session.listListeners` re-throws a failure the view renders, and drops a retired generation's
-    rejection without touching storage (`session.test.ts`).
+8. Memory-only `/lobby` (a degraded notice, and a pending storage key): the view switches, filtering
+   works, and the address bar never changes — no push, so the path stays `/lobby` and `writeSearch`
+   has nothing to write to.
+9. **A live 401 recovers, exactly once.** From the open directory, a query answered `401`: the
+   identity is invalidated, the secret is kept, the next query carries the secret, the directory is
+   still on screen and the rows that were there are still there. Two rejections from the same
+   generation cause **one** invalidation. With no secret to fall back to, the page settles at
+   `no-credential` and the join fork replaces the layout. The store assertions live in
+   `session.test.ts` against a real server; what is on screen is asserted here.
+10. `session.listListeners` has no side effect of its own: it hands back the rejection for the view
+    to render and writes **nothing**, not even for a 401 — a recovery happens only when
+    `reportCredentialFailure` is called for that query (`session.test.ts`).
 11. **Clear filters**: rendered at defaults and disabled there; enabled by one keystroke before the
     debounce fires; resets sort and direction as well as the filters; leaves the address bar at a bare
     `/lobby/listeners`.
 12. The counts line in both forms, word for word.
-13. Picking a Thread closes the directory; creating one closes it too; the composer is not rendered
-    while the directory is open; an event arriving while it is open still updates the Thread list.
+13. Picking a Thread closes the directory; creating one closes it too; the composer is not *drawn*
+    while the directory is open — its wrapper carries `hidden`, so it is out of the tab order and out
+    of the accessibility tree; an event arriving while it is open still updates the Thread list.
+14. **A recovery is authorised only by a live query.** Three ways it must not be, and none of them
+    writes to storage or moves `status` (`session.test.ts` for the first and third, the DOM suite for
+    the second):
+    a. a 401 for a query the view has already superseded — `reportCredentialFailure` is never
+       reached, because the view's own guard returns first;
+    b. a 401 that lands after the directory was closed, and one that lands after `WeaveView` has
+       unmounted entirely;
+    c. a 401 whose `issue` was taken before a reload the session has since completed — reported by a
+       live view, and refused by the session's own generation guard.
+15. **The draft survives the round trip.** Type into the composer, open the directory, come back: the
+    text and the caret are where they were, and the send that follows posts exactly that text. The
+    hand-back is unchanged — a send that fails after a join still returns its text to the composer,
+    and it is still there after a trip through the directory. Switching Threads behaves as it does
+    today, which this test pins so the next change cannot move it by accident.
+16. **A mutation failure is visible while the directory is open.** A failed `createThread` from the
+    sidebar, and a failed guidelines save, each put their message in the shared error bar with the
+    directory on screen.
+17. **A rejoin restores the view.** Open the directory, let the token die with no stored secret, join
+    through the fork: the directory is what comes back. Twice — on a durable browser, where the
+    address bar reads `/lobby/listeners` throughout, and on a memory-only one, where it never left
+    `/lobby` and the view is the only record there is.
+18. **One history rule, in the two cases the path test alone got wrong.** A deep-linked memory-only
+    `/lobby/listeners`: filtering **replaces** the query string, and `pushState` is never called — not
+    by a filter, not by the sidebar line, not by picking a Thread. A durable `/lobby` that opens the
+    directory and then loses persistence: filtering still replaces, closing the directory pushes
+    nothing, and the address bar stays at `/lobby/listeners` with the Thread on screen.
 
 ## 13. Docs to update
 
 | Doc | Change |
 | --- | --- |
-| `docs/ARCHITECTURE.md` §9 | the route table: `/lobby/listeners` is the Lobby with the directory open, not a page of its own; the in-place mirrors go back to two; a new paragraph for the one `pushState` rule beside `leavingIsSafe`; the component list loses `ListenersRoute` |
-| `docs/ARCHITECTURE.md` §12 | one sentence: the directory is read through `session.listListeners`, which is the page's own reader — core's Listeners paragraph is otherwise unchanged |
-| `docs/TESTING.md` smoke test 6 | **step 3** rewritten (the line is a button; pressing it keeps the header, sidebar and connection and swaps the main area; the address bar reads `/lobby/listeners`); **step 8** rewritten (Back leaves the directory and returns to the live Thread, Forward comes back with the filters; filter changes are still not history entries); **step 10** rewritten (blocked site data: the view still opens, the address bar never moves, and the way back is the Thread list, not a "Back to the Lobby" link). The 2026-09-20 run record stays, marked as the run that produced this spec |
+| `docs/ARCHITECTURE.md` §9 | the route table: `/lobby/listeners` is the Lobby with the directory open, not a page of its own; the in-place mirrors go back to two; a new paragraph beside `leavingIsSafe` for the one history rule — never **push** unless leaving is safe, and the page's own query string rewritten wherever the path is this page's (§4.5); the component list loses `ListenersRoute` |
+| `docs/ARCHITECTURE.md` §12 | two sentences: the directory is read through `session.listListeners`, which is the page's own reader, and a credential recovery is authorised by the **view** through `session.reportCredentialFailure` — core's Listeners paragraph is otherwise unchanged |
+| `docs/TESTING.md` smoke test 6 | **step 3** rewritten (the line is a button; pressing it keeps the header, sidebar and connection and swaps the main area; the address bar reads `/lobby/listeners`; a half-written message left in the composer is still there on the way back); **step 8** rewritten (Back leaves the directory and returns to the live Thread, Forward comes back with the filters; filter changes are still not history entries); **step 10** rewritten (blocked site data: the view still opens, the address bar never moves, and the way back is the Thread list, not a "Back to the Lobby" link). The 2026-09-20 run record stays, marked as the run that produced this spec |
 | `docs/KNOWN-ISSUES.md` | the appearance row (the directory's look, still unsigned) narrowed to what this change does not settle and re-pointed at the design session; the `ListenersPage` size row re-measured; the "no live updates" and "`partial` latches" rows unchanged |
 | `src/web/README.md` | the routes table row for `/lobby/listeners`; `ListenersRoute` out of the component list; the in-place pair description; `session.listListeners` added beside the count read |
 | `docs/REVIEW-BRIEF.md` | the web row and the "where to look first" list |
@@ -539,13 +811,16 @@ instance refuses"; and `ListenersLink`'s link-versus-button tests.
 Four task-sized steps; each ends green.
 
 1. **The route and the view shell.** `lobby-view.ts`; `Route`/`routeOf`/`App` (the `listeners` kind
-   and `openListenersInPlace` deleted); `WeaveView`'s view state, its three render groups, the
-   `<h2>`; `ListenersLink` as a toggle; `ThreadList`'s `onPick`. `ListenersPage` still mounted with
-   its old props behind a temporary adapter so the suite stays green. DOM tests 2, 3, 13.
-2. **`session.listListeners`, and `ListenersPage`'s new props.** The session wrapper with its
-   guard and recovery; `ListenersPage` down to `{ session }`; `ListenersRoute` deleted; `writeSearch`
-   loses `inPlace`; the seeding rule. Tests 9, 10, plus the re-homed blocks.
-3. **History.** The push rule, the `popstate` listener, the `popSeq` key. Tests 4, 5, 6, 7, 8.
+   and `openListenersInPlace` deleted); the view state in `WeaveSession` and the prop chain down to
+   `WeaveView`; the four render groups, the hidden composer slot, the shared error bar, the `<h2>`;
+   `ListenersLink` as a toggle; `ThreadList`'s `onPick`. `ListenersPage` still mounted with its old
+   props behind a temporary adapter so the suite stays green. DOM tests 2, 3, 13, 15, 16.
+2. **`session.listListeners` / `reportCredentialFailure`, and `ListenersPage`'s new props.** The two
+   entry points with their guards; `ListenersPage` down to `{ session }` and its failure path down to
+   one branch; `ListenersRoute` deleted; `writeSearch` loses `inPlace`; the seeding rule. Tests 9,
+   10, 14, plus the re-homed blocks.
+3. **History.** The push rule in `WeaveMount`, the `popstate` listener, the `popSeq` key. Tests 4, 5,
+   6, 7, 8, 17, 18.
 4. **Wording and docs.** CR2, CR5, then §13 in one commit. Tests 11, 12.
 
 Step 1 is the only one that touches a component every Weave page renders, so it is first and on its
@@ -558,6 +833,10 @@ and the easiest to get wrong without the rest already settled.
   session. This spec deliberately names no styling.
 - **Remembering the directory's rows across a close.** Reopening re-queries; a cache would have to
   answer "how stale is too stale" for a directory that already refuses to update itself live.
+- **Keeping the message list's scroll position across a view switch.** The Thread comes back
+  scrolled to its newest message (§11). Preserving it means giving `MessageList` a scroll memory it
+  has never had, and answering "where should it land when six messages arrived while you were away?"
+  — a question worth asking on its own, not as a side effect of this change.
 - **A view for anything else in the main area** (a Weave switcher, a paged participant list).
   `MainArea` is a union so that adding one is a case rather than a rewrite; nothing else is designed.
 
@@ -572,22 +851,44 @@ does not settle it.
    rather than `aria-pressed`, to match the Thread buttons beside it (§8).
 3. `ThreadList` gains an `onPick` prop, and **creating** a Thread closes the directory as well as
    selecting one (§3.4).
-4. `WeaveView` keeps rendering the archived, read-only and refresh-error banners in the directory
-   view, and renders `InviteBanner`, `MessageList`, the mutation error bar and `Composer` only in the
-   thread view (§3.3).
-5. The directory **unmounts** when closed and re-seeds from the URL on every open, and every
+4. The view state (and `popSeq`, and the `popstate` listener) lives in **`WeaveSession`**, above
+   `key={reloadKey}`, so a join rebuilds the page under it without resetting which part of the page
+   the human was looking at; `WeaveView` takes `view`, `viewKey` and `onView` as props and owns none
+   of it (§3.1).
+5. The push of §4.2 is made in **`WeaveMount`**, which wraps the setter before handing it on, so the
+   `leavingIsSafe` permission needs no new prop and no component below it makes a history decision
+   (§3.1, §4.2).
+6. `WeaveView` keeps rendering the archived, read-only and refresh-error banners **and the mutation
+   error bar** in both views, because the header and all three sidebar panels report through that bar
+   and stay live in the directory view; `InviteBanner` and `MessageList` are thread-view-only, on the
+   ground that both are pure functions of session state and the sidebar's `invited` badge carries the
+   invite in both views (§3.3).
+7. `Composer` is **mounted in both views and hidden** in the directory, in a `composer-slot` wrapper
+   carrying the `hidden` attribute, rather than unmounted — so the text, the caret, an in-flight send
+   and today's cross-Thread draft behaviour are all unchanged. The `draft` hand-back is untouched
+   (§3.5).
+8. The message list's **scroll position is not preserved** across a view switch: the Thread comes
+   back at its newest message (§11, §15).
+9. The directory **unmounts** when closed and re-seeds by §4.3's one rule on every open, and every
    `popstate` remounts it through a `popSeq` key (§4.4).
-6. No new `SessionState` field: the re-query after a credential recovery comes from the existing
-   `loading` → `ready` round trip (§6.3).
-7. `writeSearch` loses its `inPlace` parameter, the path test being the whole of the rule (§4.3).
-8. The refused-secret terminal card has **no** replacement: it becomes an ordinary query error
-   (§6.2).
-9. `ListenersPage` takes `{ session }` alone — it reads nothing from `SessionState` (§7).
-10. The view's own heading is `<h2>Listeners</h2>` inside the main area, and the page header is
+10. `session.listListeners` returns `{ issue, page }` and performs no side effect; a credential
+    recovery happens only through `session.reportCredentialFailure(e, issue)`, called by the view
+    **after** its own liveness guard, and refused by the session unless `issue.generation` is still
+    the session's (§6.1).
+11. No new `SessionState` field: the re-query after a credential recovery comes from the existing
+    `loading` → `ready` round trip (§6.3).
+12. The history rule is **never push** unless leaving is safe; the page's own query string is
+    rewritten wherever `location.pathname` is `/lobby/listeners`, whatever `leavingIsSafe` says, and
+    `writeSearch` therefore loses its `inPlace` parameter without gaining another (§4.3, §4.5).
+13. The refused-secret terminal card has **no** replacement: it becomes an ordinary query error
+    (§6.2).
+14. `ListenersPage` takes `{ session }` alone — it reads nothing from `SessionState`, and it no
+    longer asks whether a failure is a credential failure (§7).
+15. The view's own heading is `<h2>Listeners</h2>` inside the main area, and the page header is
     unchanged in both views (§3.3).
-11. **Clear filters**' disabled test uses the raw draft box, so a single typed space leaves it live
+16. **Clear filters**' disabled test uses the raw draft box, so a single typed space leaves it live
     (§9).
-12. On a memory-only browser the URL and the view are allowed to disagree, with no notice of its own
-    beyond the persistence bar already on screen (§4.5).
-13. No core, server or client change — verified against `src/server/src/app.ts` and the existing
+17. Where no push is allowed the URL and the view may disagree, with no notice of its own beyond the
+    persistence bar already on screen (§4.5).
+18. No core, server or client change — verified against `src/server/src/app.ts` and the existing
     client method (§10).
