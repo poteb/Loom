@@ -75,8 +75,21 @@ const QUERY_KEYS = ["q", "models", "tools", "runtime", "serves", "sort", "dir", 
 /** How much of a rejected key the message repeats. It is a value out of a URL, so it is bounded. */
 const MAX_SHOWN_KEY = 64;
 
-/** Postgres text cannot carry `\u0000` (22021) and jsonb rejects it too; the rest of C0 matches no name or owner. */
-const CONTROL_CHAR_RE = /[\u0000-\u001f]/;
+/**
+ * The one character this read path really cannot carry, checked against a live Postgres rather
+ * than assumed: a text bind parameter holding a `\u0000` is 22021 "invalid byte sequence for encoding
+ * UTF8", and the same value inside a jsonb parameter is 22P05 "unsupported Unicode escape
+ * sequence". Every other C0 character — a tab, a newline, `\u0001`, `\u001f` — travels through
+ * `ILIKE`, through `@>` containment and through a text cursor key untouched.
+ *
+ * So NUL is all this validator refuses. `validateProfile` accepts a tab or a newline inside an
+ * `owner`, a tool, a runtime, a model or an effort and Postgres stores every one of them, which
+ * means **this query itself hands them out** — in a facet value and in a cursor key. Refusing the
+ * whole C0 range made the directory refuse its own output: Show more died at a page boundary whose
+ * owner held a newline, and a facet chip whose tool held a tab could not be clicked (spec §§2.4-2.5,
+ * §5.3; PR #20 review round 1).
+ */
+const NUL_RE = /\u0000/;
 
 /**
  * Bounds, defaults and normalisation — all of it here, because the adapters carry types only.
@@ -105,8 +118,9 @@ export function validateListenersQuery(input: ListenersQuery = {}): CleanQuery {
   const q = input.q?.trim();
   if (q !== undefined && q.length > MAX_Q) throw errors.validation(`q must be at most ${MAX_Q} characters`);
   // `q` becomes an `ILIKE` bind parameter, and a `\u0000` in a text parameter is 22021 "invalid byte
-  // sequence for encoding UTF8" — a 500 for a value that came out of the address bar.
-  if (q !== undefined && CONTROL_CHAR_RE.test(q)) throw errors.validation("q must not contain control characters");
+  // sequence for encoding UTF8" — a 500 for a value that came out of the address bar. Only that one:
+  // an owner may hold a tab or a newline, and searching for the owner the cards show has to work.
+  if (q !== undefined && NUL_RE.test(q)) throw errors.validation("q must not contain a NUL character");
   // An empty filter is no filter: `matches` accepts every profile for `tools: []`, and a control
   // that goes from one chip to none must not be a 400. **Only an actually empty array** — `?.length`
   // is a truthiness test, and `{}`, `5` and `null` are all falsy-length: each would be silently
@@ -123,11 +137,13 @@ export function validateListenersQuery(input: ListenersQuery = {}): CleanQuery {
   // does not have and no listener filter offers.
   const { models, tools, runtime } = req;
   // The same hole one level down. These three end up inside a jsonb containment bind parameter, and
-  // jsonb answers a `\u0000` with "unsupported Unicode escape sequence" — another 500 out of a URL.
-  // `validateRequirements` is shared with requests and profiles, so the rule is applied here.
+  // jsonb answers a `\u0000` with 22P05 "unsupported Unicode escape sequence" — another 500 out of a
+  // URL. `validateRequirements` is shared with requests and profiles, so the rule is applied here.
+  // Again the NUL and nothing else: a stored tool, runtime, model or effort may hold a tab or a
+  // newline, `@>` matches it, and this answer's own facets list it as a chip to click.
   const filterStrings = [runtime, ...(tools ?? []), ...(models ?? []).flatMap((m) => [m.model, m.effort])];
-  if (filterStrings.some((s) => s !== undefined && CONTROL_CHAR_RE.test(s))) {
-    throw errors.validation("filters must not contain control characters");
+  if (filterStrings.some((s) => s !== undefined && NUL_RE.test(s))) {
+    throw errors.validation("filters must not contain a NUL character");
   }
   if (input.serves !== undefined && !["anyone", "owner", "list"].includes(input.serves)) {
     throw errors.validation("serves must be anyone, owner or list");
@@ -202,10 +218,12 @@ export function decodeCursor(raw: string, sort: ListenersSort, dir: "asc" | "des
     const leap = (yr! % 4 === 0 && yr! % 100 !== 0) || yr! % 400 === 0;
     const daysIn = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     if (yr! < 1 || mo! < 1 || mo! > 12 || day! < 1 || day! > daysIn[mo! - 1]! || hh! > 23 || mm! > 59 || ss! > 59) throw bad();
-  } else if (k.length === 0 || k.length > MAX_KEY || CONTROL_CHAR_RE.test(k)) {
+  } else if (k.length === 0 || k.length > MAX_KEY || NUL_RE.test(k)) {
     // `lower(name)` and `lower(capabilities->>'owner')` are both non-empty by invariant, so an empty
-    // key names no row this query could have been at. A control character names no row either, and a
-    // `\u0000` in the text bind parameter would be 22021 rather than an empty page.
+    // key names no row this query could have been at, and a `\u0000` in the text bind parameter
+    // would be 22021 rather than an empty page. No other control character is refused: an owner key
+    // is rendered by Postgres out of a stored owner, so a newline in one is a key **this query
+    // issued**, and the caller is handing it straight back (spec §2.5).
     throw bad();
   }
   return { s: sort, d: dir, k, i };

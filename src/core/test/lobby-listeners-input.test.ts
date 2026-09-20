@@ -47,8 +47,15 @@ describe("validateListenersQuery q", () => {
     expect(codeOf(q({ q: "a\u0000b" }))).toBe("validation");
   });
 
-  it("rejects a tab in q, which can match no name or owner", () => {
-    expect(codeOf(q({ q: "a\tb" }))).toBe("validation");
+  // A tab or a newline inside an owner is something `validateProfile` accepts and Postgres stores,
+  // so the directory really does emit one — in a facet value and in a cursor key. Refusing it here
+  // refused this query's own output (PR #20 review round 1).
+  it("keeps a tab in q, which an owner really can carry", () => {
+    expect(validateListenersQuery({ q: "a\tb" }).q).toBe("a\tb");
+  });
+
+  it("keeps a newline in q", () => {
+    expect(validateListenersQuery({ q: "a\nb" }).q).toBe("a\nb");
   });
 
   it("keeps a q of non-ASCII letters, which are not control characters", () => {
@@ -127,7 +134,7 @@ describe("validateListenersQuery rejects an unknown key", () => {
   });
 });
 
-describe("validateListenersQuery rejects control characters in a filter", () => {
+describe("validateListenersQuery rejects a NUL in a filter", () => {
   it("rejects a NUL in a tool, which jsonb containment cannot carry", () => {
     expect(codeOf(q({ tools: ["a\u0000b"] }))).toBe("validation");
   });
@@ -142,6 +149,31 @@ describe("validateListenersQuery rejects control characters in a filter", () => 
 
   it("rejects a NUL in a model effort", () => {
     expect(codeOf(q({ models: [{ model: "m", effort: "a\u0000b" }] }))).toBe("validation");
+  });
+});
+
+/**
+ * NUL and nothing else. `validateProfile` stores a tab or a newline inside a tool, a runtime, a
+ * model or an effort, and Postgres carries every one of them through `@>` containment — so each is
+ * a value this query's **own facets** hand out, and a facet value that cannot be selected is a chip
+ * that does nothing (PR #20 review round 1).
+ */
+describe("validateListenersQuery keeps the other control characters in a filter", () => {
+  it("keeps a tab in a tool, which a stored tool really can carry", () => {
+    expect(validateListenersQuery({ tools: ["a\tb"] }).tools).toEqual(["a\tb"]);
+  });
+
+  it("keeps a newline in the runtime", () => {
+    expect(validateListenersQuery({ runtime: "a\nb" }).runtime).toBe("a\nb");
+  });
+
+  it("keeps a tab in a model name", () => {
+    expect(validateListenersQuery({ models: [{ model: "a\tb" }] }).models).toEqual([{ model: "a\tb" }]);
+  });
+
+  it("keeps a newline in a model effort", () => {
+    expect(validateListenersQuery({ models: [{ model: "m", effort: "a\nb" }] }).models)
+      .toEqual([{ model: "m", effort: "a\nb" }]);
   });
 });
 
@@ -394,6 +426,20 @@ describe("cursor codec: a text key is bounded", () => {
   it("keeps a key of non-ASCII letters, which are not control characters", () => {
     const k = "žofia 日本";
     expect(decodeCursor(encodeCursor(cursor(k)), "name", "asc").k).toBe(k);
+  });
+
+  // `lower(capabilities->>'owner')` is what an owner cursor key is, and an owner may carry a tab or
+  // a newline — so this query issues such a key itself. Refusing it back broke Show more at exactly
+  // that page boundary (PR #20 review round 1). A `name` key cannot: `NAME_RE` (`names.ts`) allows
+  // only `A-Za-z0-9_.-`, so no name has ever carried a control character.
+  it("keeps a newline in an owner key, which is a key this query really emits", () => {
+    const k = "a\nb";
+    expect(decodeCursor(encodeCursor(cursor(k, "owner")), "owner", "asc").k).toBe(k);
+  });
+
+  it("keeps a tab in an owner key", () => {
+    const k = "a\tb";
+    expect(decodeCursor(encodeCursor(cursor(k, "owner")), "owner", "asc").k).toBe(k);
   });
 });
 

@@ -402,11 +402,19 @@ describe("GET /api/lobby/listeners", () => {
     expect(r.json.matched).toBe(r.json.total);
   });
 
-  it("refuses a q carrying a control character as validation, not as a crash", async () => {
+  it("refuses a q carrying a NUL as validation, not as a crash", async () => {
     const d = await directory();
     const r = await api(s.baseUrl, "GET", "/api/lobby/listeners?q=%00", undefined, d.ada.token);
     expect(r.status).toBe(400);
     expect(r.json.code).toBe("validation");
+  });
+
+  // Every other control character is one a stored `owner` really can carry, so the route has to
+  // carry it too: this is the search a facet chip or a pasted link makes (PR #20 review round 1).
+  it("answers a q carrying a tab", async () => {
+    const d = await directory();
+    const r = await api(s.baseUrl, "GET", "/api/lobby/listeners?q=a%09b", undefined, d.ada.token);
+    expect(r.status).toBe(200);
   });
 });
 

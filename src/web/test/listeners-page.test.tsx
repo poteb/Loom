@@ -443,6 +443,21 @@ describe("the controls and the query string (spec §5.4)", () => {
     expect(v.queries()[0]!.has("filter")).toBe(false);
   });
 
+  // A stored tool may carry a tab — `validateProfile` accepts one and Postgres stores it — so the
+  // facets really do hand this page such a chip. The chip has to work, and the link it writes has
+  // to come back the same (PR #20 review round 1).
+  it("sends a facet value carrying a tab when its chip is clicked", async () => {
+    const tabbed = "a\tb";
+    const page = directory([listener("ada", "ada@example.com")]);
+    page.facets!.tools.values = [{ value: tabbed, count: 1 }];
+    const v = mountApp({ storage: joined(), routes: { [LISTENERS]: () => json(page) } });
+    await settle();
+    fireEvent.click([...document.querySelectorAll(".chip")].find((c) => c.textContent!.includes(tabbed))!);
+    await settle();
+    expect(v.queries().map((q) => q.get("filter")))
+      .toEqual([null, JSON.stringify({ tools: [tabbed] })]);
+  });
+
   it("waits for the typing to stop: three keystrokes inside the window are one request", async () => {
     vi.useFakeTimers();
     const v = mountApp({ storage: joined() });

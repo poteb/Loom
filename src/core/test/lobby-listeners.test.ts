@@ -577,6 +577,109 @@ describe("a selected value is always in its facet", () => {
   });
 });
 
+/**
+ * Spec §§2.4–2.5 and §5.3: a cursor this query issued and a facet value this query listed have to
+ * be usable when they come back. `validateProfile` accepts a tab or a newline inside an `owner`, a
+ * tool, a runtime, a model or an effort, and Postgres stores and matches every one of them (a NUL is the one
+ * character it cannot carry), so the directory really does emit such values — in a cursor key, in a
+ * facet chip. The read side used to refuse the whole C0 range, which meant Show more died at that
+ * page boundary and that chip could not be clicked (PR #20 review round 1).
+ *
+ * Every listener here is created through `setCapabilities`, the door an agent uses: no SQL writes a
+ * shape the writer could not have written.
+ */
+describe("what this query emits, it accepts back", () => {
+  /** Owners either side of "zzz" in `lower(owner)` order, tagged so only these two are in play. */
+  const TAG = "round-trip-tag";
+  const pair = { nova: { owner: "a\nb", tools: [TAG] }, zack: { owner: "zzz", tools: [TAG] } };
+
+  it("issues an owner cursor whose key carries the newline the owner has", async () => {
+    await seed(pair);
+    const first = await listListeners(db, reader, { tools: [TAG], sort: "owner", limit: 1 });
+    const key = JSON.parse(Buffer.from(first.nextCursor!, "base64url").toString("utf8")).k as string;
+    expect(key).toBe("a\nb");
+  });
+
+  it("takes that owner cursor back and returns the next listener", async () => {
+    await seed(pair);
+    const first = await listListeners(db, reader, { tools: [TAG], sort: "owner", limit: 1 });
+    expect(names(first)).toEqual(["nova"]);
+    const second = await listListeners(db, reader, { tools: [TAG], sort: "owner", limit: 1, cursor: first.nextCursor! });
+    expect(names(second)).toEqual(["zack"]);
+  });
+
+  // No `sort: "name"` twin: `NAME_RE` (`names.ts`) is `[A-Za-z0-9_.-]{1,32}`, so a name cursor key
+  // can never carry a control character and there is nothing here for it to round-trip.
+
+  it("lists a tool carrying a tab in the tools facet", async () => {
+    await seed({ nova: { owner: "ann", tools: ["a\tb"] } });
+    const page = await listListeners(db, reader, { limit: 0 });
+    expect(pairs(page.facets!.tools)).toEqual([["a\tb", 1]]);
+  });
+
+  it("filters by the tool facet value it listed", async () => {
+    await seed({ nova: { owner: "ann", tools: ["a\tb"] }, zack: { owner: "ann", tools: ["other"] } });
+    const page = await listListeners(db, reader, { limit: 0 });
+    expect(await listed({ tools: [page.facets!.tools.values[0]!.value] })).toEqual(["nova"]);
+  });
+
+  it("filters by the runtime facet value it listed", async () => {
+    await seed({ nova: { owner: "ann", runtime: "a\nb" }, zack: { owner: "ann", runtime: "other" } });
+    const page = await listListeners(db, reader, { limit: 0 });
+    const tabbed = page.facets!.runtimes.values.find((v) => v.value.includes("\n"))!;
+    expect(await listed({ runtime: tabbed.value })).toEqual(["nova"]);
+  });
+
+  it("filters by the model facet value it listed", async () => {
+    await seed({ nova: { owner: "ann", models: [{ model: "a\tb", effort: "high" }] } });
+    const page = await listListeners(db, reader, { limit: 0 });
+    expect(await listed({ models: [{ model: page.facets!.models.values[0]!.model }] })).toEqual(["nova"]);
+  });
+
+  it("filters by the effort facet value it listed", async () => {
+    await seed({ nova: { owner: "ann", models: [{ model: "m", effort: "a\nb" }] } });
+    const page = await listListeners(db, reader, { limit: 0 });
+    const model = page.facets!.models.values[0]!;
+    expect(await listed({ models: [{ model: model.model, effort: model.efforts[0]!.value }] })).toEqual(["nova"]);
+  });
+
+  it("searches for an owner carrying a newline", async () => {
+    await seed({ nova: { owner: "ada\nlovelace" }, zack: { owner: "grace" } });
+    expect(await listed({ q: "ada\nlove" })).toEqual(["nova"]);
+  });
+
+  it("searches for an owner carrying a tab", async () => {
+    await seed({ nova: { owner: "ada\thopper" }, zack: { owner: "grace" } });
+    expect(await listed({ q: "ada\thop" })).toEqual(["nova"]);
+  });
+
+  /**
+   * The general property behind all of the above: nothing a facet hands out is a filter this query
+   * refuses, and every one of them still names the listener it was counted from.
+   */
+  it("accepts every value of every facet back as its own filter", async () => {
+    await seed({
+      nova: { owner: "a\nb", models: [{ model: "a\tb", effort: "hi\tgh" }], tools: ["a\tb", "plain"], runtime: "a\nb", serves: "anyone" },
+      zack: { owner: "zzz", models: [{ model: "opus-5", effort: "low" }], tools: ["plain"], runtime: "node", serves: ["a\nb"] },
+      lena: { owner: "lena" },
+    });
+    const f = (await listListeners(db, reader, { limit: 0 })).facets!;
+    const queries: ListenersQuery[] = [
+      ...f.tools.values.map((v) => ({ tools: [v.value] })),
+      ...f.runtimes.values.map((v) => ({ runtime: v.value })),
+      ...f.models.values.flatMap((m) => [
+        { models: [{ model: m.model }] },
+        ...m.efforts.map((e) => ({ models: [{ model: m.model, effort: e.value }] })),
+      ]),
+      ...f.serves.values.filter((v) => v.count > 0).map((v) => ({ serves: v.value as ServesKind })),
+    ];
+    for (const query of queries) {
+      const answer = await listListeners(db, reader, { ...query, limit: 0, facets: false });
+      expect({ query, matched: answer.matched > 0 }).toEqual({ query, matched: true });
+    }
+  });
+});
+
 describe("authorisation", () => {
   it("serves a participant of the Lobby", async () => {
     await seed(cast);

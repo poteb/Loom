@@ -184,38 +184,81 @@ describe("a link the listeners page cannot read whole (spec §5.4)", () => {
 });
 
 /**
- * Core answers a C0 character in any of these with `validation` (`listeners-input.ts:69, 91, 112`):
- * `\u0000` cannot travel in a Postgres text parameter or in jsonb at all, and the rest of C0 names
- * no model, tool, runtime or owner. A link carrying one must therefore be read here, not forwarded —
- * otherwise a hand-edited `?q=a%01b` renders core's 400 as an error page, which is exactly what
- * §5.4 says must not happen. Written as escapes, never as literal bytes.
+ * Core answers a **NUL** in any of these with `validation` (`listeners-input.ts`): \u0000 is the
+ * one character a Postgres text parameter and a jsonb value cannot carry. A link holding one must
+ * be read here rather than forwarded — forwarding it turns a hand-edited `?q=a%00b` into core's 400
+ * and an error page, which is the one thing §5.4 says must not happen. Written as an escape, never
+ * as a literal byte.
  */
-describe("a link carrying characters core cannot store (spec §5.4)", () => {
-  const CTRL = "a\u0001b";
+describe("a link carrying the one character core cannot store (spec §5.4)", () => {
+  const NUL = "a\u0000b";
 
-  it("drops a search carrying a control character", () => {
-    const { view, partial } = viewFromSearch(`?q=${encodeURIComponent(CTRL)}`);
+  it("drops a search carrying a NUL", () => {
+    const { view, partial } = viewFromSearch(`?q=${encodeURIComponent(NUL)}`);
     expect([view.q, partial]).toEqual(["", true]);
   });
 
   it("drops a tool carrying one and keeps the others", () => {
-    const { view, partial } = viewFromSearch(filterSearch({ tools: ["shell", CTRL] }));
+    const { view, partial } = viewFromSearch(filterSearch({ tools: ["shell", NUL] }));
     expect([view.tools, partial]).toEqual([["shell"], true]);
   });
 
   it("drops a runtime carrying one", () => {
-    const { view, partial } = viewFromSearch(filterSearch({ runtime: CTRL }));
+    const { view, partial } = viewFromSearch(filterSearch({ runtime: NUL }));
     expect([view.runtime, partial]).toEqual([undefined, true]);
   });
 
   it("drops a model name carrying one", () => {
-    const { view, partial } = viewFromSearch(filterSearch({ models: [{ model: CTRL }] }));
+    const { view, partial } = viewFromSearch(filterSearch({ models: [{ model: NUL }] }));
     expect([view.models, partial]).toEqual([[], true]);
   });
 
   it("drops a model alternative whose effort carries one, whole", () => {
-    const { view, partial } = viewFromSearch(filterSearch({ models: [{ model: "opus-5", effort: CTRL }] }));
+    const { view, partial } = viewFromSearch(filterSearch({ models: [{ model: "opus-5", effort: NUL }] }));
     expect([view.models, partial]).toEqual([[], true]);
+  });
+});
+
+/**
+ * Every **other** control character is one core accepts and the directory really emits.
+ * `validateProfile` stores a tab or a newline inside an `owner`, a tool, a runtime, a model or an
+ * effort, and Postgres matches it — so such a value arrives on a facet chip and inside a cursor.
+ * Dropping it here would leave the page unable to read a link it wrote itself, and would report a
+ * perfectly good link as "not understood" (PR #20 review round 1).
+ */
+describe("a link carrying a tab or a newline inside a value (spec §5.4)", () => {
+  it("keeps a search carrying a tab", () => {
+    const { view, partial } = viewFromSearch(`?q=${encodeURIComponent("a\tb")}`);
+    expect([view.q, partial]).toEqual(["a\tb", false]);
+  });
+
+  it("keeps a tool carrying a tab", () => {
+    const { view, partial } = viewFromSearch(filterSearch({ tools: ["a\tb"] }));
+    expect([view.tools, partial]).toEqual([["a\tb"], false]);
+  });
+
+  it("keeps a runtime carrying a newline", () => {
+    const { view, partial } = viewFromSearch(filterSearch({ runtime: "a\nb" }));
+    expect([view.runtime, partial]).toEqual(["a\nb", false]);
+  });
+
+  it("keeps a model name carrying a tab", () => {
+    const { view, partial } = viewFromSearch(filterSearch({ models: [{ model: "a\tb" }] }));
+    expect([view.models, partial]).toEqual([[{ model: "a\tb" }], false]);
+  });
+
+  it("keeps a model effort carrying a newline", () => {
+    const { view, partial } = viewFromSearch(filterSearch({ models: [{ model: "opus-5", effort: "a\nb" }] }));
+    expect([view.models, partial]).toEqual([[{ model: "opus-5", effort: "a\nb" }], false]);
+  });
+
+  // The page writes this link itself, out of a facet chip it was handed: what it writes it must read.
+  it("round-trips a view whose every value carries a tab or a newline", () => {
+    const view: ListenersView = {
+      q: "a\tb", models: [{ model: "m\tx", effort: "e\ny" }], tools: ["t\tu"],
+      runtime: "r\nv", serves: "anyone", sort: "owner", dir: "desc",
+    };
+    expect(viewFromSearch(`?${searchFromView(view)}`)).toEqual({ view, partial: false });
   });
 });
 

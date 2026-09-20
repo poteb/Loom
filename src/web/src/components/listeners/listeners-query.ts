@@ -11,13 +11,18 @@ export type ListenersView = {
 };
 
 /**
- * Core's own rule, quoted (`listeners-input.ts:69`): a C0 character in `q`, in a tool, in a runtime
- * or in a model's `model`/`effort` is `errors.validation` there — `\u0000` cannot travel in a
- * Postgres text parameter or in jsonb, and the rest of C0 names no model, tool, runtime or owner.
- * So a link carrying one is read here rather than forwarded: forwarding it turns a hand-edited URL
- * into core's 400 and an error page, which is the one thing §5.4 says must not happen.
+ * Core's own rule, quoted (`listeners-input.ts`): a **NUL** in `q`, in a tool, in a runtime or in a
+ * model's `model`/`effort` is `errors.validation` there, because `\u0000` is the one character a
+ * Postgres text parameter and a jsonb value cannot carry. So a link holding one is read here rather
+ * than forwarded: forwarding it turns a hand-edited URL into core's 400 and an error page, which is
+ * the one thing §5.4 says must not happen.
+ *
+ * Nothing else is dropped. A tab or a newline inside a value is stored by `validateProfile`,
+ * matched by Postgres and handed back out by the directory in a facet value and in a cursor — so a
+ * link carrying one is very often a link **this page wrote**, and dropping it would both lose the
+ * filter and accuse a good link of not being understood (PR #20 review round 1).
  */
-const CONTROL_CHAR_RE = /[\u0000-\u001f]/;
+const NUL_RE = /\u0000/;
 
 /**
  * What a `filter` and a model alternative may contain. Core rejects unknown keys — a top-level one
@@ -57,9 +62,12 @@ export function viewFromSearch(search: string): { view: ListenersView; partial: 
     raw === undefined ? undefined : parse(raw);
   const str = (v: unknown, max: number): string | undefined => {
     if (typeof v !== "string") return drop();
-    const t = v.trim();                       // core trims, so the page compares what core will store
+    // Core trims, so the page compares what core will store — and `validateProfile` trims every
+    // field it writes (`owner`, `tools`, `runtime`, `models[].model`/`effort`, `serves`), so no
+    // stored value ever has whitespace at an end for this trim to eat.
+    const t = v.trim();
     if (t.length < 1 || t.length > max) return drop();
-    return CONTROL_CHAR_RE.test(t) ? drop() : t;
+    return NUL_RE.test(t) ? drop() : t;
   };
   const oneOf = <T extends string>(v: unknown, allowed: readonly T[]): T | undefined =>
     typeof v === "string" && (allowed as readonly string[]).includes(v) ? (v as T) : drop();
