@@ -890,11 +890,17 @@ instance refuses"; and `ListenersLink`'s link-versus-button tests.
     directory and then loses persistence: filtering still replaces, closing the directory pushes
     nothing, and the address bar stays at `/lobby/listeners` with the Thread on screen.
 19. **A deep link whose Lobby discovery is delayed renders a WRITABLE Thread.** The stub answers
-    `LobbyRoute`'s `getLobby` and leaves the **session's** hanging, so `/lobby/listeners` reaches
-    `ready` with no pointer. On screen: the message list, and the composer **visible and usable** —
+    `LobbyRoute`'s `getLobby`, **rejects the session's first one transiently** (a network failure,
+    not a credential failure and not `weave_not_found`), and **holds the next one pending** — the
+    one `retryLobbyData` makes. A first discovery that merely *hangs* cannot reach this state:
+    `discoverLobby()` sits inside `doLoad`'s `Promise.all`
+    ([`session.ts:663`](../../../src/web/src/session.ts)), so the page would stay `loading` and
+    never paint a Thread at all. A rejected one settles the load with `lobbyKnown` false, the page
+    goes `ready` with no pointer, and the retry loop owns the discovery from there — which is the
+    real-world shape of the gap, and needs no change to how the session loads. On screen: the message list, and the composer **visible and usable** —
     type into it and send, and the post lands with exactly that text. No directory is rendered, no
     `<h2>Listeners</h2>`, and no sidebar line is marked current — the line is not on screen at all,
-    because it shares the gate. Then release the pending `getLobby`: with no further input the
+    because it shares the gate. Then release the held **retry**: with no further input the
     directory opens, the composer's wrapper carries `hidden`, and the line is there carrying
     `aria-current="true"`. The requested view was never touched, and nothing was re-mounted to get
     there (the request counts of test 2 do not move).
