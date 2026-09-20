@@ -249,7 +249,7 @@ remounted, `/lobby/listeners` becomes the Lobby route with an initial view and t
 session — serves the directory through a new `session.listListeners`. It amends spec §5.1–§5.5 and
 deletes `ListenersRoute`, `openListenersInPlace` and the page's own wordmark and **Back to the
 Lobby**. Finding 4 and all visual design are deliberately left to the owner's separate design
-session. **Spec approved 2026-09-20, plan written, awaiting review** — the plan is
+session. **Spec and plan approved 2026-09-20, implementation next** — the plan is
 [2026-09-20-loom-lobby-listeners-view.md](../plans/2026-09-20-loom-lobby-listeners-view.md), six
 tasks on `feat/lobby-listeners-view`; no implementation yet.
 
