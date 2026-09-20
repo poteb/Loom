@@ -167,6 +167,20 @@ describe("a link the listeners page cannot read whole (spec §5.4)", () => {
     const { view, partial } = viewFromSearch(filterSearch({ serves: 5 }));
     expect([view.serves, partial]).toEqual([undefined, true]);
   });
+
+  // Core's schema is `.strict()`, so a key it does not know is `validation` rather than something
+  // it quietly ignores — and "nothing is dropped silently" applies to a key as much as to a value.
+  it("reports a filter key core does not have, and keeps the ones it does", () => {
+    expect(viewFromSearch(filterSearch({ tools: ["shell"], owner: "ada" })))
+      .toEqual({ view: { ...EMPTY_VIEW, tools: ["shell"] }, partial: true });
+  });
+
+  // Dropped whole, for the reason a bad `effort` is: keeping `{ model }` out of it would silently
+  // answer a wider question than the link asked.
+  it("drops a model alternative carrying a key core does not have, whole", () => {
+    const { view, partial } = viewFromSearch(filterSearch({ models: [{ model: "opus-5", temperature: 1 }] }));
+    expect([view.models, partial]).toEqual([[], true]);
+  });
 });
 
 /**

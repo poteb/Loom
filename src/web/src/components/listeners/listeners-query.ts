@@ -19,6 +19,16 @@ export type ListenersView = {
  */
 const CONTROL_CHAR_RE = /[\u0000-\u001f]/;
 
+/**
+ * What a `filter` and a model alternative may contain. Core's schema is `.strict()`, so anything
+ * else is `validation` there rather than something quietly ignored — and the rule that nothing is
+ * dropped silently is about a **key** as much as about a value: a link carrying `{"owner":"ada"}`
+ * is asking for something this page cannot do, and saying nothing would let it look as though it
+ * had been honoured.
+ */
+const FILTER_KEYS = ["models", "tools", "runtime", "serves"];
+const MODEL_KEYS = ["model", "effort"];
+
 /** The untouched page: the defaults core would have applied anyway. Never mutated in place. */
 export const EMPTY_VIEW: ListenersView = { q: "", models: [], tools: [], sort: "name", dir: "asc" };
 
@@ -63,12 +73,17 @@ export function viewFromSearch(search: string): { view: ListenersView; partial: 
       else drop();
     } catch { drop(); }
   }
+  for (const k of Object.keys(filter)) if (!FILTER_KEYS.includes(k)) drop();
   const models = given(filter.models, (v) => {
     if (!Array.isArray(v)) return drop();
     const out: { model: string; effort?: string }[] = [];
     for (const m of v) {
       // An entry that is thrown away is thrown away **out loud**.
       if (!m || typeof m !== "object" || Array.isArray(m)) { drop(); continue; }
+      // A key core's strict schema would refuse takes the alternative with it, for the reason an
+      // unusable `effort` does: honouring the half it understood answers a wider question than the
+      // link asked, and does it silently.
+      if (Object.keys(m).some((k) => !MODEL_KEYS.includes(k))) { drop(); continue; }
       const { model, effort } = m as { model?: unknown; effort?: unknown };
       const name = str(model, 100);
       if (name === undefined) continue;                       // `str` has already dropped it
