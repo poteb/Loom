@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createCounter, isCurrent, type Now, type Stamp } from "../src/side-reads.js";
+import { cachedProfile, createCounter, isCurrent, type Now, type OwnProfile, type Stamp } from "../src/side-reads.js";
 
 const STAMP: Stamp = { id: "p1", token: "t1", generation: 3, n: 5 };
 const NOW: Now = { generation: 3, meId: "p1", meToken: "t1", applied: 4 };
@@ -19,6 +19,16 @@ describe("createCounter", () => {
     const c = createCounter();
     c.markApplied(2);
     expect(c.applied()).toBe(2);
+  });
+
+  // The watermark is what "newer than anything acted on" is measured against, so it only ever goes
+  // up: a caller that marked an older read — by its own mistake, or because two reads were acted on
+  // out of order — would otherwise reopen the door to every answer between the two.
+  it("never moves the watermark back to an older read", () => {
+    const c = createCounter();
+    c.markApplied(3);
+    c.markApplied(1);
+    expect(c.applied()).toBe(3);
   });
 });
 
@@ -47,5 +57,28 @@ describe("isCurrent (spec §3.3)", () => {
 
   it("refuses one when the session holds no identity at all", () => {
     expect(isCurrent(STAMP, { generation: 3, applied: 4 })).toBe(false);
+  });
+});
+
+describe("cachedProfile (spec §3.3)", () => {
+  const CACHE: OwnProfile = { participantId: "p1", token: "t1", profile: { runtime: "node" } };
+
+  it("applies a cache read for this participant under this token", () => {
+    expect(cachedProfile(CACHE, "p1", "t1")).toEqual({ runtime: "node" });
+  });
+
+  // The Global Constraint names both halves, and the id alone is not the smaller half of it: a
+  // token is what the server refuses, and a cache owned by one this browser no longer reads with
+  // would paint a retired identity's profile onto the identity that replaced it.
+  it("refuses one owned by another token of the same participant", () => {
+    expect(cachedProfile(CACHE, "p1", "t2")).toBeNull();
+  });
+
+  it("refuses one read for another participant", () => {
+    expect(cachedProfile(CACHE, "p2", "t1")).toBeNull();
+  });
+
+  it("gives a null profile when nothing is cached, rather than leaving the old one on screen", () => {
+    expect(cachedProfile(undefined, "p1", "t1")).toBeNull();
   });
 });

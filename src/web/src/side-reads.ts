@@ -33,7 +33,10 @@ export function isCurrent(stamp: Stamp, now: Now): boolean {
 export function createCounter(): { next(): number; applied(): number; markApplied(n: number): void } {
   let seq = 0;
   let applied = 0;
-  return { next: () => ++seq, applied: () => applied, markApplied: (n) => { applied = n; } };
+  // The watermark only ever goes up. It is the line every later answer is measured against, so a
+  // mark for an older read would reopen the door to every answer between the two — and "the newest
+  // one acted on" would no longer be what it says.
+  return { next: () => ++seq, applied: () => applied, markApplied: (n) => { applied = Math.max(applied, n); } };
 }
 
 /**
@@ -41,3 +44,14 @@ export function createCounter(): { next(): number; applied(): number; markApplie
  * it was read for, and it retires with them (spec §3.3).
  */
 export type OwnProfile = { participantId: string; token: string; profile: Profile | null };
+
+/**
+ * The profile a cache may be painted onto a participant with: **both** halves of the ownership are
+ * asked for, the participant id and the token it was read under, because a cache is evidence about
+ * one identity and a token is the half the server can refuse. Anything else is `null` — a
+ * participant whose profile this session does not know, which is exactly what `getWeave` now says
+ * about every Lobby row (spec §3.1).
+ */
+export function cachedProfile(cache: OwnProfile | undefined, participantId: string, token: string): Profile | null {
+  return cache && cache.participantId === participantId && cache.token === token ? cache.profile : null;
+}

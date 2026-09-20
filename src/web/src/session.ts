@@ -6,7 +6,7 @@ import {
   saveWeaveEntry, setIdentity, storedWeaves, type ReaderChoice, type WeaveEntry,
 } from "./weaves-store.js";
 import { applyEvent, applySnapshot, isRequestEvent, type Requests } from "./requests-state.js";
-import { createCounter, isCurrent, type Now, type OwnProfile, type Stamp } from "./side-reads.js";
+import { cachedProfile, createCounter, isCurrent, type Now, type OwnProfile, type Stamp } from "./side-reads.js";
 
 /**
  * What a session is pointed at. A secret is the credential *and* the id the router has; an id is
@@ -165,12 +165,13 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
    * reading with. Both existing callers pass nothing and behave exactly as they did.
    */
   const recoverFromCredentialFailure = (e: unknown, failed: "page" | "identity" = "page"): { reload: boolean } | undefined => {
-    if (!isCredentialFailure(e) || !weaveId || retriedWithSecret) return undefined;
-    // The page reader's own failure keeps today's guard: read with the secret, a 401 is an ordinary
-    // error. An identity failure while the page reads with something else is a different event —
-    // the page is reading perfectly well, so it is never reloaded and nothing that reads is retired.
-    if (failed === "page" && !readingWithToken) return undefined;
-    if (failed === "identity" && !readingWithToken) {
+    if (!isCredentialFailure(e) || !weaveId) return undefined;
+    if (!readingWithToken) {
+      // The page reader's own failure keeps today's guard: the page reads with the secret, and a
+      // 401 from it is an ordinary error with nothing to retire.
+      if (failed === "page") return undefined;
+      // The sibling rule: an identity refused while the page reads with something else. The page is
+      // reading perfectly well, so it is never reloaded and nothing that reads is retired.
       // Into a variable first, as below: the write happens whether or not anyone is listening.
       const wrote = invalidateIdentity(storage, weaveId);
       onWrite(wrote);
@@ -180,6 +181,11 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       set({ me: undefined, readOnlyReason: "secret-fallback" });
       return { reload: false };
     }
+    // Below this line the page itself is reading with the refused token, so the latch belongs here
+    // and not above it: it counts the page's **one** fallback onto the stored secret, which the
+    // sibling branch neither spends nor is entitled to. Guarding the whole function with it let a
+    // page that had already fallen back refuse to retire a second, unrelated identity.
+    if (retriedWithSecret) return undefined;
     // Into a variable first: `onWrite?.(invalidateIdentity(…))` would skip the *argument* — and the
     // write with it — whenever nobody is listening.
     const wrote = invalidateIdentity(storage, weaveId);
@@ -272,8 +278,8 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
    *
    * `weave_not_found` is the instance's own answer — it has no Lobby — and settles the question.
    * Every other failure is a failed read: taken for "no Lobby" it would hide the requests panel and
-   * the profile cards for the life of the page, because both gate on `state.lobby` and nothing else
-   * ever asks again.
+   * the listeners line for the life of the page, because both gate on `state.lobby` and nothing
+   * else ever asks again.
    */
   const discoverLobby = async (): Promise<{ lobby?: Lobby; settled: boolean; error?: string }> => {
     try { return { lobby: await client.getLobby(), settled: true }; }
@@ -288,11 +294,12 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
   /**
    * The single place `me` is built, so a refresh cannot quietly blank the profile again — it
    * rebuilds `me` from `getWeave`'s list, which carries no Lobby profile at all now (spec §3.1).
-   * Because the id is compared here, where the value is *used* and not only where it is stored, a
-   * cache belonging to a previous identity can never be painted onto a new one.
+   * The ownership is asked for here, where the value is *used* and not only where it is stored, so
+   * a cache belonging to a previous identity can never be painted onto a new one — and it is asked
+   * for in full: the token the `me` under construction carries, as well as its participant id.
    */
-  const withMyProfile = (p: Participant): Participant =>
-    p.id === ownProfile?.participantId ? { ...p, capabilities: ownProfile.profile } : { ...p, capabilities: null };
+  const withMyProfile = (p: Participant, token: string): Participant =>
+    ({ ...p, capabilities: cachedProfile(ownProfile, p.id, token) });
   /** What the session is at the moment an own-profile answer asks to be acted on. */
   const nowForProfile = (): Now =>
     ({ generation, meId: state.me?.participant.id, meToken: state.me?.token, applied: profileReads.applied() });
@@ -310,7 +317,7 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
         if (disposed || !isCurrent(stamp, nowForProfile())) return;    // generation, identity, order
         profileReads.markApplied(stamp.n);
         ownProfile = { participantId: stamp.id, token: stamp.token, profile: p.capabilities };
-        if (state.me) set({ me: { token: state.me.token, participant: withMyProfile(state.me.participant) } });
+        if (state.me) set({ me: { token: state.me.token, participant: withMyProfile(state.me.participant, state.me.token) } });
       },
       (e: unknown) => {
         // The guard comes before ANY side effect: no write, no onWrite, no cache clear, no set().
@@ -398,7 +405,7 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       instanceGuidelines: instance,
       threads: info.threads, participants: info.participants,
       me: state.me && info.participants.some((p) => p.id === state.me!.participant.id)
-        ? { token: state.me.token, participant: withMyProfile(info.participants.find((p) => p.id === state.me!.participant.id)!) }
+        ? { token: state.me.token, participant: withMyProfile(info.participants.find((p) => p.id === state.me!.participant.id)!, state.me.token) }
         : state.me });
     if (requests && "rs" in requests) {
       applyRequests(requests.rs);
@@ -412,8 +419,10 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
     // nothing (it returns at once when one is already running for this generation) and means a
     // page whose discovery failed converges even if its loop were somehow never started.
     if (!lobbyKnown) retryLobbyData(myGeneration);
-    // Every refresh keeps the count honest as people join and leave, and re-reads my own profile —
-    // which is also what covers `participant.capabilities_changed` for everyone but me.
+    // Every refresh keeps the count honest as people join and leave, and re-reads my own profile.
+    // Somebody else declaring or clearing a profile moves the **count** and nothing else here: no
+    // part of this session's state carries anyone else's profile any more (spec §3.1), so the
+    // refresh this event schedules has exactly one number to bring up to date.
     if (onLobby()) readLobbySides(myGeneration);
   };
 
@@ -476,7 +485,7 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
    * What the panel needs and the Weave does not: where the Lobby is, and — on the Lobby's own page
    * — the request snapshot. Neither may break the rest of the page, and neither may be given up on:
    * a missed request has no later event that would bring it in, and a missed pointer would hide the
-   * panel and the profile cards for good. So the failure is held in state and the read is retried,
+   * panel and the listeners line for good. So the failure is held in state and the read is retried,
    * in one loop, on the same backoff a refresh uses, until it succeeds or the session goes away.
    *
    * Discovery comes first because the second half depends on it; off the Lobby the pointer was the
@@ -679,7 +688,7 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
         const p = info.participants.find((x) => x.id === e.participantId);
         // A token that reads but names nobody is a corrupt identity, and on a token load it is
         // also the credential in hand — treated exactly like a 401 (spec §2.6).
-        if (p) me = { token: e.token, participant: withMyProfile(p) };
+        if (p) me = { token: e.token, participant: withMyProfile(p, e.token) };
         else if (readingWithToken) throw new LoomClientError("invalid_token", "Stored identity is not in this Weave");
         else {
           // The same row of the §2.6 table, reached by the other credential: the entry loses
@@ -793,7 +802,7 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
         ? state.participants
         : [...state.participants, j.participant];
       // Invites are "for me" only once there is a me: recompute now that this session has an identity.
-      set({ me: { token: j.token, participant: withMyProfile(j.participant) }, needsName: false, participants,
+      set({ me: { token: j.token, participant: withMyProfile(j.participant, j.token) }, needsName: false, participants,
         readOnlyReason: undefined,     // a join is the way out of the §2.6 read-only fallback
         ...deriveInvites(state.events, j.participant.id, seenUpTo) });
       scheduleRefresh();
