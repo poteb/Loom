@@ -10,6 +10,15 @@ export type ListenersView = {
   runtime?: string; serves?: ServesKind; sort: ListenersSort; dir: "asc" | "desc";
 };
 
+/**
+ * Core's own rule, quoted (`listeners-input.ts:69`): a C0 character in `q`, in a tool, in a runtime
+ * or in a model's `model`/`effort` is `errors.validation` there — `\u0000` cannot travel in a
+ * Postgres text parameter or in jsonb, and the rest of C0 names no model, tool, runtime or owner.
+ * So a link carrying one is read here rather than forwarded: forwarding it turns a hand-edited URL
+ * into core's 400 and an error page, which is the one thing §5.4 says must not happen.
+ */
+const CONTROL_CHAR_RE = /[\u0000-\u001f]/;
+
 /** The untouched page: the defaults core would have applied anyway. Never mutated in place. */
 export const EMPTY_VIEW: ListenersView = { q: "", models: [], tools: [], sort: "name", dir: "asc" };
 
@@ -38,7 +47,8 @@ export function viewFromSearch(search: string): { view: ListenersView; partial: 
   const str = (v: unknown, max: number): string | undefined => {
     if (typeof v !== "string") return drop();
     const t = v.trim();                       // core trims, so the page compares what core will store
-    return t.length >= 1 && t.length <= max ? t : drop();
+    if (t.length < 1 || t.length > max) return drop();
+    return CONTROL_CHAR_RE.test(t) ? drop() : t;
   };
   const oneOf = <T extends string>(v: unknown, allowed: readonly T[]): T | undefined =>
     typeof v === "string" && (allowed as readonly string[]).includes(v) ? (v as T) : drop();

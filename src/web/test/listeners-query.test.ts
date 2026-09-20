@@ -166,6 +166,42 @@ describe("a link the listeners page cannot read whole (spec §5.4)", () => {
   });
 });
 
+/**
+ * Core answers a C0 character in any of these with `validation` (`listeners-input.ts:69, 91, 112`):
+ * `\u0000` cannot travel in a Postgres text parameter or in jsonb at all, and the rest of C0 names
+ * no model, tool, runtime or owner. A link carrying one must therefore be read here, not forwarded —
+ * otherwise a hand-edited `?q=a%01b` renders core's 400 as an error page, which is exactly what
+ * §5.4 says must not happen. Written as escapes, never as literal bytes.
+ */
+describe("a link carrying characters core cannot store (spec §5.4)", () => {
+  const CTRL = "a\u0001b";
+
+  it("drops a search carrying a control character", () => {
+    const { view, partial } = viewFromSearch(`?q=${encodeURIComponent(CTRL)}`);
+    expect([view.q, partial]).toEqual(["", true]);
+  });
+
+  it("drops a tool carrying one and keeps the others", () => {
+    const { view, partial } = viewFromSearch(filterSearch({ tools: ["shell", CTRL] }));
+    expect([view.tools, partial]).toEqual([["shell"], true]);
+  });
+
+  it("drops a runtime carrying one", () => {
+    const { view, partial } = viewFromSearch(filterSearch({ runtime: CTRL }));
+    expect([view.runtime, partial]).toEqual([undefined, true]);
+  });
+
+  it("drops a model name carrying one", () => {
+    const { view, partial } = viewFromSearch(filterSearch({ models: [{ model: CTRL }] }));
+    expect([view.models, partial]).toEqual([[], true]);
+  });
+
+  it("drops a model alternative whose effort carries one, whole", () => {
+    const { view, partial } = viewFromSearch(filterSearch({ models: [{ model: "opus-5", effort: CTRL }] }));
+    expect([view.models, partial]).toEqual([[], true]);
+  });
+});
+
 describe("the query a view asks core for (spec §5.3)", () => {
   it("asks for a page of 50 when the caller names no limit", () => {
     expect(queryFromView(EMPTY_VIEW, {})).toEqual({ sort: "name", dir: "asc", limit: 50 });
