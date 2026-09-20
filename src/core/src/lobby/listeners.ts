@@ -21,25 +21,35 @@ type FacetKey = "models" | "tools" | "runtime" | "serves";
 /** Every listener of the Lobby and nobody else. The one predicate every query starts from. */
 const base = (lobbyId: string) => and(eq(participants.weaveId, lobbyId), isNotNull(participants.capabilities));
 
-/** Whole-document containment, so the one GIN index on `capabilities` serves it (spec §2.8). */
+/**
+ * Whole-document containment, so the one GIN index on `capabilities` serves it (spec §2.8).
+ *
+ * Every guard here is `!== undefined` — the same test `filtering` makes in `listListeners`, so a
+ * filter can never be built for a query that does not count as filtering. **Invariant, from Task
+ * 1:** `validateListenersQuery` normalises an empty `tools`/`models` array and a blank `q` to
+ * absent, so none of them ever reaches this function. That is what makes `!== undefined` safe, and
+ * why truthiness would be the wrong test rather than merely a looser one: `tools: []` would build
+ * `@> '{"tools":[]}'`, which **excludes** every profile with no `tools` key — the opposite of "no
+ * filter" — and `models: []` would render `sql.join([])` as `()`, a syntax error.
+ */
 function filterSql(c: CleanQuery, omit?: FacetKey): SQL[] {
   const out: SQL[] = [];
-  if (c.q) {
+  if (c.q !== undefined) {
     const p = likePattern(c.q);
     out.push(sql`(${participants.name} ILIKE ${p} ESCAPE '\\' OR ${participants.capabilities}->>'owner' ILIKE ${p} ESCAPE '\\')`);
   }
-  if (c.models && omit !== "models") {
+  if (c.models !== undefined && omit !== "models") {
     const alts = c.models.map((m) => sql`${participants.capabilities} @> ${JSON.stringify({ models: [m.effort === undefined ? { model: m.model } : { model: m.model, effort: m.effort }] })}::jsonb`);
     out.push(sql`(${sql.join(alts, sql` OR `)})`);          // any-of
   }
-  if (c.tools && omit !== "tools") {
+  if (c.tools !== undefined && omit !== "tools") {
     // Array containment is subset containment, so one predicate is all-of — not one per tool.
     out.push(sql`${participants.capabilities} @> ${JSON.stringify({ tools: c.tools })}::jsonb`);
   }
-  if (c.runtime && omit !== "runtime") {
+  if (c.runtime !== undefined && omit !== "runtime") {
     out.push(sql`${participants.capabilities} @> ${JSON.stringify({ runtime: c.runtime })}::jsonb`);
   }
-  if (c.serves && omit !== "serves") {
+  if (c.serves !== undefined && omit !== "serves") {
     out.push(c.serves === "anyone" ? sql`${participants.capabilities} @> '{"serves":"anyone"}'::jsonb`
       : c.serves === "list" ? sql`jsonb_typeof(${participants.capabilities}->'serves') = 'array'`
       // `admits` reads an absent `serves` as "owner" (matching.ts:54), so the default is included.
@@ -116,7 +126,10 @@ function rankedFacet(db: Db, lobbyId: string, c: CleanQuery, kind: "tools" | "ru
           FROM base b WHERE b.capabilities ? 'runtime' GROUP BY 1`;
   return db.execute<CountRow>(sql`
     WITH base AS (${facetBase(lobbyId, c, kind)}), counts AS (${counts}), ranked AS (
-      SELECT value, n, row_number() OVER (ORDER BY n DESC, value) AS rn FROM counts
+      -- COLLATE "C" so this cut and byCountThenValue's re-sort are one order: without it the rank
+      -- uses the database collation while the fold compares bytes, and on a glibc/ICU database the
+      -- displayed twenty would be the top twenty under neither comparator.
+      SELECT value, n, row_number() OVER (ORDER BY n DESC, value COLLATE "C") AS rn FROM counts
     )
     SELECT value, n FROM ranked WHERE rn <= ${TOP_VALUES + 1}
     UNION
@@ -145,7 +158,8 @@ function modelsFacet(db: Db, lobbyId: string, c: CleanQuery): Promise<ModelRow[]
     ), model_counts AS (
       SELECT model, count(DISTINCT id)::int AS n FROM pairs GROUP BY model
     ), ranked_models AS (
-      SELECT model, n, row_number() OVER (ORDER BY n DESC, model) AS rn FROM model_counts
+      -- COLLATE "C" for the reason rankedFacet gives: one order for the cut and for the fold.
+      SELECT model, n, row_number() OVER (ORDER BY n DESC, model COLLATE "C") AS rn FROM model_counts
     ), kept_models AS (
       SELECT model, n FROM ranked_models WHERE rn <= ${TOP_VALUES + 1}
       UNION
@@ -156,7 +170,7 @@ function modelsFacet(db: Db, lobbyId: string, c: CleanQuery): Promise<ModelRow[]
       FROM pairs p JOIN kept_models k ON k.model = p.model GROUP BY p.model, p.effort
     ), ranked_efforts AS (
       SELECT model, effort, n,
-             row_number() OVER (PARTITION BY model ORDER BY n DESC, effort) AS rn FROM effort_counts
+             row_number() OVER (PARTITION BY model ORDER BY n DESC, effort COLLATE "C") AS rn FROM effort_counts
     ), kept_efforts AS (
       SELECT model, effort, n FROM ranked_efforts WHERE rn <= ${TOP_EFFORTS + 1}
       UNION
@@ -183,9 +197,13 @@ async function servesFacet(db: Db, lobbyId: string, c: CleanQuery): Promise<Serv
   return rows[0]!;
 }
 
-/** `count desc, value asc` — the same total order the ranking used, so a re-run is the same list. */
+/**
+ * `count desc, value asc` — the same total order the ranking used, so a re-run is the same list.
+ * The tie-break compares UTF-8 **bytes**, which is exactly what the queries' `COLLATE "C"` does;
+ * JavaScript's own `<` compares UTF-16 code units and disagrees for astral characters.
+ */
 const byCountThenValue = (a: CountRow, b: CountRow) =>
-  b.n - a.n || (a.value < b.value ? -1 : a.value > b.value ? 1 : 0);
+  b.n - a.n || Buffer.compare(Buffer.from(a.value, "utf8"), Buffer.from(b.value, "utf8"));
 
 /**
  * Pure shaping over at most a few dozen rows: keep the top N, say whether the ranking was cut, and
@@ -262,6 +280,12 @@ export async function listListeners(db: Db, actor: Actor, query: ListenersQuery 
     || c.runtime !== undefined || c.serves !== undefined;
   // Nothing here depends on anything else here. `limit: 0` skips the page, `facets: false` skips the
   // four facet queries, and with nothing filtering the two counts are the same `count(*)`.
+  //
+  // These are independent reads on pooled connections, not one snapshot: there is no surrounding
+  // transaction, so a profile set or cleared while they run can land between two of them and leave
+  // a page disagreeing with its counts or its facets by one. That is the tolerance the page is
+  // built for — spec §5.5's "list changed — reload" hint — not an error, and a repeatable-read
+  // transaction here would buy consistency for a directory nobody reads twice in the same second.
   const [total, matched, rows, facets] = await Promise.all([
     countRows(db, base(lobbyId)!),
     filtering ? countRows(db, whereFor(lobbyId, c)) : undefined,

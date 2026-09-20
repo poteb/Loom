@@ -466,10 +466,16 @@ describe("the facets are bounded", () => {
 });
 
 describe("a selected value is always in its facet", () => {
+  // Every fixture here puts the selected value **strictly below** the ranked branch's own cut, not
+  // level with it. The ranking keeps 21 values (11 efforts) so that the fold can tell "there are
+  // more" from "that was all", so a fixture of 20 common values plus one rare one leaves the rare
+  // one at rank 21 — which the ranked branch returns by itself, and the `UNION` that exists for
+  // this case is then never the reason the test passes. 22 (and 12) is the smallest fixture that
+  // makes the selection branch load-bearing.
   it("keeps a selected tool that ranks outside the top twenty", async () => {
-    const twenty = Array.from({ length: 20 }, (_, i) => `t${String(i + 1).padStart(2, "0")}`);
+    const common = Array.from({ length: 22 }, (_, i) => `t${String(i + 1).padStart(2, "0")}`);
     await seed({
-      a: { owner: "ann", tools: twenty }, b: { owner: "ann", tools: twenty },
+      a: { owner: "ann", tools: common }, b: { owner: "ann", tools: common },
       c: { owner: "ann", tools: ["rare"] },
     });
     const page = await listListeners(db, reader, { tools: ["rare"], limit: 0 });
@@ -483,23 +489,52 @@ describe("a selected value is always in its facet", () => {
   });
 
   it("keeps a selected model that ranks outside the top twenty", async () => {
-    const twenty = Array.from({ length: 20 }, (_, i) => ({ model: `m${String(i + 1).padStart(2, "0")}`, effort: "high" }));
+    // Twenty-two models over four listeners, because one profile may carry only 20 model entries.
+    const half = (from: number) => Array.from({ length: 11 },
+      (_, i) => ({ model: `m${String(from + i).padStart(2, "0")}`, effort: "high" }));
     await seed({
-      a: { owner: "ann", models: twenty }, b: { owner: "ann", models: twenty },
-      c: { owner: "ann", models: [{ model: "rare", effort: "high" }] },
+      a: { owner: "ann", models: half(1) }, b: { owner: "ann", models: half(1) },
+      c: { owner: "ann", models: half(12) }, d: { owner: "ann", models: half(12) },
+      e: { owner: "ann", models: [{ model: "rare", effort: "high" }] },
     });
     const page = await listListeners(db, reader, { models: [{ model: "rare" }], limit: 0 });
     expect(page.facets!.models.values.map((m) => [m.model, m.count])).toContainEqual(["rare", 1]);
   });
 
   it("keeps a selected effort that ranks outside a model's top ten", async () => {
-    const ten = Array.from({ length: 10 }, (_, i) => ({ model: "m", effort: `e${String(i + 1).padStart(2, "0")}` }));
+    const common = Array.from({ length: 12 }, (_, i) => ({ model: "m", effort: `e${String(i + 1).padStart(2, "0")}` }));
     await seed({
-      a: { owner: "ann", models: ten }, b: { owner: "ann", models: ten },
+      a: { owner: "ann", models: common }, b: { owner: "ann", models: common },
       c: { owner: "ann", models: [{ model: "m", effort: "rare" }] },
     });
     const page = await listListeners(db, reader, { models: [{ model: "m", effort: "rare" }], limit: 0 });
     expect(page.facets!.models.values[0]!.efforts).toContainEqual({ value: "rare", count: 1 });
+  });
+
+  it("keeps a selected model another filter has eliminated, at zero", async () => {
+    await seed({
+      x: { owner: "ann", runtime: "node", models: [{ model: "opus-5", effort: "high" }] },
+      y: { owner: "ann", runtime: "deno", models: [{ model: "sonnet-5", effort: "high" }] },
+    });
+    const page = await listListeners(db, reader, { runtime: "node", models: [{ model: "sonnet-5" }], limit: 0 });
+    // The models facet leaves out its own filter but keeps the runtime one, so `sonnet-5` has no
+    // aggregate row at all: no ranking can recover it, only the selection `UNION`.
+    expect(page.facets!.models.values).toEqual([
+      { model: "opus-5", count: 1, efforts: [{ value: "high", count: 1 }], moreEfforts: false },
+      { model: "sonnet-5", count: 0, efforts: [], moreEfforts: false },
+    ]);
+  });
+
+  it("keeps a selected effort another filter has eliminated, at zero", async () => {
+    await seed({
+      x: { owner: "ann", runtime: "node", models: [{ model: "m", effort: "high" }] },
+      y: { owner: "ann", runtime: "deno", models: [{ model: "m", effort: "low" }] },
+    });
+    const page = await listListeners(db, reader, { runtime: "node", models: [{ model: "m", effort: "low" }], limit: 0 });
+    // The model survives on its own listener; the selected effort is the thing with no row.
+    expect(page.facets!.models.values).toEqual([
+      { model: "m", count: 1, efforts: [{ value: "high", count: 1 }, { value: "low", count: 0 }], moreEfforts: false },
+    ]);
   });
 
   it("always reports all three serving policies, zeros included", async () => {
@@ -537,9 +572,21 @@ describe("authorisation", () => {
     await expect(listListeners(db, outsider, {})).rejects.toMatchObject({ code: "forbidden" });
   });
 
-  it("is never reached without a credential", async () => {
+  // Named for what it asserts: there is no anonymous `Actor` to hand `listListeners`, so the "no
+  // credential" case is `resolveCredential`'s, one step before this module.
+  it("cannot be called without an actor: an empty credential resolves to none", async () => {
     await seed(cast);
     await expect(resolveCredential(db, "")).rejects.toMatchObject({ code: "invalid_token" });
+  });
+
+  it("refuses an agent key that has not joined the Lobby", async () => {
+    await seed(cast);
+    const core = createCore(db);
+    await core.seedKeepers([keeperToken("k")]);
+    const keeper = await core.resolveCredential(keeperToken("k"));
+    const { key } = await core.addAgent(keeper, "ChatGPT");
+    const agent = await core.resolveCredential(key);
+    await expect(core.listListeners(agent, { limit: 0 })).rejects.toMatchObject({ code: "forbidden" });
   });
 
   it("serves an agent key that has joined, through the facade", async () => {
