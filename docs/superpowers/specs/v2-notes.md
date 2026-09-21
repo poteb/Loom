@@ -250,7 +250,7 @@ none of the heading or padding its neighbouring sections have.
 Findings 1, 2, 3 and 5 are **built** — see the entry below. Finding 4 and the visual design are
 still the design session's.
 
-### Lobby listeners view: the directory inside the Lobby (Paw, 2026-09-20) — **built on `feat/lobby-listeners-view`** ([PR #25](https://github.com/poteb/Loom/pull/25))
+### Lobby listeners view: the directory inside the Lobby (Paw, 2026-09-20) — **shipped** ([PR #25](https://github.com/poteb/Loom/pull/25), merged 2026-09-21 as `cbab671`)
 
 Spec: [2026-09-20-loom-lobby-listeners-view-design.md](2026-09-20-loom-lobby-listeners-view-design.md);
 plan: [2026-09-20-loom-lobby-listeners-view.md](../plans/2026-09-20-loom-lobby-listeners-view.md),
@@ -293,6 +293,19 @@ same job for a Thread. It is the single CSS change of this branch and it is layo
 `state.error` above the form, exactly as the generic no-credential card already did, so the branch no
 longer drops the *"Your identity in this Weave is no longer valid"* sentence. The KNOWN-ISSUES row
 that recorded the loss is gone with it.
+
+- **2026-09-21, the first run of smoke test 6 on `main`: two marked lines in one sidebar.** With the
+  directory open the Thread list still drew `li.active` and `aria-current="true"` on **General**
+  beside the sidebar line's own `aria-current`, so two entries both said "this is the one you are
+  looking at" — which is the one thing `aria-current` exists to say once. Spec §8 had said the
+  Thread list's mark was untouched in both views and left the difference to the design session; Paw
+  reversed that on the spot. Fixed on `fix/lobby-listeners-no-thread-mark`: `ThreadList` takes
+  `markCurrent` (default `true`, so every other page is unchanged) and `WeaveView` passes
+  `markCurrent={!showListeners}`. `currentThreadId` is **not** touched — the selection is kept and
+  only its mark is withheld, so the mark returns whether the human presses a Thread or presses the
+  sidebar line a second time. The spec's §8, its §3.1 table and its §16 assumption 2 are amended and
+  dated. This is a behaviour finding; how the one remaining marked line should *look* is still the
+  design session's.
 
 **PR #25 is the first pull request reviewed through Loom itself** — requested in a Thread, picked
 up by ChatGPT off its own inbox poll and reviewed on GitHub with no human relay; see

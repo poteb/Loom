@@ -133,6 +133,10 @@ The figure before that was 1208 in 60 (core 305/22, web 484/10, server 141/9, cl
 cli 68/5, client 37/4, mcp-tools 34/1), so the listeners work as a whole has added 489 tests and six
 files. Counts change with every feature; run the suites to see current numbers.
 
+Since then, on `fix/lobby-listeners-no-thread-mark`: the no-Thread-mark fix adds **three web tests
+and no file** — `web` is **749 in 14** from `npx vitest run` in `src/web`, with `pnpm -r typecheck`
+clean. No other package was run for that fix, because it touches no other package.
+
 ## Manual smoke tests
 
 Six things the automated suites cannot cover, because they need a live Claude Code session, a live
@@ -449,8 +453,13 @@ storage and the site-data block of step 10 are keyed by).
    requests, and this line now marked as the current view) and the connection all stay exactly as
    they were — only the **main area** swaps, from the Thread to the directory under a **Listeners**
    heading. The connection indicator must not blink through *connecting*: nothing was reloaded.
-   The address bar reads `/lobby/listeners`. Press the line again to go back to the Thread, and
-   confirm the **half-written message is still in the composer**, untouched — the composer is kept
+   The address bar reads `/lobby/listeners`. With the directory open, **no Thread is marked** in the
+   Thread list: the sidebar line is the only entry in that sidebar shown as the current view, and
+   **General** is drawn like any other Thread (2026-09-21 — the first run of this step found both
+   marked at once). Press the line again to go back to the Thread, and confirm three things: the
+   **mark returns** on the Thread that was selected all along, with no click on it — the selection
+   was kept, only its mark was withheld — the sidebar line is no longer marked, and the
+   **half-written message is still in the composer**, untouched, because the composer is kept
    mounted and merely hidden while the directory is open. With the directory open, **scroll to the
    last card**: the **header**, the **sidebar** and the **connection indicator** must not move, and
    the page itself must not grow a scrollbar — only the directory scrolls, inside the layout.

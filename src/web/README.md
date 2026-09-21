@@ -271,7 +271,7 @@ re-reads storage.
 - [src/markdown.ts](src/markdown.ts) — `renderMarkdown`: escaping, safe hrefs, mention spans
 - [src/styles.css](src/styles.css) — the stylesheet
 - [src/components/Header.tsx](src/components/Header.tsx) — the **Loom** wordmark back to `/` (a button that switches in place when the session is memory-only), title, identity, connection state, archive button
-- [src/components/ThreadList.tsx](src/components/ThreadList.tsx) — threads, artefact links, new-thread form
+- [src/components/ThreadList.tsx](src/components/ThreadList.tsx) — threads, artefact links, new-thread form; `markCurrent` (default `true`) withholds the selected Thread's `active`/`aria-current` while the main area shows something other than a Thread, so only one sidebar entry is ever marked — the selection itself is kept
 - [src/components/ThreadTools.tsx](src/components/ThreadTools.tsx) — per-thread URL field and invite list
 - [src/components/MessageList.tsx](src/components/MessageList.tsx) — rendered messages and system events
 - [src/components/Composer.tsx](src/components/Composer.tsx) — the text box and mention popup
