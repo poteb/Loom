@@ -71,9 +71,14 @@ Concretely, five pieces:
    same connector. Its five-minute `inbox` heartbeat picks the Thread up with no human prompt, and
    its reconnect polls no longer log a 500 apiece.
 4. A merge whose branch carried a migration does the same thing, except that step 1 prints the
-   migration it applied and the `pg_dump` taken immediately before it.
+   migration it applied and the `pg_dump` taken immediately before it — after the build, so nothing
+   posted while the image was compiling is outside the backup.
 5. A migration that fails prints its error, exits non-zero, and **the running Loom is not
-   restarted** — the old image is still serving, and the backup taken a moment earlier is on disk.
+   restarted** — the old image is still serving, and the backup taken seconds earlier is on disk.
+6. A merge that changed the **database's topology** — Postgres's volume, its mount, or the compose
+   file's `volumes:` block — stops the script before it touches anything, with
+   `database topology changed — deploy by hand (§9-style), not with live-update`. That deployment is
+   a hand-run one, with a human deciding which volume holds the data (§4.5 step 2, §13).
 
 ### Explicitly out of scope
 
@@ -99,7 +104,7 @@ know it was considered and dropped.
 | **One command** after each merge (`live-update`), run by the session as the last merge step, and by Paw when he wants | The update is the step that will be done most often and is the one with a database in it. A script is the only form that can be idempotent, ordered and stoppable |
 | Spool's Caddy serves Loom through **one generic hook**: `import /etc/caddy/sites/*.caddy` plus a mounted host folder; Loom's deploy drops `loom.caddy` there and reloads | Spool must not have to change again for the next site. One hook, once; after that a new site is a file in a folder |
 | Loom's container joins a **shared external Docker network** with Spool's Caddy | Caddy has to reach Loom by name without either project publishing a port to the world |
-| The Loom repository is **public**, so the server clones `https://github.com/poteb/Loom.git` with **no credentials** | Unlike Spool, whose server checkout has a local git bundle as its origin because no GitHub credentials are allowed on that box by policy. Loom needs no credential, so the ordinary clone is fine |
+| The Loom repository is **public**, so the server clones `https://github.com/poteb/Loom.git` with **no credentials** | Unlike Spool, whose server checkout has the local bundle `/root/spool.bundle` as its origin because no GitHub credential is allowed on that box by policy — so a Spool change reaches the server by re-bundling and `scp`, which §9 step 1 spells out. Loom needs no credential, so the ordinary clone, and an ordinary `fetch` from GitHub, is fine |
 | A **standalone migrate entry** with a `--check` mode, and a switch to turn the boot migration off | "Migrate, check, then start" is the gate the interim has no way to express |
 | A session-less `GET /mcp` answers **400** | A real connector sends that request on every reconnect; five 500s in ChatGPT's first hour of polling |
 | Paw does two things by hand: the **DNS A record**, and **re-adding the connector once**, together with the one paste that gets the reviewer into the Weave | They are in panels and an application the session cannot reach, and they happen once |
@@ -117,8 +122,12 @@ takes the project name from the directory and Spool's directory is `deploy`: the
 2026-09-21 (`COMPOSE_PROJECT_NAME` among them; no value was printed). That file is not in git, so
 the name is a property of the server, not of the repository — §7 therefore requires the hook pull
 request to leave it in place, and §9 step 1 verifies it before touching anything. Loom does **not**
-copy that trick; it carries its project name in the compose file itself (§4.2), because a name that
-lives in an ignored file is a name that can go missing.
+copy that trick. It carries its project name in the compose file itself (§4.2), because a name that
+lives in an ignored file is a name that can go missing — and, because `COMPOSE_PROJECT_NAME`
+outranks that key, **every compose command in this spec names its project on the command line**:
+`docker compose -p loom …` for Loom, and
+`docker compose -p spool -f ~/git/Spool/deploy/docker-compose.yml …` for Spool, whichever directory
+they are run from and whatever the shell running them has exported.
 
 ## 3. What is already parameterised, and what the neighbour looks like
 
@@ -169,8 +178,8 @@ Two properties of that file matter here and are easy to get wrong:
 
 ## 4. `deploy/` in the Loom repository
 
-Six files, and not one of them is generated: they are read by a human deciding whether to trust the
-update that is about to run.
+Seven files, and not one of them is generated: they are read by a human deciding whether to trust
+the update that is about to run.
 
     deploy/docker-compose.yml     compose project `loom` on the server
     deploy/loom.caddy             the site block, installed into Spool's Caddy
@@ -178,6 +187,18 @@ update that is about to run.
     deploy/live-update.sh         the one server-side command, idempotent
     deploy/live-update.ps1        the local wrapper: ssh, and nothing else
     deploy/live-update.cmd        a two-line shim so `deploy\live-update.cmd` works from cmd.exe
+    deploy/weave-guidelines.md    the approved Weave guidelines text, read by §9 step 11
+
+**Why the guidelines text is a committed file, which is a correction.** An earlier draft had §9
+step 11 pipe `C:\Users\paw\.loom\live-guidelines.md` into `create`, a file nothing in the runbook
+ever wrote: on a fresh workstation the `Get-Content` fails and, depending on how PowerShell is
+feeling about the pipeline, the Weave is either created with no guidelines at all or the command
+dies after the agent key has already been selected. The approved text is not an operator's local
+note — it is the text in [DOGFOOD.md](../../DOGFOOD.md) §3 step 2, decided on 2026-09-20 — so it
+belongs in git, where it is reviewed once and then read the same way on every workstation.
+`deploy/weave-guidelines.md` is **byte-identical to that block** (the blockquote's `> ` markers
+stripped and nothing else changed); the implementation task copies it across rather than rewriting
+it, and a later edit to either one is an edit to both.
 
 ### 4.1 Where everything lives on the server
 
@@ -187,7 +208,7 @@ check them.
 | Thing | Path, and how it gets there |
 | --- | --- |
 | The checkout | `~/git/Loom` (i.e. `/root/git/Loom`), `git clone https://github.com/poteb/Loom.git`, **`main` only**. Cloned once by hand in §9. It is never checked out to a branch, never committed to, and `live-update.sh` only ever fast-forwards it |
-| The compose project | `loom`, from the **top-level `name: loom` in `deploy/docker-compose.yml`** — *not* from the directory, which is `deploy` and would otherwise name the project `deploy`. So containers are `loom-postgres-1`, `loom-migrate-1`, `loom-loom-1` and the volume is `loom_pgdata` wherever the command is run from |
+| The compose project | `loom`, named **explicitly on every command** (`docker compose -p loom …`) and **again in the file** (top-level `name: loom` in `deploy/docker-compose.yml`) — *not* taken from the directory, which is `deploy` and would otherwise name the project `deploy`. So containers are `loom-postgres-1`, `loom-migrate-1`, `loom-loom-1` and the volume is `loom_pgdata` wherever the command is run from and whatever the shell has exported (§4.2) |
 | The environment file | `~/git/Loom/deploy/.env`, **`chmod 600`**, created by hand on the server in §9, never in git (`.env` is already in [`.gitignore`](../../../.gitignore)) |
 | Database backups | `~/backups/loom/loom-pre-update-<UTC timestamp>.sql.gz`, created by `live-update.sh` in a directory it creates with `install -d -m 700`. Root-only, like Spool's dumps |
 | The update lock | `/run/lock/loom-live-update.lock`, held for the whole of one `live-update.sh` run (§4.5 step 1). `/run/lock` is a tmpfs on Ubuntu, so the file is not persistent state and a lock held by a killed shell is released by the kernel when the descriptor closes |
@@ -273,13 +294,25 @@ Every non-obvious line, with its reason:
   and §9's done-checks look for. Worse, the name would then depend on who ran the command and from
   where, and an ambient `COMPOSE_PROJECT_NAME` in the root shell's environment could move the live
   database out from under the script. The top-level `name:` key settles it inside the file, in git,
-  where a reader can check it: compose's precedence is `-p` over `COMPOSE_PROJECT_NAME` over the
-  file's `name:` over the directory, so the only thing that can still override it is an explicit
-  flag or variable, and neither appears anywhere in this slice. §9 step 1 proves both project names
-  with `docker compose ls` before anything is created.
+  where a reader can check it. **But the key is not sufficient, and this is the second correction.**
+  Compose's precedence is `-p` over `COMPOSE_PROJECT_NAME` over the file's `name:` over the
+  directory — so an ambient `COMPOSE_PROJECT_NAME` in the root shell *outranks* `name: loom`. With
+  `COMPOSE_PROJECT_NAME=spool` exported, which is exactly the value a troubleshooting session in
+  `~/git/Spool/deploy` may have picked up, a bare `docker compose up -d` in Loom's `deploy/`
+  targets the project **`spool`**: the service names `postgres` and `migrate` collide with Spool's,
+  `pgdata` resolves to `spool_pgdata`, and compose will happily recreate the shop's Postgres from
+  Loom's Postgres-17 definition while `live-update.sh` goes on inspecting `loom_pgdata`. So three
+  things hold together, in order of precedence: **every command in this spec passes `-p loom`**
+  (highest precedence, nothing can outrank it); the `name: loom` key stays in the file as the second
+  line of defence, for anyone who types a compose command this spec did not write; and
+  `live-update.sh` **refuses to run at all** when `COMPOSE_PROJECT_NAME` is set in its environment
+  (§4.5 step 1), because a shell holding that variable is a shell in which every hand-run command
+  beside the script is aimed at the wrong project. §9's done-checks read the **effective** project
+  names from `docker compose ls` rather than trusting any of the three.
 - **`postgres` publishes nothing.** The only things that need it are `migrate` and `loom`, both on
   the project's default network. A published port would put the live database on the host's
-  interface list for no gain, and `live-update.sh` reaches it with `docker compose exec` instead.
+  interface list for no gain, and `live-update.sh` reaches it with `docker compose -p loom exec`
+  instead.
 - **Postgres 17**, where Spool runs 16. They are separate servers in separate containers with
   separate volumes, so there is nothing to match; 17 is what the dev compose file and the test
   containers already use, which means the live database is the version every test ran against.
@@ -292,13 +325,13 @@ Every non-obvious line, with its reason:
   compose with a message, not silently bring up a live database with the development password. The
   `:-` form is right for `LOOM_KEEPER_TOKENS`, which is genuinely optional after the first boot
   (seeding only runs on an empty `keepers` table) and whose absence the server reports at boot.
-- **`migrate` and `loom` are the same image**, built from the same context, so `docker compose build`
-  builds once and both services use the result. `command:` and not `entrypoint:` — the image has no
-  `ENTRYPOINT`, its `CMD` is `["node", "dist/main.js"]`, and `WORKDIR` is `/app/src/server`, so
+- **`migrate` and `loom` are the same image**, built from the same context, so
+  `docker compose -p loom build` builds once and both services use the result. `command:` and not
+  `entrypoint:` — the image has no `ENTRYPOINT`, its `CMD` is `["node", "dist/main.js"]`, and `WORKDIR` is `/app/src/server`, so
   `["node", "dist/migrate.js"]` is the same shape one directory over.
 - **`restart: "no"` on `migrate`**, because a one-shot that Docker restarts on exit 0 is a loop.
 - **`depends_on: migrate: condition: service_completed_successfully` on `loom`.** It makes a bare
-  `docker compose up -d` correct for someone who is not using the script: the schema is at the
+  `docker compose -p loom up -d` correct for someone who is not using the script: the schema is at the
   version the image expects before the server is asked to serve. `live-update.sh` runs migrate
   itself first anyway (§4.5), so this gate normally fires against an already-migrated database and
   prints "nothing to apply" — a no-op, deliberately kept rather than removed.
@@ -427,19 +460,39 @@ prints the usage line `usage: live-update.sh [--bootstrap]` to stderr and exits 
 exit-code convention as the migrate entry (§5.2), so a mistyped invocation is never mistaken for a
 deployment failure.
 
-**The ordering is the design.** Everything that can be judged wrong *without* touching the live
-system is judged first — the checkout, and the Caddy configuration this update proposes. Only then
-is the database dumped, migrated and the application replaced. The persisted Caddy site file is
-written **last**, after Loom is already answering, because the file is the one artefact that
-outlives the run: a bad one sits on disk waiting for the next container restart to take the shop
-down with it.
+**Every compose command in the script is `docker compose -p loom …`**, and every Spool one is
+`docker compose -p spool -f ~/git/Spool/deploy/docker-compose.yml …`, for the reason in §4.2: the
+flag is the only form of the project name that nothing in the caller's environment can outrank.
+
+**The ordering is the design, and it changed in answer to review round 2.** Everything that can be
+judged wrong *without* touching the live system is judged first: the checkout, whether the merge
+changed the database's topology, and the Caddy configuration this update proposes. Then the image is
+**built**, which still changes nothing that is running. Only then is the database dumped — and the
+dump is taken **immediately before** the migration, with nothing slow between them. That last point
+is the correction: the earlier draft dumped and *then* spent the minute or two of a build, so a
+message a reviewer posted during the build was outside the dump, and a restore after a failed
+migration would have silently thrown it away. A backup is worth exactly the window between it and
+the change it insures against, so that window is made as small as the script can make it. Migration,
+restart and the health checks follow, and the persisted Caddy site file is written **last**, after
+Loom is already answering, because the file is the one artefact that outlives the run: a bad one
+sits on disk waiting for the next container restart to take the shop down with it.
 
 The ordered steps, each with what it prints and what makes it stop:
 
-1. **Locate itself, and take the update lock.** `cd "$(dirname "$0")"`, then
+1. **Locate itself, refuse an inherited project name, and take the update lock.**
+   `cd "$(dirname "$0")"`, then
 
+       [ -z "${COMPOSE_PROJECT_NAME:-}" ] || { echo "COMPOSE_PROJECT_NAME is set in this environment; unset it and run again"; exit 1; }
        exec 9>/run/lock/loom-live-update.lock
        flock -n 9 || { echo "another live-update is running"; exit 1; }
+
+   **The refusal, on top of `-p loom` on every command.** The flag already makes the variable
+   powerless over this script (§4.2), so the refusal is not there to protect the script's own
+   commands — it is there because a shell that has `COMPOSE_PROJECT_NAME` exported is a shell in
+   which every `docker compose` a human types *beside* the script is aimed at the wrong project, and
+   a root session that has just been troubleshooting the shop is the likeliest such shell. Stopping
+   with a one-line reason costs an `unset` and removes the whole class; it is a cheap check in the
+   one place both callers of §2 pass through.
 
    The lock is **non-blocking** and is held, through the open descriptor 9, until the script exits
    — the kernel releases it then, including on a kill or a dropped SSH connection, so there is
@@ -452,14 +505,18 @@ The ordered steps, each with what it prints and what makes it stop:
    already changed the schema and restarted the app. Being told "another live-update is running"
    and exiting non-zero is the whole of the answer. What the lock does **not** cover is someone
    running `docker compose` by hand beside it; §13 says so.
-2. **Require a clean checkout that is exactly `origin/main`, then fast-forward it.** Four checks
-   and a fetch, each of which stops the script with a printed reason:
+2. **Require a clean checkout that is exactly `origin/main`, fast-forward it, then stop if the
+   merge changed the database's topology.** Five checks and a fetch, each of which stops the script
+   with a printed reason:
 
+       OLD="$(git -C .. rev-parse HEAD)"
        git -C .. symbolic-ref --short HEAD          # must be exactly "main"
        git -C .. status --porcelain --untracked-files=all   # must be empty
        git -C .. fetch origin main
        git -C .. merge --ff-only origin/main
        git -C .. rev-parse HEAD  ==  git -C .. rev-parse refs/remotes/origin/main
+       git -C .. diff "$OLD"..HEAD -- deploy/docker-compose.yml | grep -Eq 'postgres|pgdata|volumes' && {
+         echo "database topology changed — deploy by hand (§9-style), not with live-update"; exit 1; }
 
    Then it prints the head SHA. **This is a correction to an earlier draft**, which ran
    `git pull --ff-only origin main` alone and claimed that a stray commit or a hand edit would stop
@@ -474,82 +531,151 @@ The ordered steps, each with what it prints and what makes it stop:
    changing what the build produces as a tracked edit. The one thing deliberately exempted is
    `deploy/.env`, which is git-ignored and must be on the server: `--untracked-files=all` does not
    report ignored files, so no exception has to be written.
-3. **Validate the Caddy configuration this update proposes — before anything is mutated.** Staged
-   in a temporary directory, checked by a disposable Caddy, and nothing is installed yet:
 
-       STAGE="$(mktemp -d)"; trap 'rm -rf "$STAGE"' EXIT
+   **The topology guard, and why it is a refusal rather than a cleverness.** `live-update.sh`
+   hard-codes `loom_pgdata` and the container `loom-postgres-1`, and it dumps through the compose
+   file it has *just* fast-forwarded to. A merge that moved Postgres's mount, renamed the volume or
+   added a second one therefore breaks the dump's only guarantee: the script would see that
+   `loom_pgdata` still exists, start Postgres against whatever the **new** file says, dump a
+   database that may be empty, migrate it, and restart Loom with every conversation apparently gone
+   while the real volume sits untouched and undumped. There is no safe automatic answer to that —
+   the right recovery depends on which volume holds the data — so the script does the one thing it
+   can be sure about: it compares the compose file across the fast-forward, and if the diff mentions
+   `postgres`, `pgdata` or `volumes` at all it prints the line above and **does nothing else**. No
+   dump, no build, no migration, no restart. A grep on the diff over-triggers, deliberately: a
+   comment edit near the `postgres` service stops an update, and being stopped costs one hand
+   deployment while being wrong costs the event log. **A database topology change is an explicit
+   manual deployment** — §9's shape, with a human deciding which volume to dump and in what order —
+   and §13 says so.
+3. **Validate the Caddy configuration this update proposes — before anything is mutated.** Staged
+   in a temporary directory, checked by a disposable Caddy, given an environment file holding two
+   variables and nothing else, and nothing is installed yet:
+
+       STAGE="$(mktemp -d)"; CADDYENV="$(mktemp)"; chmod 600 "$CADDYENV"
+       trap 'rm -rf "$STAGE"; rm -f "$CADDYENV"' EXIT
        cp /root/caddy-sites/*.caddy "$STAGE"/ 2>/dev/null || true
        cp loom.caddy "$STAGE"/loom.caddy
+       SA="$(grep -E '^SITE_ADDRESS=' /root/git/Spool/deploy/.env | tail -1 | cut -d= -f2-)"
+       RA="$(grep -E '^REDIRECT_ADDRESSES=' /root/git/Spool/deploy/.env | tail -1 | cut -d= -f2-)"
+       printf 'SITE_ADDRESS=%s\nREDIRECT_ADDRESSES=%s\n' "${SA:-localhost}" "${RA:-redirect.localhost}" > "$CADDYENV"
        docker run --rm \
          -v /root/git/Spool/deploy/Caddyfile:/etc/caddy/Caddyfile:ro \
          -v "$STAGE":/etc/caddy/sites:ro \
-         --env-file /root/git/Spool/deploy/.env \
+         --env-file "$CADDYENV" \
          caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
 
    The stage is a **copy of the live sites folder with `loom.caddy` replaced**, so what is validated
    is the whole configuration that would be in force after the install — not Loom's block in
    isolation, which would miss a duplicate site address or a clash with a future neighbour. The
    mounted Caddyfile is Spool's real one, from Spool's checkout, because that is the file that does
-   the `import`. The `--env-file` is Spool's real `.env` because Spool's Caddyfile is written in
-   terms of **`SITE_ADDRESS`** and **`REDIRECT_ADDRESSES`** (§3): without them the canonical block's
-   site address substitutes empty, Caddy reads the block as global configuration and refuses the
-   whole file, and the validation would fail for a reason that has nothing to do with this update.
-   That file also holds `COMPOSE_PROJECT_NAME` and Spool's `DB_PASSWORD`; they are handed to a
-   container that runs `caddy validate` and exits, `caddy validate` prints neither, and nothing in
-   this script reads or echoes the file — but it is worth knowing that the shop's database password
-   is in that container's environment for the second the check takes. A non-zero exit here stops the
-   script with **nothing touched**: no dump, no build, no migration, the old site file still on disk
-   and the shop still up. This is the check that makes a malformed `loom.caddy` a failed update
-   rather than a half-deployed one.
-4. **Back up, and be precise about what "nothing to back up" means.** Three cases, decided in this
-   order, because conflating the second with the third is how a live database gets migrated with no
-   dump:
+   the `import`.
+
+   **Two variables, not Spool's whole environment, and this is a correction.** An earlier draft
+   passed `--env-file /root/git/Spool/deploy/.env` straight to the container, on the reasoning that
+   Spool's Caddyfile is written in terms of **`SITE_ADDRESS`** and **`REDIRECT_ADDRESSES`** (§3) and
+   substitutes an empty site address without them — which is true, and is why some value for each
+   must be present: an empty `{$SITE_ADDRESS}` makes Caddy read the canonical block as global
+   configuration and refuse the whole file, failing the validation for a reason that has nothing to
+   do with this update. What is *not* true is that the container needs the rest of that file. It
+   also carries Spool's `DB_PASSWORD` and `COMPOSE_PROJECT_NAME` and, as the shop grows, whatever
+   payment, shipping, mail or AI keys Spool comes to hold — handed, for the second the check takes,
+   to a mutable third-party image (`caddy:2-alpine`) that has outbound network access and needs none
+   of them. So the two values are extracted with `grep -E` into a **mode-600 temporary file**,
+   created before the container and removed by the cleanup trap whichever way the script exits, and
+   a missing or empty value falls back to **the same default Spool's own compose file gives it**
+   (`localhost`, `redirect.localhost`), so a Spool `.env` that never set one of them validates
+   rather than failing obscurely. A check that needs two strings is given two strings.
+
+   A non-zero exit here stops the script with **nothing touched**: no dump, no build, no migration,
+   the old site file still on disk and the shop still up. This is the check that makes a malformed
+   `loom.caddy` a failed update rather than a half-deployed one. It comes **after** step 2 because
+   the file it validates is the one the fast-forward brought in — validating the copy that is
+   already installed would prove nothing about this update — and **before** every step that touches
+   the live system, which is the part of the ordering that matters.
+4. **Build.** `docker compose -p loom build`. Both services share the image, so this is one build. A
+   build failure stops the script with Loom still serving the old image, nothing dumped and nothing
+   migrated. The build is here, before the dump, because it is the slowest step in the script and
+   the last one that changes nothing outside the image store.
+5. **Back up, immediately before the migration, and be precise about what "nothing to back up"
+   means.** Three cases, decided in this order, because conflating the second with the third is how
+   a live database gets migrated with no dump:
 
    - **`docker volume inspect loom_pgdata` fails** — there is no volume, so this is the first
      deployment and there is nothing to dump. **Skipped with a printed line**, and that is correct.
    - **The volume exists but the `postgres` container is not running.** Then there *is* a live
-     database and the dump is mandatory: `docker compose up -d postgres`, wait for the healthcheck
-     to report healthy, then dump. Never skipped. Compose may *recreate* that container rather than
-     merely start it, if its service definition changed since it was created — and that is
-     harmless, because `pgdata` is a named volume that outlives any container attached to it. What
-     matters is that this happens **before** the migration, not that the same container object
+     database and the dump is mandatory: `docker compose -p loom up -d postgres`, wait for the
+     healthcheck to report healthy **within a bound** (below), then dump. Never skipped. Compose may
+     *recreate* that container rather than merely start it, if its service definition changed since
+     it was created — and that is harmless, because `pgdata` is a named volume that outlives any
+     container attached to it, and step 2 has already refused any merge that could have moved it.
+     What matters is that this happens **before** the migration, not that the same container object
      comes back.
    - **The volume exists and Postgres is running.** Dump.
 
    **This is a correction to an earlier draft**, which skipped the backup whenever
    `docker compose ps --status running -q postgres` was empty and called that "the first
    deployment". It is not: a stopped container over a populated volume gives the same empty answer,
-   and the very next step (`docker compose run --rm migrate`) starts Postgres through `depends_on`
-   and migrates that populated volume — a schema change on the live database with no dump behind
-   it. The volume, not the container, is the thing that tells you whether data exists.
+   and the very next step (`docker compose -p loom run --rm migrate`) starts Postgres through
+   `depends_on` and migrates that populated volume — a schema change on the live database with no
+   dump behind it. The volume, not the container, is the thing that tells you whether data exists.
 
-   The dump itself is written so that a file under `~/backups/loom` is never anything but a
-   complete backup:
+   **The wait for a started Postgres is bounded, which is the second correction here.** "Wait for
+   the healthcheck to report healthy" was left as an operation with no command, no timeout and no
+   failure handling — so a Postgres that can never come healthy, because its data directory is
+   damaged or the disk is full (§14.3), would leave the script looping forever while it holds
+   `/run/lock/loom-live-update.lock`, and every later update would report only that another update
+   is running. The bound:
 
+       for i in $(seq 1 60); do
+         st="$(docker inspect --format '{{.State.Health.Status}}' loom-postgres-1 2>/dev/null || echo gone)"
+         [ "$st" = healthy ] && break
+         case "$st" in
+           unhealthy|gone) echo "postgres is $st; not migrating"; docker compose -p loom logs --tail 50 postgres; exit 1 ;;
+         esac
+         sleep 1
+       done
+       [ "$st" = healthy ] || { echo "postgres did not become healthy within 60s"; docker compose -p loom logs --tail 50 postgres; exit 1; }
+
+   Sixty polls a second apart: the healthcheck of §4.2 is `pg_isready` every 5 s with 20 retries,
+   and a Postgres that starts over an existing volume is healthy in a few seconds, so a minute is
+   generous without being a hang. An `unhealthy` verdict, or a container that has exited or is not
+   there at all, **fails immediately** rather than waiting the minute out. A timeout exits non-zero
+   after printing the last fifty lines of Postgres's log, which is what whoever reads the failure
+   wants next. On every one of those paths the **migration and the restart are not attempted**: the
+   script stops, Loom keeps serving the old image, and the lock goes with the process.
+
+   The dump itself is written so that a file under `~/backups/loom` is never anything but a complete
+   backup, and so that it can only have come from the database Loom is actually using:
+
+       docker inspect -f '{{range .Mounts}}{{.Name}} {{end}}' loom-postgres-1 | grep -qw loom_pgdata \
+         || { echo "loom-postgres-1 is not bound to loom_pgdata — deploy by hand"; exit 1; }
        umask 077
        install -d -m 700 ~/backups/loom
        TS="$(date -u +%Y%m%dT%H%M%SZ)"
        FINAL="$HOME/backups/loom/loom-pre-update-$TS.sql.gz"
        TMP="$(mktemp "$HOME/backups/loom/.loom-pre-update-$TS.XXXXXX")"
-       trap 'rm -f "$TMP"' EXIT        # added to the stage's trap, not replacing it
-       docker compose exec -T postgres pg_dump -U loom loom | gzip > "$TMP"
+       trap 'rm -rf "$STAGE"; rm -f "$CADDYENV" "$TMP"' EXIT   # extends the step-3 trap, never replaces it
+       docker compose -p loom exec -T postgres pg_dump -U loom loom | gzip > "$TMP"
        mv "$TMP" "$FINAL"
 
-   Each line earns its place. `umask 077` and `install -d -m 700` **make** the modes this spec
-   claims instead of hoping for them — `mkdir -p` and a bare `>` inherit whatever the root shell's
-   umask happens to be, and §12 states 700/600 as a property a reviewer can check. The temporary
-   file is in the **same directory** so the `mv` is a rename within one filesystem and therefore
-   atomic. `pipefail` fails the script on a failed `pg_dump` or `gzip`, and because the redirection
-   went to the temporary name, the `trap` removes the partial file: the earlier draft's redirection
-   created the final `.sql.gz` *before* the pipeline ran, so a failure left a truncated file whose
-   name says "backup" behind. The dot prefix keeps a partial file out of a `ls ~/backups/loom`
-   glance. Prints the final path. The backup is before the build and the migration, which is the
-   only ordering worth having.
-5. **Build.** `docker compose build`. Both services share the image, so this is one build. A build
-   failure stops the script with Loom still serving the old image.
+   Each line earns its place. **The `docker inspect` assertion answers "did I dump the right
+   database?"** — it reads the mounts of the container that is running *now* and refuses unless
+   `loom_pgdata` is among them, so a dump can never be taken from a container compose attached to
+   some other volume. With step 2's guard it makes the promise checkable from both ends: the
+   topology did not change across this update, and the thing being dumped is the volume that serves
+   Loom. `umask 077` and `install -d -m 700` **make** the modes this spec claims instead of hoping
+   for them — `mkdir -p` and a bare `>` inherit whatever the root shell's umask happens to be, and
+   §12 states 700/600 as a property a reviewer can check. The temporary file is in the **same
+   directory** so the `mv` is a rename within one filesystem and therefore atomic. `pipefail` fails
+   the script on a failed `pg_dump` or `gzip`, and because the redirection went to the temporary
+   name, the `trap` removes the partial file: the earlier draft's redirection created the final
+   `.sql.gz` *before* the pipeline ran, so a failure left a truncated file whose name says "backup"
+   behind. The dot prefix keeps a partial file out of a `ls ~/backups/loom` glance. Prints the final
+   path. And this step is the one immediately before the migration, with only the `exec` between
+   them, which is the whole point of the reordering.
 6. **Migrate, and stop on failure.**
 
-       docker compose run --rm migrate
+       docker compose -p loom run --rm migrate
 
    `run --rm` rather than `up migrate`, deliberately and this is the one place the shape had to be
    chosen: `docker compose up <service>` **returns 0 even when the service exited non-zero**, and
@@ -558,9 +684,10 @@ The ordered steps, each with what it prints and what makes it stop:
    container's exit code, starts `postgres` via `depends_on` without stopping it afterwards, and
    removes the container. With `set -e`, a non-zero exit **is** the stop: no restart happens, the
    old image keeps serving, the Caddy file on disk is still the one that was there, and the backup
-   from step 4 is on disk.
-7. **Restart Loom.** `docker compose up -d loom`. Compose recreates the container because the image
-   id changed, and runs the `migrate` gate again — a no-op that prints "nothing to apply" (§4.2).
+   from step 5 — taken seconds earlier, with nothing accepted in between — is on disk.
+7. **Restart Loom.** `docker compose -p loom up -d loom`. Compose recreates the container because
+   the image id changed, and runs the `migrate` gate again — a no-op that prints "nothing to apply"
+   (§4.2).
 8. **Check health over the loopback port.** `curl -fsS http://127.0.0.1:3100/api/guidelines`,
    retried up to 30 times at one second apart; exhausting the retries **fails the script**.
    `/api/guidelines` rather than `/health`: `/health` answers `{"ok":true}` from the HTTP layer
@@ -622,10 +749,13 @@ The ordered steps, each with what it prints and what makes it stop:
     **reruns the script in normal mode** once the certificate exists, and that rerun is what
     completes the first deployment's end-to-end check. Every update after that is a normal run.
 
-Nothing in the script prints a token, a secret or a `DATABASE_URL`. The two places a credential
-could surface are a compose error echoing `environment:` — which is why `.env` holds only two values
-and neither is echoed by the script itself — and step 3's `--env-file`, which hands Spool's
-environment to a container that prints only a validation verdict.
+Nothing in the script prints a token, a secret or a `DATABASE_URL`, and nothing it prints can reach
+the controller's transcript as a credential. The one place a credential could still surface is a
+compose error echoing `environment:` — which is why `.env` holds only two values and neither is
+echoed by the script itself. Step 3's `--env-file` used to be the second such place and is not any
+more: it is a mode-600 temporary file holding `SITE_ADDRESS` and `REDIRECT_ADDRESSES` and nothing
+else, removed by the cleanup trap, so the disposable Caddy never sees Spool's `DB_PASSWORD` or any
+other key that file has come to hold.
 
 ### 4.6 The local wrapper
 
@@ -724,7 +854,7 @@ Usage: node dist/migrate.js [--check]
 asked", `1` means "I failed", `2` means "you asked wrongly". In particular **`--check` exits 0 even
 with migrations pending**: it answers *what would you do*, not *is this database up to date*. A
 caller that wants a gate does not use `--check` at all — it runs the applying form and reads its
-exit code, which is what `live-update.sh` step 5 does, or it starts the server with
+exit code, which is what `live-update.sh` step 6 does, or it starts the server with
 `LOOM_MIGRATE_ON_BOOT=false` and lets the refusal of §5.3 be the gate. `--check` is for a human who
 wants to know what the next update will touch before running it.
 
@@ -904,14 +1034,29 @@ project is `spool` because the server-local, git-ignored `~/git/Spool/deploy/.en
 `COMPOSE_PROJECT_NAME=spool` (§3). Every container name, the `spool_default` network and Spool's own
 volumes hang off that. So the hook PR adds the `import` line, the mount and the two networks and
 **leaves that variable in place**; it does not remove it, does not rename it, and does not add a
-top-level `name:` that a reader might take for the operative one. With it in place, no Spool command
-in this spec needs `-p spool` — a plain
-`docker compose -f ~/git/Spool/deploy/docker-compose.yml …` run from any directory picks the
-project name out of the env file beside that compose file, which is where compose looks for it.
-§9 step 1 verifies that before it touches Caddy, because the cost of being wrong is the shop's
-containers being recreated under a second project name.
+top-level `name:` that a reader might take for the operative one. Removing that variable would
+rename every one of the shop's containers, its network and its volumes on the next `up`, and Spool's
+own runbook is written in terms of commands that rely on it.
 
-**The two prerequisites, run by the session over SSH before Spool's compose is re-upped** — this
+**And every Spool command in this spec names the project anyway:**
+`docker compose -p spool -f ~/git/Spool/deploy/docker-compose.yml …`, never the bare `-f` form an
+earlier draft used. `-p` outranks the env file, so the command is correct whether or not the file
+still sets the variable, and it cannot be redirected by whatever the root shell has exported — the
+same reasoning as `-p loom` on Loom's side (§4.2). The two mechanisms are independent on purpose:
+the variable keeps Spool's own tooling right, the flag keeps *this* spec's commands right. §9 step 1
+still verifies the effective name with `docker compose ls` before it touches Caddy, because the cost
+of being wrong is the shop's containers being recreated under a second project name.
+
+**How the merged hook actually reaches the server.** Not by `git pull` from GitHub: Spool's server
+checkout has **no GitHub credential by policy** and its `origin` is the local bundle
+`/root/spool.bundle`. So the merge is followed by a bundle refresh from Paw's PC, which is the
+procedure Spool's own deployment tasks already use and which §9 step 1 spells out command by
+command. Loom's checkout is the opposite case — `origin` is GitHub over plain HTTPS with no
+credential, because the Loom repository is public (§2) — and that asymmetry is why the two
+repositories are updated by different means on the same box.
+
+**The two prerequisites, run by the session over SSH before Spool's compose is re-upped** (with
+`-p spool -f ~/git/Spool/deploy/docker-compose.yml`, as every Spool command here is) — this
 ordering is the whole of the risk in §7:
 
     docker network create web
@@ -970,26 +1115,45 @@ STDIO, which fails silently with the client reporting only that the connector's 
 exposed (DOGFOOD §3 step 4). This is the last time it has to be done: the hostname is now stable, so
 the connector survives every restart and every update. In the same sitting Paw pastes the prepared
 onboarding text into the ChatGPT session (§9 step 12), which is what gets the reviewer into the
-Weave without its secret ever appearing in a Claude conversation.
+Weave without its secret ever entering the controller's transcript (§8.1).
 
 ### 8.1 Credentials: exactly where each one is generated, stored and read
 
-**Credentials never pass through the conversation.** This is a standing trap
-([HANDBOOK.md](../../HANDBOOK.md) §5, from the 2026-09-20 run). An earlier draft of this spec stated
-that rule and then left the commands that honour it unwritten — a `node -e "console.log(…)"` in a
-root SSH session prints its result into the session's captured output, which is the opposite of the
-promise. So every command is given here, in the form that is actually run.
+**A credential never enters the controller's transcript** — the Claude Code conversation — **it
+moves by file, by `scp` or on Paw's own clipboard.** That is the guarantee, in those words, and it is
+the wording used in §9, §12 and §14 as well.
 
-**The five files, and what is in each.**
+**Why it is worded that narrowly, which is a correction.** An earlier draft said "credentials never
+pass through the conversation" and then, twelve steps later, had Paw paste the Weave's secret into
+the ChatGPT session (§9 step 12) — so an operator following the broad rule could not finish the
+runbook, and one following the runbook broke a stated security property. The rule that was actually
+paid for on 2026-09-20 ([HANDBOOK.md](../../HANDBOOK.md) §5) is about the *controller's* transcript:
+a secret rendered there is a secret in a conversation log, in a summary, and in whatever a later
+session reads back. It says nothing about a clipboard or a local file, and it cannot, because the
+reviewer has to be given something. So the guarantee is stated where it holds and §14.5 names the
+residue: the Weave secret does exist in a clipboard, in one local file and in the ChatGPT
+conversation, once, and the invitation route retires that after the first run.
 
-| File | Written by | Holds |
-| --- | --- | --- |
-| `~/git/Loom/deploy/.env` on the **server** | §9 step 3, generated in place | `LOOM_DB_PASSWORD`, `LOOM_KEEPER_TOKENS` |
-| `C:\Users\paw\.loom\live.env` | §9 step 3, `scp` of the above | the same two lines — the only copy off the server |
-| `C:\Users\paw\.loom\live-keeper.json` | §9 step 3, derived locally | `{ "url": "https://loom.3dbox.dk", "token": "<43 chars>" }` |
-| `C:\Users\paw\.loom\live-claude-code.json`, `…\live-chatgpt.json` | §9 step 10, redirected `--json` | the `admin agents add` payload: `agent.id`, `agent.name`, `key` |
-| `C:\Users\paw\.loom\live-weave.json` | §9 step 11, redirected `--json` | the `create` payload: `weave.id`, `secret`, `token`, `participant` |
-| `C:\Users\paw\.loom\live-lobby.json` | §9 step 10, redirected `--json` | the Lobby's `weaveId` and its `secret` (only a keeper is told it) |
+The other half of the same correction is the inventory: the earlier draft called it "the five
+files", listed six, and left out the two that matter most — the paste file that carries the secret,
+and the CLI's own config file, into which `create` stores the new Weave's participant token. The
+complete list is below. Every command that writes one of these files is given here in the form it is
+actually run, because an earlier draft stated the rule and left those commands unwritten — a
+`node -e "console.log(…)"` in a root SSH session prints its result into the session's captured
+output, which is the opposite of the promise.
+
+**Every file that holds a credential, what is in it, and who can read it.**
+
+| File | Written by | Holds | Holder and protection |
+| --- | --- | --- | --- |
+| `~/git/Loom/deploy/.env` on the **server** | §9 step 3, generated in place | `LOOM_DB_PASSWORD`, `LOOM_KEEPER_TOKENS` | `root`, mode **600**, made by `umask 077`, checked with `stat -c %a` |
+| `C:\Users\paw\.loom\live.env` | §9 step 3, `scp` of the above | the same two lines — the only copy off the server | Paw, by the profile ACL on `C:\Users\paw\.loom` (Paw and local administrators, nobody else) |
+| `C:\Users\paw\.loom\live-keeper.json` | §9 step 3, derived locally | `{ "url": "https://loom.3dbox.dk", "token": "<43 chars>" }` | Paw, same profile ACL |
+| `C:\Users\paw\.loom\live-claude-code.json`, `…\live-chatgpt.json` | §9 step 10, redirected `--json` | the `admin agents add` payload: `agent.id`, `agent.name`, `key` | Paw, same profile ACL |
+| `C:\Users\paw\.loom\live-lobby.json` | §9 step 10, redirected `--json` | the Lobby's `weaveId` and its `secret` (only a keeper is told it) | Paw, same profile ACL |
+| `C:\Users\paw\.loom\live-weave.json` | §9 step 11, redirected `--json` | the `create` payload: `weave.id`, `secret`, `token`, `participant` | Paw, same profile ACL |
+| `C:\Users\paw\.loom\live-config.json` | the **CLI itself**, on `create` in §9 step 11 | the CLI's own store: the live Weave's **participant token** and which Weave is current | Paw, same profile ACL. Kept — it is what makes later `--weave`-less commands work against the live instance (below) |
+| `C:\Users\paw\.loom\live-chatgpt-paste.md` | §9 step 12, assembled by the session | the reviewer brief **plus the Weave's `secret`** in a `join_weave({ … })` call, ready to paste | Paw, same profile ACL. **Deleted** as a numbered sub-step of §9 step 12, with Paw's clipboard cleared in the same breath — it is the one file here whose whole purpose ends the moment it has been pasted |
 
 **Server side — generated straight into the file, nothing printed.** One command, run over SSH:
 
@@ -1040,7 +1204,9 @@ have to say so; it does not move in this slice.
 
 so the live instance's Weave tokens land in their own store and a `--weave`-less command can never
 address the dev server's Weave by accident. `LOOM_CONFIG` is the variable's real name, read from the
-CLI source rather than assumed.
+CLI source rather than assumed. That file is itself credential-bearing — it is the last row of the
+inventory above — and it is kept rather than cleaned up, because the participant token in it is how
+every later live command speaks as the Claude-Code participant.
 
 ## 9. The first deployment runbook
 
@@ -1077,22 +1243,61 @@ In practice the session runs these itself in the worktree; Paw's own typing is s
 1. **Spool's change is merged and applied.** Its pull request (§7) is merged on Paw's word; then,
    by the session, on the server, in this order:
 
-   1. **Verify the two project names before touching anything** — `docker compose ls`, which must
+   1. **Read the effective project names before touching anything** — `docker compose ls`, whose
+      output is the *effective* name of every running project, not what any file claims. It must
       list `spool` as running and must **not** list `deploy` or `loom`. This is the check that
-      catches a hook PR that dropped `COMPOSE_PROJECT_NAME=spool` from
-      `~/git/Spool/deploy/.env` (§7); if `spool` is not there under that name, stop and fix the
-      env file, because the next command would otherwise create a second project alongside the
-      shop's running one.
-   2. `docker network create web` and `install -d -m 755 /root/caddy-sites`, then
-      `git -C ~/git/Spool pull`.
-   3. **Preflight Spool's proposed Caddyfile in a disposable container, before Caddy is recreated**
-      — the same shape as `live-update.sh` step 3, with an empty sites directory because that is
-      the state the shop is about to run in:
+      catches a hook PR that dropped `COMPOSE_PROJECT_NAME=spool` from `~/git/Spool/deploy/.env`
+      (§7); if `spool` is not there under that name, stop and fix the env file, because the shop's
+      containers, network and volumes all hang off it. Every command below carries `-p spool` or
+      `-p loom` regardless (§4.2), so this check is about the state of the box rather than about
+      the commands that follow.
+   2. **Get the merged hook onto the server, by bundle.** The server's Spool checkout has
+      **`/root/spool.bundle` as its `origin`** — a file, not GitHub — because no GitHub credential
+      is allowed on that box by policy; Loom's checkout, by contrast, has GitHub as its `origin`
+      and needs no credential because the Loom repository is public (§2). So `git -C ~/git/Spool
+      pull` **cannot see a commit that was merged on GitHub**, and an earlier draft of this step
+      relied on exactly that: the pull would report "already up to date", the preflight would
+      validate the old Caddyfile without the `import`, Caddy would never join `web`, and the
+      prerequisite would look deployed while it was not. The procedure is the one Spool's own
+      deployments already use (`Tasks/done/20260715-140446` and `…/20260717-133934` in that
+      repository): re-bundle on Paw's PC, copy, replace atomically, reset.
 
+      On Paw's PC:
+
+          git -C D:\git\Spool fetch origin
+          git -C D:\git\Spool bundle create $env:TEMP\spool.bundle --all
+          scp $env:TEMP\spool.bundle SpoolServer:/root/spool.bundle.new
+
+      then on the server:
+
+          mv /root/spool.bundle.new /root/spool.bundle
+          git -C ~/git/Spool fetch origin
+          git -C ~/git/Spool reset --hard origin/main
+          git -C ~/git/Spool rev-parse HEAD        # must equal the merged hook SHA
+
+      `--all` because that is what the provisioning and the TLS cutover both used, and a whole-
+      history bundle is a few megabytes. The `scp` lands on **`spool.bundle.new`** and a local `mv`
+      puts it in place, because `/root/spool.bundle` is the file `origin` points at: writing
+      straight onto it would replace the checkout's only remote while the transfer is in flight, so
+      an interrupted copy would leave a truncated bundle and a checkout that can no longer fetch
+      anything. `reset --hard origin/main` and not `pull`: the server checkout is a deployment
+      artefact that is never committed to, and a reset says so in one command instead of asking git
+      to merge. Then the SHA is compared against the merge commit the pull request produced — the
+      one number that proves the hook is actually on the box.
+   3. `docker network create web` and `install -d -m 755 /root/caddy-sites`.
+   4. **Preflight Spool's proposed Caddyfile in a disposable container, before Caddy is recreated**
+      — the same shape as `live-update.sh` step 3, including the **two-variable mode-600 env file**
+      of §4.5 step 3 rather than Spool's whole `.env`, and with an empty sites directory because
+      that is the state the shop is about to run in:
+
+          CADDYENV="$(mktemp)"; chmod 600 "$CADDYENV"; trap 'rm -f "$CADDYENV"' EXIT
+          SA="$(grep -E '^SITE_ADDRESS=' /root/git/Spool/deploy/.env | tail -1 | cut -d= -f2-)"
+          RA="$(grep -E '^REDIRECT_ADDRESSES=' /root/git/Spool/deploy/.env | tail -1 | cut -d= -f2-)"
+          printf 'SITE_ADDRESS=%s\nREDIRECT_ADDRESSES=%s\n' "${SA:-localhost}" "${RA:-redirect.localhost}" > "$CADDYENV"
           docker run --rm \
             -v /root/git/Spool/deploy/Caddyfile:/etc/caddy/Caddyfile:ro \
             -v /root/caddy-sites:/etc/caddy/sites:ro \
-            --env-file /root/git/Spool/deploy/.env \
+            --env-file "$CADDYENV" \
             caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
 
       **Why before and not after, which is a correction.** An earlier draft ran `up -d caddy` and
@@ -1105,17 +1310,20 @@ In practice the session runs these itself in the worktree; Paw's own typing is s
       `/root/caddy-sites/00-placeholder.caddy` containing one `#` comment line and repeat — the
       placeholder is installed **before** the first recreation, not after it, and
       `live-update.sh` never touches that file.
-   4. `docker compose -f ~/git/Spool/deploy/docker-compose.yml up -d caddy`, then the same
+   5. `docker compose -p spool -f ~/git/Spool/deploy/docker-compose.yml up -d caddy`, then the same
       `caddy validate` again via `docker exec spool-caddy-1` — kept as a **second** check, because
       it is the only one that reads the configuration as the container actually mounted it.
 
-   *Done when:* both validates print `Valid configuration`, `docker compose ls` still shows exactly
-   `spool` (no `deploy`), `docker network inspect web` lists `spool-caddy-1`, and
+   *Done when:* `git -C ~/git/Spool rev-parse HEAD` equals the merged hook SHA, both validates
+   print `Valid configuration`, `docker compose ls` still shows the effective project name `spool`
+   and nothing called `deploy` or `loom`, `docker network inspect web` lists `spool-caddy-1`, and
    `https://shop.3dbox.dk` still serves the shop.
 2. **Clone Loom.** `git clone https://github.com/poteb/Loom.git ~/git/Loom` — no credentials, the
-   repository is public. *Done when:* `git -C ~/git/Loom rev-parse HEAD` equals the `main` SHA the
-   session expects, `git -C ~/git/Loom status --porcelain --untracked-files=all` is empty, and
-   `ls ~/git/Loom/deploy` lists all six files with `live-update.sh` executable.
+   repository is public — the asymmetry with Spool's bundle origin is stated in step 1. *Done when:*
+   `git -C ~/git/Loom rev-parse HEAD` equals the `main` SHA the session expects,
+   `git -C ~/git/Loom status --porcelain --untracked-files=all` is empty, and
+   `ls ~/git/Loom/deploy` lists all **seven** files (§4) — `weave-guidelines.md` among them, since
+   step 11 reads it — with `live-update.sh` executable.
 3. **Generate the secrets on the server, then copy them once.** The exact commands are in §8.1 and
    are not repeated here: generate straight into `~/git/Loom/deploy/.env` with `umask 077` and
    `openssl`, check the shapes with `stat` and `awk`, `scp` the file to
@@ -1124,24 +1332,28 @@ In practice the session runs these itself in the worktree; Paw's own typing is s
    lines directly is fewer steps and leaves no commented template to be half-filled.
    *Done when:* `stat -c %a ~/git/Loom/deploy/.env` is `600`, the two `awk` length checks print `32`
    and `43`, and `Test-Path C:\Users\paw\.loom\live-keeper.json` is `True`.
-4. **Bring it up.** In `~/git/Loom/deploy`: `docker compose up -d`. Postgres starts, `migrate` runs
-   to completion against an empty database and applies all five migrations, then `loom` starts.
-   *Done when:* `docker compose ls` now lists `loom` (and still no `deploy`), `docker compose ps`
-   shows `postgres` and `loom` running and `migrate` exited 0, `docker volume inspect loom_pgdata`
-   succeeds, and `docker compose logs loom` carries `keepers: seeded 1 from LOOM_KEEPER_TOKENS`,
+4. **Bring it up.** In `~/git/Loom/deploy`: `docker compose -p loom up -d`. Postgres starts,
+   `migrate` runs to completion against an empty database and applies all five migrations, then
+   `loom` starts.
+   *Done when:* `docker compose ls` now lists the effective name `loom` beside `spool` (and nothing
+   called `deploy`), `docker compose -p loom ps` shows `postgres` and `loom` running and `migrate`
+   exited 0, `docker volume inspect loom_pgdata` succeeds, and `docker compose -p loom logs loom`
+   carries `keepers: seeded 1 from LOOM_KEEPER_TOKENS`,
    `lobby: created /w/…` and `loom server listening on http://0.0.0.0:3000`.
 5. **Install the site block and reload Caddy** — by running the real script, so that the first
    deployment exercises it: `~/git/Loom/deploy/live-update.sh --bootstrap`. It takes the lock,
-   confirms the checkout equals `origin/main` and pulls nothing new, validates the proposed Caddy
-   configuration, takes a dump (the volume exists and Postgres is up), rebuilds, runs migrate
-   (nothing to apply), restarts `loom`, passes the loopback check, installs `loom.caddy` and reloads
-   Caddy. `--bootstrap` is required here and **only** here: there is no A record yet, so the public
-   check of §4.5 step 10 cannot pass. *Done when:* it prints the skipped-public-check line,
+   confirms the checkout equals `origin/main`, pulls nothing new and so trips no topology guard,
+   validates the proposed Caddy configuration, rebuilds, takes a dump (the volume exists and
+   Postgres is up and bound to `loom_pgdata`), runs migrate (nothing to apply), restarts `loom`,
+   passes the loopback check, installs `loom.caddy` and reloads Caddy. `--bootstrap` is required
+   here and **only** here: there is no A record yet, so the public check of §4.5 step 10 cannot
+   pass. *Done when:* it prints the skipped-public-check line,
    exits 0, `/root/caddy-sites/loom.caddy` exists with mode 644, and a dump exists under
    `~/backups/loom` with no leftover dot-prefixed temporary file.
 6. **Paw adds the DNS A record** (§8 item 1). *Done when:* `dig +short loom.3dbox.dk` from the
    server answers `89.167.47.120`.
-7. **Watch the certificate.** `docker compose -f ~/git/Spool/deploy/docker-compose.yml logs -f caddy`
+7. **Watch the certificate.**
+   `docker compose -p spool -f ~/git/Spool/deploy/docker-compose.yml logs -f caddy`
    — or re-reload Caddy to skip the accumulated ACME backoff, which is the trick Spool's own cutover
    runbook records. *Done when:* the log carries a successful certificate obtain for
    `loom.3dbox.dk`, and `curl -fsS https://loom.3dbox.dk/api/guidelines` answers 200 with no
@@ -1160,7 +1372,7 @@ In practice the session runs these itself in the worktree; Paw's own typing is s
    *Done when:* it prints a list (the Lobby, at this point) rather than `invalid_token`. Note that
    the global `--url` comes **before** the command name.
 10. **Mint the two agent keys and capture the Lobby secret**, each with `--json` redirected into its
-    own file so no key is ever rendered into the conversation (§8.1):
+    own file so no key is ever rendered into the controller's transcript (§8.1):
 
         node src\cli\bin\loom.js --json --url https://loom.3dbox.dk admin agents add Claude-Code > C:\Users\paw\.loom\live-claude-code.json
         node src\cli\bin\loom.js --json --url https://loom.3dbox.dk admin agents add ChatGPT     > C:\Users\paw\.loom\live-chatgpt.json
@@ -1174,12 +1386,18 @@ In practice the session runs these itself in the worktree; Paw's own typing is s
     *Done when:* `admin agents list` shows both, unrevoked; all three files exist; and
     `(Get-Content C:\Users\paw\.loom\live-claude-code.json | ConvertFrom-Json).agent.id` prints a
     uuid.
-11. **Create the Weave as the Claude-Code agent.** The agent key is loaded from its file and the
-    keeper token is **cleared for this one command**:
+11. **Create the Weave as the Claude-Code agent.** The guidelines text is read from the
+    **checkout** — `deploy/weave-guidelines.md` (§4) — and is checked before anything else happens;
+    then the agent key is loaded from its file and the keeper token is **cleared for this one
+    command**:
 
+        $g = "D:\git\Loom\deploy\weave-guidelines.md"
+        if (-not (Test-Path $g)) { throw "missing $g — the Weave is not created without the approved guidelines" }
+        $text = (Get-Content $g -Raw)
+        if ($text.Trim().Length -gt 4000) { throw "guidelines are $($text.Trim().Length) characters; the limit is 4000" }
         $env:LOOM_AGENT_KEY = (Get-Content C:\Users\paw\.loom\live-claude-code.json | ConvertFrom-Json).key
         $env:LOOM_KEEPER_TOKEN = $null
-        Get-Content -Raw C:\Users\paw\.loom\live-guidelines.md | node src\cli\bin\loom.js --json --url https://loom.3dbox.dk create --title "Loom development" --name Claude-Code --kind agent --guidelines - > C:\Users\paw\.loom\live-weave.json
+        $text | node src\cli\bin\loom.js --json --url https://loom.3dbox.dk create --title "Loom development" --name Claude-Code --kind agent --guidelines - > C:\Users\paw\.loom\live-weave.json
         $env:LOOM_AGENT_KEY = $null
         $env:LOOM_KEEPER_TOKEN = (Get-Content C:\Users\paw\.loom\live-keeper.json | ConvertFrom-Json).token
 
@@ -1187,9 +1405,17 @@ In practice the session runs these itself in the worktree; Paw's own typing is s
     command is not silently made as an agent — the same precedence that matters below, read the
     other way round.
 
-    `live-guidelines.md` is the guidelines text from [DOGFOOD.md](../../DOGFOOD.md) §3 step 2,
-    copied verbatim into a local file — it is the approved text and this step copies it rather than
-    rewriting it.
+    **The file is read from the repository, and the two checks come before `create`, which is a
+    correction.** An earlier draft piped `C:\Users\paw\.loom\live-guidelines.md`, a file no step in
+    this runbook ever wrote: on a fresh workstation `Get-Content` fails, and depending on how
+    PowerShell treats the pipeline the Weave is either created with **no** guidelines — quietly
+    wrong, and only noticed by the done-check after the fact — or the command dies with the agent
+    key already sitting in the environment. So the text lives in git as
+    `deploy/weave-guidelines.md`, byte-identical to the approved block in
+    [DOGFOOD.md](../../DOGFOOD.md) §3 step 2, and this step **stops before `create`** if the file is
+    absent or if its trimmed length exceeds **4000 characters**, which is the server's own bound on
+    a guidelines layer. Both checks run before the agent key is loaded, so a stop here leaves the
+    shell exactly as step 9's prelude left it.
 
     **Why the agent key, and why the keeper token has to be out of the way.** `create` presents
     `LOOM_KEEPER_TOKEN ?? LOOM_AGENT_KEY`, in that order
@@ -1204,12 +1430,25 @@ In practice the session runs these itself in the worktree; Paw's own typing is s
     equals `(Get-Content C:\Users\paw\.loom\live-claude-code.json | ConvertFrom-Json).agent.id`,
     and `loom --url https://loom.3dbox.dk guidelines` prints the instance layer under
     `## Loom guidelines` and the DOGFOOD text under `## Guidelines for this Weave`.
-12. **Paw re-adds the connector and pastes one prepared text** (§8 item 2). The session assembles
-    that text into `C:\Users\paw\.loom\live-chatgpt-paste.md` beforehand: the reviewer brief
-    ([DOGFOOD.md](../../DOGFOOD.md) §4) plus an instruction to call
-    `join_weave({ secret: "<secret>", name: "ChatGPT" })`, with the secret read out of
-    `live-weave.json`. Paw copies the file's contents and pastes them into the ChatGPT session; the
-    connector URL comes the same way, from `live-chatgpt.json`.
+12. **Paw re-adds the connector and pastes one prepared text** (§8 item 2), in four sub-steps,
+    because the last of them is the cleanup and it is not optional:
+
+    1. The session assembles the text into `C:\Users\paw\.loom\live-chatgpt-paste.md`: the reviewer
+       brief ([DOGFOOD.md](../../DOGFOOD.md) §4) plus an instruction to call
+       `join_weave({ secret: "<secret>", name: "ChatGPT" })`, with the secret read out of
+       `live-weave.json` — read into the file, never rendered into the controller's transcript
+       (§8.1).
+    2. Paw adds the connector, `https://loom.3dbox.dk/mcp?agent=<key>`, as a **Streamable HTTP**
+       remote MCP server; the URL comes the same way, from `live-chatgpt.json`.
+    3. Paw copies the paste file's contents and pastes them into the ChatGPT session.
+    4. **Paw deletes the paste file and clears his clipboard**:
+       `Remove-Item C:\Users\paw\.loom\live-chatgpt-paste.md` and
+       `Set-Clipboard -Value ' '`. The file's whole purpose ended when it was pasted, and it is the
+       only file in the §8.1 inventory that is deleted rather than kept: everything else in
+       `C:\Users\paw\.loom` is still needed by a later command, while this one is a copy of a
+       secret sitting in a folder for no remaining reason. The clipboard goes with it for the same
+       reason — a clipboard survives until something else replaces it, and "something else" is not
+       a plan.
 
     **The decision, and the route not taken.** The secret travels **Paw's clipboard, not a Claude
     conversation** — which is what §8.1 requires, and it is how ChatGPT was brought into a Weave on
@@ -1225,8 +1464,9 @@ In practice the session runs these itself in the worktree; Paw's own typing is s
     afterwards and the Lobby-join is worth doing in the same sitting so that it can.
 
     *Done when:* the reviewer's client lists Loom's tools, `join_weave` returns an identity and both
-    guideline layers, and the server's log shows **no** 500 from its reconnect polls — which is §5.4
-    proved in the place the defect was found.
+    guideline layers, the server's log shows **no** 500 from its reconnect polls — which is §5.4
+    proved in the place the defect was found — and
+    `Test-Path C:\Users\paw\.loom\live-chatgpt-paste.md` is `False`.
 13. **Run one review round on the live instance**, by the protocol in
     [DOGFOOD.md](../../DOGFOOD.md) §4 — for this slice's own pull request, if the timing allows, and
     otherwise for the next one. *Done when:* a round completes on the live instance with the
@@ -1251,9 +1491,10 @@ that ships the code without it leaves the repository describing a world that no 
 | [DOGFOOD.md](../../DOGFOOD.md) §1.2 | "The always-on instance does not exist yet" becomes "it exists", with the date and the hostname |
 | [DOGFOOD.md](../../DOGFOOD.md) preamble | The `loom` invocation line: the live instance is `--url https://loom.3dbox.dk` with no `LOOM_ALLOW_INSECURE`, and `http://127.0.0.1:3100` is the **server-local** form only |
 | [DOGFOOD.md](../../DOGFOOD.md) §3 step 5 | The tunnel paragraph is replaced by the stable hostname. The server-side loopback reasoning stays — it is still true and still the reason the dev server needs no TLS |
+| [DOGFOOD.md](../../DOGFOOD.md) §3 step 2 | One line under the guidelines blockquote: the same text is committed as `deploy/weave-guidelines.md`, which is what §9 step 11 and every later `create` read, and the two must stay byte-identical |
 | [HANDBOOK.md](../../HANDBOOK.md) §6 "current state" | The live instance, its hostname, and where its credentials' file paths are |
 | [HANDBOOK.md](../../HANDBOOK.md) §3 step 13 | Merge gains its last action: run `deploy\live-update.cmd` and report what it printed |
-| [HANDBOOK.md](../../HANDBOOK.md) §5 traps | Five new ones, all paid for in writing this spec and in answering its first review round: `docker compose up <service>` **returns 0 even when the service failed**, and `--exit-code-from` implies `--abort-on-container-exit`, which would stop the live database — use `docker compose run --rm`; **HSTS `includeSubDomains` does not cover a sibling host**, so `loom.3dbox.dk` needs its own; **a compose project is named after its directory unless the file says otherwise** — two `deploy/` directories are two projects called `deploy`, so put `name:` in the file; **`git pull --ff-only` does not mean "the checkout equals origin"** — it succeeds over a local commit the remote has not passed and leaves a dirty tracked file alone, so assert `HEAD == refs/remotes/origin/main` on a clean tree instead; and **a stopped Postgres container is not an empty database** — ask the volume, or a migration runs with no dump behind it |
+| [HANDBOOK.md](../../HANDBOOK.md) §5 traps | Ten new ones, all paid for in writing this spec and in answering its two review rounds: `docker compose up <service>` **returns 0 even when the service failed**, and `--exit-code-from` implies `--abort-on-container-exit`, which would stop the live database — use `docker compose run --rm`; **HSTS `includeSubDomains` does not cover a sibling host**, so `loom.3dbox.dk` needs its own; **a compose project is named after its directory unless the file says otherwise** — two `deploy/` directories are two projects called `deploy`, so put `name:` in the file; **and `name:` is not enough** — `COMPOSE_PROJECT_NAME` outranks it, so pass `-p <project>` on every command and refuse to run with that variable set; **`git pull --ff-only` does not mean "the checkout equals origin"** — it succeeds over a local commit the remote has not passed and leaves a dirty tracked file alone, so assert `HEAD == refs/remotes/origin/main` on a clean tree instead; **a stopped Postgres container is not an empty database** — ask the volume, or a migration runs with no dump behind it; **a checkout whose `origin` is a local bundle cannot see a commit merged on GitHub** — a `pull` says "already up to date" and the prerequisite is silently not deployed, so re-bundle and `scp` it; **a backup is worth only the window between it and the change it insures against** — dump immediately before the migration, not before a two-minute build; **"wait until it is healthy" with no bound is a hang holding a lock** — poll with a timeout, fail fast on `unhealthy`, and print the logs; and **`--env-file` hands a container every line of the file**, so build a two-variable temporary file instead of passing a neighbour's whole environment |
 | [ARCHITECTURE.md](../../ARCHITECTURE.md) §10 | A third paragraph: the two root-level profiles are the **standalone** install, `deploy/` is the **beside another Caddy** install, and this is where the shared `web` network and the sites-folder hook are described. The sentence "Migrations run on every boot in `main.ts`" is corrected to name `LOOM_MIGRATE_ON_BOOT` |
 | [README.md](../../../README.md) "Running locally" | A short **Deploying beside another Caddy** paragraph pointing at `deploy/` and naming the one command; the existing production paragraph keeps describing the standalone `--profile prod` install |
 | [TESTING.md](../../TESTING.md) §1 | The generalised truncate guard (`_test` suffix), the testcontainer's database name, and the sentence about pointing `TEST_DATABASE_URL` somewhere safe (§6). One more sentence in the build-before-test paragraph: `src/server/test/migrate.test.ts` runs the built entry as a child process, so it is one of the suites that needs `pnpm -r build` first (§11.2) |
@@ -1367,24 +1608,33 @@ them can be observed by calling a function. The suite therefore builds the packa
 
 ### 11.6 What no unit test covers, said plainly
 
-**`deploy/docker-compose.yml`, `deploy/loom.caddy`, `deploy/live-update.sh` and the two wrappers are
-verified by the first deployment (§9) and by nothing else.** There is no compose harness in this
-repository, no Caddy fixture and no shell-test framework, and inventing one for five files that run
-once per merge against one specific server would be a larger and less honest change than reading
-them. What stands in for automation:
+**`deploy/docker-compose.yml`, `deploy/loom.caddy`, `deploy/live-update.sh`, the two wrappers and
+`deploy/weave-guidelines.md` are verified by the first deployment (§9) and by nothing else.** There
+is no compose harness in this repository, no Caddy fixture and no shell-test framework, and
+inventing one for seven files that run once per merge against one specific server would be a larger
+and less honest change than reading them. The guidelines file is the easy case — it is text, and §9
+step 11 refuses to create the Weave if it is missing or over 4000 characters, which is the only
+failure it has. What stands in for automation on the rest:
 
 - Every §9 step has a "done when" that checks the thing the previous step claimed to do, and steps 5
   and 8 run the **real** `live-update.sh` rather than its steps by hand — step 5 with `--bootstrap`
   and step 8 without, so that both modes are exercised on the first day.
 - The failure paths that matter are structural rather than tested: `flock -n` on an open descriptor
   cannot let two runs overlap; the `HEAD == refs/remotes/origin/main` assertion cannot pass on a
-  dirty or locally-committed tree; a `caddy validate` that fails stops the run before the database
-  is touched; the dump's `mktemp` + `mv` cannot leave a partial file under a name that looks like a
-  backup; `set -euo pipefail` plus `docker compose run --rm`'s exit code cannot skip a failed
-  migration; `cmp` makes the Caddy install idempotent; the `.prev` restore cannot leave an
-  unbootable sites folder behind a failed reload; `${LOOM_DB_PASSWORD:?…}` cannot default; the
-  top-level `name: loom` cannot be moved by the caller's directory; and both health checks read a
-  route that touches the database.
+  dirty or locally-committed tree; the topology guard's diff-grep cannot let a compose change that
+  mentions `postgres`, `pgdata` or `volumes` reach the dump, the migration or the restart; the
+  `docker inspect` mount check cannot let a dump be taken from a container that is not bound to
+  `loom_pgdata`; the bounded health poll cannot loop forever holding the lock, and cannot reach the
+  migration without a `healthy` verdict; a `caddy validate` that fails stops the run before the
+  database is touched, and the mode-600 two-variable env file cannot hand that container a secret
+  it does not need; the dump's `mktemp` + `mv` cannot leave a partial file under a name that looks
+  like a backup; the dump sits immediately before the migration, so the window a restore would lose
+  is seconds rather than a build; `set -euo pipefail` plus `docker compose run --rm`'s exit code
+  cannot skip a failed migration; `cmp` makes the Caddy install idempotent; the `.prev` restore
+  cannot leave an unbootable sites folder behind a failed reload; `${LOOM_DB_PASSWORD:?…}` cannot
+  default; `-p loom` on every command cannot be outranked by the caller's directory or environment,
+  and the script refuses to start at all if `COMPOSE_PROJECT_NAME` is set; and both health checks
+  read a route that touches the database.
 - The **second** time the script runs — §9 step 8, and then the first real merge after this slice —
   is when idempotence is actually observed. That run is recorded in v2-notes as a dogfood note,
   whatever it shows.
@@ -1408,24 +1658,35 @@ Short, and each one a property a reviewer can check.
   rules"), and reach a file by `--json` redirection rather than by being rendered anywhere.
 - **The copies on Paw's PC live in `C:\Users\paw\.loom`**, inside his own profile, whose inherited
   ACL grants him and the local administrators access and nobody else — the same protection
-  `~/.loom/config.json` already relies on for every per-Weave token the CLI stores. Six files
-  (§8.1), one of which, `live.env`, is the only copy of the server's `.env` off the server. No
-  `icacls` call is needed and none is specified; if that folder ever moved outside the profile, this
-  line would have to change with it.
+  `~/.loom/config.json` already relies on for every per-Weave token the CLI stores. **Eight files,
+  inventoried row by row in §8.1** with what each holds and who can read it — among them `live.env`,
+  the only copy of the server's `.env` off the server, and `live-config.json`, which is the CLI's own
+  store for the live Weave's participant token. One of the eight, `live-chatgpt-paste.md`, is
+  **deleted** as a numbered sub-step of §9 step 12, with Paw's clipboard cleared in the same breath;
+  the rest are kept because a later command needs them. No `icacls` call is needed and none is
+  specified; if that folder ever moved outside the profile, this line would have to change with it.
+- **The credential guarantee, in the words it holds in:** a credential never enters the
+  controller's transcript — the Claude Code conversation — it moves by file, by `scp` or on Paw's
+  own clipboard (§8.1). It is stated that narrowly on purpose: §9 step 12 has Paw paste the Weave's
+  secret into the ChatGPT session, so a broader claim would be one the runbook breaks, and §14.5
+  names the residue and the route that retires it.
 - **The live CLI has its own config file.** Every live command sets
   `LOOM_CONFIG=C:\Users\paw\.loom\live-config.json`, so the live instance's per-Weave tokens are
   stored apart from the dev server's `~/.loom/config.json` and a `--weave`-less command cannot
   address the wrong instance's Weave.
-- **One disposable container sees Spool's environment.** `live-update.sh` step 3 and §9 step 1
-  validate Caddy's configuration with `--env-file ~/git/Spool/deploy/.env`, which carries Spool's
-  `DB_PASSWORD` as well as the two variables Caddy's file needs. The container runs
-  `caddy validate` and exits, `caddy validate` prints neither value, and nothing in this slice reads
-  or echoes that file. It is named here because "a container was handed the shop's database
-  password for one second" is the kind of thing a reviewer should find written down rather than
-  discover.
+- **The disposable Caddy is given two strings, not Spool's environment.** `live-update.sh` step 3
+  and §9 step 1 validate Caddy's configuration in a throwaway `caddy:2-alpine` container, and an
+  earlier draft handed it `--env-file ~/git/Spool/deploy/.env` — the whole file, which carries
+  Spool's `DB_PASSWORD` and `COMPOSE_PROJECT_NAME` today and whatever payment, shipping, mail or AI
+  keys the shop comes to hold tomorrow. A mutable third-party image with outbound network access
+  needs none of it. Both validations now write a **mode-600 temporary file holding `SITE_ADDRESS`
+  and `REDIRECT_ADDRESSES` only**, extracted with `grep -E`, defaulted to the same values Spool's
+  compose file defaults them to, and removed by the cleanup trap however the script exits. Nothing
+  in this slice reads or echoes Spool's `.env` beyond those two `grep`s, and their output goes into
+  a file rather than onto a terminal.
 - **Postgres publishes nothing.** It is reachable from `migrate` and `loom` on the project's default
-  network and from `docker compose exec`, and from nowhere else. It is deliberately **not** on the
-  `web` network, so nothing that Caddy can reach can reach the database.
+  network and from `docker compose -p loom exec`, and from nowhere else. It is deliberately **not**
+  on the `web` network, so nothing that Caddy can reach can reach the database.
 - **Port 3100 is loopback-only and is for the server-local CLI.** It exists because §9 has to mint
   keys and create a Weave before a certificate exists, and because the health check must not depend
   on DNS or TLS. Its flip side is the one DOGFOOD already states of the dev server: any process on
@@ -1458,8 +1719,10 @@ Short, and each one a property a reviewer can check.
   `umask 077`, root-only, on the server, and are never copied off it by anything in this slice.
   A dump is written to a dot-prefixed temporary name in that same directory and renamed into place
   only after the whole `pg_dump | gzip` pipeline succeeded, so a file named `loom-pre-update-*.sql.gz`
-  is always a complete backup and a failed run leaves nothing behind (§4.5 step 4). Retention,
-  rotation and encrypted off-server copies are §13.
+  is always a complete backup and a failed run leaves nothing behind (§4.5 step 5). The dump is
+  taken from a container the script has just asserted is bound to `loom_pgdata`, and immediately
+  before the migration rather than before the build, so what a restore gives back is the database
+  as it was seconds before the change. Retention, rotation and encrypted off-server copies are §13.
 
 ## 13. What this does not promise
 
@@ -1471,6 +1734,18 @@ Each with the reason it is out, so that a later slice can pick it up without re-
   secret-bearing (§12), so an off-server copy needs encryption to a key that is not in the dump, and
   that is a decision with a key-custody question in it — a slice of its own, next to Spool's, whose
   ROLLOUT.md already states the shape.
+- **`live-update.sh` does not deploy a database topology change.** If a merge touches Postgres's
+  service definition or the compose file's `volumes:` block, the script stops at §4.5 step 2 having
+  done nothing, and the deployment is **a hand-run one in §9's shape**: a human decides which volume
+  holds the data, dumps it, brings the new definition up and migrates. The guard is a `grep` on the
+  diff, not a parser, so it also stops on a comment edit near the `postgres` service — over-
+  triggering on purpose, because being stopped costs one manual deployment and being wrong costs the
+  event log. Nothing automates the manual path, and nothing has rehearsed it (§14.6).
+- **The wait for Postgres is bounded and the bound is not tunable.** Sixty seconds, polled once a
+  second (§4.5 step 5). A database that needs longer than that to come healthy — a very large
+  volume replaying WAL, say — fails the update rather than waiting, and the answer then is a hand
+  deployment, not a flag. There is no `--timeout`, because one flag on one script invites a second
+  and the honest bound is a number a reader can see.
 - **The update lock excludes other `live-update.sh` runs and nothing else.**
   `/run/lock/loom-live-update.lock` is a host lock taken by that one script, so two overlapping
   updates cannot happen (§4.5 step 1). Nothing stops someone with root SSH from running
@@ -1522,13 +1797,14 @@ Each with the reason it is out, so that a later slice can pick it up without re-
 - **No IPv6.** The A record is the only DNS this slice asks for; no AAAA, and nothing in the compose
   files or the site block configures one.
 - **No `docker compose down` path and no rollback script.** Rolling back is `git -C ~/git/Loom
-  checkout <sha>` followed by a build and an `up -d` by hand, and a rollback **across** a migration
+  checkout <sha>` followed by a `docker compose -p loom build` and a `docker compose -p loom up -d`
+  by hand, and a rollback **across** a migration
   needs the dump — restoring it is a hand-run operation with a human deciding, not a script. Saying
   so is more useful than a script nobody has run.
 
 ## 14. Deliberate risks, named
 
-Five, because each one is a thing that could go wrong on the day and each has an answer that is
+Six, because each one is a thing that could go wrong on the day and each has an answer that is
 better written down now than discovered then.
 
 1. **Loom shares the shop's front door.** A Loom site block that Caddy refuses would, on a reload,
@@ -1563,10 +1839,28 @@ better written down now than discovered then.
 5. **The first-run route into the Weave puts a secret on Paw's clipboard.** §9 step 12 has Paw paste
    one prepared text into the ChatGPT session, and that text carries the development Weave's secret
    so `join_weave` can succeed on the first try. The secret therefore exists in a clipboard, in a
-   local file (`live-chatgpt-paste.md`) and in the ChatGPT conversation — never in a Claude
-   conversation, which is the rule §8.1 actually states, but "not in a Claude conversation" is not
-   the same as "nowhere". The mitigation is that this happens **once**: after ChatGPT stands in the
-   live Lobby, the invitation route (Lobby join, keeper `invite-weave`, `join_weave({ inviteId })`)
-   moves no secret at all, and it is the route every later Weave uses. If the secret is ever
-   believed to have leaked, the answer is a new Weave rather than a rotation, because a Weave's
-   secret is its identity.
+   local file (`live-chatgpt-paste.md`) and in the ChatGPT conversation. The guarantee §8.1 states
+   is the one that holds — **a credential never enters the controller's transcript; it moves by
+   file, by `scp` or on Paw's own clipboard** — and this is precisely its edge: "not in the
+   controller's transcript" is not the same as "nowhere". Three things bound it. The paste file is
+   **deleted and the clipboard cleared** as a numbered sub-step of step 12, with
+   `Test-Path … live-chatgpt-paste.md` in the done-check, so the local copy's life is one sitting.
+   It happens **once**: after ChatGPT stands in the live Lobby, the invitation route (Lobby join,
+   keeper `invite-weave`, `join_weave({ inviteId })`) moves no secret at all, and it is the route
+   every later Weave uses. And if the secret is ever believed to have leaked, the answer is a new
+   Weave rather than a rotation, because a Weave's secret is its identity. What is *not* bounded is
+   the ChatGPT conversation itself: the secret stays in that transcript for as long as the
+   conversation does, which is the price of the shortest first run and the reason the invitation
+   route takes over.
+6. **The topology guard makes a rare merge into a manual deployment, and the manual path is
+   unrehearsed.** §4.5 step 2 stops the update whenever the compose diff mentions `postgres`,
+   `pgdata` or `volumes` — which is the right refusal, because the script's dump is written in terms
+   of `loom_pgdata` and `loom-postgres-1` and cannot reason about a volume it was not told about.
+   Two costs follow, both accepted. The guard **over-triggers**: a comment edit or a bumped Postgres
+   tag stops a deployment that would have been fine, and the operator's answer is to read the diff
+   and deploy by hand, which is one afternoon's annoyance against the alternative of a dumped empty
+   database. And the hand-run path itself has **never been run** — §9 is the only deployment shape
+   anyone will have exercised, and a topology change would be someone reading §9 and §4.5 side by
+   side at the moment they least want to. Writing the refusal down, with the message the script
+   prints, is what makes that reading possible; automating a case nobody has met yet would be
+   guessing at it.
