@@ -165,7 +165,7 @@ of those has to be remembered separately.
 | Reads | Who, and why |
 | --- | --- |
 | **`view`** — the request | The push of §4.2, which writes `pathForView(next)` for the view that was *asked* for; the `popstate` listener that sets it (§4.4); `initialView`, which seeds it; and the state itself, held above `key={reloadKey}` so a rejoin restores the request (§3.1, §5). Every one of these is about the **address** and about what the human wants, and the Lobby pointer has no say in either. |
-| **`showListeners`** — the effect | Everything **rendered**: which group of §3.3 is drawn, the composer slot's `hidden` (§3.5), `ListenersPage` with its `<h2>` and its `viewKey`, and the sidebar line's `active`/`aria-current` (§8). Nothing rendered reads `view`. |
+| **`showListeners`** — the effect | Everything **rendered**: which group of §3.3 is drawn, the composer slot's `hidden` (§3.5), `ListenersPage` with its `<h2>` and its `viewKey`, the sidebar line's `active`/`aria-current` (§8), and whether the Thread list marks its selected Thread (§8). Nothing rendered reads `view`. |
 
 **When the gate turns true later.** `retryLobbyData` settles the pointer and publishes it —
 `set({ lobby: found.lobby })` ([`session.ts:508-514`](../../../src/web/src/session.ts)) — `WeaveView`
@@ -725,11 +725,25 @@ all, since its own gate *is* `lobbyGate`; passing the effective view anyway is w
 is marked current exactly when the directory is drawn" true by construction rather than by two
 conditions happening to agree.
 
-**`ThreadList`'s own `aria-current` is untouched**, in both views. The selected Thread is still
-selected — it is what the main area comes back to, its unread mark keeps moving, and clearing the
-mark while the directory is open would say the session had forgotten where it was. It is not a
-function of the view today and this spec does not make it one; whether the two marked lines want to
-look different is a question for the design session (§15), not a behaviour change here.
+**While the directory is open the Thread list marks no Thread** (amended 2026-09-21, the owner's
+decision after the first run of smoke test 6 on `main`). This spec first said the opposite and left
+the two marked lines to the design session; the run showed why that cannot stand. With the directory
+on screen the Thread list still drew `li.active` and `aria-current="true"` on **General** beside the
+sidebar line's own `aria-current`, so two entries of one sidebar both claimed to be the one being
+looked at — which is exactly what `aria-current` is there to say once.
+
+So `ThreadList` takes `markCurrent?: boolean` (default `true`, which leaves every other page and
+every bare render of the component unchanged), and both the `li`'s `active` class and the button's
+`aria-current` are drawn only when `markCurrent && t.id === state.currentThreadId`. `WeaveView`
+passes `markCurrent={!showListeners}` — the effective predicate of §3.1, never the raw `view`, for
+the same reason the sidebar line reads it.
+
+**`state.currentThreadId` is not touched.** The selected Thread is still selected: it is what the
+main area comes back to, its unread mark keeps moving, and clearing the selection would say the
+session had forgotten where it was. Only the **mark** is withheld, and it returns the moment a
+Thread is on screen again — whether the human got there by pressing a Thread or by pressing the
+sidebar line a second time. Whether the one remaining marked line wants to *look* different in the
+two views is still a question for the design session (§15).
 
 Pressing it while the directory is open closes it (and pushes `/lobby`), so the control is a toggle in
 behaviour as well as in appearance.
@@ -917,6 +931,13 @@ instance refuses"; and `ListenersLink`'s link-versus-button tests.
     `weave_not_found`: `/lobby/listeners` is ready, the Thread is whole, and a typed message sends.
     In the `weave_not_found` case nothing ever opens the directory, and the page is a working Lobby
     Thread rather than a half-drawn one for the rest of its life.
+21. **One marked line, not two** (§8, amended 2026-09-21). Deep-linked to `/lobby/listeners`: there
+    is no `.threads li.active` and no `button.thread-pick[aria-current]` anywhere, while the sidebar
+    line carries `aria-current="true"`. Press the **General** Thread button — the Thread list is in
+    the sidebar in both views — and the mark comes back: that button carries `aria-current="true"`,
+    its `li` carries `active`, and the sidebar line carries nothing. A third test says the selection
+    itself was kept, by coming back through the **sidebar line** instead: no Thread was pressed, and
+    General is marked again.
 
 ## 13. Docs to update
 
@@ -977,7 +998,10 @@ does not settle it.
    an initial value that a later `pushState` deliberately does not update (§4.1).
 2. The sidebar line is **always** a `<button>` and never an anchor, and it carries `aria-current`
    rather than `aria-pressed`, to match the Thread buttons beside it; its `active` is
-   `showListeners`, and `ThreadList`'s own `aria-current` is not made a function of the view (§8).
+   `showListeners`. This assumption once added "and `ThreadList`'s own `aria-current` is not made a
+   function of the view" — **withdrawn 2026-09-21** by the owner, after the run showed two marked
+   lines in one sidebar: the Thread list now takes `markCurrent={!showListeners}` and marks nothing
+   while the directory is open, with `currentThreadId` untouched (§8).
 3. `ThreadList` gains an `onPick` prop, and **creating** a Thread closes the directory as well as
    selecting one (§3.4).
 4. The view state (and `popSeq`, and the `popstate` listener) lives in **`WeaveSession`**, above

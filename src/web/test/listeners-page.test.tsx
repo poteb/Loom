@@ -317,6 +317,45 @@ describe("the sidebar line is the toggle (spec §8)", () => {
   });
 });
 
+/**
+ * Spec §8, as amended on 2026-09-21 after the first run of smoke test 6 on `main`: with the
+ * directory on screen the Thread list marked "General" beside the sidebar line's own mark, so two
+ * entries claimed to be the one being looked at. Only the **mark** is withheld — the selection is
+ * kept, which is the third test here.
+ */
+describe("the Thread list marks nothing while the directory is open (spec §8)", () => {
+  const thread = () => screen.getByRole("button", { name: "General" });
+
+  it("while the directory is open no Thread is marked", async () => {
+    const v = mountLobby();
+    await settle();
+    expect([
+      v.container.querySelector(".threads li.active"),
+      v.container.querySelector("button.thread-pick[aria-current]"),
+      v.line()!.getAttribute("aria-current"),
+    ]).toEqual([null, null, "true"]);
+  });
+
+  it("the mark returns when a Thread is shown again", async () => {
+    const v = mountLobby();
+    await settle();
+    fireEvent.click(thread());                       // the Thread list is in the sidebar in both views
+    await settle();
+    expect([thread().getAttribute("aria-current"), thread().closest("li")!.classList.contains("active"),
+      v.line()!.getAttribute("aria-current")]).toEqual(["true", true, null]);
+  });
+
+  // Coming back through the **sidebar line** presses no Thread at all, so a mark that reappears can
+  // only be the selection this page has held all along. The DOM is the way this is asserted because
+  // the harness mounts the `App`, which owns its session and hands no reference back.
+  it("the selection is kept, not cleared", async () => {
+    const v = mountLobby();
+    await settle();
+    await v.toggle();
+    expect(thread().getAttribute("aria-current")).toBe("true");
+  });
+});
+
 describe("the deep link (spec §4.3)", () => {
   it("mounts the Lobby with the directory open and the box seeded from the link", async () => {
     const v = mountLobby({ path: "/lobby/listeners?q=ada" });

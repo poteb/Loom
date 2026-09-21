@@ -14,11 +14,15 @@ function shortUrl(url: string): string {
   return bare.length > 40 ? `${bare.slice(0, 39)}…` : bare;
 }
 
-export function ThreadList({ state, session, onError, onPick }: {
+export function ThreadList({ state, session, onError, onPick, markCurrent = true }: {
   state: SessionState; session: Session; onError: (e: unknown) => void;
   /** Told that this list has put a Thread on screen, by a selection or by a creation (spec §3.4).
    *  It reports; what that costs — closing the directory, and a history entry — is the caller's. */
   onPick?: () => void;
+  /** Whether the selected Thread is drawn as the current one (spec §8). The selection is kept
+   *  either way; only its mark is withheld while the main area shows something other than a Thread,
+   *  so that no two sidebar entries claim at once to be the one being looked at. */
+  markCurrent?: boolean;
 }) {
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
@@ -41,6 +45,7 @@ export function ThreadList({ state, session, onError, onPick }: {
     try { await session.closeThread(id); } catch (e) { onError(e); }
   };
   const current = state.threads.find((t) => t.id === state.currentThreadId);
+  const marked = (id: string) => markCurrent && id === state.currentThreadId;
   return (
     <nav class="threads">
       <div class="threads-head">
@@ -56,9 +61,9 @@ export function ThreadList({ state, session, onError, onPick }: {
       )}
       <ul>
         {state.threads.map((t) => (
-          <li key={t.id} class={[t.id === state.currentThreadId ? "active" : "", state.invitesForMe.has(t.id) ? "invited" : ""].filter(Boolean).join(" ")}>
+          <li key={t.id} class={[marked(t.id) ? "active" : "", state.invitesForMe.has(t.id) ? "invited" : ""].filter(Boolean).join(" ")}>
             {/* A real button, so selecting a thread is reachable by keyboard (Tab, then Enter or Space). */}
-            <button type="button" class="thread-pick" aria-current={t.id === state.currentThreadId ? "true" : undefined}
+            <button type="button" class="thread-pick" aria-current={marked(t.id) ? "true" : undefined}
               onClick={() => { session.selectThread(t.id); onPick?.(); }}>
               <span>{t.name}</span>
               {t.closedAt && <span class="badge">closed</span>}

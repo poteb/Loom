@@ -132,7 +132,10 @@ export function WeaveView({ session, state, banner, noCredential, openMainInPlac
       <Header state={state} session={session} onError={reportError} openMainInPlace={openMainInPlace} />
       <div class="body">
         <aside class="sidebar">
-          <ThreadList state={state} session={session} onError={reportError} onPick={() => onView?.("thread")} />
+          {/* The selection is kept; only its mark is withheld, so the sidebar line above is the one
+              and only entry saying "this is what you are looking at" (spec §8). */}
+          <ThreadList state={state} session={session} onError={reportError} onPick={() => onView?.("thread")}
+            markCurrent={!showListeners} />
           <GuidelinesPanel state={state} session={session} onError={reportError} />
           {/* Both render nothing away from the Lobby, so every other Weave's sidebar is unchanged. */}
           <RequestsPanel state={state} session={session} onError={reportError} />
