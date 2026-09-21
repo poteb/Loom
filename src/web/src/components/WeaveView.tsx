@@ -132,7 +132,7 @@ export function WeaveView({ session, state, banner, noCredential, openMainInPlac
       <Header state={state} session={session} onError={reportError} openMainInPlace={openMainInPlace} />
       <div class="body">
         <aside class="sidebar">
-          {/* The selection is kept; only its mark is withheld, so the sidebar line above is the one
+          {/* The selection is kept; only its mark is withheld, so the sidebar line below is the one
               and only entry saying "this is what you are looking at" (spec §8). */}
           <ThreadList state={state} session={session} onError={reportError} onPick={() => onView?.("thread")}
             markCurrent={!showListeners} />

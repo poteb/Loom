@@ -716,8 +716,8 @@ and **there is never an invented zero**. Two changes:
 - It takes `{ state, active, onToggle }` and carries `aria-current={active ? "true" : undefined}`.
   `aria-current` rather than `aria-pressed`: the sidebar is one list of places in this page and the
   thread buttons next to it already say `aria-current="true"` for the selected Thread
-  ([`ThreadList.tsx:50`](../../../src/web/src/components/ThreadList.tsx)). One convention for "this
-  is the one you are looking at" beats two.
+  ([`ThreadList`'s thread buttons](../../../src/web/src/components/ThreadList.tsx)). One convention
+  for "this is the one you are looking at" beats two.
 
 `active` is **`showListeners`** (§3.1), not the raw `view` — the line says what is on screen, and it
 is the same predicate that put it there. The two can only differ where the line renders nothing at

@@ -311,10 +311,14 @@ that recorded the loss is gone with it.
 up by ChatGPT off its own inbox poll and reviewed on GitHub with no human relay; see
 [Dogfood findings (2026-09-20, the first pull request reviewed through Loom)](#dogfood-findings-2026-09-20-the-first-pull-request-reviewed-through-loom).
 
-Not yet looked at in a real browser as a whole: **manual smoke test 6** in
-[../../TESTING.md](../../TESTING.md) has been rewritten for the new behaviour (steps 3, 8 and 10
-especially, and step 3 now carries the scrolling check) and is otherwise **unrun** against this
-branch — only the scrolling above was checked by hand.
+**Manual smoke test 6** in [../../TESTING.md](../../TESTING.md) was rewritten for the new behaviour
+(steps 3, 8 and 10 especially, and step 3 now carries the scrolling check) and was **run by hand on
+`main` at `cbab671` on 2026-09-21**, the first run against the rewritten test. That run produced two
+things: the two-marked-lines finding above, fixed on `fix/lobby-listeners-no-thread-mark`, and
+**finding 4 seen again** — the nested effort row pushing the next model chip far to the right —
+which stays docketed for the owner's separate design session. How far past step 3 the run went is
+not recorded; the dated run paragraphs under smoke test 6 in [../../TESTING.md](../../TESTING.md)
+are the record.
 
 ### A live Loom instance for the project's own use (Paw, 2026-09-20) — **wanted; not built**
 

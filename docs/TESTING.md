@@ -540,7 +540,17 @@ storage and the site-data block of step 10 are keyed by).
     wearing it is the single worst failure this page can have. Start the server again and confirm
     the next control change recovers.
 
-*Last run 2026-09-20* on `main` at `62adf4a`, in Firefox, against a dev Lobby that already held two
+*Last run 2026-09-21* on `main` at `cbab671`, in Firefox — the first run against the rewritten test,
+and it found a **product defect** in step 3: with the directory open the Thread list still marked
+**General** beside the sidebar line's own mark, so two entries of one sidebar claimed to be the
+current view. It is fixed on `fix/lobby-listeners-no-thread-mark` — the Thread list marks nothing
+while the directory is open, the selection itself is kept — and step 3 above now carries the check.
+**Finding 4 of the 2026-09-20 run was seen again**, the nested effort row pushing the next model
+chip far to the right; it stays with the owner's separate design session, as
+[KNOWN-ISSUES.md](KNOWN-ISSUES.md) records. How far past step 3 this run went is not recorded here,
+so the 2026-09-20 paragraph below remains the only step-by-step record of the whole test.
+
+*Previously run 2026-09-20* on `main` at `62adf4a`, in Firefox, against a dev Lobby that already held two
 listeners from smoke test 4 (so every count read 62, not 60): **12 of 12 passed, no product defect.**
 **This is the run that produced the listeners-view spec**
 ([2026-09-20-loom-lobby-listeners-view-design.md](superpowers/specs/2026-09-20-loom-lobby-listeners-view-design.md)),

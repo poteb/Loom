@@ -352,7 +352,7 @@ describe("the Thread list marks nothing while the directory is open (spec §8)",
     const v = mountLobby();
     await settle();
     await v.toggle();
-    expect(thread().getAttribute("aria-current")).toBe("true");
+    expect([v.directory(), thread().getAttribute("aria-current")]).toEqual([false, "true"]);
   });
 });
 
