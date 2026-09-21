@@ -82,8 +82,10 @@ Concretely, five pieces:
    recorded before the run (§4.5 banner 9). In the ordinary case the run's migrations rolled back as
    one transaction — drizzle applies a run in **one transaction**, and §5.1's
    `assertTransactionSafe` refuses any migration file that could break that from inside — so the
-   schema is exactly as it was, the script **restarts the exact container it stopped**
-   (`docker start loom-loom-1`, still holding the old image by id), and exits non-zero. The backup
+   schema is exactly as it was, the script **restarts the exact container it stopped** —
+   `docker start loom-loom-1`, after checking that its image **id** is the one recorded before the
+   build, because that id is the only thing that proves the object is the previous deployment — and
+   exits non-zero. The backup
    taken seconds earlier is on disk and nothing needs it: the instance is back to the code and the
    schema it had before the run, with no write lost, because nothing was accepted while it was
    stopped. In the rare case where the migration committed but the client never saw the commit, the
@@ -93,7 +95,7 @@ Concretely, five pieces:
 6. A merge whose image **starts but never serves** — a startup regression, no migration in it — is
    not mistaken for a deployment. The container being created proves nothing; only the loopback
    `/api/guidelines` answer does, and until that answer arrives the script's recovery is still armed
-   (§4.5 banner 11). So the failed container is removed and the previous deployment is put back, and
+   (§4.5 banner 10). So the failed container is removed and the previous deployment is put back, and
    the run exits non-zero. If that same update *had* carried a migration, the schema has moved and
    the old image must not be started against it: the script says **Loom is DOWN** in as many words,
    prints the absolute commands to read the new container's log and to retry the same commit, and
@@ -223,8 +225,8 @@ Two properties of that file matter here and are easy to get wrong:
 
 ## 4. `deploy/` in the Loom repository
 
-Ten files, and not one of them is generated: they are read by a human deciding whether to trust the
-update that is about to run.
+Ten files and one test harness beside them, and not one of them is generated: they are read by a
+human deciding whether to trust the update that is about to run.
 
     deploy/docker-compose.yml          compose project `loom` on the server
     deploy/loom.caddy                  the site block, installed into Spool's Caddy
@@ -237,19 +239,29 @@ update that is about to run.
     deploy/prepare-chatgpt-paste.ps1   brief + Weave secret -> the paste file, printing nothing (§9 step 12.1)
     deploy/connector-url-to-clipboard.ps1   the connector URL onto Paw's clipboard, never onto a screen (§9 step 12.2)
 
+**And the harness that runs `live-update.sh` against stub commands** — review round 8's F5 and the
+new §11.7. It is three kinds of file in one directory, committed like everything else here, and it
+is the first automated test any of `deploy/` has ever had:
+
+    deploy/test/run.sh                 the runner: one temp directory and one scenario per case, no framework
+    deploy/test/stubs/                 docker, git, curl, timeout and flock, each driven by the scenario file
+    deploy/test/cases/                 one file per case: the scenario, and what it asserts afterwards
+
 **Four files the server writes into this directory are not in that list and are not in git**, and
 keeping them apart is the answer to review round 4's F2 — **one fact per record**:
 
     deploy/.deployed-sha     the commit whose image AND schema are active. With migrations
                              pending, written the moment the migrator exits 0, before Loom is
                              started; with nothing pending, written only once the new image is
-                             up AND has answered the loopback check (§4.5 banners 9 and 11).
+                             up AND has answered the loopback check (§4.5 banners 9 and 10).
     deploy/.verified-sha     the last commit that passed the public health check. Written last.
     deploy/.deployed-image   the image id of the running loom container, captured before the build.
     deploy/.update-state     the intent record of an update in flight: written before the quiesce,
-                             removed the moment the target is healthy and recorded. Its presence
-                             means a run did not finish, and the next run reconciles it before it
-                             fetches anything (§4.5 banners 2 and 7, review round 7's F2).
+                             removed only by the one helper that has proved a target healthy AND
+                             recorded it, or by the restore that has proved the previous deployment
+                             is serving again. Its presence means a run did not finish, and the next
+                             run reconciles it before it fetches anything (§4.5 banners 2, 7 and 10,
+                             review round 7's F2 and round 8's F2).
 
 `.deployed-sha` is what the topology guard compares against and what the recovery aims at;
 `.verified-sha` is the public proof and nothing reads it as state. **An earlier draft had one file
@@ -301,10 +313,10 @@ check them.
 | The checkout | `~/git/Loom` (i.e. `/root/git/Loom`), `git clone https://github.com/poteb/Loom.git`, **`main` only**. Cloned once by hand in §9. It is never checked out to a branch, never committed to, and `live-update.sh` only ever fast-forwards it |
 | The compose project | `loom`, named **explicitly on every command** (`docker compose -p loom …`) and **again in the file** (top-level `name: loom` in `deploy/docker-compose.yml`) — *not* taken from the directory, which is `deploy` and would otherwise name the project `deploy`. So containers are `loom-postgres-1`, `loom-migrate-1`, `loom-loom-1` and the volume is `loom_pgdata` wherever the command is run from and whatever the shell has exported (§4.2) |
 | The environment file | `~/git/Loom/deploy/.env`, **`chmod 600`**, created by hand on the server in §9, never in git (`.env` is already in [`.gitignore`](../../../.gitignore)) |
-| The deployed-commit record | `~/git/Loom/deploy/.deployed-sha`, one line holding the short SHA of **the commit whose image and schema are both active**. Written atomically (temporary file in the same directory, then `mv`) **and durably** (`sync -f` on the result, review round 7's F2) at one of exactly two moments: when the update had migrations to apply, the instant the migrator exits 0 and **before** Loom is started (§4.5 banner 9); when it had none, only **after** the new container has answered the loopback health check, because until then the new image is running but unproven and the recovery's answer for that window is to restore the previous deployment (§4.5 banner 11, review round 7's F3). It is **never** written at the quiesce, and a write that fails is its own state (`record-failed`) rather than a silent continuation. Read as the topology guard's base (§4.5 banner 3), as the agreement check's expectation (§4.5 banner 2) and as the recovery's target (§4.5's recovery procedure, R7 and R11). Git-ignored |
+| The deployed-commit record | `~/git/Loom/deploy/.deployed-sha`, one line holding the short SHA of **the commit whose image and schema are both active**. Written atomically (temporary file in the same directory, then `mv`) **and durably** (`sync -f` on the result, review round 7's F2) at one of exactly two moments: when the update had migrations to apply, the instant the migrator exits 0 and **before** Loom is started (§4.5 banner 9); when it had none, only **after** the new container has answered the loopback health check, because until then the new image is running but unproven and the recovery's answer for that window is to restore the previous deployment (§4.5 banner 10's helper, review round 7's F3). The second of those two writes now happens in exactly one function, `start_target_and_prove`, which is the only thing in the script that starts a target at all (round 8's F2). It is **never** written at the quiesce, and a write that fails is its own state (`record-failed`) rather than a silent continuation. Read as the topology guard's base (§4.5 banner 3), as the agreement check's expectation (§4.5 banner 2) and as the recovery's target (§4.5's recovery procedure, R7 and R11). Git-ignored |
 | The verified-commit record | `~/git/Loom/deploy/.verified-sha`, one line holding the short SHA of the last commit that answered the **public** health check. Written at the very end of a normal run (§4.5 banner 13) and by nothing else; a `--bootstrap` run never writes it. It is the public proof, for a human and for §9's done-checks — **no mechanism reads it**, deliberately, so a failing public check can never misdirect a recovery. Git-ignored |
-| The previous image id | `~/git/Loom/deploy/.deployed-image`, one line holding `docker inspect --format '{{.Image}}' loom-loom-1` as captured in §4.5 banner 3, before the build. It is an immutable image id, not a tag, so it still names the old image after a same-commit rebuild has re-pointed `loom-live:<SHA>`. The run itself holds that id in `PREV_IMAGE` and the intent record carries it across an interruption as `old_image=`, so **no mechanism reads this file any more** — it is the human's copy of which image the previous deployment was, and the value `.update-state` is written from. Git-ignored |
-| The update-state record | `~/git/Loom/deploy/.update-state`, six `key=value` lines — `old_sha`, `old_image`, `target_sha`, `target_tag`, `pending` (the journal tags outstanding when the run began, space-separated, empty when there were none) and `started_at` (a UTC timestamp). Written atomically and durably **before the quiesce** (§4.5 banner 7) and removed the moment the target has passed the loopback check and `.deployed-sha` names it (§4.5 banner 11). Its presence is the only thing that says "a run did not finish", and it is read by exactly one thing: every invocation's reconciliation, right after the lock and before the fetch (§4.5 banner 2, review round 7's F2). `key=value` and not JSON, because this box has no `jq` and the script already reads `key=value` lines with `sed -n 's/^key=//p' … \| tail -1`, which exits 0 on a missing key — one idiom, used twice. Git-ignored |
+| The previous image id | `~/git/Loom/deploy/.deployed-image`, one line holding `docker inspect --format '{{.Image}}' loom-loom-1` as captured in §4.5 banner 3, before the build. It is an immutable image id, not a tag, so it still names the old image after a same-commit rebuild has re-pointed `loom-live:<SHA>`. The run itself holds that id in `PREV_IMAGE` and the intent record carries it across an interruption as `old_image=`, so **no mechanism reads this file any more** — it is the human's copy of which image the previous deployment was, and the value `.update-state` is written from. **And `PREV_IMAGE` is now the *only* thing that identifies the previous deployment**: `restore_prev` compares it with the running container's own `{{.Image}}` and reconstructs rather than `docker start`ing whenever the two differ, which is review round 8's F3. Git-ignored |
+| The update-state record | `~/git/Loom/deploy/.update-state`, six `key=value` lines — `old_sha`, `old_image`, `target_sha`, `target_tag`, `pending` (the journal tags outstanding when the run began, space-separated, empty when there were none) and `started_at` (a UTC timestamp). Written atomically and durably **before the quiesce** (§4.5 banner 7) and removed in exactly two places, both of which have proved something first: inside `start_target_and_prove`, once the target has answered the loopback check **and** `.deployed-sha` durably names it, and inside `restore_prev`, once the previous deployment has answered it (§4.5 banner 10, round 8's F2). Its presence is the only thing that says "a run did not finish", and it is read by exactly one thing: every invocation's reconciliation, right after the lock and before the fetch (§4.5 banner 2, review round 7's F2). `key=value` and not JSON, because this box has no `jq` and the script already reads `key=value` lines with `sed -n 's/^key=//p' … \| tail -1`, which exits 0 on a missing key — one idiom, used twice. Git-ignored |
 | The per-commit images | `loom-live:<short SHA>` in the host's image store, one per deployed commit, built by `live-update.sh` step 4 and never pruned by it — the previous one *is* the rollback (§13) |
 | Database backups | `~/backups/loom/loom-pre-update-<UTC timestamp>.sql.gz`, created by `live-update.sh` in a directory it creates with `install -d -m 700`. Root-only, like Spool's dumps |
 | The update lock | `/run/lock/loom-live-update.lock`, held for the whole of one `live-update.sh` run (§4.5 banner 2). `/run/lock` is a tmpfs on Ubuntu, so the file is not persistent state and a lock held by a killed shell is released by the kernel when the descriptor closes |
@@ -631,6 +643,7 @@ STATUS=unknown                   # R8's verdict: read|unavailable
 STATUS_TEXT="not read"
 FINAL=""                         # the dump's final path, once step 8 has taken one
 FINAL_RC=0                       # the status the exit handler will exit with
+SP=0                             # start_target_and_prove's verdict: 0 healthy, 1 no answer, 2 record
 OLD_CONTAINER=loom-loom-1        # the only container name the project's loom service ever has
 MIGRATE_CHECK=loom-migrate-check # the named one-off that reads migration status
 MIGRATE_RUN=loom-migrate-run     # the named one-off that applies migrations
@@ -658,9 +671,45 @@ redact_logs() {                  # §8.1: the one filter every log this script p
   sed -E 's#/w/[A-Za-z0-9_-]{43}#/w/<redacted>#g; s#[A-Za-z0-9_-]{43}#<43-char-token>#g'
 }
 
+dk() {                           # round 8's F1: the default bound on a docker call. The exceptions
+  timeout 60 docker "$@"         #   carry their own deadline and are named in the commentary; 60 s
+}                                #   is two orders of magnitude more than any dk call needs
+
+prove_url() {                    # round 8's F1: $1 url, $2 the loop's absolute deadline in seconds,
+  local deadline=$((SECONDS + $2))   # $3 seconds between tries. The ONLY curl in the script.
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    curl -fsS --connect-timeout 5 --max-time 20 "$1" >/dev/null 2>&1 && return 0
+    sleep "$3"
+  done
+  return 1
+}
+
+start_target_and_prove() {       # round 8's F2: the ONE way a target is started and then believed.
+  local tag="$1"                 #   0 = up, answering and recorded; 1 = no answer; 2 = no record
+  CREATED=1                      # armed before the command, exactly as QUIESCED is (round 6's F5)
+  if ! timeout 120 docker compose -p loom up -d --no-build loom; then
+    echo "docker compose up -d loom did not report success for loom-live:$tag; asking the port" >&2
+  fi
+  echo "created $OLD_CONTAINER from loom-live:$tag — not yet proven healthy"
+  if ! prove_url "$LOCAL_URL" 60 1; then
+    dk compose -p loom logs --tail 50 loom 2>&1 | redact_logs >&2 || true
+    echo "loom-live:$tag did not answer $LOCAL_URL within 60s" >&2
+    return 1
+  fi
+  echo "loopback health: ok"
+  if ! record_deployed "$tag"; then
+    MIGRATE_STATE=record-failed
+    return 2
+  fi
+  HEALTHY=1                      # the one and only thing that disarms the recovery (R1)
+  rm -f "$STATE"                 # up, answering AND recorded: the intent is fulfilled
+  echo "started loom-live:$tag"
+  return 0
+}
+
 reap_oneoff() {                  # F1: a VERIFIED transition. 0 = proven absent or proven exited;
   local name="$1" err out rc=0   #      2 = not proven, and then nothing may be believed
-  err="$(docker inspect "$name" 2>&1 >/dev/null)" || rc=$?
+  err="$(dk inspect "$name" 2>&1 >/dev/null)" || rc=$?
   if [ "$rc" -ne 0 ]; then
     case "$err" in
       *"No such object"*) return 0 ;;                # absent, and the daemon said so: proven
@@ -669,12 +718,12 @@ reap_oneoff() {                  # F1: a VERIFIED transition. 0 = proven absent 
          return 2 ;;
     esac
   fi
-  docker stop -t 10 "$name" >/dev/null 2>&1 || docker kill "$name" >/dev/null 2>&1 || true
-  timeout 60 docker wait "$name" >/dev/null 2>&1 \
+  dk stop -t 10 "$name" >/dev/null 2>&1 || dk kill "$name" >/dev/null 2>&1 || true
+  dk wait "$name" >/dev/null 2>&1 \
     || echo "WARNING: $name did not report an exit within 60s of being stopped" >&2
-  docker logs --tail 50 "$name" 2>&1 | redact_logs >&2 || true
+  dk logs --tail 50 "$name" 2>&1 | redact_logs >&2 || true
   rc=0
-  out="$(docker inspect --format '{{.State.Status}}' "$name" 2>&1)" || rc=$?
+  out="$(dk inspect --format '{{.State.Status}}' "$name" 2>&1)" || rc=$?
   if [ "$rc" -ne 0 ]; then
     case "$out" in
       *"No such object"*) return 0 ;;                # gone between the wait and the question: proven
@@ -686,7 +735,7 @@ reap_oneoff() {                  # F1: a VERIFIED transition. 0 = proven absent 
     *) echo "WARNING: $name is '$out', neither exited nor dead — it is NOT proven stopped" >&2
        return 2 ;;
   esac
-  docker rm -f "$name" >/dev/null 2>&1 \
+  dk rm -f "$name" >/dev/null 2>&1 \
     || echo "NOTE: $name has provably exited but could not be removed; the next run clears" \
             "the name" >&2
   return 0
@@ -694,7 +743,7 @@ reap_oneoff() {                  # F1: a VERIFIED transition. 0 = proven absent 
 
 read_status() {                  # the ONLY way status is read. $1=stdout file, $2=timeout seconds
   local out="$1" secs="$2" rc=0
-  docker rm -f "$MIGRATE_CHECK" >/dev/null 2>&1 || true
+  dk rm -f "$MIGRATE_CHECK" >/dev/null 2>&1 || true
   timeout "$secs" docker compose -p loom run --rm -T --name "$MIGRATE_CHECK" \
     migrate node dist/migrate.js --check > "$out" 2> "$out.err" || rc=$?
   if [ "$rc" -ne 0 ]; then       # the client is dead; the container may not be — F1's lifecycle
@@ -717,14 +766,32 @@ cleanup() {
 }
 
 manual_recovery() {              # R13. Every command it prints is absolute and self-contained (F6)
+  local img                      # round 8's F3: the id decides which of the two commands is printed
+  img="$(dk inspect --format '{{.Image}}' "$OLD_CONTAINER" 2>/dev/null || true)"
   echo "MANUAL RECOVERY REQUIRED — loom is STOPPED and has not been restarted."
   echo "  /root/git/Loom/deploy/.deployed-sha (image+schema): $(cat ./.deployed-sha 2>/dev/null || echo none)"
   echo "  commit being deployed:                             $LOOM_IMAGE_TAG"
+  echo "  previous deployment's recorded image id:           ${PREV_IMAGE:-none}"
+  echo "  $OLD_CONTAINER's image id right now:               ${img:-absent}"
   echo "  pending before the migration:                      $(tr '\n' ' ' < "$PENDING_BEFORE.set" 2>/dev/null)"
   echo "  pending now:                                       $STATUS_TEXT"
   echo "  pre-migration dump:                                ${FINAL:-none taken}"
   echo "  decide which schema the database is at, then paste ONE of these two, whole:"
-  echo "    cd /root/git/Loom/deploy && docker start $OLD_CONTAINER     # the pre-migration container"
+  if [ -n "$img" ] && [ "$img" = "${PREV_IMAGE:-}" ]; then
+    echo "    cd /root/git/Loom/deploy && docker start $OLD_CONTAINER     # the pre-migration container:"
+    echo "    # its image id IS the recorded previous one, so this really is the old deployment"
+  else
+    echo "    # $OLD_CONTAINER does NOT hold the recorded previous image id, so a docker start of"
+    echo "    # it would start something else; reconstruct the previous deployment instead, whole:"
+    echo "    cd /root/git/Loom/deploy && docker rm -f $OLD_CONTAINER ; \\"
+    echo "      docker tag ${PREV_IMAGE:-<none recorded>} loom-live:${PREV_SHA:-<none recorded>} \\"
+    echo "      && git -C /root/git/Loom show ${PREV_SHA:-<none recorded>}:deploy/docker-compose.yml \\"
+    echo "           > /tmp/loom-prev-compose.yml \\"
+    echo "      && LOOM_IMAGE_TAG=${PREV_SHA:-<none recorded>} docker compose -p loom \\"
+    echo "           --project-directory /root/git/Loom/deploy \\"
+    echo "           --env-file /root/git/Loom/deploy/.env -f /tmp/loom-prev-compose.yml \\"
+    echo "           up -d --no-build loom"
+  fi
   echo "  or"
   echo "    cd /root/git/Loom/deploy && LOOM_IMAGE_TAG=$LOOM_IMAGE_TAG \\"
   echo "      docker compose -p loom --env-file /root/git/Loom/deploy/.env up -d --no-build loom   # the new image"
@@ -743,8 +810,8 @@ record_failed_message() {        # R2 (F2): the record could not be written, so 
        "$(cat ./.deployed-sha 2>/dev/null || echo none)."
   echo "  the two DISAGREE, the next run's topology guard and recovery both believe that file, and"
   echo "  no automatic action is taken here."
-  echo "  $OLD_CONTAINER running: $(docker inspect --format '{{.State.Running}}' "$OLD_CONTAINER" 2>/dev/null || echo unknown)"
-  echo "  $OLD_CONTAINER image:   $(docker inspect --format '{{.Config.Image}}' "$OLD_CONTAINER" 2>/dev/null || echo none)"
+  echo "  $OLD_CONTAINER running: $(dk inspect --format '{{.State.Running}}' "$OLD_CONTAINER" 2>/dev/null || echo unknown)"
+  echo "  $OLD_CONTAINER image:   $(dk inspect --format '{{.Config.Image}}' "$OLD_CONTAINER" 2>/dev/null || echo none)"
   echo "  make room, then set the record by hand, whole:"
   echo "    df -h /root && ls -la /root/git/Loom/deploy"
   echo "    printf '%s\\n' $LOOM_IMAGE_TAG > /root/git/Loom/deploy/.deployed-sha"
@@ -772,41 +839,56 @@ failed_start_after_migration() { # R5 (F3): the schema has moved and the new ima
   echo "  come up by itself; the interrupted update's record is left for the next run to reconcile."
 }
 
-restore_prev() {                 # R4/R6/R10, falling through to R14 when no old container survives
-  local cfg
-  cfg="$(docker inspect --format '{{.Config.Image}}' "$OLD_CONTAINER" 2>/dev/null || true)"
-  if [ "$cfg" = "loom-live:$LOOM_IMAGE_TAG" ] && [ "$LOOM_IMAGE_TAG" != "$PREV_SHA" ]; then
-    docker rm -f "$OLD_CONTAINER" >/dev/null 2>&1 || true   # that name is the TARGET's container now
-  elif docker start "$OLD_CONTAINER" >/dev/null 2>&1; then
-    rm -f "$STATE"                                          # the exact container the quiesce stopped
-    return 0
-  fi
+restore_prev() {                 # R4/R6/R10, falling through to R14. Round 8's F3: the previous
+  local img                      #   deployment is the recorded IMAGE ID and nothing else
   if [ -z "$PREV_SHA" ] || [ -z "$PREV_IMAGE" ]; then
     echo "no recorded previous deployment — loom is DOWN, deploy by hand"; return 1
   fi
-  if ! docker tag "$PREV_IMAGE" "loom-live:$PREV_SHA" >/dev/null 2>&1; then
+  img="$(dk inspect --format '{{.Image}}' "$OLD_CONTAINER" 2>/dev/null || true)"
+  if [ "$img" = "$PREV_IMAGE" ]; then              # proved: this object IS the old deployment
+    if dk start "$OLD_CONTAINER" >/dev/null 2>&1 && prove_url "$LOCAL_URL" 60 1; then
+      rm -f "$STATE"
+      return 0
+    fi
+    dk compose -p loom logs --tail 50 loom 2>&1 | redact_logs >&2 || true
+    echo "$OLD_CONTAINER holds the recorded image $PREV_IMAGE but did not answer $LOCAL_URL —"
+    echo "loom is DOWN, deploy by hand; the interrupted update's record is left in place"
+    return 1
+  fi
+  if [ -n "$img" ]; then                           # a different id, whatever the tag or the SHA says
+    echo "$OLD_CONTAINER holds image $img, which is NOT the recorded previous image $PREV_IMAGE;"
+    echo "removing it and reconstructing the previous deployment from the recorded id"
+    dk rm -f "$OLD_CONTAINER" >/dev/null 2>&1 || true
+  fi
+  if ! dk tag "$PREV_IMAGE" "loom-live:$PREV_SHA" >/dev/null 2>&1; then
     echo "recorded image id $PREV_IMAGE is not on disk — loom is DOWN, deploy by hand"; return 1
   fi
   PREVCOMPOSE="$(mktemp)"
   if ! git -C .. show "$PREV_SHA:deploy/docker-compose.yml" > "$PREVCOMPOSE" 2>/dev/null; then
     echo "$PREV_SHA's own compose file could not be read — loom is DOWN, deploy by hand"; return 1
   fi
-  if ! LOOM_IMAGE_TAG="$PREV_SHA" docker compose -p loom \
+  if ! LOOM_IMAGE_TAG="$PREV_SHA" timeout 120 docker compose -p loom \
          --project-directory /root/git/Loom/deploy \
          --env-file /root/git/Loom/deploy/.env \
          -f "$PREVCOMPOSE" up -d --no-build loom; then
     echo "could not recreate loom from the recorded image id — loom is DOWN, deploy by hand"
     return 1
   fi
+  if ! prove_url "$LOCAL_URL" 60 1; then
+    dk compose -p loom logs --tail 50 loom 2>&1 | redact_logs >&2 || true
+    echo "loom was recreated from image $PREV_IMAGE through $PREV_SHA's own compose file and did"
+    echo "NOT answer $LOCAL_URL — loom is DOWN, deploy by hand; the record is left in place"
+    return 1
+  fi
   rm -f "$STATE"
-  echo "WARNING: the previous container object was gone, so loom was recreated from image" \
-       "$PREV_IMAGE through $PREV_SHA's OWN compose definition — same image, same definition," \
-       "a new container object; check its command, environment and networks before trusting it"
+  echo "WARNING: $OLD_CONTAINER did not hold the recorded image id, so loom was recreated from" \
+       "image $PREV_IMAGE through $PREV_SHA's OWN compose definition — same image, same" \
+       "definition, a new container object — and it is answering $LOCAL_URL"
   return 0
 }
 
 reconcile_update_state() {       # F2: an interrupted update is settled before any new commit is read
-  local old_sha old_image target pending started cfg gone still t
+  local old_sha old_image target pending started cfg gone still t sp=0
   old_sha="$(sed -n 's/^old_sha=//p' "$STATE" | tail -1)"
   old_image="$(sed -n 's/^old_image=//p' "$STATE" | tail -1)"
   target="$(sed -n 's/^target_sha=//p' "$STATE" | tail -1)"
@@ -823,8 +905,8 @@ reconcile_update_state() {       # F2: an interrupted update is settled before a
   PREV_SHA="$old_sha"; [ "$PREV_SHA" != none ] || PREV_SHA=""
   PREV_IMAGE="$old_image"; [ "$PREV_IMAGE" != none ] || PREV_IMAGE=""
 
-  cfg="$(docker inspect --format '{{.Config.Image}}' "$OLD_CONTAINER" 2>/dev/null || true)"
-  if [ "$cfg" = "loom-live:$target" ] && curl -fsS "$LOCAL_URL" >/dev/null 2>&1; then
+  cfg="$(dk inspect --format '{{.Config.Image}}' "$OLD_CONTAINER" 2>/dev/null || true)"
+  if [ "$cfg" = "loom-live:$target" ] && prove_url "$LOCAL_URL" 20 1; then
     if ! record_deployed "$target"; then record_failed_message; return 1; fi
     rm -f "$STATE"
     echo "the target was already up and answering: its records are complete and the interrupted"
@@ -863,15 +945,16 @@ reconcile_update_state() {       # F2: an interrupted update is settled before a
       manual_recovery; return 1
     fi
     if ! record_deployed "$target"; then record_failed_message; return 1; fi
-    if docker compose -p loom up -d --no-build loom; then
-      rm -f "$STATE"
-      echo "the interrupted update's migration had committed: the database is at $target, the"
-      echo "target image is started, and the record is cleared. Run live-update.sh again to finish."
-      return 1
-    fi
-    echo "the database is at $target but its image could NOT be started — loom is DOWN, deploy by"
-    echo "hand; /root/git/Loom/deploy/.update-state is left in place"
-    return 1
+    start_target_and_prove "$target" || sp=$?     # F2: the same helper as the normal path
+    case "$sp" in
+      0) echo "the interrupted update's migration had committed: the database is at $target, the"
+         echo "target image is up, answering and recorded, and the record is cleared. Run"
+         echo "/root/git/Loom/deploy/live-update.sh again to finish."
+         return 1 ;;
+      2) record_failed_message; return 1 ;;
+      *) MIGRATE_STATE=succeeded                  # the schema is $target's: R5, and the record stays
+         failed_start_after_migration; return 1 ;;
+    esac
   fi
   echo "the interrupted update is PARTIALLY applied: $gone of the recorded tags are gone and"
   echo "$still remain."
@@ -919,9 +1002,13 @@ recover() {                      # R1-R14. Never runs under errexit: see on_exit
       if restore_prev; then echo "no migration ran; the previous deployment is serving again"; fi
       return 0 ;;
     succeeded)                                     # R7
-      echo "the record names $LOOM_IMAGE_TAG; starting the new image"
-      docker compose -p loom up -d --no-build loom \
-        || echo "could not start the new image — loom is DOWN, deploy by hand"
+      echo "the record names $LOOM_IMAGE_TAG; starting the new image and proving it"
+      SP=0; start_target_and_prove "$LOOM_IMAGE_TAG" || SP=$?
+      case "$SP" in
+        0) : ;;                                    # up, answering, recorded — nothing left to say
+        2) record_failed_message ;;
+        *) failed_start_after_migration ;;         # R5: the schema has moved and it will not serve
+      esac
       return 0 ;;
   esac
 
@@ -952,15 +1039,15 @@ recover() {                      # R1-R14. Never runs under errexit: see on_exit
     if ! record_deployed "$LOOM_IMAGE_TAG"; then
       MIGRATE_STATE=record-failed; record_failed_message; return 0
     fi
-    if docker compose -p loom up -d --no-build loom; then
-      rm -f "$STATE"
-      echo "the migrator failed but every pending migration is applied: the database is at" \
-           "$LOOM_IMAGE_TAG and the new image has been started; rerun" \
-           "/root/git/Loom/deploy/live-update.sh to finish the remaining steps"
-    else
-      echo "every pending migration is applied and the database is at $LOOM_IMAGE_TAG, but the" \
-           "new image could NOT be started — loom is DOWN, deploy by hand"
-    fi
+    MIGRATE_STATE=succeeded                        # the schema is the target's from this line on
+    SP=0; start_target_and_prove "$LOOM_IMAGE_TAG" || SP=$?
+    case "$SP" in
+      0) echo "the migrator failed but every pending migration is applied: the database is at" \
+              "$LOOM_IMAGE_TAG and the new image is up, answering and recorded; rerun" \
+              "/root/git/Loom/deploy/live-update.sh to finish the remaining steps" ;;
+      2) record_failed_message ;;
+      *) failed_start_after_migration ;;           # R5, reached from R11: the record stays
+    esac
   else                                             # R12 -> R13: partially applied
     echo "the migration is PARTIALLY applied: $gone of the pending tags are gone and $still remain."
     manual_recovery
@@ -990,7 +1077,7 @@ fi
 
 if [ -f ./.deployed-sha ]; then  # F2: the record and the running image must agree before an update
   RECORDED="$(cat ./.deployed-sha)"
-  CONFIGURED="$(docker inspect --format '{{.Config.Image}}' "$OLD_CONTAINER" 2>/dev/null || true)"
+  CONFIGURED="$(dk inspect --format '{{.Config.Image}}' "$OLD_CONTAINER" 2>/dev/null || true)"
   if [ -n "$CONFIGURED" ] && [ "$CONFIGURED" != "loom-live:$RECORDED" ]; then
     echo "the running container and the deployed record DISAGREE; reconcile by hand:" >&2
     echo "  $OLD_CONTAINER's configured image:   $CONFIGURED" >&2
@@ -1030,7 +1117,7 @@ git -C .. merge --ff-only refs/remotes/origin/main
 
 LOOM_IMAGE_TAG="$(git -C .. rev-parse --short HEAD)"
 if [ -f ./.deployed-sha ]; then PREV_SHA="$(cat ./.deployed-sha)"; fi
-PREV_IMAGE="$(docker inspect --format '{{.Image}}' "$OLD_CONTAINER" 2>/dev/null || true)"
+PREV_IMAGE="$(dk inspect --format '{{.Image}}' "$OLD_CONTAINER" 2>/dev/null || true)"
 if [ -n "$PREV_IMAGE" ]; then printf '%s\n' "$PREV_IMAGE" > ./.deployed-image
 else                          rm -f ./.deployed-image; fi
 echo "deploying $(git -C .. rev-parse HEAD) as loom-live:$LOOM_IMAGE_TAG"
@@ -1079,8 +1166,8 @@ echo "update-state: $STATE written; ${PREV_SHA:-none} -> $LOOM_IMAGE_TAG"
 QUIESCED=1
 if [ -s "$PENDING_BEFORE.set" ]; then MIGRATE_STATE=not-attempted
 else                                  MIGRATE_STATE=not-needed; fi
-if ! docker compose -p loom stop loom; then
-  RUNNING="$(docker inspect --format '{{.State.Running}}' "$OLD_CONTAINER" 2>/dev/null || echo unknown)"
+if ! dk compose -p loom stop loom; then
+  RUNNING="$(dk inspect --format '{{.State.Running}}' "$OLD_CONTAINER" 2>/dev/null || echo unknown)"
   if [ "$RUNNING" = true ]; then
     QUIESCED=0                     # positively still running: nothing was stopped, disarm
     rm -f "$STATE"                 # and nothing is interrupted, so leave no record behind
@@ -1093,29 +1180,30 @@ if ! docker compose -p loom stop loom; then
 fi
 
 # --- 8. back up, with Loom already stopped and immediately before the migration ---
-if ! docker volume inspect loom_pgdata >/dev/null 2>&1; then
+if ! dk volume inspect loom_pgdata >/dev/null 2>&1; then
   echo "backup: no loom_pgdata volume — first deployment, nothing to dump"
 else
-  if [ "$(docker inspect --format '{{.State.Running}}' loom-postgres-1 2>/dev/null || echo false)" \
+  if [ "$(dk inspect --format '{{.State.Running}}' loom-postgres-1 2>/dev/null || echo false)" \
        != true ]; then
-    docker compose -p loom up -d postgres
+    dk compose -p loom up -d postgres
   fi
   st=unknown
-  for _ in $(seq 1 60); do
-    st="$(docker inspect --format '{{.State.Health.Status}}' loom-postgres-1 2>/dev/null || echo gone)"
+  PG_DEADLINE=$((SECONDS + 60))    # F1: an absolute deadline, not a count of iterations
+  while [ "$SECONDS" -lt "$PG_DEADLINE" ]; do
+    st="$(dk inspect --format '{{.State.Health.Status}}' loom-postgres-1 2>/dev/null || echo gone)"
     if [ "$st" = healthy ]; then break; fi
     case "$st" in
       unhealthy|gone)
         echo "postgres is $st; not migrating" >&2
-        docker compose -p loom logs --tail 50 postgres 2>&1 | redact_logs >&2 || true
+        dk compose -p loom logs --tail 50 postgres 2>&1 | redact_logs >&2 || true
         exit 1 ;;
     esac
     sleep 1
   done
   [ "$st" = healthy ] || { echo "postgres did not become healthy within 60s" >&2
-                           docker compose -p loom logs --tail 50 postgres 2>&1 | redact_logs >&2 || true
+                           dk compose -p loom logs --tail 50 postgres 2>&1 | redact_logs >&2 || true
                            exit 1; }
-  MOUNTS="$(docker inspect -f '{{range .Mounts}}{{.Name}} {{end}}' loom-postgres-1)"
+  MOUNTS="$(dk inspect -f '{{range .Mounts}}{{.Name}} {{end}}' loom-postgres-1)"
   case " $MOUNTS " in
     *" loom_pgdata "*) ;;
     *) echo "loom-postgres-1 is not bound to loom_pgdata — deploy by hand" >&2; exit 1 ;;
@@ -1125,7 +1213,19 @@ else
   TS="$(date -u +%Y%m%dT%H%M%SZ)"
   FINAL="$HOME/backups/loom/loom-pre-update-$TS.sql.gz"
   TMP="$(mktemp "$HOME/backups/loom/.loom-pre-update-$TS.XXXXXX")"
-  docker compose -p loom exec -T postgres pg_dump -U loom loom | gzip > "$TMP"
+  DUMP_RC=0                        # F1: the dump is a managed lifecycle, not an open-ended wait
+  timeout --signal=TERM --kill-after=15 300 \
+    docker compose -p loom exec -T postgres pg_dump -U loom loom | gzip > "$TMP" || DUMP_RC=$?
+  if [ "$DUMP_RC" -ne 0 ]; then
+    if [ "$DUMP_RC" -eq 124 ] || [ "$DUMP_RC" -eq 137 ]; then
+      echo "the dump did not finish within 300s — a conflicting lock or a stalled read; the client" \
+           "is gone, so the server-side pg_dump is signalled before anything else happens" >&2
+      dk compose -p loom exec -T postgres pkill -TERM -f pg_dump >/dev/null 2>&1 \
+        || echo "NOTE: no server-side pg_dump answered the signal; it may already be gone" >&2
+    fi
+    echo "backup: pg_dump failed (exit $DUMP_RC); not migrating" >&2
+    exit 1
+  fi
   mv "$TMP" "$FINAL"; TMP=""
   echo "backup: $FINAL"
 fi
@@ -1135,7 +1235,7 @@ if [ "$MIGRATE_STATE" = not-needed ]; then
   echo "migrate: nothing pending — the schema already satisfies $LOOM_IMAGE_TAG's journal"
 else
   MIGRATE_STATE=attempted
-  docker rm -f "$MIGRATE_RUN" >/dev/null 2>&1 || true
+  dk rm -f "$MIGRATE_RUN" >/dev/null 2>&1 || true
   if timeout --signal=TERM --kill-after=30 600 \
        docker compose -p loom run --rm -T --name "$MIGRATE_RUN" migrate; then
     if record_deployed "$LOOM_IMAGE_TAG"; then
@@ -1162,33 +1262,16 @@ else
   fi
 fi
 
-# --- 10. create the new container: CREATED is armed BEFORE the up, like QUIESCED ---
-CREATED=1
-docker compose -p loom up -d loom
-echo "created $OLD_CONTAINER from loom-live:$LOOM_IMAGE_TAG — not yet proven healthy"
+# --- 10. create the new container and prove it, through the one shared helper (F2) -
+start_target_and_prove "$LOOM_IMAGE_TAG" || SP=$?
 
-# --- 11. the loopback health check, and the records only a healthy target writes ---
-OK=0
-for _ in $(seq 1 30); do
-  if curl -fsS "$LOCAL_URL" >/dev/null 2>&1; then OK=1; break; fi
-  sleep 1
-done
-[ "$OK" = 1 ] || { echo "loom did not answer on 127.0.0.1:3100 within 30s" >&2
-                   docker compose -p loom logs --tail 50 loom 2>&1 | redact_logs >&2 || true
-                   exit 1; }
-echo "loopback health: ok"
-if [ "$MIGRATE_STATE" = not-needed ]; then
-  if record_deployed "$LOOM_IMAGE_TAG"; then
-    echo "/root/git/Loom/deploy/.deployed-sha is now $LOOM_IMAGE_TAG"
-  else
-    MIGRATE_STATE=record-failed
-    echo "the new image is healthy, but /root/git/Loom/deploy/.deployed-sha could NOT be written" >&2
-    exit 1
-  fi
+# --- 11. only a proven AND recorded target disarms the recovery -------------------
+if [ "$SP" -eq 2 ]; then
+  echo "loom-live:$LOOM_IMAGE_TAG is answering, but" \
+       "/root/git/Loom/deploy/.deployed-sha could NOT be written" >&2
+  exit 1
 fi
-HEALTHY=1                        # the one and only thing that disarms the recovery (R1)
-rm -f "$STATE"                   # the target is up, answering and recorded: the intent is fulfilled
-echo "started loom-live:$LOOM_IMAGE_TAG"
+[ "$SP" -eq 0 ] || exit 1        # created and never answered: the recovery is still armed (R4/R5)
 
 # --- 12. install the site block if it changed, then reload Caddy -----------------
 if ! cmp -s loom.caddy "$SITES/loom.caddy"; then
@@ -1198,7 +1281,7 @@ if ! cmp -s loom.caddy "$SITES/loom.caddy"; then
   fi
   install -m 644 loom.caddy "$SITES/.loom.caddy.new"
   mv "$SITES/.loom.caddy.new" "$SITES/loom.caddy"
-  if ! docker exec spool-caddy-1 caddy reload --config /etc/caddy/Caddyfile; then
+  if ! dk exec spool-caddy-1 caddy reload --config /etc/caddy/Caddyfile; then
     if [ "$HAD_PREV" = 1 ]; then mv "$SITES/loom.caddy.prev" "$SITES/loom.caddy"
     else rm -f "$SITES/loom.caddy"; fi
     echo "caddy reload failed; the previous site configuration was restored" >&2
@@ -1214,12 +1297,7 @@ if [ "$BOOTSTRAP" = 1 ]; then
   echo "--bootstrap: skipped the public health check; deploy/.verified-sha not written"
   exit 0
 fi
-OK=0
-for _ in $(seq 1 10); do
-  if curl -fsS "$PUBLIC_URL" >/dev/null 2>&1; then OK=1; break; fi
-  sleep 3
-done
-[ "$OK" = 1 ] || { echo "$PUBLIC_URL did not answer within 30s" >&2; exit 1; }
+prove_url "$PUBLIC_URL" 120 3 || { echo "$PUBLIC_URL did not answer within 120s" >&2; exit 1; }
 printf '%s\n' "$LOOM_IMAGE_TAG" > ./.verified-sha.new && mv ./.verified-sha.new ./.verified-sha
 echo "health: ok"
 ```
@@ -1283,7 +1361,7 @@ over a container that was never going to answer — with the old image sitting u
 the nothing-pending path, a schema that had never changed. So the state is split. `CREATED=1` means
 "the new container exists, or may exist" and is armed **before** the `up`, for the same reason
 `QUIESCED` is armed before the `stop` (round 6's F5): the command can half-succeed. `HEALTHY=1` means
-"the loopback `/api/guidelines` answered", and it is set in banner 11 and nowhere else. **Only
+"the loopback `/api/guidelines` answered", and it is set inside `start_target_and_prove` and nowhere else. **Only
 `HEALTHY=1` disarms the recovery.** Between the two flags the recovery is not merely still armed, it
 has its own branches: R4 for a failed start with no schema change, R5 for one with a committed
 migration.
@@ -1297,7 +1375,7 @@ a cleanup that went first would delete the evidence the classification is made f
 
 **Two more helpers sit beside them, and both are round 6's.** `redact_logs` is the filter of §8.1,
 defined once here and used everywhere this script prints something it did not write itself —
-Postgres's log in banner 8 (twice), Loom's in banner 11, a reaped one-off's inside `reap_oneoff`, and
+Postgres's log in banner 8 (twice), Loom's in banner 10's helper, a reaped one-off's inside `reap_oneoff`, and
 `migrate --check`'s own stdout and stderr in banner 6, in R8 and in banner 2's reconciliation — and
 it is the filter R5 prints **as a literal `sed`** for the operator to paste, because the person
 reading that message has no shell in which this function is defined. It is not decoration:
@@ -1322,6 +1400,48 @@ for a committed migration whose image will not serve (F3); and `reconcile_update
 reconciliation every invocation runs before it fetches (F2, banner 2). They are functions for the
 reason `reap_oneoff` is: each is reachable from more than one place, and a message written twice is a
 message that will differ.
+
+**And three helpers are round 8's, and between them they are the whole of F1 and F2.**
+
+- **`dk` is `timeout 60 docker`, and after this round every `docker` call in the script is
+  bounded.** Round 8's F1 is that a ceiling the script does not enforce is not a
+  ceiling, and the ceiling was stated as a sum of the deadlines of *some* of the steps while the
+  rest — the dump, the probes, and every ordinary `docker inspect`, `stop`, `start`, `rm`, `logs`
+  and `up` — could each hang forever. A Docker daemon that accepts a connection and never answers
+  is not exotic; it is the same daemon outage that produces round 7's F1, and one hung `inspect`
+  inside the exit handler is an outage with no end and the update lock still held. So the rule is
+  now mechanical and auditable, and the whole of it is: **`dk` everywhere, five call sites with
+  their own longer deadline, two deliberately unbounded.** The five are the two
+  `timeout 120 docker compose … up -d --no-build loom` (the helper's and `restore_prev`'s, 120
+  rather than 60 because the `up` runs the compose `migrate` gate, which boots a container),
+  `read_status`'s `timeout "$secs"` (120 at both its call sites), the dump's 300 and the migrator's
+  600. The two unbounded ones are the **build** and the **Caddy validation** (banners 5 and 4), and
+  they are unbounded on purpose: Loom is still serving while they run, so no outage ceiling depends
+  on them, and a build that takes eleven minutes on a busy box must not be killed at ten. 60 s is
+  two orders of magnitude more than any `dk` call needs, which is the point: it is not a performance
+  bound, it is the difference between a failure and a hang.
+- **`prove_url` is the only `curl` in the script**, and it is bounded twice. Each call carries
+  `--connect-timeout 5 --max-time 20`, because F1's other half is that a server which *accepts* the
+  connection and then blocks on Postgres makes a bare `curl` wait for ever — and counting
+  iterations bounds nothing when the first iteration never returns. And the loop is bounded by an
+  **absolute deadline** computed from bash's own `SECONDS`, not by a count of tries, so the wall
+  clock a reader adds up is the wall clock the loop actually takes. Two call sites use it for the
+  loopback (60 s, one second apart) and one for the public check (120 s, three seconds apart), and
+  the reconciliation's cheap "is the target already answering" probe uses it with a 20 s deadline.
+  **A deadline-bounded loop can overrun its deadline by at most one iteration**, which is one 20 s
+  call plus one sleep, and §13's arithmetic says so rather than pretending otherwise.
+- **`start_target_and_prove` is the one and only way this script starts a commit's image and then
+  believes it — round 8's F2.** It arms `CREATED`, runs `docker compose -p loom up -d --no-build
+  loom` under a 120 s bound, proves the loopback answer, writes `.deployed-sha`, sets `HEALTHY=1`
+  and removes `.update-state`, in that order, and returns **0** (up, answering and recorded), **1**
+  (no answer) or **2** (answering but the record could not be written). Four places used to start a
+  target: banner 10, R7, R11 and the reconciliation's case (b) — and **two of them removed the
+  intent record the moment compose returned**, which is F2's finding: a commit with a startup
+  regression would have had the only record of an unfinished update deleted on the strength of a
+  container's existence, while every request got a 502. Now the record is removed in one function,
+  after one proof, and a target that does not answer leaves `.deployed-sha` and `.update-state`
+  exactly as they were for the next run and for R5's message. The finding named three call sites;
+  R7 is the fourth and gets the helper too, because it was the same mistake in the same words.
 
 **And `record_deployed` now ends in `sync -f`, which is what makes "durably written" a fact.** The
 `printf` + `mv` pair was already atomic — a reader sees the old content or the new one, never half a
@@ -1379,10 +1499,13 @@ newer commit on top of a half-applied one. `reconcile_update_state` reads the si
   the record and not recomputed: the point of the comparison is what has changed since, and a set
   read now cannot tell you that. Three answers, and they are the same three the recovery makes,
   which is deliberate: **(a)** every recorded tag is still pending, or nothing was pending at all, so
-  nothing committed — `restore_prev` puts the recorded old deployment back and the record is cleared;
+  nothing committed — `restore_prev` puts the recorded old deployment back, by its image id and only
+  once it answers, and the record is cleared;
   **(b)** none of them is pending, so the migration committed — `.deployed-sha` is set to the target
-  and the target's image is started, after asserting that this checkout is still at the target, since
-  its compose definition is what would start it; **(c)** the status could not be read, or some tags
+  and the target is started **through `start_target_and_prove`**, after asserting that this checkout
+  is still at the target, since its compose definition is what would start it; a target that does
+  not answer there leaves the record in place and prints R5's `LOOM IS DOWN`, which is round 8's F2;
+  **(c)** the status could not be read, or some tags
   are applied and others are not — the manual-recovery message of R13, and the record is **left in
   place** so the next invocation asks again rather than deploying over an unknown schema.
 
@@ -1587,9 +1710,15 @@ exists to recognise. `sed '/^$/d'` deletes blank lines without an exit status to
 case yields an empty file and exit 0. §11.2's contract test pins both the empty and the non-empty
 extraction.
 
-**Three things this banner also buys**, each a reason it is here rather than folded into the
+**Four things this banner also buys**, each a reason it is here rather than folded into the
 migration:
 
+- **It refuses a drifted journal while Loom is still serving — round 8's F4.** `migrationStatus`
+  validates that the journal's `when` values are strictly increasing and that the database's rows
+  are an exact `(created_at, hash)` prefix of it, and **throws** otherwise (§5.1), so a backdated
+  migration that merged after a newer one — the one shape that used to be reported as "applied" and
+  silently skipped — makes this `--check` exit **1** and stops the update here: no quiesce, no dump,
+  no migration, and a message naming the first mismatch for whoever has to regenerate the file.
 - **It runs `assertTransactionSafe` over every pending file before the live instance is touched**
   (§5.1, §5.2): a merged migration carrying a `COMMIT`, an `ABORT`, a `CREATE INDEX CONCURRENTLY` or
   any other statement that would break the one-transaction guarantee from inside makes this `--check`
@@ -1625,7 +1754,7 @@ into an unreadable one.
 **7. The intent record, then the quiesce.** `deploy/.update-state` is written first, then
 `QUIESCED=1` and a `MIGRATE_STATE` of `not-attempted` or `not-needed` according to whether anything
 is pending, and **then** `docker compose -p loom stop loom`. **No `.deployed-sha` is written here, and
-that is round 5's F3** (see banners 9 and 11).
+that is round 5's F3** (see banners 9 and 10).
 
 **Why the intent record is written here, and why here is the only place it can be — round 7's F2.**
 This is the last line before the first irreversible act. Everything above it can be abandoned with
@@ -1651,9 +1780,14 @@ cache when the lights go out is not a record. A failure to write it stops the ru
 **before** `QUIESCED=1`, so nothing has been stopped and there is nothing to recover — the right
 direction to fail in, and the reason the write is above the flag rather than below it.
 
-**And it is removed in exactly one place** — banner 11, once the target is healthy **and**
-`.deployed-sha` names it — plus in the branches that have finished settling it (`restore_prev` on
-success, R11's successful start, and the reconciliation's own (a) and (b)). One exception, and it is
+**And since round 8's F2 it is removed in exactly two places, both of which have proved something
+first.** `start_target_and_prove` removes it once the target has answered the loopback check **and**
+`.deployed-sha` durably names it — which covers banner 10, R7, R11 and the reconciliation's case (b)
+in one function, because all four go through the helper. `restore_prev` removes it once the previous
+deployment has answered that same check — which settles the same record in the other direction, by
+undoing the update rather than finishing it, and is why F2's "only inside that helper" is read here
+as "only after a proof": a restore that left the record behind would send every later invocation
+into a reconciliation of an update that has already been undone. One exception, and it is
 deliberate: on the torn-stop branch where `docker inspect` positively answers that the container is
 **still running**, the record is removed too, because nothing was stopped and there is therefore no
 interrupted update for the next run to reconcile.
@@ -1704,19 +1838,52 @@ after the snapshot are salvaged — this spec **binds quiesce**. The other one i
 every future migration, enforced by nothing, whose failure mode is silent data loss discovered later;
 this one is a command, in one place, whose failure mode is a visible minute of downtime.
 
-**What it costs, stated exactly.** Between this banner and banner 10, Loom is not running: Caddy has
-nothing to reach on the `web` network and answers **502** to every request, the web client's stream
-drops, and the reviewer's connector poll fails. The duration is the dump plus the migration plus the
-container start — on this database, today, **well under a minute**, and the dump is the slow part.
-The worst case is bounded rather than typical: the Postgres wait is at most 60 s, the migrator at
-most 600 s plus a 30 s kill grace, each reap at most a 10 s stop plus a 60 s `docker wait` (round
-6's F3), R8's status read at most a further 120 s, and — since round 7's F3 made the start's outcome
-a *proved* thing — the loopback poll's own 30 s, because the outage does not end when the container
-is created but when it answers. So the arithmetic ceiling of a quiesce is about **sixteen minutes**
-before a human is either serving again or reading R13's message (§13, §14.7). Every term in
-that sum is a constant a reader can find in the listing, which is the point of stating it. **Downtime of seconds per update is accepted; zero downtime is not
-promised.** The build, which is the minute-or-two part of an update, is deliberately on the other
-side of this line: it finishes while Loom is still serving.
+**What it costs, stated exactly.** Between this banner and the moment banner 10's helper gets its
+loopback answer, Loom is not running: Caddy has nothing to reach on the `web` network and answers
+**502** to every request, the web client's stream drops, and the reviewer's connector poll fails.
+The duration is the dump plus the migration plus the container start and its first answer — on this
+database, today, **well under a minute**, and the dump is the slow part.
+
+**And the worst case is now a sum of deadlines the script actually enforces, which is review round
+8's F1.** The previous draft claimed a sixteen-minute ceiling and did not have one: the `pg_dump`
+ran with no timeout at all, so a conflicting lock or a stalled read left Loom stopped **for ever**
+with the lock held and no trap able to run, because the command had not exited; both `curl` polls
+counted iterations without bounding a single call, so one connection that is accepted and never
+answered hangs the first iteration and every "30 s" with it; and every ordinary `docker` call was
+unbounded. The deadlines are now these, and every one of them is a constant in the listing:
+
+| Phase, after the quiesce | Deadline, as the listing enforces it |
+| --- | --- |
+| The stop | `dk compose stop loom` = **60** |
+| The backup | volume inspect 60 + running inspect 60 + `up -d postgres` 60 + the health loop's absolute 60 (plus at most one 60 s inspect in flight) + mounts inspect 60 + the dump's `timeout --signal=TERM --kill-after=15 300` = **675**, and on a dump that times out a further **60** for the `pkill` that kills the server-side dump |
+| The migration | name-clearing `rm -f` 60 + `timeout --signal=TERM --kill-after=30 600` = **690**, and on any non-success a reap of at most **420** (seven `dk` calls: inspect, stop, kill, wait, logs, inspect, rm) |
+| R8's status read | `rm -f` 60 + `timeout 120` = **180**, and **600** if that read itself fails and its container has to be reaped |
+| Starting and proving a target | `timeout 120` on the `up` + the loopback loop's 60 (plus at most one 20 s `curl` in flight) = **200** |
+| Restoring the previous deployment | inspect 60 + start 60 + prove 80 = **200** on the recorded image id, or inspect 60 + rm 60 + tag 60 + `up` 120 + prove 80 = **380** when it has to be reconstructed |
+| R13's message | one `dk inspect` for the image-id check = **60** |
+
+So the arithmetic ceilings, per branch: a happy update with nothing pending is 60 + 675 + 200 =
+**935 s**; one with a migration is 60 + 675 + 690 + 200 = **1625 s**; a dump that blocks on a lock
+is 60 + 735 + 200 = **995 s** before the previous deployment is serving again; and the longest
+reachable path of all is a migrator that fails, a reap that succeeds and a status read that then
+does not — 60 + 675 + 1110 + 600 + 60 = **2505 s, about forty-two minutes**, after which Loom is
+stopped and R13's message is on the screen. That is the number this spec now claims, in place of
+sixteen minutes it could not enforce. It is a sum of every deadline hitting its limit at once, which
+nobody expects to see; what it is *for* is that it is finite.
+
+**And the four things that remain unbounded are named rather than covered by that sum.**
+`record_deployed`'s `printf`, `mv` and `sync -f` are not under a `timeout`: putting one there would
+leave a 41-byte write in an unknown state, which is the one thing worse than waiting, and a
+filesystem that cannot flush 41 bytes is a box whose answer is R2's message and not a deadline.
+`gzip`'s write of the dump is bounded only in as much as `pg_dump` is: a write blocking on a full
+filesystem can hang the pipeline, and §14.3's disk risk is where that lives. The local filesystem
+and `git` work — `mktemp`, `install -d`, `cmp` and `restore_prev`'s
+`git show "$PREV_SHA:deploy/docker-compose.yml"` — is unbounded for the same reason: a few kilobytes
+on a local disk, and a box where those hang has a problem no deadline answers. And the whole of the
+pre-quiesce phase — the fetch, the Caddy validation, the build — is deliberately unbounded, because
+Loom is serving throughout it and no outage ceiling depends on it. **Downtime of seconds per update
+is accepted; zero downtime is not promised.** The build, which is the minute-or-two part of an
+update, is on the other side of this line on purpose: it finishes while Loom is still serving.
 
 **8. The backup.** With Loom already stopped and immediately before the migration, and precise about
 what "nothing to back up" means. Three cases, decided in this order, because conflating the second
@@ -1738,9 +1905,12 @@ is not: a stopped container over a populated volume gives the same empty answer,
 would then start Postgres through `depends_on` and migrate that populated volume with no dump behind
 it. The volume, not the container, is the thing that tells you whether data exists.
 
-**The wait is bounded.** Sixty polls a second apart: the healthcheck of §4.2 is `pg_isready` every
-5 s with 20 retries, and a Postgres that starts over an existing volume is healthy in a few seconds,
-so a minute is generous without being a hang. An `unhealthy` verdict, or a container that has exited
+**The wait is bounded, and since round 8's F1 it is bounded by a clock rather than by a count.**
+`PG_DEADLINE=$((SECONDS + 60))` and a `while` on `SECONDS`, where the previous draft counted sixty
+iterations of a poll whose own `docker inspect` had no deadline — sixty unbounded calls are not a
+minute. The healthcheck of §4.2 is `pg_isready` every 5 s with 20 retries, and a Postgres that
+starts over an existing volume is healthy in a few seconds, so a minute is generous without being a
+hang. An `unhealthy` verdict, or a container that has exited
 or is not there at all, **fails immediately** rather than waiting the minute out. A timeout exits
 non-zero after printing the last fifty lines of Postgres's log **through `redact_logs`**, as every
 log this script prints now goes (F1). On every one of those paths the
@@ -1765,6 +1935,36 @@ temporary name, `cleanup` removes the partial file — the earlier draft's redir
 final `.sql.gz` *before* the pipeline ran, so a failure left a truncated file whose name says
 "backup" behind. The dot prefix keeps a partial file out of a `ls ~/backups/loom` glance, and
 clearing `TMP` after the `mv` stops `cleanup` deleting the finished dump. The path is printed.
+
+**And the dump is a managed lifecycle under a deadline, which is round 8's F1 at its sharpest.**
+The previous draft ran `docker compose -p loom exec -T postgres pg_dump …` with no bound at all,
+and F1 walked the consequence: another session holding a conflicting lock, or an accepted connection
+that then stalls on I/O, and the command never returns. **The `EXIT` handler is not a timeout** — it
+only runs when the script exits, and a script blocked in `pg_dump` has not exited, so Loom stays
+stopped, `/run/lock/loom-live-update.lock` stays held, every request is a 502 and every later update
+is told only that another update is running. There is no trap for that, because there is no exit.
+Three lines answer it:
+
+- **`timeout --signal=TERM --kill-after=15 300`** around the client. Five minutes is many times this
+  database's dump and short enough that a human is reading a message inside the same coffee. `TERM`
+  first so the client can close its connection, `KILL` 15 s later so a client ignoring it still
+  goes.
+- **Killing the client is not killing the dump, so the server side is killed too.** `docker compose
+  exec` runs `pg_dump` **inside the Postgres container**; killing the local client leaves that
+  process running, holding a transaction and a snapshot on the live database while the script goes
+  on to migrate it. So on 124 or 137 the script runs `dk compose -p loom exec -T postgres pkill
+  -TERM -f pg_dump` — itself bounded, like every other `dk` — before it does anything else, and
+  says so in its message. A `pkill` that matches nothing is normal (the dump may have died with its
+  client) and prints a note rather than failing: what matters is that no run reaches the migrator
+  with a dump still open behind it. The `pkill` is **busybox's**, which is what `postgres:17-alpine`
+  ships; the `|| echo NOTE` is there so that an image without it produces a note rather than a
+  second failure mode — the run stops either way, and a surviving dump is then something a human was
+  told about rather than something nobody knows.
+- **A failed dump is the existing recovery and nothing new.** The `exit 1` lands in the one exit
+  handler with `MIGRATE_STATE` still `not-attempted` and `CREATED` still 0, which is **R6**: the
+  previous deployment is restored — by the recorded image id, and proved by the loopback check
+  (round 8's F3) — and the run exits non-zero. §11.7 has a case for exactly this: a dump that blocks
+  on a lock, the `pkill`, and the handler restoring Loom.
 
 **9. The migration: a named one-off under a bounded timeout — and that is F5.** With nothing pending
 the migrator is not run at all: the banner prints why and `MIGRATE_STATE` stays `not-needed`, so the
@@ -1885,20 +2085,45 @@ client's acknowledgement, or the migrator finishes and then dies closing its poo
 the process exits non-zero over a database that is at the new schema. So the script stops asserting
 and starts asking.
 
-**10. The container is created, which is not the same as the quiesce ending — and that is round 7's
-F3.** `CREATED=1` is set **first**, then `docker compose -p loom up -d loom` creates the container
-from `loom-live:<short SHA>` and runs the `migrate` gate again (§4.2). The banner writes no record
-and changes no `MIGRATE_STATE`. Both of those moved to banner 11.
+**10. The target is started and proved by one helper, and these two banners are now one operation
+in two halves — round 7's F3 and round 8's F2.** The banner is a single call,
+`start_target_and_prove "$LOOM_IMAGE_TAG"`, which arms `CREATED`, runs
+`docker compose -p loom up -d --no-build loom` under a 120 s bound (the image was built in banner 5,
+so there is nothing to build; the `migrate` gate of §4.2 still runs, which is the 120 rather than
+the 60 every other `dk` call gets), waits for the loopback answer, writes the record, sets `HEALTHY`
+and removes the intent record. The same helper is what R7, R11 and the reconciliation's case (b)
+call, so the four paths that start a target cannot disagree about what "started" means. Banner 11 is
+then nothing but the verdict.
+
+**Why one helper and not four call sites — F2, in one walk-through.** Start with A stopped during an
+update to B. B's migration commits, the acknowledgement is lost or the host loses power, and the
+next invocation reconciles: status proves every recorded migration applied, so case (b) runs. In the
+previous draft case (b) and R11 each ran `up -d --no-build loom` and **removed `.update-state` the
+moment compose returned 0**. If B has a startup regression, compose returns 0 having created a
+container whose Node process then exits, and the script printed that B was started and deleted the
+only record that an update was ever unfinished — while every human and the reviewer's connector got
+a 502, and the old image could not safely be started either, because the schema is B's. The record
+is the only thing that would have told the *next* run to look. So the removal moved inside the
+helper, behind two facts: the loopback answer, and a durable `.deployed-sha`. And when the target
+does not answer after a committed migration, the helper returns 1 with the record **kept** and the
+caller prints R5's `LOOM IS DOWN`, which is the one honest thing to say there.
 
 **`CREATED=1` before the command, for the same reason `QUIESCED=1` is.** `up -d` can create the
 container and still exit non-zero, and a flag set only on success would leave the recovery believing
-no new container exists while one does. Armed first, the recovery's answer is the same either way,
-because `restore_prev` **asks** rather than assumes: it reads
-`docker inspect --format '{{.Config.Image}}' loom-loom-1` and only treats that name as the target's
-container when its configured image is `loom-live:<the commit being deployed>` **and** the commit
-being deployed is not the deployed one — the second condition is what keeps a no-change rerun, where
-the two SHAs are equal and the name legitimately belongs to the deployment that is already there,
-from having its own container removed.
+no new container exists while one does. It is armed inside the helper, on the line above the `up`.
+Armed first, the recovery's answer is the same either way, because `restore_prev` **asks** rather
+than assumes — and since round 8's F3 what it asks is the only question with a certain answer:
+`docker inspect --format '{{.Image}}' loom-loom-1`, compared with the recorded image **id**. The
+previous draft compared `{{.Config.Image}}` with `loom-live:<commit being deployed>` and additionally
+required the two SHAs to differ, which is a tag and a name deciding the identity of an object. F3's
+walk-through: commit S is serving from image id I1; before a no-change rerun root pulls a newer
+`node:24-alpine`, so building S again produces **I2** under the same `loom-live:S` tag; banner 10
+replaces the container with one built from I2, which never serves; and `restore_prev` — seeing
+`LOOM_IMAGE_TAG == PREV_SHA` — declined to treat the name as the target's, ran `docker start
+loom-loom-1`, started **I2** again, removed the intent record and printed that the previous
+deployment was restored. Both records said S and neither was wrong; the running code was never I1.
+Comparing ids has no such gap: equal means this object *is* the previous deployment, and anything
+else — a different id, or no container at all — means it must be reconstructed from `PREV_IMAGE`.
 
 **`up -d loom` REPLACES `loom-loom-1`, and that is the fact the restore is built around.** Compose
 identifies its service's container by the project and service **labels**, not by name: when the
@@ -1915,9 +2140,10 @@ container object the quiesce stopped no longer exists, and `docker start loom-lo
   from the finding's letter, with its reason; the property F3 asked for is delivered by the next
   bullet instead.
 - **So the restore is a faithful reconstruction, from the two facts banner 3 captured plus the
-  deployed commit's own compose file.** `restore_prev` removes the failed new container, retags the
-  recorded image **id** as `loom-live:$PREV_SHA` — undoing any tag movement a same-commit rebuild
-  caused — extracts that commit's compose definition with
+  deployed commit's own compose file.** `restore_prev` removes whatever container holds the
+  canonical name when its image id is not the recorded one, retags the recorded image **id** as
+  `loom-live:$PREV_SHA` — undoing any tag movement a same-commit rebuild caused — extracts that
+  commit's compose definition with
   `git show "$PREV_SHA:deploy/docker-compose.yml"`, and brings `loom` up from **that** file with
   `--project-directory /root/git/Loom/deploy` and `--env-file /root/git/Loom/deploy/.env`, because
   `-f` alone moves neither the project directory the file's relative paths resolve against nor
@@ -1925,43 +2151,64 @@ container object the quiesce stopped no longer exists, and `docker start loom-lo
   deployment that was running — a new container object, which the printed warning says in as many
   words. That is strictly better than the previous last resort, which combined the old image with the
   **new** commit's definition, and it is why that warning no longer has to tell the operator to check
-  whether the command and environment are even right.
+  whether the command and environment are even right. **And since round 8's F3 the reconstruction
+  proves itself before it clears anything**: it runs the same bounded loopback probe the normal path
+  does, and only an answering container gets `.update-state` removed and the "restored" line
+  printed. A reconstruction that does not answer prints that Loom is DOWN and leaves the record for
+  the next run, because "I recreated a container" is the same empty claim about the old image that
+  F2 refused about the new one.
 
 **Why no record is written here.** The previous draft wrote `.deployed-sha` the instant `up -d loom`
 returned, on the nothing-pending path, and called that "the first instant at which B is genuinely
 what is serving". It is not: `up -d` proves the container was created, and F3's walk-through is what
 that buys — B has a startup regression, the container is created, the record says B, the loopback
 check fails, and the recovery had already been disarmed. So on the nothing-pending path the record
-moves to banner 11, **after** the loopback answer, and the invariant it keeps is the stronger one:
+moves into banner 10's helper, **after** the loopback answer, and the invariant it keeps is the stronger one:
 at no moment does `.deployed-sha` name a commit that has not answered a request. The window between
-banner 10 and banner 11 is covered twice — by the recovery, whose answer there is R4's restore, and,
+the `up` and the loopback answer is covered twice — by the recovery, whose answer there is R4's
+restore, and,
 against an untrappable kill, by `.update-state` (banner 7). **With migrations pending nothing
 changes:** the record is still written the instant the migrator exits 0 (banner 9), because the schema
 then requires B and R5 and R7 must aim at B from that moment on.
 
-**11. The loopback health check, and the records only a healthy target may write.** `curl -fsS
-http://127.0.0.1:3100/api/guidelines`, retried up to 30
-times at one second apart; exhausting the retries **fails the script** after printing the last fifty
-lines of Loom's log. `/api/guidelines` rather than `/health`: `/health` answers `{"ok":true}` from the
+**11. The verdict, and the records only a healthy target may write.** The check itself is inside the
+helper: `prove_url "$LOCAL_URL" 60 1`, which is `curl -fsS --connect-timeout 5 --max-time 20
+http://127.0.0.1:3100/api/guidelines` once a second until an absolute 60-second deadline —
+**round 8's F1 changed both halves of that**. The bound was 30 iterations with no per-call deadline,
+so a server that accepts the connection and then blocks on Postgres hung the first iteration and
+every "30 s" with it; and 60 s rather than 30 because the per-call `--max-time 20` can now spend
+part of the budget on a call that goes nowhere. Exhausting the deadline **fails the script** after
+printing the last fifty lines of Loom's log. `/api/guidelines` rather than `/health`: `/health` answers `{"ok":true}` from the
 HTTP layer alone and would go green on a server that cannot reach its database, whereas
 `/api/guidelines` reads `settings` through core, so a 200 proves HTTP, the database connection and the
 migrated schema in one request. It needs no credential
 ([`routes/guidelines.ts:8`](../../../src/server/src/routes/guidelines.ts)), so the check carries no
-secret. 30 seconds because a cold container has to connect a pool, run `ensureLobby` and bind. This
+secret. A minute because a cold container has to connect a pool, run `ensureLobby` and bind. This
 check comes **before** the Caddy install so that the site file is never installed in front of an
 application that is not answering.
 
-**And this banner is where the deployment becomes a fact — round 7's F3.** Three things happen in
-this order, once the check has passed and never before it: on the nothing-pending path
-`record_deployed "$LOOM_IMAGE_TAG"` writes the new commit (a failure there is `record-failed`,
-exactly as in banner 9); then `HEALTHY=1`, which is **the only thing in the script that disarms the
-recovery**; then `rm -f "$STATE"` removes the intent record, because the target is up, answering and
-recorded and there is nothing left for a later run to reconcile. The order matters in one direction
-only: the record must be durable before the recovery is disarmed, so that a crash after the disarm
-cannot leave a healthy target that nothing names. What this banner no longer does is set
-`MIGRATE_STATE=succeeded`: that assignment existed only to steer a recovery that `HEALTHY=1` now ends
-outright, and a state variable kept for a branch that can no longer be reached is a state variable
-that will mislead somebody.
+**And this is where the deployment becomes a fact — round 7's F3, now inside the helper.** Three
+things happen in this order, once the check has passed and never before it:
+`record_deployed "$tag"` writes the commit (a failure there is `record-failed`, exactly as in
+banner 9); then `HEALTHY=1`, which is **the only thing in the script that disarms the recovery**;
+then `rm -f "$STATE"` removes the intent record, because the target is up, answering and recorded
+and there is nothing left for a later run to reconcile. The order matters in one direction only: the
+record must be durable before the recovery is disarmed, so that a crash after the disarm cannot
+leave a healthy target that nothing names. The record is written on **every** path through the
+helper and not only the nothing-pending one, which is a simplification round 8's F2 allows: with a
+migration the value was already written in banner 9 and is the same short SHA, so writing it again
+is a rewrite of identical bytes, and one unconditional write is easier to check than a conditional
+one. What this banner no longer does is set `MIGRATE_STATE=succeeded`: that assignment existed only
+to steer a recovery that `HEALTHY=1` now ends outright, and a state variable kept for a branch that
+can no longer be reached is a state variable that will mislead somebody.
+
+**What banner 11 itself contains is the verdict, and the reason it is separate.** The helper's three
+return values are three different failures and the caller has to distinguish them: **2** means the
+target is answering but `.deployed-sha` could not be written, which is `record-failed` and R2's
+message from the handler; **1** means created and never answering, which is R4 or R5 according to
+whether a migration committed; **0** is the deployment. So the banner prints the `record-failed`
+line for 2 and exits 1 in either failure, and the classification is left where it belongs, in the
+one exit handler.
 
 **12. The site block, installed atomically, then the reload.** `cmp` first because that is what makes
 the step idempotent, and because a reload restarts certificate management — cheap, but not something
@@ -1983,18 +2230,22 @@ now. The persisted file is written **last**, after Loom is already answering, be
 one artefact that outlives the run: a bad one sits on disk waiting for the next container restart to
 take the shop down with it.
 
-**13. The public check, and the record of what was proved.** `curl -fsS
-https://loom.3dbox.dk/api/guidelines`, retried up to 10 times at three seconds apart; exhausting the
-retries **fails the script**. Skipped, with a printed line, when `--bootstrap` was given.
+**13. The public check, and the record of what was proved.** `prove_url "$PUBLIC_URL" 120 3` — the
+same one `curl` as everywhere else, `--connect-timeout 5 --max-time 20` a call, three seconds apart,
+under an absolute 120-second deadline; exhausting it **fails the script**. 120 rather than the
+previous draft's nominal 30 because this call crosses DNS, TLS and the shop's Caddy, each of which
+can be slow for reasons that have nothing to do with Loom, and because round 8's F1 made the
+per-call bound real: a public hostname that accepts a connection and stalls no longer hangs the run.
+Skipped, with a printed line, when `--bootstrap` was given.
 
 **This writes `.verified-sha`, and it is the only thing that does.** `deploy/.verified-sha` means
 "this commit's image was served and answered over the public hostname". It is the public proof: §9's
 done-checks read it, a human reads it to see how far the last deployment got, and **no mechanism in
 this spec reads it at all**. `deploy/.deployed-sha`, the record the topology guard and the recovery
-use, was already written in banner 9 or banner 11 — the instant the new image and schema became the
+use, was already written in banner 9 or banner 10's helper — the instant the new image and schema became the
 live pair, proved by the migrator's exit and by the loopback answer respectively — so a public check
 that fails for a reason outside Loom can no longer leave the machinery pointed at a pre-migration
-image. `deploy/.update-state` is gone by then too, removed in banner 11, so a failing public check
+image. `deploy/.update-state` is gone by then too, removed by that helper, so a failing public check
 does not send the next run into a reconciliation either: the deployment is finished, and only its
 public proof is missing. What a failing public check leaves is exactly right in both files:
 `.deployed-sha` names the commit whose image and schema are live, because they are; `.verified-sha`
@@ -2002,7 +2253,7 @@ still names the last commit that answered publicly, because this one did not.
 
 **Why the loopback check is not enough.** A site block can be syntactically perfect, reload cleanly
 and still send every visitor to nothing: `reverse_proxy looom:3000` is a valid directive. Loom keeps
-answering on `127.0.0.1:3100`, so banner 11 goes green while every human and the reviewer get a 502
+answering on `127.0.0.1:3100`, so the loopback check goes green while every human and the reviewer get a 502
 from Caddy. The public check is the only one that exercises DNS, TLS, Caddy's routing, the `web`
 network and the database in one call.
 
@@ -2030,7 +2281,8 @@ R5 is round 6's procedure with its numbers moved.
       so, and `.update-state` is gone. The remaining failures (the Caddy install, the public check)
       are not reasons to touch the container. Nothing else in R2–R14 runs, and the script exits with
       the status it died with. **`CREATED=1` does not get here, and that is round 7's F3:** a created
-      container is not a serving one.
+      container is not a serving one. Since round 8's F2 the flag is set in exactly one place,
+      inside `start_target_and_prove`, after both the loopback answer and the durable record.
   R2. **If `MIGRATE_STATE` is `record-failed`, touch nothing and print why** — the
       `record_failed_message` function in the listing — then return. `.deployed-sha` could not be
       written, so the schema and the image on disk are the new commit's while the record still names
@@ -2049,9 +2301,11 @@ R5 is round 6's procedure with its numbers moved.
       **remove the new container and restore the previous deployment**, then return. This is F3's
       first half: `up -d loom` created a container from the new image, the loopback check never
       answered, and because the schema was never touched the previous image is a valid thing to
-      serve. `restore_prev` does it: it asks which deployment owns the name `loom-loom-1`, removes it
-      when that is the target's container, and brings the recorded previous deployment back — the
-      exact container if one survives, otherwise the reconstruction of R14. The run exits non-zero.
+      serve. `restore_prev` does it, and since round 8's F3 it asks exactly one question: is
+      `loom-loom-1`'s `{{.Image}}` the recorded `PREV_IMAGE`? If it is, that object **is** the
+      previous deployment and `docker start` brings it back; if it is anything else, or absent, the
+      name is removed and the deployment is reconstructed from `PREV_IMAGE` (R14). Either way the
+      restore is believed only once the loopback check has answered. The run exits non-zero.
   R5. **If `CREATED=1` and the migration committed** (`MIGRATE_STATE` is `succeeded`) — **leave the
       container as it is and print that Loom is DOWN**, then return. This is F3's second half and the
       one place the script refuses to restore anything: the schema is the new commit's, so the
@@ -2064,18 +2318,27 @@ R5 is round 6's procedure with its numbers moved.
       come up by itself, and `.update-state` is left for the next run to reconcile. The run exits
       non-zero. Going back *across* the migration needs the dump and a human, which is §13.
   R6. **If `MIGRATE_STATE` is `not-attempted` or `not-needed` and no container was created, restore
-      the previous deployment** — `docker start loom-loom-1`, the exact container the quiesce stopped
-      — and return. No migration ran, `.deployed-sha` still names the deployed commit, so the schema
-      is untouched and the container's own image is the right one by definition. This is the branch a
+      the previous deployment** — `docker start loom-loom-1` when its image id is the recorded one,
+      which is the exact container the quiesce stopped — and return. No migration ran,
+      `.deployed-sha` still names the deployed commit, so the schema
+      is untouched and the container's own image is the right one by definition — **and since round
+      8's F3 that "by definition" is checked rather than assumed**, because the id is the only thing
+      that can distinguish the object the quiesce stopped from one a rebuild produced. This is the
+      branch a
       failed dump, an unhealthy Postgres, a failed `up -d loom` that created nothing or a `set -e`
       death before banner 9 takes, and it is the cheapest correct answer because the container still
       holds the deployed commit's image id, command, environment and networks.
-  R7. **If `MIGRATE_STATE` is `succeeded` and no container was created, start the NEW image** —
-      `docker compose -p loom up -d --no-build loom`, with `LOOM_IMAGE_TAG` still the new commit's
-      short SHA — and return. `.deployed-sha` already names the new commit and the compose definition
-      in the checkout is that same commit's, so image and definition agree. The old image must
-      **not** come back here: the schema has moved past it. This branch exists for a failure in
-      `up -d loom` itself, which it retries in the only form that can be right.
+  R7. **If `MIGRATE_STATE` is `succeeded` and no container was created, start the NEW image and
+      prove it** — `start_target_and_prove "$LOOM_IMAGE_TAG"`, with `LOOM_IMAGE_TAG` still the new
+      commit's short SHA — and return. `.deployed-sha` already names the new commit and the compose
+      definition in the checkout is that same commit's, so image and definition agree. The old image
+      must **not** come back here: the schema has moved past it. This branch exists for a failure in
+      `up -d loom` itself, which it retries in the only form that can be right. **It goes through
+      F2's helper, which is a deviation from round 8's letter and not from its reasoning:** the
+      finding named the normal path, R11 and the reconciliation's case (b) as the three places that
+      equated compose's exit with a serving application, and R7 was the fourth, written the same way
+      by the same hand. Through the helper it either reaches `HEALTHY=1` with a durable record, or
+      falls to R5's `LOOM IS DOWN`, or to R2's message if the record cannot be written.
   R8. **Otherwise `MIGRATE_STATE` is `failed`, and the database is asked what happened** — the same
       `read_status`, into a second temporary file, **under `timeout 120`**. `--check` applies nothing
       (§5.2), so this cannot make the situation worse, and it reconnects, which is the point: the
@@ -2099,13 +2362,17 @@ R5 is round 6's procedure with its numbers moved.
        on disk with nothing needing it.
   R11. **If none of the previously-pending tags is still pending** — `comm -12` is empty — **the
        migration committed and the client did not see it.** So: `record_deployed "$LOOM_IMAGE_TAG"` —
-       and if *that* fails, R2's message, because the same reasoning applies —
-       `docker compose -p loom up -d --no-build loom`, remove `.update-state`, print that the
-       database is at the new SHA and the new image has been started and that a rerun finishes the
-       remaining steps, and exit **non-zero**. Non-zero because the run did not complete — the health
-       checks and the Caddy install never happened — and a rerun is the finish: it will fast-forward
-       nothing, find nothing pending, and carry on to the checks. The instance is whole in the
-       meantime, which is the part that matters.
+       and if *that* fails, R2's message, because the same reasoning applies — then
+       `MIGRATE_STATE=succeeded`, because from that line the schema is the target's and R5 is the
+       only fallback left, and then **`start_target_and_prove "$LOOM_IMAGE_TAG"`**. On 0 it prints
+       that the database is at the new SHA and the new image is up, answering and recorded, and that
+       a rerun finishes the remaining steps; on 1 it prints R5's `LOOM IS DOWN` and **leaves
+       `.update-state` in place**; on 2, R2's message. Either way it exits **non-zero**: the run did
+       not complete — the health checks and the Caddy install never happened — and a rerun is the
+       finish, which will fast-forward nothing, find nothing pending, and carry on to the checks.
+       **The removal of `.update-state` moved into the helper, which is round 8's F2:** the previous
+       draft removed it the moment `up -d` returned, so a target that was created and never served
+       took the only record of an unfinished update with it.
   R12. **If some previously-pending tags are applied and others are still pending, go to R13**, after
        printing both counts. That is a partially-applied schema, which means the one-transaction
        guarantee did not hold, and there is no command a script can be trusted to choose.
@@ -2118,7 +2385,15 @@ R5 is round 6's procedure with its numbers moved.
        recoverable; a Loom serving against a half-migrated schema is not. The message carries
        everything the recovery needs — both records, both candidate commands and the dump's path, or
        `none taken` when there is no dump — so the human does not have to reconstruct the run from
-       this document, and it ends with the one instruction round 7 added: clear
+       this document. **And which of the two candidate commands it prints is decided by the image id,
+       which is round 8's F3.** The draft always printed `docker start loom-loom-1` and always called
+       it "the pre-migration container", which is false from banner 10 onwards and false after any
+       same-SHA rebuild: the message compares `docker inspect --format '{{.Image}}' loom-loom-1` with
+       the recorded `PREV_IMAGE` and prints the simple `docker start` **only** when they are equal,
+       saying so in the same breath; otherwise it prints the full reconstruction — remove the name,
+       retag the recorded id, `git show` that commit's compose file, bring `loom` up from it — and
+       says why the short command would have started something else. It ends with the one instruction
+       round 7 added: clear
        `/root/git/Loom/deploy/.update-state` **last**, once the record and the running container
        agree, because until it is gone the next invocation reconciles instead of deploying.
        **Every command it prints is self-contained, and that is round 6's F6.** The draft printed
@@ -2138,8 +2413,11 @@ R5 is round 6's procedure with its numbers moved.
        `/root/git/Loom/deploy/live-update.sh` for the rerun rather than a bare `live-update.sh`, R5
        names both its log command and its retry absolutely, and nothing else in the script prints an
        instruction at all.
-  R14. **If no previous container survives** — because banner 10's `up -d loom` replaced it, which is
-       the ordinary case from R4 onwards, or because someone ran `docker compose -p loom down` beside
+  R14. **If the canonical container does not hold the recorded image id** — because banner 10's
+       `up -d loom` replaced it, which is the ordinary case from R4 onwards; because a same-SHA
+       rebuild produced a *different* image under the same tag and compose then recreated the
+       container from it, which is round 8's F3 and the case the previous draft got wrong; or because
+       someone ran `docker compose -p loom down` beside
        the script (the case §13's lock bullet already says nothing prevents) — **reconstruct the
        previous deployment from the recorded image id and that commit's own compose definition, with
        a printed warning.** `docker tag "$PREV_IMAGE" "loom-live:$PREV_SHA"` puts the recorded **id**
@@ -2151,9 +2429,12 @@ R5 is round 6's procedure with its numbers moved.
        image with the **new** commit's definition — a combination nobody had ever run, and one that a
        commit which legitimately changed `command:` or `environment:` would make unbootable. Same
        image, same definition, a new container object: the warning says exactly that, and no longer
-       has to ask the operator to check whether the command and the environment are even right. If
-       `PREV_SHA` or `PREV_IMAGE` is empty (the first deployment), if the id is no longer on disk, or
-       if that commit's compose file cannot be read, the script prints that loom is DOWN and must be
+       has to ask the operator to check whether the command and the environment are even right. **And
+       the reconstruction proves itself before anything is cleared** (round 8's F3): the same bounded
+       loopback probe, and only an answering container gets `.update-state` removed. If
+       `PREV_SHA` or `PREV_IMAGE` is empty (the first deployment), if the id is no longer on disk, if
+       that commit's compose file cannot be read, or if the recreated container does not answer, the
+       script prints that loom is DOWN and must be
        deployed by hand, and stops there. R14 is reached through `restore_prev`, so R4, R6 and R10 all
        get it.
 
@@ -2178,7 +2459,9 @@ nothing else, removed by `cleanup`, so the disposable Caddy never sees Spool's `
 other key that file has come to hold.
 
 **And a container's log was the third such place, which is round 6's F1.** The script itself prints no
-secret, but seven of its reads hand on somebody else's output — Postgres's log twice, Loom's log, a
+secret, but every one of its reads hands on somebody else's output — Postgres's log twice, Loom's
+log wherever a container fails to answer (banner 10's helper and both of `restore_prev`'s failure
+paths), a
 reaped one-off's log, and `migrate --check`'s own stdout and stderr in banner 6, in R8 and in banner
 2's reconciliation — and
 Loom's log is not a log this spec controls. `main.ts` prints the Lobby's link, `/w/<43-character secret>`, in full on the boot that
@@ -2334,7 +2617,13 @@ export type MigrationStatus = {
   readonly pending: readonly string[];
 };
 
-export async function migrationStatus(db: Db): Promise<MigrationStatus>;
+/**
+ * What this database has had, validated against the journal. Throws when the two DISAGREE — a
+ * journal whose `when` values are not strictly increasing, or a `__drizzle_migrations` table that
+ * is not an exact prefix of the journal — naming the first mismatch. There is no status to report
+ * in that case, only drift to fix.
+ */
+export async function migrationStatus(db: Db, folder?: string): Promise<MigrationStatus>;
 
 /**
  * Throws if `sql` contains a statement that would escape the single transaction `runMigrations`
@@ -2347,33 +2636,98 @@ export function assertTransactionSafe(sql: string, file: string): void;
 migrations has this database had?" — and two callers need the same answer: the migrate entry and the
 server's boot refusal (§5.3). One implementation, tested once, in the package that owns the schema.
 
-**How it decides, and why it must be this and not a set comparison.** The journal
+**How it decides, and why it is no longer drizzle's own rule — review round 8's F4, accepted in
+full.** The journal
 [`src/core/drizzle/meta/_journal.json`](../../../src/core/drizzle/meta/_journal.json) lists entries
 with a `tag` and a `when` (epoch milliseconds); drizzle's postgres-js migrator records what it has
 applied in the `drizzle` schema's `__drizzle_migrations` table, whose `created_at` column holds that
-same `when`. The migrator's own rule is **"apply every journal entry whose `when` is greater than
-the maximum `created_at` in the table"** — so `migrationStatus` uses exactly that rule, because its
-whole value is agreeing with what `runMigrations` will actually do. A set difference would disagree
-in one case and the disagreement would be silent.
+same `when` and whose `hash` column holds the hash drizzle computed over the migration file.
+The migrator's own rule is **"apply every journal entry whose `when` is greater than
+the maximum `created_at` in the table"**, and the previous draft used exactly that rule on the
+reasoning that agreeing with the migrator is the whole value of the function.
 
-That rule has a consequence worth writing down rather than discovering: a migration authored with a
-`when` **earlier** than one already applied would be reported as applied and never run.
-`drizzle-kit generate` stamps `Date.now()`, so it cannot happen in normal use; it could only arise
-from a hand-edited journal or a merge that reordered one, and it is the migrator's behaviour, not
-something this function may paper over.
+**That reasoning is wrong for a repository with long-lived branches, and F4 walked the cost.** A
+branch generates migration X at time 150. Meanwhile Y is generated at time 200, merged and deployed,
+so the table's maximum `created_at` is 200. X merges **after** Y and keeps its older stamp —
+`drizzle-kit generate` stamps `Date.now()` at generation, not at merge, and a branch that lives a
+week is a stamp that is a week old. Under the maximum rule X's `when` of 150 is *not* greater than
+200, so it is reported **applied** when it has never run: `live-update.sh` finds nothing pending and
+skips the migrator (§4.5 banner 6), the boot guard of §5.3 sees nothing pending either,
+`/api/guidelines` passes because it touches `settings` and not X's table, the deployment is recorded
+healthy — and the first request that exercises X fails against a schema that does not have it. The
+author of X needed no credential for any of it; root's update process supplied the database one and
+was never told there was anything to tell. The previous draft *noted* this case and called it "the
+migrator's behaviour, not something this function may paper over". Reporting it as applied **is** the
+papering over.
 
-Two details of the read:
+So `migrationStatus` validates instead, and the validation is two properties:
+
+1. **The journal's `when` values are strictly increasing in file order.** Equal or decreasing is
+   drift, and it is caught with no database read at all: it is a property of the repository, so it
+   is the same answer on every machine and it names the two entries that are out of order.
+2. **The table's rows, ordered by `created_at`, are an exact prefix of the journal by
+   `(created_at, hash)`.** There must be no more rows than journal entries, and the row at position
+   *i* must match the journal entry at position *i* in both columns. The applied tags are then the
+   journal's first *k* by position and the pending tags are the rest — **by position, not by
+   comparing timestamps** — and on a clean prefix that is the same set the migrator's own rule
+   selects, because a strictly increasing journal makes "greater than the maximum `created_at`"
+   and "after the prefix" the same line.
+
+**Anything else is a drift state, and a drift state has no status.** `migrationStatus` **throws**,
+naming the first mismatch — the position, the journal entry's tag and `when`, and what the row at
+that position actually held. Four shapes reach it: a backdated entry appended after an applied newer
+one (property 1), a missing row so that the rows are not a prefix, a duplicate `when` (property 1
+again, since equality is not increasing), and a row whose `hash` is not the journal file's. Both
+forms of the migrate entry exit **1** on it (§5.2), so `live-update.sh` stops at banner 6 —
+**before the quiesce, with Loom still serving, nothing dumped and nothing migrated** — which is the
+same gate `assertTransactionSafe` already has and for the same reason: a repository defect must not
+become an outage.
+
+**And `runMigrations` refuses on drift too, which F4 asks and this spec answers yes.** It calls
+`migrationStatus` over the same folder before it calls drizzle's `migrate()`, exactly as it already
+calls `assertTransactionSafe` over the pending set first. Without that, the honest note below would
+be the whole story: **drizzle's own migrator still applies by its own rule**, so a drifted journal
+handed straight to `migrate()` would skip X silently whatever this function thinks. Loom's callers
+never hand it straight to `migrate()` — `runMigrations` is the only caller in this repository
+(`main.ts`, the migrate entry, `freshDb()`), and it now refuses first. What that does not buy, and
+the note stands: a developer running `drizzle-kit migrate` or `migrate()` by hand bypasses it, and
+nothing in this slice can stop that.
+
+**What the developer does on drift, because a refusal with no remedy is a trap.** The fix is to
+**regenerate the migration so that its `when` is the newest in the journal** — delete the file and
+its journal entry, re-run `drizzle-kit generate` on the merged schema, commit that — which is the
+one operation that makes the journal strictly increasing again without touching any database. A
+hand-edited `when` is the other way and is not recommended: the file's hash is recorded with the
+stamp, so editing the journal after a deployment has applied the file produces the hash-mismatch
+drift instead. §10 puts that in CONTRIBUTING's `## Migrations` section, beside the transaction rule,
+because it binds every future migration and a rule that lives only in this document is a rule the
+next author will not read.
+
+Three details of the read:
+
+- **The hash comes from drizzle's own reader, not from a digest reimplemented here.** The journal
+  file carries `tag` and `when` but no hash; drizzle computes the hash when it reads the migration
+  files. So `migrationStatus` takes the hashes from **`readMigrationFiles` in
+  `drizzle-orm/migrator`** — the same helper `migrate()` is given the output of — matching each
+  entry by its `folderMillis` to the journal's `when`, so the hash this check compares is by
+  construction the hash the migrator would have inserted. A journal entry with no file, or a file
+  with no journal entry, is itself drift. The implementation task confirms that export's shape
+  against `drizzle-orm@0.45.2` and, if it differs there, computes the digest the way that version's
+  migrator does — and either way §11.1 case 4 pins the agreement empirically, by applying the real
+  migrations and reading the rows back rather than by trusting this paragraph.
 
 - The table may not exist on a fresh database. `migrationStatus` asks
   `select to_regclass('drizzle.__drizzle_migrations')` first and treats a null answer as "nothing
   applied", rather than catching SQLSTATE `42P01` from a failed select — a probe that answers is
-  clearer than an exception that has to be classified.
+  clearer than an exception that has to be classified. A null answer is **not** drift: an empty
+  prefix is a prefix.
 - The migrations folder is resolved by **one** exported helper shared with `runMigrations`
   (`migrationsFolder()` in [`src/core/src/db/index.ts`](../../../src/core/src/db/index.ts), pulled
   out of the body it is inlined in today), so the status and the application can never read
-  different folders. `runMigrations` gains it as an **optional second parameter** defaulting to that
-  helper — `runMigrations(db, folder = migrationsFolder())` — which changes no existing call and is
-  what lets §11.1 case 5 apply a folder of deliberately broken migrations.
+  different folders. Both functions take it as an **optional parameter** defaulting to that
+  helper — `runMigrations(db, folder = migrationsFolder())` and
+  `migrationStatus(db, folder = migrationsFolder())` — which changes no existing call and is what
+  lets §11.1 cases 5 to 8 point them at a folder the test wrote.
 
 **`assertTransactionSafe`, and why transaction-safe SQL is now a binding convention rather than a
 caveat.** This is review round 4's F4, accepted in full. Every recovery decision in §4.5 rests on
@@ -2425,7 +2779,7 @@ block (`CREATE`/`DROP INDEX CONCURRENTLY`, `REINDEX … CONCURRENTLY`, `VACUUM`,
 this spec makes on its own (`ALTER TYPE … ADD VALUE`). Round 4 listed a sample of the first group and
 round 5's F6 found the alias it had missed; taking the group whole is what stops that being a
 recurring finding. The optional noise words (`WORK`, `TRANSACTION`) are covered because the match is
-on leading keywords, but they are written out above and tested individually in §11.1 case 7, because
+on leading keywords, but they are written out above and tested individually in §11.1 case 10, because
 "covered because of how the matcher works" is a claim worth pinning to a test.
 
 **How the scan works: one stateful pass, and that is review round 6's F4.** The previous draft
@@ -2506,6 +2860,7 @@ Usage: node dist/migrate.js [--check]
 | `--check`, nothing pending | prints `migrations: 5 applied, nothing to apply` | 0 |
 | cannot connect, cannot read the journal, or a migration throws | the error through `logError` (which redacts, and never prints a driver error's `query` or `parameters` — those carry the password from the URL) | 1 |
 | **either form, a pending file that `assertTransactionSafe` rejects** | the refusal through `logError`, naming the file, the keyword and the statement's first line; **nothing is applied** | **1** |
+| **either form, the journal and the table disagree** (a `when` that is not strictly increasing, or rows that are not an exact `(created_at, hash)` prefix) | `migrationStatus`'s drift message through `logError`, naming the first mismatch; **nothing is applied, and no status is printed** | **1** |
 | any argument that is not `--check` | prints the usage line to stderr | 2 |
 
 **The exit-code convention, stated because a script depends on it.** `0` means "I did what you
@@ -2516,12 +2871,18 @@ exit code, which is what `live-update.sh` step 8 does, or it starts the server w
 `LOOM_MIGRATE_ON_BOOT=false` and lets the refusal of §5.3 be the gate. `--check` is for a human who
 wants to know what the next update will touch before running it.
 
-**The one carve-out in that convention, and it is deliberate: a rejected file makes `--check` exit
-1.** A transaction-unsafe migration is not a *pending-migration state* that `--check` is reporting
+**The two carve-outs in that convention, and both are deliberate: a rejected file and a drifted
+journal make `--check` exit 1.** A transaction-unsafe migration is not a *pending-migration state*
+that `--check` is reporting
 on — it is a defect in the repository, and `1` is this entry's code for "I failed". Making it exit 0
 with a warning would leave `live-update.sh` step 5 with nothing to gate on, which is the whole
 reason the check is run there: an offending file must stop the update **before** the quiesce, with
 Loom still serving and nothing dumped. So the refusal is a failure in both forms of the command.
+**Drift is the second carve-out, and it is the same argument** (round 8's F4): a journal whose `when`
+values are not strictly increasing, or a table that is not an exact prefix of it, is a defect in the
+repository and not a status. There is nothing truthful to print — "5 applied, nothing to apply" would
+be the lie the finding is about — so both forms print the first mismatch and exit 1, and banner 6
+stops the update there.
 
 **And `--check`'s output shape is now a contract, because `live-update.sh` parses it** (§4.5's `pending_tags`,
 R8 and banner 2's reconciliation). With something pending, stdout is: the `migrations: N applied`
@@ -2529,7 +2890,7 @@ line, then a line that is
 **exactly** `pending:`, then the pending tags, **one bare tag per line, nothing after them**. With
 nothing pending, stdout is the single `migrations: N applied, nothing to apply` line and no
 `pending:` line at all. That is what makes `sed -n '/^pending:$/,$p'` a sound extraction, and
-§11.2 case 10 asserts the shape — and, since round 5's F2, the extraction itself over both an empty
+§11.2 case 13 asserts the shape — and, since round 5's F2, the extraction itself over both an empty
 and a non-empty result — rather than only the words, because the reconciliation of §4.5's recovery
 procedure is only as good as this listing.
 
@@ -2568,6 +2929,10 @@ anything is pending:
 
 thrown from `main()`, so the existing `main().catch` path logs it through `logError` and exits 1 —
 no new failure mechanism. With nothing pending it skips `runMigrations` entirely and boots normally.
+**And a drifted journal refuses the boot through the same path**, because `migrationStatus` throws
+rather than answering (§5.1, round 8's F4): the server does not start against a database whose
+history it cannot characterise, whichever way `LOOM_MIGRATE_ON_BOOT` is set — with it `true`,
+`runMigrations` performs the same check before it applies anything.
 
 **Why refuse rather than serve.** A server running against a schema older than its own code does not
 fail once, visibly; it fails per request, as a 500 from every query touching a column that is not
@@ -2846,8 +3211,9 @@ applied at the **reader**, so that it holds for a line that was printed on purpo
 
 The `/w/` form is replaced first, so a Lobby link reads `/w/<redacted>` and a human can still see
 *which kind* of value was removed; the second expression catches a bare agent key or keeper token
-wherever a log happens to carry one. **Every log this slice reads goes through it**: the seven reads in
-`live-update.sh` — Postgres's log twice (§4.5 banner 8), Loom's log (banner 11), a reaped one-off's
+wherever a log happens to carry one. **Every log this slice reads goes through it**: every read in
+`live-update.sh` — Postgres's log twice (§4.5 banner 8), Loom's log wherever a container fails to
+answer (banner 10's helper and `restore_prev`'s two failure paths), a reaped one-off's
 log inside `reap_oneoff`, and `migrate --check`'s own output in banner 6, in R8 and in banner 2's
 reconciliation — and the runbook's two, §9 step
 5's first-deployment diagnostics and §9 step 7's certificate watch. The two logs that are **not read
@@ -2993,7 +3359,7 @@ In practice the session runs these itself in the worktree; Paw's own typing is s
        pnpm -C D:\git\Loom -r build
        foreach ($f in 'docker-compose.yml','loom.caddy','.env.example','live-update.sh',
                        'live-update.ps1','live-update.cmd','weave-guidelines.md','reviewer-brief.md',
-                       'prepare-chatgpt-paste.ps1','connector-url-to-clipboard.ps1') {
+                       'prepare-chatgpt-paste.ps1','connector-url-to-clipboard.ps1','test\run.sh') {
          if (-not (Test-Path "D:\git\Loom\deploy\$f")) { throw "missing deploy\$f" }
        }
 
@@ -3006,7 +3372,8 @@ In practice the session runs these itself in the worktree; Paw's own typing is s
    same commit rather than assumed to be. `install --frozen-lockfile` before `-r build` because the
    CLI is invoked as `node src\cli\bin\loom.js` against built output, and a stale `dist/` is the
    quietest way for step 9 to fail with something that looks like a server problem. The `Test-Path`
-   loop checks all **ten** files of §4 by name, before anything on the server is created, because
+   loop checks all **ten** files of §4 by name, plus the harness's entry point `test\run.sh`, before
+   anything on the server is created, because
    every one of them is either read or run from this checkout later in this runbook.
    *Done when:* the porcelain check printed nothing, `git -C D:\git\Loom rev-parse HEAD` equals
    `git -C D:\git\Loom rev-parse origin/main`, both `pnpm` commands exited 0, and the loop threw
@@ -3125,7 +3492,8 @@ In practice the session runs these itself in the worktree; Paw's own typing is s
    `git -C ~/git/Loom rev-parse HEAD` equals **`$deploySha` from step 0.2** — the same commit Paw's
    PC is on, checked rather than assumed —
    `git -C ~/git/Loom status --porcelain --untracked-files=all` is empty, and
-   `ls ~/git/Loom/deploy` lists all **ten** files (§4) — `weave-guidelines.md` among them, since
+   `ls ~/git/Loom/deploy` lists all **ten** files (§4) and the `test/` directory beside them —
+   `weave-guidelines.md` among them, since
    step 11 reads it, and `reviewer-brief.md` with the two `.ps1` helpers, since §9 step 12 runs
    them from Paw's own checkout and a server that is missing them means the merge is not what the
    runbook expects — with `live-update.sh` executable.
@@ -3181,10 +3549,10 @@ In practice the session runs these itself in the worktree; Paw's own typing is s
    records the pending set (`--check` says nothing pending), **stops `loom`**, takes a dump (the
    volume exists and Postgres is up and bound to `loom_pgdata`), skips the migrator because nothing
    is pending, creates the new container — **and writes `deploy/.deployed-sha` only after the
-   loopback check has answered**, because a created container is not a serving one (§4.5 banner 11,
+   loopback check has answered**, because a created container is not a serving one (§4.5 banner 10,
    review round 7's F3, over round 5's F3) — and then installs `loom.caddy` and reloads Caddy. It
    also writes `deploy/.update-state` before the quiesce and removes it again in the same breath as
-   the record (§4.5 banners 7 and 11). `--bootstrap` is required here and **only** here: there
+   the record (§4.5 banners 7 and 10). `--bootstrap` is required here and **only** here: there
    is no A record yet, so the public check of §4.5 banner 13 cannot pass — and because that check is
    what writes `deploy/.verified-sha`, this run deliberately leaves **no** verified-SHA record and
    step 8's normal rerun is what first creates it.
@@ -3479,22 +3847,26 @@ that ships the code without it leaves the repository describing a world that no 
 | [DOGFOOD.md](../../DOGFOOD.md) §4 | One line under the "brief to paste" block: the same text is committed as `deploy/reviewer-brief.md`, which is what `deploy/prepare-chatgpt-paste.ps1` reads (§4.7), and the two must stay byte-identical |
 | [HANDBOOK.md](../../HANDBOOK.md) §6 "current state" | The live instance, its hostname, and where its credentials' file paths are |
 | [HANDBOOK.md](../../HANDBOOK.md) §3 step 13 | Merge gains its last action: run `deploy\live-update.cmd` and report what it printed — including, in one clause, that the update stops Loom for a few seconds while it dumps and migrates, so a reviewer mid-poll may see a 502 and that is expected (§4.5 banner 7) |
-| [HANDBOOK.md](../../HANDBOOK.md) §5 traps | Forty-two new ones, all paid for in writing this spec and in answering its seven review rounds: `docker compose up <service>` **returns 0 even when the service failed**, and `--exit-code-from` implies `--abort-on-container-exit`, which would stop the live database — use `docker compose run --rm`; **HSTS `includeSubDomains` does not cover a sibling host**, so `loom.3dbox.dk` needs its own; **a compose project is named after its directory unless the file says otherwise** — two `deploy/` directories are two projects called `deploy`, so put `name:` in the file; **and `name:` is not enough** — `COMPOSE_PROJECT_NAME` outranks it, so pass `-p <project>` on every command and refuse to run with that variable set; **`git pull --ff-only` does not mean "the checkout equals origin"** — it succeeds over a local commit the remote has not passed and leaves a dirty tracked file alone, so assert `HEAD == refs/remotes/origin/main` on a clean tree instead; **a stopped Postgres container is not an empty database** — ask the volume, or a migration runs with no dump behind it; **a checkout whose `origin` is a local bundle cannot see a commit merged on GitHub** — a `pull` says "already up to date" and the prerequisite is silently not deployed, so re-bundle and `scp` it; **a backup is worth only the window between it and the change it insures against** — dump immediately before the migration, not before a two-minute build; **"wait until it is healthy" with no bound is a hang holding a lock** — poll with a timeout, fail fast on `unhealthy`, and print the logs; **`--env-file` hands a container every line of the file**, so build a two-variable temporary file instead of passing a neighbour's whole environment; **`-f` does not move compose's `.env` lookup** — it follows the caller's directory, so a `-f`-only command run from elsewhere silently takes every default in the file, and `--env-file` belongs beside every `-p`; **a guard placed after the mutation it guards is disarmed by a retry** — compare against the deployed state *before* fast-forwarding, and persist what is deployed; **a dump taken while the application still accepts writes is a snapshot with a live tail** — stop the application, or stop claiming the restore loses nothing; **a single mutable image tag means there is no previous image** — tag per commit if a failure has to be able to go back; **`grep | cut` under `set -euo pipefail` defeats the `${VAR:-default}` on the next line** — `grep` exits 1 on no match, `pipefail` propagates it and `set -e` kills the script before the default is read, so use `sed -n 's/^KEY=//p'`, which exits 0; **`git fetch origin` does not move the local `main`** — a bundle cut afterwards advertises the stale branch while containing the new commit, so `switch` and `pull --ff-only` before bundling; **an instance keeper is not a Lobby participant** — `loom lobby` needs a stored Lobby token or an agent key, so join before reading, and read as the keeper because only a keeper is told the Lobby's secret; **a non-zero exit from a database client does not prove the transaction rolled back** — PostgreSQL can commit and the connection can drop before the client hears it, so record the pending set before migrating and *ask* afterwards instead of asserting; **one record cannot hold two facts** — "which commit's image and schema are active" and "which commit was proved over the public hostname" have different lifetimes, and a single file holding both will aim a recovery at an image the schema has moved past; **an old image inside a new compose definition is not the old deployment** — `stop` keeps the container with its image id, command, environment and networks, so `docker start` it rather than re-`up`-ing a tag through a file that has changed; **a guarantee a future merge can void from inside a file is not a guarantee** — one `COMMIT` or `CREATE INDEX CONCURRENTLY` in a migration ends the transaction everything else relies on, so enforce it in code and test it over the real files; **an A record that resolves is not a complete DNS answer** — a stale or wildcard `AAAA` sends ACME's validator and every IPv6 client elsewhere while the A check passes, and a `CNAME` beside an `A` is invalid outright; **a runbook that reads files out of a local checkout has to say which commit that checkout is on**, or it fails three-quarters of the way through on a missing helper; **running a deployment's steps by hand is not running the deployment** — exercise the wrapper the merge will actually use, on the first day, or its first real use is the test; **`docker compose run <service> <args>` replaces the service's `command:`** rather than appending to it, so a status flag on its own becomes the program the container tries to execute — name the whole command; **a shell pipeline that ends in `grep` fails on the empty result** — `grep -v '^$'` exits 1 with nothing to filter, and under `pipefail` the most ordinary outcome there is kills the script, so delete blank lines with `sed` instead; **`cmd | grep -q` under `pipefail` can report 141** — `grep -q` exits on the first match, the producer dies of `SIGPIPE`, and a guard written as `producer | grep -q … && refuse` therefore waves the very case through that it was written to catch, **and collecting the output into a variable is not the fix** — `printf '%s\n' "$VAR" | grep -q …` has the same defect with `printf` as the victim, so the pipe itself has to go: `grep -q … <<<"$VAR"`, or a variable and a `case`, and then the *whole* file audited for the shape, because one instance is never the population; **`docker compose run` allocates a pseudo-TTY when its stdin is a terminal**, so output a script parses arrives CR-terminated from an interactive SSH shell and matches nothing — pass `-T` on anything whose output is read, and keep its stderr out of the file being parsed; **a record written before the thing it records is live is a record that lies** — with no migration to apply, the new commit is only deployed once its container is actually up, so write the record after the start, not at the quiesce; **a trap armed half-way down a script reads variables the script may not have assigned yet** — under `set -u` the handler dies instead of recovering, so initialise every input first and install one handler at the top, and clear `errexit` before classifying inside it; **`timeout` bounds the client, not the container** — a killed `docker compose run` leaves the one-off running with its transaction open, so name the container, kill it, wait for it under a bound and reap it before asking the database anything, and bound that question too — **and reap on every non-success, not only on the timeout's exit codes**, because a client that loses its connection to the daemon exits 1 while the container keeps running, and a reconciliation run alongside a live migrator can restart the old image just in time for the migrator to commit the new schema under it; **`ABORT` is PostgreSQL's alias for `ROLLBACK`** — a guard that lists the transaction-control statements by sample rather than taking the group whole will miss one, and one is enough; **`docker compose ps` omits stopped containers** — a completed one-shot is invisible without `--all`, so a correct startup can fail a done-check written against plain `ps`; **a line an application prints on purpose is still a credential when somebody else reads the log** — Loom's first boot prints the Lobby's secret link by design, so a session running `docker compose logs` over SSH puts it in the controller's transcript: redact at the **reader** as well as at the writer, and let a done-check match on the server and print only its verdict; **arm a recovery before the command it recovers from, never after it** — `docker compose stop` can stop the container and still exit non-zero, and a flag set only on success leaves the handler disarmed over a stopped application, so set it first and clear it again only on positive evidence that nothing was stopped; **a comment stripper that does not understand quoting deletes the statement the guard exists to find** — `VALUES ('--')` turns the rest of the line into a comment for any scanner that strips comments as a phase, so a SQL guard must be one stateful pass in which a comment is only a comment in the code state; **a printed recovery command is only a recovery if it works in the shell that reads it** — a `docker compose …` that relies on the script's own working directory fails in the `/root` shell the operator actually opens, so print `cd <absolute path> && …`, name the environment file, and name every record by its absolute path; **a failure to ask is not an answer** — `docker inspect … || return 0` reads a daemon that is not answering as "the container is not there", which is precisely the outage that left the container running, so classify the error text and treat anything but "No such object" as unknown; **a stop you did not verify is not a stop** — `docker stop`, `docker kill` and `docker wait` can all fail quietly, so re-inspect and require `exited` or `dead` before believing anything about the database, and make the unprovable case its own state rather than a warning; **`docker compose up -d <service>` REPLACES that service's container** — compose finds it by project and service *labels*, stops it, renames it aside and removes it, so the container a recovery meant to restart is gone the moment the new one is created, **and `docker rename` does not hide it**, because the labels are what the lookup uses: keep the *image id* and the *deployed commit's own compose file* instead, and reconstruct from those two; **"the container was created" is not "the application is serving"** — `up -d` returns 0 as soon as Docker has started the process, so a state variable set there disarms a recovery on the strength of nothing, and only a request the application answered may do that; and **a trap cannot recover an interruption that is not an exit** — a power loss or a `SIGKILL` runs no handler at all, so write an intent record before the first irreversible step, reconcile it at the top of every later invocation, and remove it only once the thing it intended is a durable fact |
+| [HANDBOOK.md](../../HANDBOOK.md) §5 traps | Forty-seven new ones, all paid for in writing this spec and in answering its eight review rounds: **a timeout on a client is not a timeout on the work** — `docker compose exec … pg_dump` under a killed client leaves `pg_dump` running inside the container, holding a snapshot of the database the script is about to migrate, so kill the server side too and bound that as well; **an exit handler is not a timeout** — a script blocked in a command has not exited, so no trap runs, the lock stays held and the outage has no end: put a deadline on every command that runs while the application is stopped, and state the ones that still have none; **a retry count is not a deadline** — `for _ in $(seq 1 30); do curl …` bounds nothing when one call can hang, so give the call `--connect-timeout`/`--max-time` and the loop an absolute clock; **a mutable tag and a canonical name do not identify a container** — the same commit rebuilt over a newer base image is a different image id under the same tag, so a recovery that starts "the previous deployment" by name starts the wrong binary while every record tells the truth: compare the recorded **image id**; **and a migrator's own rule is not a safety property** — drizzle applies what is newer than the newest applied row, so a migration generated on a long-lived branch and merged after a newer one is reported applied and silently skipped, which is a healthy deployment with a missing table in it: validate that the journal increases and that the rows are an exact prefix of it, and refuse instead of reporting; `docker compose up <service>` **returns 0 even when the service failed**, and `--exit-code-from` implies `--abort-on-container-exit`, which would stop the live database — use `docker compose run --rm`; **HSTS `includeSubDomains` does not cover a sibling host**, so `loom.3dbox.dk` needs its own; **a compose project is named after its directory unless the file says otherwise** — two `deploy/` directories are two projects called `deploy`, so put `name:` in the file; **and `name:` is not enough** — `COMPOSE_PROJECT_NAME` outranks it, so pass `-p <project>` on every command and refuse to run with that variable set; **`git pull --ff-only` does not mean "the checkout equals origin"** — it succeeds over a local commit the remote has not passed and leaves a dirty tracked file alone, so assert `HEAD == refs/remotes/origin/main` on a clean tree instead; **a stopped Postgres container is not an empty database** — ask the volume, or a migration runs with no dump behind it; **a checkout whose `origin` is a local bundle cannot see a commit merged on GitHub** — a `pull` says "already up to date" and the prerequisite is silently not deployed, so re-bundle and `scp` it; **a backup is worth only the window between it and the change it insures against** — dump immediately before the migration, not before a two-minute build; **"wait until it is healthy" with no bound is a hang holding a lock** — poll with a timeout, fail fast on `unhealthy`, and print the logs; **`--env-file` hands a container every line of the file**, so build a two-variable temporary file instead of passing a neighbour's whole environment; **`-f` does not move compose's `.env` lookup** — it follows the caller's directory, so a `-f`-only command run from elsewhere silently takes every default in the file, and `--env-file` belongs beside every `-p`; **a guard placed after the mutation it guards is disarmed by a retry** — compare against the deployed state *before* fast-forwarding, and persist what is deployed; **a dump taken while the application still accepts writes is a snapshot with a live tail** — stop the application, or stop claiming the restore loses nothing; **a single mutable image tag means there is no previous image** — tag per commit if a failure has to be able to go back; **`grep | cut` under `set -euo pipefail` defeats the `${VAR:-default}` on the next line** — `grep` exits 1 on no match, `pipefail` propagates it and `set -e` kills the script before the default is read, so use `sed -n 's/^KEY=//p'`, which exits 0; **`git fetch origin` does not move the local `main`** — a bundle cut afterwards advertises the stale branch while containing the new commit, so `switch` and `pull --ff-only` before bundling; **an instance keeper is not a Lobby participant** — `loom lobby` needs a stored Lobby token or an agent key, so join before reading, and read as the keeper because only a keeper is told the Lobby's secret; **a non-zero exit from a database client does not prove the transaction rolled back** — PostgreSQL can commit and the connection can drop before the client hears it, so record the pending set before migrating and *ask* afterwards instead of asserting; **one record cannot hold two facts** — "which commit's image and schema are active" and "which commit was proved over the public hostname" have different lifetimes, and a single file holding both will aim a recovery at an image the schema has moved past; **an old image inside a new compose definition is not the old deployment** — `stop` keeps the container with its image id, command, environment and networks, so `docker start` it rather than re-`up`-ing a tag through a file that has changed; **a guarantee a future merge can void from inside a file is not a guarantee** — one `COMMIT` or `CREATE INDEX CONCURRENTLY` in a migration ends the transaction everything else relies on, so enforce it in code and test it over the real files; **an A record that resolves is not a complete DNS answer** — a stale or wildcard `AAAA` sends ACME's validator and every IPv6 client elsewhere while the A check passes, and a `CNAME` beside an `A` is invalid outright; **a runbook that reads files out of a local checkout has to say which commit that checkout is on**, or it fails three-quarters of the way through on a missing helper; **running a deployment's steps by hand is not running the deployment** — exercise the wrapper the merge will actually use, on the first day, or its first real use is the test; **`docker compose run <service> <args>` replaces the service's `command:`** rather than appending to it, so a status flag on its own becomes the program the container tries to execute — name the whole command; **a shell pipeline that ends in `grep` fails on the empty result** — `grep -v '^$'` exits 1 with nothing to filter, and under `pipefail` the most ordinary outcome there is kills the script, so delete blank lines with `sed` instead; **`cmd | grep -q` under `pipefail` can report 141** — `grep -q` exits on the first match, the producer dies of `SIGPIPE`, and a guard written as `producer | grep -q … && refuse` therefore waves the very case through that it was written to catch, **and collecting the output into a variable is not the fix** — `printf '%s\n' "$VAR" | grep -q …` has the same defect with `printf` as the victim, so the pipe itself has to go: `grep -q … <<<"$VAR"`, or a variable and a `case`, and then the *whole* file audited for the shape, because one instance is never the population; **`docker compose run` allocates a pseudo-TTY when its stdin is a terminal**, so output a script parses arrives CR-terminated from an interactive SSH shell and matches nothing — pass `-T` on anything whose output is read, and keep its stderr out of the file being parsed; **a record written before the thing it records is live is a record that lies** — with no migration to apply, the new commit is only deployed once its container is actually up, so write the record after the start, not at the quiesce; **a trap armed half-way down a script reads variables the script may not have assigned yet** — under `set -u` the handler dies instead of recovering, so initialise every input first and install one handler at the top, and clear `errexit` before classifying inside it; **`timeout` bounds the client, not the container** — a killed `docker compose run` leaves the one-off running with its transaction open, so name the container, kill it, wait for it under a bound and reap it before asking the database anything, and bound that question too — **and reap on every non-success, not only on the timeout's exit codes**, because a client that loses its connection to the daemon exits 1 while the container keeps running, and a reconciliation run alongside a live migrator can restart the old image just in time for the migrator to commit the new schema under it; **`ABORT` is PostgreSQL's alias for `ROLLBACK`** — a guard that lists the transaction-control statements by sample rather than taking the group whole will miss one, and one is enough; **`docker compose ps` omits stopped containers** — a completed one-shot is invisible without `--all`, so a correct startup can fail a done-check written against plain `ps`; **a line an application prints on purpose is still a credential when somebody else reads the log** — Loom's first boot prints the Lobby's secret link by design, so a session running `docker compose logs` over SSH puts it in the controller's transcript: redact at the **reader** as well as at the writer, and let a done-check match on the server and print only its verdict; **arm a recovery before the command it recovers from, never after it** — `docker compose stop` can stop the container and still exit non-zero, and a flag set only on success leaves the handler disarmed over a stopped application, so set it first and clear it again only on positive evidence that nothing was stopped; **a comment stripper that does not understand quoting deletes the statement the guard exists to find** — `VALUES ('--')` turns the rest of the line into a comment for any scanner that strips comments as a phase, so a SQL guard must be one stateful pass in which a comment is only a comment in the code state; **a printed recovery command is only a recovery if it works in the shell that reads it** — a `docker compose …` that relies on the script's own working directory fails in the `/root` shell the operator actually opens, so print `cd <absolute path> && …`, name the environment file, and name every record by its absolute path; **a failure to ask is not an answer** — `docker inspect … || return 0` reads a daemon that is not answering as "the container is not there", which is precisely the outage that left the container running, so classify the error text and treat anything but "No such object" as unknown; **a stop you did not verify is not a stop** — `docker stop`, `docker kill` and `docker wait` can all fail quietly, so re-inspect and require `exited` or `dead` before believing anything about the database, and make the unprovable case its own state rather than a warning; **`docker compose up -d <service>` REPLACES that service's container** — compose finds it by project and service *labels*, stops it, renames it aside and removes it, so the container a recovery meant to restart is gone the moment the new one is created, **and `docker rename` does not hide it**, because the labels are what the lookup uses: keep the *image id* and the *deployed commit's own compose file* instead, and reconstruct from those two; **"the container was created" is not "the application is serving"** — `up -d` returns 0 as soon as Docker has started the process, so a state variable set there disarms a recovery on the strength of nothing, and only a request the application answered may do that; and **a trap cannot recover an interruption that is not an exit** — a power loss or a `SIGKILL` runs no handler at all, so write an intent record before the first irreversible step, reconcile it at the top of every later invocation, and remove it only once the thing it intended is a durable fact |
 | [ARCHITECTURE.md](../../ARCHITECTURE.md) §10 | A third paragraph: the two root-level profiles are the **standalone** install, `deploy/` is the **beside another Caddy** install, and this is where the shared `web` network and the sites-folder hook are described. The sentence "Migrations run on every boot in `main.ts`" is corrected to name `LOOM_MIGRATE_ON_BOOT` |
 | [README.md](../../../README.md) "Running locally" | A short **Deploying beside another Caddy** paragraph pointing at `deploy/` and naming the one command; the existing production paragraph keeps describing the standalone `--profile prod` install |
 | [TESTING.md](../../TESTING.md) §1 | The generalised truncate guard (`_test` suffix), the testcontainer's database name, and the sentence about pointing `TEST_DATABASE_URL` somewhere safe (§6). One more sentence in the build-before-test paragraph: `src/server/test/migrate.test.ts` runs the built entry as a child process, so it is one of the suites that needs `pnpm -r build` first (§11.2). And one on the two **package-local** Testcontainers fixtures, `src/core/test/pg-container.ts` and `src/server/test/pg-container.ts`: the migration suites start a Postgres of their own rather than using the shared global-setup database, because they need one with no migrations applied (§11.1, §11.2) |
+| [TESTING.md](../../TESTING.md), a new short section | **The shell contract tests** of §11.7: `pnpm test:deploy`, or `bash deploy/test/run.sh`, runs the real `deploy/live-update.sh` against stub `docker`, `git`, `curl`, `timeout` and `flock` commands in a temporary directory. It needs **no Docker, no Postgres and no network**, which is the one thing about it a reader must know before the first time it is run on a laptop, and it is **not** part of `pnpm -r test`: it is a `bash` runner, not a `vitest` suite, so it is its own script. The section also says what the harness does not cover — reality — and points at §11.6 for what does |
+| root [`package.json`](../../../package.json) | One script: `"test:deploy": "bash deploy/test/run.sh"`. Named beside `test` rather than folded into it, because the two need different things (one needs Docker, the other needs nothing) and a developer who breaks the deployment script should be able to run the fast one alone |
 | [KNOWN-ISSUES.md](../../KNOWN-ISSUES.md) | **Rows deleted:** the `mcp/index.ts:111` session-less `GET` 500 (§5.4). **Rows added:** one, and only one — the first-boot Lobby link of the row below; §13 is scope, not defects, so nothing in it becomes a row. **Rows kept, and now depended on:** the `commands/lobby.ts` keeper-cannot-read-the-Lobby row stays deferred exactly as written; §9 step 10 works around it with a `lobby join` and points at it, so the row gains one clause noting that the live-instance runbook is a caller that has to do that |
 | [KNOWN-ISSUES.md](../../KNOWN-ISSUES.md) and [v2-notes.md](v2-notes.md) — **the first-boot Lobby link** | **One row and one note added, and this is review round 6's F1 follow-up.** `main.ts` prints the Lobby's `/w/<43-character secret>` link unredacted on the boot that creates it — by design, documented in the README, and the only way a first operator learns where the Lobby is. It is also the reason every log read in this slice goes through `redact_logs` (§8.1) and the reason §9 step 4's done-check asserts a shape on the server instead of reading the log. The note records the alternative for a later slice: **gate that one line behind an explicit flag** (`LOOM_PRINT_LOBBY_LINK=1`, say) so the secret is printed only when someone asked for it, and have the unflagged boot print the Lobby's id alone. **It is not this slice's change** — it alters an interface the README documents and a first-run path nothing else has exercised, and redacting at the reader already closes the transcript hole this slice is responsible for. The KNOWN-ISSUES row is the defect statement, the v2-notes entry is the idea with this decision attached |
 | [`.gitignore`](../../../.gitignore) | **Seven** lines, beside the existing `.env`: `deploy/.deployed-sha`, `deploy/.verified-sha`, `deploy/.deployed-image`, `deploy/.update-state` and the three atomic-write temporaries `deploy/.deployed-sha.new`, `deploy/.verified-sha.new` and `deploy/.update-state.new`. All seven are server state written by `live-update.sh`, and an untracked file in the checkout would trip the script's own clean-tree check — including one a killed run left behind, which is why the temporaries are named too (§4, §4.1, §4.5 banners 1, 2, 3 and 7). Seven explicit lines rather than a glob, so a reviewer can read what is ignored — and a `deploy/.deployed-*` glob would not have covered `.update-state` at all |
 | [v2-notes.md](v2-notes.md) | The "A live Loom instance …" entry becomes **built**, dated, with the hostname, the `deploy/` path and a one-line pointer to this spec; the 2026-09-20 dogfood finding about the session-less `GET` gains its "fixed in PR #N" note |
-| [CONTRIBUTING.md](../../../CONTRIBUTING.md) | **A new short section, `## Migrations`, after `## Concurrency conventions`** — this is the one convention this slice does add, in answer to review round 4's F4. Three bullets: **a run is one transaction**, which is what makes a failed migration a no-op and the deployment's recovery possible (§4.5); **so a migration file may not contain a transaction-control statement or a statement PostgreSQL cannot run inside a transaction block** — the list of §5.1, enforced by `assertTransactionSafe`, which `runMigrations` and `migrate --check` both call, and which §11.1 runs over every real file; and **a migration that genuinely needs to be non-transactional is a guarded hand-run deployment**, never an input `live-update.sh` accepts (§13). It is in CONTRIBUTING and not only in the spec because it binds every future migration, and a rule that lives in one slice's design document is a rule the next author will not read |
+| [CONTRIBUTING.md](../../../CONTRIBUTING.md) | **A new short section, `## Migrations`, after `## Concurrency conventions`** — this is the one convention this slice does add, in answer to review round 4's F4. Four bullets now, the fourth being review round 8's F4: **the journal's `when` values must be strictly increasing in file order**, so a migration generated on a long-lived branch and merged **after** a newer one must be **regenerated** — delete the file and its journal entry, re-run `drizzle-kit generate`, commit that — because its original stamp is older than a migration the live database has already applied, and a database whose rows are not an exact prefix of the journal makes `migrationStatus` refuse and stops the deployment at §4.5 banner 6 with Loom still serving. Editing the `when` by hand is not the fix: the entry's hash is recorded with it, so a stamp edited after the file has been applied anywhere produces a hash mismatch instead (§5.1). And the other three: **a run is one transaction**, which is what makes a failed migration a no-op and the deployment's recovery possible (§4.5); **so a migration file may not contain a transaction-control statement or a statement PostgreSQL cannot run inside a transaction block** — the list of §5.1, enforced by `assertTransactionSafe`, which `runMigrations` and `migrate --check` both call, and which §11.1 runs over every real file; and **a migration that genuinely needs to be non-transactional is a guarded hand-run deployment**, never an input `live-update.sh` accepts (§13). It is in CONTRIBUTING and not only in the spec because it binds every future migration, and a rule that lives in one slice's design document is a rule the next author will not read |
 | `.claude/launch.json` | **Unchanged, deliberately.** It stays pinned to port 3000: it is the *development* preview harness on Paw's PC, and the live instance is not something the harness starts. DOGFOOD's gap list said it "cannot start the live instance without editing it" — that row is not a gap any more, it is the right behaviour, and §13 says so |
 
 ## 11. Tests
 
 Every test below is assigned to exactly one plan task
-([HANDBOOK.md](../../HANDBOOK.md) §3 step 5). The six groups are honest about what is and is not
-covered by an automated suite, and §11.6 is the one that says what no suite touches at all.
+([HANDBOOK.md](../../HANDBOOK.md) §3 step 5). The seven groups are honest about what is and is not
+covered by an automated suite: §11.6 says what no suite touches at all, and §11.7 — new in answer to
+review round 8's F5 — is the first automated test anything in `deploy/` has ever had, with its own
+paragraph on the difference between testing a script's control flow and testing a deployment.
 
 **The migration tests are two files, not one, and that is a correction.** An earlier draft put both
 `migrationStatus` and the migrate entry's process behaviour — `--check`, the exit codes, the output,
@@ -3513,8 +3885,9 @@ cases need a database with *no* migrations applied at all, and the shared one is
 run by `freshDb()`. The container comes from **`src/core/test/pg-container.ts`**, this package's own
 fixture (§11.2 for why there are two), and the file stops it in `afterAll`. It imports `@loom/core`
 and nothing else from this repository; applying is done by core's own `runMigrations`, never by the
-server entry. The `assertTransactionSafe` cases (6 and 7) need no database at all and are in this
-file because they test the same module.
+server entry. The `assertTransactionSafe` cases (9 and 10) need no database at all and are in this
+file because they test the same module, and so does the journal half of cases 5 and 7 — a `when`
+sequence that is not strictly increasing is refused before anything is read.
 
 1. **A fresh database lists every journal entry as pending and nothing as applied** — the count
    equals the journal's entry count, the order is the journal's, and
@@ -3524,10 +3897,37 @@ file because they test the same module.
 3. **A second run applies nothing.** Idempotence, and the assertion is the *rule* — `pending` is
    empty and the table's row count is unchanged — never an exact write count
    ([HANDBOOK.md](../../HANDBOOK.md) §5).
-4. **The listing agrees with the migrator's own rule** — a row in `__drizzle_migrations` whose
-   `created_at` equals the second journal entry's `when` makes entries 0 and 1 applied and the rest
-   pending, which is the maximum-based rule of §5.1 and not a set difference.
-5. **A failing migration leaves the schema unchanged** — the case §4.5 banners 7 and 9 stand on, and
+4. **A clean prefix is the happy path, and the hash is what proves the check is real — new in
+   answer to review round 8's F4.** Against a fresh database, `runMigrations` applies every real
+   migration; then the newest row is **deleted** from `__drizzle_migrations` and `migrationStatus` is
+   asked again: the remaining rows are exactly journal entries 0 to n-2, so those tags are `applied`
+   and the last one is `pending`. Rows are *deleted* rather than inserted on purpose — the rows that
+   remain carry drizzle's **own** `created_at` and `hash`, so a case that passes proves
+   `migrationStatus` computes the same `(created_at, hash)` pair drizzle inserted, which is the one
+   claim §5.1's paragraph about `readMigrationFiles` cannot make by assertion. The previous case here
+   inserted a single hand-made row to simulate "migrated to entry 1" and asserted the
+   maximum-`created_at` rule; that rule is what F4 removed, and a single row at entry 1's `when` is
+   now correctly reported as **drift**, because entry 0's row is missing (case 6).
+5. **A backdated entry appended after a newer one is drift — F4's own scenario, and no database is
+   needed for it.** A temporary folder (the mechanism case 8 introduces) whose journal is, in file
+   order, `Y` at `when` 200 and then `X` at `when` 150, with a valid `.sql` file for each.
+   `migrationStatus(db, folder)` is expected to **reject**, with a message naming the two entries
+   that are out of order, and **`runMigrations(db, folder)` is expected to reject too, applying
+   nothing** — `to_regclass` for both files' tables is null afterwards. That second half is the
+   answer to F4's question about whether core should refuse as well: it must, because drizzle's
+   `migrate()` would otherwise apply by its own maximum rule and skip `X` exactly as the finding
+   describes. The process-level half — both forms of the migrate entry exiting 1 — is §11.2 case 16.
+6. **A row that is not where the journal says is drift, and so is a gap.** Take case 4's clean
+   prefix and (a) change one remaining row's `hash` to a different 64-hex string, (b) instead delete
+   a row from the **middle** so the rows are no longer a prefix. Both are expected to reject, and the
+   message must name **the first** mismatching position, its journal tag and what the row at that
+   position actually held — because that message is the whole user interface of this check and the
+   developer has to know which file to regenerate.
+7. **A duplicate `when` is drift.** A temporary folder whose journal holds two entries with the same
+   `when`: strictly increasing excludes equality, so it rejects, naming both. This is the case a
+   hand-edited journal or a badly resolved merge conflict produces, and it would otherwise make the
+   prefix comparison ambiguous about which of the two a row matched.
+8. **A failing migration leaves the schema unchanged** — the case §4.5 banners 7 and 9 stand on, and
    new in answer to review round 3. Against the same dedicated container, on a **fresh database**,
    `runMigrations` is pointed at a **temporary migrations folder** written by the test: a journal
    with two entries and two `.sql` files, the first valid (`create table t_good (id int)`), the
@@ -3548,8 +3948,8 @@ file because they test the same module.
    `src/core/drizzle/` to be a single transaction of its own. The failing test is the signal to go
    and do that; that is why it is a test and not a comment. The *other* way that promise could
    break — a migration file carrying its own `commit` — is no longer left to this test to notice,
-   because case 6 refuses it at the source.
-6. **`assertTransactionSafe` accepts every real migration file — new in answer to review round 4's
+   because case 9 refuses it at the source.
+9. **`assertTransactionSafe` accepts every real migration file — new in answer to review round 4's
    F4, and this is the case that makes the convention more than a sentence.** The test reads
    **every** file matching `*.sql` under the folder `migrationsFolder()` resolves (today
    `src/core/drizzle/`, five files) and calls `assertTransactionSafe(contents, name)` on each. All
@@ -3562,16 +3962,16 @@ file because they test the same module.
 
    **And the same case proves `runMigrations` actually calls it, and applies nothing when it
    refuses.** Against the dedicated container, on a fresh database, `runMigrations(db, folder)` is
-   pointed at a temporary folder — the mechanism case 5 introduced — holding one file with a valid
+   pointed at a temporary folder — the mechanism case 8 introduced — holding one file with a valid
    `create table t_first (id int)` and a second file carrying a bare `COMMIT;` between two valid
    statements. The call is expected to **reject with the guard's message**, and then
    `to_regclass('public.t_first')` is **null**: the refusal happened over the whole pending set
    *before* anything was applied, not part-way through it, which is the ordering §5.1 specifies and
    the only ordering that is any use. The process-level half of this needs no case of its own —
-   `migrate.ts` reports a thrown error through `logError` and exits 1, which §11.2 case 12 already
+   `migrate.ts` reports a thrown error through `logError` and exits 1, which §11.2 case 15 already
    asserts as a process contract — and the deployment-level half is `live-update.sh` step 5 running
    `--check`, which §11.6 lists among the mechanisms that are structural rather than tested.
-7. **`assertTransactionSafe` rejects each form, and is not fooled by the look-alikes.** Unit cases,
+10. **`assertTransactionSafe` rejects each form, and is not fooled by the look-alikes.** Unit cases,
    no database: **one rejection per spelling in §5.1's table**, which is review round 5's F6 as a
    test list — `BEGIN;`, `BEGIN WORK;`, `BEGIN TRANSACTION;`, `START TRANSACTION;`, `COMMIT;`,
    `COMMIT WORK;`, `COMMIT TRANSACTION;`, `END;`, `END WORK;`, `END TRANSACTION;`, `ROLLBACK;`,
@@ -3632,7 +4032,7 @@ file because they test the same module.
 
    **And one execution case, because the rejection list is only half of F6's ask.** Against the
    dedicated container, on a fresh database, `runMigrations(db, folder)` is pointed at a temporary
-   folder — the mechanism case 5 introduced — holding **one** file whose **first** statement is valid
+   folder — the mechanism case 8 introduced — holding **one** file whose **first** statement is valid
    DDL (`create table t_enclosed (id int);`) and whose **later** statement Postgres rejects at
    execution (`select nonexistent_function();`). The call is expected to **reject**, and then
    `to_regclass('public.t_enclosed')` is **null**: the enclosing transaction held, so the accepted
@@ -3643,13 +4043,15 @@ file because they test the same module.
    is null again, and the rejection names the file and `ABORT` — which is the pair F6 asked for: the
    escape is impossible because the guard refuses it, and the enclosure is real when the guard
    accepts.
-**And the one signature change case 5 needs, decided here rather than left to the plan.**
+**And the one signature change cases 5 to 8 need, decided here rather than left to the plan.**
 `runMigrations(db)` resolves its folder internally today, so a test cannot give it one. It becomes
 `runMigrations(db, folder = migrationsFolder())` — the same helper §5.1 extracts, as the **default**,
-so every existing caller (`main.ts`, the migrate entry, `freshDb()`) is unchanged and unaware, and a
+and `migrationStatus(db, folder = migrationsFolder())` takes it the same way, for the same reason and
+so that the two can never be pointed at different folders (§5.1). Every existing caller
+(`main.ts`, the migrate entry, `freshDb()`) is unchanged and unaware, and a
 test can pass a folder it wrote. The alternative, having the test call drizzle's `migrate()` itself,
 would test drizzle rather than the function this repository actually deploys with, which is the
-opposite of what case 5 is for.
+opposite of what case 8 is for.
 
 ### 11.2 The migrate entry as a process — `src/server/test/migrate.test.ts`
 
@@ -3698,12 +4100,12 @@ avoid duplicating one constructor call. Two four-line files that can drift apart
 cheaper answer, and if they ever need to agree on something that matters, *that* is the moment to
 make a package.
 
-8. **No flag, nothing pending:** prints `migrations: 5 applied, nothing to apply` on stdout,
+11. **No flag, nothing pending:** prints `migrations: 5 applied, nothing to apply` on stdout,
    exit **0**.
-9. **No flag, some pending:** prints the applied count, then `applying:` and each pending tag on its
+12. **No flag, some pending:** prints the applied count, then `applying:` and each pending tag on its
    own line, applies them, then the `migrations: applied 2 (…)` summary; exit **0**, and the
    database is migrated afterwards.
-10. **`--check` applies nothing, and its output has the shape `live-update.sh` parses.** With
+13. **`--check` applies nothing, and its output has the shape `live-update.sh` parses.** With
    migrations pending it prints the same listing with `pending:` in place of `applying:`, leaves
    `to_regclass('drizzle.__drizzle_migrations')` as it found it, and exits **0** — the convention of
    §5.2, that `--check` answers *what would you do* and is not a gate. With nothing pending it
@@ -3725,66 +4127,80 @@ make a package.
    result there is — a fully migrated database, which is every rerun and the whole of the first
    bootstrap. An extraction whose failure mode is "the update stops after the build, before the
    quiesce, with nothing wrong" has to be pinned at both ends.
-11. **An unknown argument exits 2** and prints the usage line to **stderr**, with nothing on stdout
+14. **An unknown argument exits 2** and prints the usage line to **stderr**, with nothing on stdout
    and no connection attempted — a mistyped invocation must be distinguishable from a failure.
-12. **`DATABASE_URL` absent** fails with the same message `loadConfig` already gives, and exits
+15. **`DATABASE_URL` absent** fails with the same message `loadConfig` already gives, and exits
    **1**.
-13. **The process ends on every path.** Each of the cases above is asserted to exit within the
+16. **A drifted journal exits 1 in both forms, and prints no status — new in answer to review round
+    8's F4.** The child process is given a `LOOM_MIGRATIONS_FOLDER`-free, ordinary invocation against
+    a database the case has drifted by deleting a row from the middle of `__drizzle_migrations`
+    (§11.1 case 6's shape). Both `node dist/migrate.js` and `node dist/migrate.js --check` exit
+    **1**, stdout carries **no** `migrations: N applied` line and **no** `pending:` line — because a
+    drifted database has no honest status to print, and `live-update.sh` parses that stdout — and the
+    drift message naming the first mismatch is on stderr through `logError`. This is the case that
+    makes §4.5 banner 6 a gate rather than a hope: without it a drift would be reported as a healthy
+    "nothing to apply" and the update would proceed through the quiesce.
+17. **The process ends on every path.** Each of the cases above is asserted to exit within the
     suite's timeout rather than being killed, which is what proves `closeDb` runs — a migrate
     container that never exits would hang `docker compose run --rm migrate` and therefore hang the
     update, with the lock of §4.5 banner 2 still held.
 
 ### 11.3 The boot switch — `src/server/test/config.test.ts` and the server boot suite
 
-14. **Default true.** `loadConfig({ DATABASE_URL: … })` gives `migrateOnBoot: true`; `"true"` and
+18. **Default true.** `loadConfig({ DATABASE_URL: … })` gives `migrateOnBoot: true`; `"true"` and
     `"false"` (in any case, with surrounding whitespace) parse to the obvious values.
-15. **Anything else throws** — `"0"`, `"no"`, `""`, `"yes"` — with the variable name in the message.
-16. **`false` with migrations pending refuses to start**, with the message of §5.3 naming the count
+19. **Anything else throws** — `"0"`, `"no"`, `""`, `"yes"` — with the variable name in the message.
+20. **`false` with migrations pending refuses to start**, with the message of §5.3 naming the count
     and the pending tags, and the process exits non-zero. Against a database migrated to an earlier
-    point than the journal (the row-insert trick of case 4).
-17. **`false` with nothing pending starts normally** and serves a request — the case that proves the
+    point than the journal (the row-deletion trick of case 4).
+21. **`false` with nothing pending starts normally** and serves a request — the case that proves the
     refusal is not simply "false never boots".
-18. **`true` is unchanged**: a server booted against an unmigrated database migrates it and serves,
+22. **`true` is unchanged**: a server booted against an unmigrated database migrates it and serves,
     exactly as today.
 
 ### 11.4 The MCP guard — `src/server/test/mcp.test.ts`
 
-19. **Session-less `GET /mcp?agent=<key>` answers 400 `{ code: "validation" }`** — with a valid agent
+23. **Session-less `GET /mcp?agent=<key>` answers 400 `{ code: "validation" }`** — with a valid agent
     key, and with `Accept: text/event-stream`, because that is the request the real connector sends.
-20. **Session-less `DELETE /mcp` answers 400** the same way.
-21. **A session-less `GET` with a revoked key is still 400, not 401** — the guard runs before any
+24. **Session-less `DELETE /mcp` answers 400** the same way.
+25. **A session-less `GET` with a revoked key is still 400, not 401** — the guard runs before any
     credential resolution (§5.4).
-22. **A bogus `mcp-session-id` is still 404 `not_found`** — the existing case, unchanged.
-23. **A full `initialize` over `POST` still works**, and the two concurrent session-less `PUT`
+26. **A bogus `mcp-session-id` is still 404 `not_found`** — the existing case, unchanged.
+27. **A full `initialize` over `POST` still works**, and the two concurrent session-less `PUT`
     requests of `mcp.test.ts:95` still get two connect attempts and two 405s — the coverage the
     guard's method list exists to preserve.
 
 ### 11.5 The truncate guard — `src/core/test/db-guard.test.ts`
 
-24. **Refused:** a URL whose database is `loom`; one whose database is `spool`; one whose database is
+28. **Refused:** a URL whose database is `loom`; one whose database is `spool`; one whose database is
     `loom_live`; one whose database is `postgres`; and an unparseable URL.
-25. **Allowed:** `loom_test`; any other `<name>_test`; and the **named testcontainer URL** of §6
+29. **Allowed:** `loom_test`; any other `<name>_test`; and the **named testcontainer URL** of §6
     (`.../loom_test`) — replacing the old case that asserted a bare `test` database was allowed.
-26. **Not fooled by the name elsewhere in the URL** — `postgres://loom:loom@loom:5432/loom_test` is
+30. **Not fooled by the name elsewhere in the URL** — `postgres://loom:loom@loom:5432/loom_test` is
     allowed. The existing case, kept.
-27. **`fallbackTestUrl` is unchanged** — both existing cases stand.
-28. **The whole suite still runs.** Not a test but a verification step the plan must name: after
+31. **`fallbackTestUrl` is unchanged** — both existing cases stand.
+32. **The whole suite still runs.** Not a test but a verification step the plan must name: after
     `.withDatabase("loom_test")`, `pnpm --workspace-concurrency=1 -r test` passes on the normal
-    Testcontainers path *and* on the fallback path. Case 25 would pass while every other test in the
+    Testcontainers path *and* on the fallback path. Case 29 would pass while every other test in the
     repository refused to start, which is precisely the failure §6 exists to prevent.
 
 ### 11.6 What no unit test covers, said plainly
 
-**All ten files in `deploy/` are verified by the first deployment (§9), by two small shell contract
-checks, and by nothing else** — `docker-compose.yml`, `loom.caddy`, `live-update.sh`, the two
-wrappers, the two committed texts and the two PowerShell helpers. There is no compose harness in this
-repository, no Caddy fixture and no shell-test framework, and inventing one for ten files that run
-once per merge against one specific server would be a larger and less honest change than reading
-them. The two checks that do exist are the exception that proves the rule: each pins **one line** of
-`live-update.sh` whose failure mode is silent and whose behaviour a reading demonstrably missed —
-`pending_tags` over an empty result (§11.2 case 10, round 5's F2) and the topology guard against a
-diff larger than a pipe buffer (below, round 6's F2). A line that four rounds of reading got wrong is
-a line worth six lines of `bash`. The two texts are the easy case —
+**`live-update.sh`'s control flow is covered by the harness of §11.7; everything else in `deploy/`
+is covered by the first deployment (§9), by the rehearsals below, and by nothing else** —
+`docker-compose.yml`, `loom.caddy`, the two wrappers, the two committed texts and the two PowerShell
+helpers. There is no compose harness in this repository and no Caddy fixture, and inventing one for
+files that run once per merge against one specific server would be a larger and less honest change
+than reading them. **The script itself is the exception, and round 8's F5 is why it stopped being
+one.** Seven review rounds each found a defect in it that a reading had missed — a pipeline that
+dies on an empty result, a status command that does not read status, a state variable read before it
+is set, a trap that cannot recover an interruption, a container identified by a mutable tag — and
+two of those rounds could only pin their finding with a few lines of `bash` run locally. At the
+eighth round the honest conclusion is that a 690-line script with fourteen recovery branches is not
+a thing anyone reads correctly, so §11.7 runs the **real** script against stub commands and asserts
+the branch it took. What that does **not** cover is Docker, Caddy, Postgres and the network, which
+is what the rehearsals below and §9 are for; the division is stated at the top of §11.7 so that
+neither half is mistaken for the other. The two texts are the easy case —
 §9 step 11 refuses to create the Weave if `weave-guidelines.md` is missing or over 4000 characters,
 and `prepare-chatgpt-paste.ps1` refuses if `reviewer-brief.md` is missing, which is the only failure
 either has. The two helpers are next easiest: each is a dozen lines, each stops on a missing input
@@ -3808,7 +4224,8 @@ secret it handled. What stands in for automation on the rest:
   here rather than glossed.
 - **The local prerequisite is what makes the runbook's own file reads safe** (§9 step 0.2): a clean
   `D:\git\Loom` on `main`, fast-forwarded, `pnpm install --frozen-lockfile && pnpm -r build`, and a
-  `Test-Path` over all ten `deploy/` files — before the server is touched, and with that commit's
+  `Test-Path` over all ten `deploy/` files and the harness's `test/run.sh` — before the server is
+  touched, and with that commit's
   SHA becoming the value step 2 requires the server's clone to equal. Nothing tests that the
   runbook's `Get-Content` calls will find their files; this step checks it instead.
 - The failure paths that matter are structural rather than tested: `flock -n` on an open descriptor
@@ -3818,7 +4235,7 @@ secret it handled. What stands in for automation on the rest:
   an empty diff; the guard's match cannot let a compose change that mentions `postgres`,
   `pgdata` or `volumes` reach the dump, the migration or the restart — **and cannot be defeated by
   the size of the diff either, because it is a here-string and not a pipeline** (§4.5 banner 3,
-  round 6's F2), which is the one property of it that now has a test of its own below; the
+  round 6's F2), which is the property §11.7's 1.2 MB case pins; the
   `docker inspect` mount
   check cannot let a dump be taken from a container that is not bound to `loom_pgdata`; the bounded
   health poll cannot loop forever holding the lock, and cannot reach the migration without a
@@ -3852,8 +4269,9 @@ secret it handled. What stands in for automation on the rest:
   created-but-unanswering container cannot set** (round 7's F3); the classification inside it
   cannot be cut short by `errexit`, because the handler clears it before classifying; the recovery cannot *assume* a rollback, because it re-reads the
   migration status and compares it with the set recorded in step 5, and it cannot combine the old
-  image with the new compose definition, because its first choice is `docker start` on the exact
-  container `docker compose stop` left in place and its fallback starts the old image through **the
+  image with the new compose definition, because its first choice is `docker start` on the container
+  whose **image id is the recorded one** — the exact object `docker compose stop` left in place,
+  proved rather than assumed (round 8's F3) — and its fallback starts the old image through **the
   old commit's own** compose file, extracted with `git show` (round 7's F3); the per-commit `image:`
   tag cannot be overwritten in a way that matters, because a container holds its image by id and the
   old id is recorded before the build — and the id and the SHA a restore uses cannot drift apart,
@@ -3874,8 +4292,24 @@ secret it handled. What stands in for automation on the rest:
   caller's directory or environment, and the script refuses to start at all if
   `COMPOSE_PROJECT_NAME` is set; `--env-file` on every Spool command cannot be defeated by the
   directory the caller is in; and both health checks read a route that touches the database.
+  **And five more are round 8's.** No operation after the quiesce can hang without a deadline,
+  because every `docker` call goes through `dk`'s `timeout 60` and the two that need longer carry
+  their own (the dump's 300 + 15, the migrator's 600 + 30), so the ceiling of §4.5 banner 7 is a sum
+  of constants rather than a hope (F1). No `pg_dump` can outlive its client either, because a
+  timed-out dump is followed by a bounded `pkill -TERM -f pg_dump` **inside** the Postgres container
+  before anything else happens (F1). No `curl` can block on an accepted connection that never
+  answers, because every probe carries `--connect-timeout 5 --max-time 20` and every loop is bounded
+  by an absolute `SECONDS` deadline rather than a count of tries (F1). No target can be believed
+  started without a request it answered **and** a durable record, because all four start paths — the
+  normal one, R7, R11 and the reconciliation's case (b) — go through `start_target_and_prove`, which
+  is also the only place `.update-state` is removed on a forward path (F2). And the previous
+  deployment cannot be misidentified, because `restore_prev` and `manual_recovery` compare
+  `docker inspect --format '{{.Image}}' loom-loom-1` with the recorded **image id** and reconstruct
+  whenever they differ — so a same-SHA rebuild over a newer base image, which leaves the tag and
+  both records saying the right commit, cannot make a `docker start` of the wrong binary look like a
+  restore (F3).
 - **What is structural but one-sided, said rather than implied.** The reconciliation of §4.5's
-  recovery procedure is only as good as `migrate --check`'s output shape, which is why §11.2 case 10
+  recovery procedure is only as good as `migrate --check`'s output shape, which is why §11.2 case 13
   asserts that shape and not merely its words. And R11 and R13 — the "committed but unacknowledged"
   and "cannot tell" branches — are reachable only by a torn connection or a partial apply, so
   **neither is exercised by anything before the day it happens**; R2 (`record-failed`) and R3
@@ -3887,7 +4321,7 @@ secret it handled. What stands in for automation on the rest:
   is when idempotence is actually observed. That run is recorded in v2-notes as a dogfood note,
   whatever it shows.
 - **The recovery's R6/R10 branch gets a deployment check of its own — a numbered step of the plan,
-  run once on the first day — and round 4 changed what that check is.** §11.1 case 5 proves the
+  run once on the first day — and round 4 changed what that check is.** §11.1 case 8 proves the
   *schema* half of §4.5 banner 9: a failed migration changes nothing. Nothing above proves the
   *container* half — that the container `docker compose stop` left behind really does come back with
   the code it was created from. It cannot be proved through the whole script without merging a
@@ -3909,53 +4343,51 @@ secret it handled. What stands in for automation on the rest:
   discovered during a real failed migration. **The R14 last resort is deliberately not rehearsed**:
   proving it would mean deleting the container, and what it adds over R6 is a `docker tag`, a
   `git show` and a warning. Its result is recorded in v2-notes with the other dogfood notes.
-- **And the pending-migration-plus-failed-dump path is a by-hand check of its own, on the first
-  day, which is review round 5's F4.** The rehearsal above proves the recovery's *commands*; it does
-  not prove that the handler survives the path F4 broke — a real pending migration and a dump that
+- **The pending-migration-plus-failed-dump path is rehearsed with a stub and no SQL at all, which is
+  round 8's F5 applied to round 5's F4.** The rehearsal above proves the recovery's *commands*; it
+  does not prove that the handler survives the path F4 broke — a pending migration and a dump that
   then fails, where the old design read `MIGRATE_STATE` before anything had assigned it and the
-  handler died under `set -u` with Loom stopped. It is staged in two reversible commands, after §9
-  step 8 and before §9 step 10 mints any key, when the database holds nothing but the Lobby:
+  handler died under `set -u` with Loom stopped. The previous draft staged it by **deleting the
+  newest row from the live migration journal** and putting it back afterwards by hand, and F5 was
+  right that editing the live journal to rehearse a script is a poor trade: one mistyped `insert` and
+  the live database's history is wrong in a way nothing checks. **So the pending set is a fiction the
+  stub tells**, and the database is not touched:
 
-      # 1. note the newest journal row, then remove it, so one tag is genuinely pending
-      docker compose -p loom exec -T postgres psql -U loom -d loom -Atc         "select hash||'|'||created_at from drizzle.__drizzle_migrations order by created_at desc limit 1"
-      docker compose -p loom exec -T postgres psql -U loom -d loom -c         "delete from drizzle.__drizzle_migrations where created_at = (select max(created_at) from drizzle.__drizzle_migrations)"
-      # 2. make the dump fail: a file where the backup directory must be
-      mv ~/backups/loom ~/backups/loom.bak && : > ~/backups/loom
-      ~/git/Loom/deploy/live-update.sh --bootstrap ; echo "exit=$?"
+      install -d -m 755 /tmp/stub
+      printf '%s\n' '#!/bin/sh' \
+        'case " $* " in' \
+        '  *" node dist/migrate.js --check "*)' \
+        '    printf "migrations: 5 applied\\npending:\\n9999_rehearsal_only\\n"; exit 0 ;;' \
+        'esac' \
+        'exec /usr/bin/docker "$@"' > /tmp/stub/docker
+      chmod 755 /tmp/stub/docker
+      mv ~/backups/loom ~/backups/loom.bak && : > ~/backups/loom   # a file where the directory must be
+      PATH=/tmp/stub:$PATH ~/git/Loom/deploy/live-update.sh --bootstrap ; echo "exit=$?"
 
-  *Checked:* the run prints the pending tag, writes `deploy/.update-state`, stops `loom`, fails at
-  `install -d`, and then — from the handler, not from any step — prints `no migration ran; the
-  previous deployment is serving again`; `exit=` is
+  The one lie is the status read: banner 6 records `9999_rehearsal_only` as pending, so the run takes
+  the has-a-migration path — `MIGRATE_STATE=not-attempted`, an intent record that carries that tag —
+  and every other `docker` command, the stop and the real dump attempt included, passes through to
+  the real client. No migration is applied because the run never gets past the dump.
+
+  *Checked:* the run prints `pending: 9999_rehearsal_only`, writes `deploy/.update-state` with that
+  tag in it, stops `loom`, fails at `install -d`, and then — from the handler, not from any step —
+  prints `no migration ran; the previous deployment is serving again`; `exit=` is
   **non-zero**; `curl -fsS http://127.0.0.1:3100/api/guidelines` answers 200 within a few seconds;
   `cat ~/git/Loom/deploy/.deployed-sha` is **unchanged**; `~/git/Loom/deploy/.update-state` is
   **gone**, because the restore settled it; and no `MANUAL RECOVERY REQUIRED` line was
-  printed, because R6 — not R8 — is the branch a dump failure takes. Then it is undone in two
-  commands: `rm ~/backups/loom && mv ~/backups/loom.bak ~/backups/loom`, and the noted row is put
-  back with `insert into drizzle.__drizzle_migrations (hash, created_at) values ('<hash>', <when>)`
-  — re-inserting the row rather than letting the next run re-apply the file, because the file's
-  `create table` is not written to be applied twice. If anything about it goes wrong, the first day's
+  printed, because R6 — not R8 — is the branch a dump failure takes. Undone in two commands,
+  `rm ~/backups/loom && mv ~/backups/loom.bak ~/backups/loom` and `rm -rf /tmp/stub`, with no SQL to
+  get wrong. If anything about it goes wrong, the first day's
   escape is the one §9 step 5 already licenses: `docker compose -p loom down -v` and §9 step 4 again.
-  It is done **once**, on the first day, for the same reason the R6/R10 rehearsal is.
-- **Two shell contract checks that need no server, no Docker and no deployment — review round 6's F2
-  and the pattern §11.2 case 10 already set.** They belong to the plan task that writes
-  `live-update.sh`, run in a local `bash`, and each is a few lines because each pins one line of the
-  script.
-
-  The first is the topology guard against a diff **larger than the pipe buffer**, which is the shape
-  that made round 5's `printf … | grep -Eq` version unsafe:
-
-      TOPO="$(printf '+  postgres:\n'; printf 'y\n%.0s' $(seq 1 600000))"   # 1.2 MB, match on line 1
-      if grep -Eq 'postgres|pgdata|volumes' <<<"$TOPO"; then echo refused; else echo "WAVED THROUGH"; fi
-      set +e; printf '%s\n' "$TOPO" | grep -Eq 'postgres|pgdata|volumes'; echo "pipeline status=$?"
-
-  *Checked:* under `set -Eeuo pipefail`, the here-string form prints `refused`, and the pipeline form
-  beside it reports **141** — `SIGPIPE` — on the very same input, which is what the `if` in round 5's
-  draft would have treated as "no topology change". Both halves are run, because a check that only
-  proves the new form works does not show what it replaced. The match is on the first line and more
-  than a megabyte of input sits behind it, which is the shape that makes the difference: with a small
-  diff both forms answer identically, which is why four rounds of reading did not catch it. The second
-  check is §11.2 case 10's, already specified: `pending_tags` over an empty and a non-empty `--check`
-  output.
+  It is done **once**, on the first day, for the same reason the R6/R10 rehearsal is. **The
+  classification itself is §11.7's business** — the harness runs the same failure against stubs on
+  every `pnpm test:deploy` — and what this live run adds is the one thing the harness cannot: that a
+  real `docker start` of a real container really does serve again.
+- **The shell contract checks that need no server and no Docker are now a harness, not two
+  snippets — §11.7.** Round 6's F2 check (the topology guard against a 1.2 MB diff) and round 5's
+  F2 check (`pending_tags` over an empty result, §11.2 case 13) were the first two, written as
+  pasteable snippets because there was nowhere to put them. §11.7 is that place, they are two of its
+  cases, and every later round's finding has somewhere to land.
 - **The torn stop is rehearsed by hand on the first day — round 6's F5 — and both directions are, in
   two runs.** Neither can be staged by waiting for Docker to lose an acknowledgement, so the
   acknowledgement is what the rehearsal fakes: a stub earlier on `PATH` that forwards every `docker`
@@ -4007,35 +4439,75 @@ secret it handled. What stands in for automation on the rest:
       install -d -m 755 /tmp/stub
       printf '%s\n' '#!/bin/sh' \
         'case " $* " in' \
-        '  *" compose -p loom up -d loom "*) /usr/bin/docker "$@"; /usr/bin/docker stop -t 1 loom-loom-1 >/dev/null 2>&1; exit 0 ;;' \
+        '  *" compose -p loom up -d --no-build loom "*)' \
+        '    /usr/bin/docker "$@"; /usr/bin/docker stop -t 1 loom-loom-1 >/dev/null 2>&1; exit 0 ;;' \
         'esac' \
         'exec /usr/bin/docker "$@"' > /tmp/stub/docker
       chmod 755 /tmp/stub/docker
       PATH=/tmp/stub:$PATH ~/git/Loom/deploy/live-update.sh --bootstrap ; echo "exit=$?"
 
-  *Checked, without a migration (R4):* the run prints `created loom-loom-1 from loom-live:<SHA> — not
-  yet proven healthy`, then fails the loopback poll after 30 s and prints the redacted tail of the
+  *Checked, without a migration (R4):* the run prints `created loom-loom-1 from loom-live:<SHA> —
+  not yet proven healthy`, then fails the
+  loopback probe at its 60-second deadline and prints the redacted tail of the
   container's log, and then — **from the handler** — that the container never answered and is being
-  removed, followed by `restored the previous deployment (loom-live:<the content of
-  .deployed-sha>)`; `exit=` is non-zero; `curl -fsS http://127.0.0.1:3100/api/guidelines` answers
+  removed, followed by `restored the previous deployment`; `exit=` is non-zero;
+  `curl -fsS http://127.0.0.1:3100/api/guidelines` answers
   200 within a few seconds; `cat ~/git/Loom/deploy/.deployed-sha` is **unchanged**, which is the
   invariant F3 asked for — a created-but-unproven container never became the record;
   `~/git/Loom/deploy/.update-state` is gone; and `docker inspect -f '{{.Config.Image}}' loom-loom-1`
   names the deployed SHA, from the reconstruction of R14 rather than the original object, because
-  banner 10's `up -d loom` had already replaced it. Undone with `rm -rf /tmp/stub` and one ordinary
+  banner 10's `up -d loom` had already replaced it — **and the warning the reconstruction prints
+  names the recorded image id**, which is round 8's F3 observed rather than argued: the id of the
+  container that had just been removed was a different one, and the restore said so. Undone with
+  `rm -rf /tmp/stub` and one ordinary
   `~/git/Loom/deploy/live-update.sh --bootstrap`, which deploys the head again with nothing pending.
 
-  *Checked, with a migration (R5):* the same stub, run immediately after the journal-row deletion of
-  the rehearsal above so that one tag is genuinely pending. The run applies the migration, prints
-  that `.deployed-sha` is now the new SHA, creates the container, fails the loopback poll, and then
+  *Checked, with a committed migration (R5) — and this is review round 8's F5, which found that the
+  previous version of this rehearsal could not reach R5 at all.* It said to delete the newest journal
+  row and then let the **real** migrator apply that file again, which cannot work: the file's schema
+  changes are still in place, so the migration fails on an object that already exists (for the
+  current newest file, an index), the run takes the migration-failure reconciliation instead of the
+  committed-migration branch, and the first day's check produces an output the spec does not
+  describe — after a human has edited the live migration journal for nothing. So R5 is reached by
+  **deterministic fault injection and no SQL at all**, with one stub telling three lies:
+
+      install -d -m 755 /tmp/stub
+      printf '%s\n' '#!/bin/sh' \
+        'case " $* " in' \
+        '  *" node dist/migrate.js --check "*)' \
+        '    printf "migrations: 5 applied\\npending:\\n9999_rehearsal_only\\n"; exit 0 ;;' \
+        '  *" --name loom-migrate-run "*) exit 0 ;;' \
+        '  *" compose -p loom up -d --no-build loom "*)' \
+        '    /usr/bin/docker "$@"; /usr/bin/docker stop -t 1 loom-loom-1 >/dev/null 2>&1; exit 0 ;;' \
+        'esac' \
+        'exec /usr/bin/docker "$@"' > /tmp/stub/docker
+      chmod 755 /tmp/stub/docker
+      PATH=/tmp/stub:$PATH ~/git/Loom/deploy/live-update.sh --bootstrap ; echo "exit=$?"
+
+  The three lies are exactly the three facts R5 needs and nothing else. The status read reports one
+  fabricated pending tag, so the run believes it has a migration to apply. The migrator **exits 0
+  without running**, so `MIGRATE_STATE` becomes `succeeded` and `.deployed-sha` is written the moment
+  it does — which is the state R5 branches on — while the database's real journal and real schema are
+  never touched by anything. And the `up` runs for real and the container is then stopped behind the
+  script's back, which is precisely the observable a startup regression produces. Everything else,
+  including the real dump, passes through.
+
+  *Checked:* the run prints `pending: 9999_rehearsal_only`, takes a real dump, prints that
+  `.deployed-sha` is now the head's SHA, creates the container, fails the loopback probe, and then
   prints `LOOM IS DOWN` with both records, the dump's path, the absolute redacted-log command and the
   absolute retry command; `exit=` is non-zero; **no** restore line is printed and `docker inspect -f
-  '{{.Config.Image}}' loom-loom-1` still names the **new** SHA — the old image was deliberately not
-  started against the migrated schema; `~/git/Loom/deploy/.update-state` is still there, for the next
-  run to reconcile. Undone by `rm -rf /tmp/stub` and one ordinary run, which reconciles the record
-  through banner 2's case (b) — the migration is applied, so the target is started and the record
-  cleared — and then one more run to deploy normally. That two-run finish is itself the observation
-  F2's reconciliation is there to make, and it is why these two rehearsals are done in this order.
+  '{{.Config.Image}}' loom-loom-1` still names the head's SHA — the old image was deliberately not
+  started against what the script believes is a migrated schema; and
+  `~/git/Loom/deploy/.update-state` is **still there**, with `pending=9999_rehearsal_only` in it, for
+  the next run to reconcile. Undone by `rm -rf /tmp/stub` and one ordinary run, which reconciles the
+  record through banner 2's case (b) — the fabricated tag is not pending in the real journal, so
+  every recorded tag is "gone", the target is started through `start_target_and_prove` and the record
+  is cleared — and then one more run to deploy normally. That two-run finish is itself the
+  observation F2's reconciliation is there to make, and it is why these rehearsals are done in this
+  order. **What is deliberately fictional here is named rather than glossed:** no migration ran, so
+  this rehearsal proves the *script's* R5 branch and not that a real committed migration behaves
+  this way. The schema half of that is §11.1 case 8's, and the two halves do not meet before the day
+  a real migration fails — which §14.8 says.
 - **And the interrupted update is rehearsed by hand too — round 7's F2 — because the state it
   recovers from cannot be produced by any exit.** It is produced by removing the handler: a
   `SIGKILL`. After the rehearsals above and still before §9 step 10, with nothing pending:
@@ -4058,8 +4530,91 @@ secret it handled. What stands in for automation on the rest:
   no record and a still-running Loom, which is a second, cheaper thing worth seeing once.
 - The one mechanism nothing at all exercises before the day is the **reload-failure restore** of
   §4.5 banner 12: it needs a `loom.caddy` that validates in the staged check and is then refused by the
-  running Caddy. It is written to be read, and §14 names it as a risk rather than pretending it is
-  covered.
+  running Caddy. It is covered against stubs by §11.7's Caddy-reload case, and against a real Caddy
+  by nothing; §14 names it as a risk rather than pretending it is covered.
+
+### 11.7 Shell contract tests for `live-update.sh` — `deploy/test/`
+
+**What this is, and what it is not, said before the case list so that neither half is mistaken for
+the other.** This harness runs the **real** `deploy/live-update.sh` with a directory of stub
+commands earlier on `PATH`, and asserts three things per case: the **sequence of `docker` and `git`
+calls** the script made, the **contents of the records** it left behind, and its **exit code**. That
+is a test of the script's control flow — which branch a given set of answers takes, which command it
+runs next, which file it writes and which it leaves alone — and it is worth having because seven
+review rounds have each found a control-flow defect that a careful reading had missed. It is **not**
+a test of Docker, Compose, Caddy, Postgres or the network: every one of those is a stub that answers
+what the scenario tells it to. The first deployment (§9) and the by-hand rehearsals of §11.6 are
+what test the script against reality, and §11.6 is now trimmed to the cases that need reality — a
+real container coming back as itself, a real torn stop, a real kill. Neither half replaces the
+other, and a case list that grows here does not make a rehearsal removable.
+
+**No framework, and `bats` deliberately not added.** The runner is `deploy/test/run.sh`, plain
+`bash`, and `pnpm test:deploy` at the repository root runs it (§10); it is also runnable as
+`bash deploy/test/run.sh` by anyone with a shell, which matters because the thing under test is a
+shell script and the machine that will need to run it in a hurry may be the server. Adding a test
+framework to this repository for one file would mean a dependency, a lockfile entry and a tool every
+future contributor has to know, against a runner that is a `for` loop over `deploy/test/cases/*.sh`
+with a pass/fail count — and the repository's own convention is that a helper earns its machinery
+(§11.2's two four-line container fixtures make the same argument).
+
+**How a case is built.** `run.sh` makes a temporary directory per case, lays out a fake
+`~/git/Loom/deploy` inside it — the real `live-update.sh`, the real `loom.caddy`, an `.env`, and
+whichever of `.deployed-sha`, `.verified-sha`, `.deployed-image` and `.update-state` the case wants —
+points `HOME` and the working directory at it, and puts `deploy/test/stubs` first on `PATH`. The
+stubs are `docker`, `git`, `curl`, `timeout` and `flock`, one small `sh` script each, and they are
+**driven by a scenario file** the case writes: a table of "when the arguments match this pattern,
+print this, exit with this status". Every stub appends its full argument list to one
+`$CALLS` file in call order, which is what the case's assertions read. Four notes on the stubs,
+because each is a decision:
+
+- **`timeout` is stubbed too, and that is what makes the deadline cases deterministic.** The stub
+  reads its first arguments, records the deadline it was given, and then either runs the rest
+  through or returns **124** on demand — so "the dump blocked for 300 s" is a scenario line rather
+  than five minutes of a test suite's life. The deadline it recorded is asserted, which is how the
+  numbers in §4.5 banner 7's table are pinned to the script rather than to this document.
+- **`flock` is stubbed to succeed, and one case stubs it to fail**, so the "another live-update is
+  running" refusal is exercised without a second process.
+- **There is no `pg_dump` stub, because the script never calls one.** The dump is
+  `docker compose exec … pg_dump`, so it is the `docker` stub's business; naming that here stops the
+  next reader looking for a stub that should not exist.
+- **`curl` is stubbed, and the probe's loop is not skipped.** A case that wants a target which never
+  answers has `curl` fail every time and asserts that the script gave up at its deadline and took
+  R4 or R5 — with the `sleep` between tries left alone, because a 60-second case is acceptable and a
+  stubbed `sleep` would make the deadline arithmetic untestable. Cases that want a healthy target
+  answer on the first call, which is the common path and is fast.
+
+**The cases.** Each names the branch it is there for, and every one of them exists because a review
+round found that branch by reading rather than by running:
+
+| Case | What it asserts |
+| --- | --- |
+| Happy path, nothing pending | build, `--check`, the intent record, stop, dump, **no** migrator call, `up -d --no-build loom`, one `curl`, `.deployed-sha` = the target, `.update-state` **gone**, Caddy reload skipped by `cmp`, public probe, `.verified-sha` = the target, exit 0 |
+| Happy path, with a migration | the same, plus the migrator call, `.deployed-sha` written **before** the `up` (the call order proves it), and the dump taken between the stop and the migrator |
+| Topology change refused | a `git diff` answer mentioning `postgres`, and: exit 1, **no** build, **no** stop, the checkout not fast-forwarded, no record touched |
+| A 1.2 MB topology diff refused | round 6's F2 as a case rather than a snippet: the stubbed diff is a match on line 1 followed by more than a megabyte, and the guard still refuses — the shape that made the `printf … \| grep -Eq` version report 141 and wave it through |
+| Dirty tree refused | a `git status --porcelain` answer with one line in it: exit 1, nothing stopped, the porcelain output printed |
+| `COMPOSE_PROJECT_NAME` set refused | exit 1 before `flock` is called at all, which the `$CALLS` file shows by being empty |
+| Leftover `.update-state`, case (a) | nothing committed: no fetch, no build, `restore_prev` by the recorded image id, `.update-state` gone, exit non-zero |
+| Leftover `.update-state`, case (b) | everything committed: `.deployed-sha` = the target, `start_target_and_prove`, `.update-state` gone, exit non-zero — **and the same case with the target never answering**, where the record **stays** and `LOOM IS DOWN` is printed, which is round 8's F2 |
+| Leftover `.update-state`, case (c) | a partial apply and an unreadable status: `manual_recovery` printed, the record **left in place**, nothing started |
+| Failed dump → R2's sibling R6 | the dump stub exits non-zero: `restore_prev` starts the container whose image id **is** `PREV_IMAGE`, the probe answers, the record is unchanged and `.update-state` is gone |
+| A dump that blocks on a lock → the handler restores Loom | round 8's F1: the `timeout` stub returns **124** for the dump, and the case asserts the deadline it was given was `--signal=TERM --kill-after=15 300`, that the **next** `docker` call is the bounded `exec … pkill -TERM -f pg_dump`, and that the run then takes R6 and serves again |
+| Migrator timeout → reap → classify | `timeout` returns 124 for the migrator, the reap's calls appear in order (inspect, stop, wait, logs, inspect, rm), and the status read that follows decides R10 or R11 according to the scenario's `--check` answer |
+| Unreapable → R13 | the post-stop `inspect` answers `running`: **no** status read and **no** `up` appear in `$CALLS` at all, and `manual_recovery` is printed — round 7's F1 as an assertion about calls that must be *absent* |
+| Failed start, no migration → restore by image id | the target never answers: the container's `{{.Image}}` differs from `PREV_IMAGE`, so the case asserts the removal, the `docker tag` of `PREV_IMAGE`, the `git show` of `PREV_SHA:deploy/docker-compose.yml`, the `up` through that file, and the probe **before** `.update-state` is removed |
+| Failed start after a committed migration → R5 | `.deployed-sha` = the target, `LOOM IS DOWN` printed, **no** `docker start` and **no** `docker tag` in `$CALLS`, `.update-state` **present** afterwards, exit non-zero |
+| Same-SHA rebuild with a different image id | round 8's F3: `PREV_SHA` equals the target's SHA and the container's `{{.Image}}` is **not** `PREV_IMAGE`, and the case asserts the script reconstructs from `PREV_IMAGE` rather than running `docker start` — the exact walk-through the finding described, which the previous code would have got wrong while printing that the previous deployment was restored |
+| Record failure → `record-failed` | the fake `deploy/` is made unwritable: `record_failed_message` is printed, **nothing** is started, exit non-zero |
+| Caddy reload failure → `.prev` restored | the reload call exits non-zero: `loom.caddy` on disk equals what it was before the run, or is absent when there was no previous file, and exit non-zero |
+| Public health failure → no `.verified-sha` | the public probe fails: `.verified-sha` is **not** written, `.deployed-sha` **is** the target, `.update-state` is gone, exit non-zero — the two-record invariant of round 4's F2 as a case |
+| `pending_tags` over an empty and a non-empty `--check` output | round 5's F2, moved here from §11.6 and kept as §11.2 case 13's shell half: the pipeline prints the expected tags and exits 0, and prints nothing and still exits 0 |
+
+**What the harness deliberately does not assert.** It does not check the *text* of any message
+beyond the few lines a human is meant to act on (`LOOM IS DOWN`, `MANUAL RECOVERY REQUIRED`,
+`restored the previous deployment`), because pinning prose makes a test that fails on every edit to
+prose. It does not assert timings other than the deadlines handed to the stubbed `timeout`. And it
+does not test the two PowerShell wrappers or the two `.ps1` helpers, which are Windows-side and are
+exercised by §9 steps 8 and 12.
 
 ## 12. Security notes
 
@@ -4081,6 +4636,10 @@ Short, and each one a property a reviewer can check.
   read — and does, because the operator needs it — and none of the four needs a mode stricter than
   the directory's. They are nevertheless all git-ignored (§10) for a different reason: they are
   server state, and an untracked file inside the checkout trips the script's own clean-tree check.
+  The same holds of the harness of §11.7: its stubs' recorded call lists hold container names, image
+  ids, short SHAs and journal tags, and it runs against no real credential at all — the `.env` it
+  writes into its temporary directory holds a placeholder, because nothing in it ever reaches a real
+  Postgres.
 - **The copies on Paw's PC live in `C:\Users\paw\.loom`**, inside his own profile, whose inherited
   ACL grants him and the local administrators access and nobody else — the same protection
   `~/.loom/config.json` already relies on for every per-Weave token the CLI stores. **Eight files,
@@ -4149,8 +4708,9 @@ Short, and each one a property a reviewer can check.
   the Lobby's `/w/<43-character secret>` link in full on the boot that creates the Lobby (by design,
   and documented), and Caddy's access log carries `?agent=<key>` query strings. Both are read over
   root SSH by a session whose conversation is a record, so **every** log read in this slice goes
-  through `redact_logs` — the `sed` of §8.1, the same three lines in `live-update.sh`'s seven log
-  reads (§4.5 banner 1), the literal `sed` R5 prints for an operator who has no such function in
+  through `redact_logs` — the `sed` of §8.1, the same three lines in every one of
+  `live-update.sh`'s log reads (§4.5 banner 1), the literal `sed` R5 prints for an operator who has
+  no such function in
   their shell, and §9 steps 5 and 7. §9 step 4's done-check, which is the one that runs
   against the creating boot, does not read a log at all: it matches on the server and prints
   `lobby creation log: ok`. Nor does §9 step 12's, which counts 500s on the server. What this does not do is change what Loom prints — §10 carries that as a
@@ -4186,17 +4746,24 @@ Each with the reason it is out, so that a later slice can pick it up without re-
   so for the length of a dump, a migration, a container start **and the loopback answer that proves
   it** — well under a minute on this
   database — `https://loom.3dbox.dk` answers 502 from Caddy, the web client's stream drops and the
-  reviewer's next poll fails. **The worst case is bounded rather than typical, and the bound now
-  includes the migrator's kill grace, the reaps and the health poll:** 60 s for Postgres to come
-  healthy, 600 s for
-  the migrator plus the 30 s `--kill-after` grace, up to 70 s to reap its container (a 10 s stop and
-  a 60 s `docker wait`), a further 120 s for the recovery's one status read, up to 70 s to reap
-  *that* container if it too had to be killed, and 30 s of loopback polling before a created
-  container is called a failed start — so the arithmetic ceiling of an outage is about
-  **sixteen minutes**, after which Loom is either serving again or R13 has printed why it is not
-  (§4.5 banners 8, 9, 11 and the recovery procedure, §14.7). Round 6's F3 added the two reap terms by
-  making the reap unconditional and round 7's F3 added the health poll by making the start's outcome
-  a proved thing; every term is a constant a reader can find in the listing.
+  reviewer's next poll fails. **The worst case is bounded rather than typical, and since review
+  round 8's F1 it is bounded by deadlines the script enforces rather than by a sum over the steps
+  that happened to have one.** The previous draft's "about sixteen minutes" left out the dump
+  entirely — which had no timeout at all, so the true ceiling was *unbounded*: a `pg_dump` blocking
+  on a conflicting lock never returns, so the exit handler never runs and Loom is down until a human
+  notices. Both `curl` polls had the same defect at a smaller scale, and so did every ordinary
+  `docker` call. The terms now are: `dk`'s **60 s** on every `docker` call after the quiesce; the
+  dump's **300 + 15**; the migrator's **600 + 30**; a reap's seven bounded calls, **420**; the status
+  read's **120**; the loopback probe's **60** absolute deadline with a **20 s** per-call ceiling; and
+  the public probe's **120 + 20**. §4.5 banner 7 lays them out phase by phase and sums the branches:
+  a happy update with nothing pending is **935 s**, one with a migration **1625 s**, a dump that
+  blocks **995 s** before the previous deployment is serving again, and the longest reachable path —
+  a failed migrator, a successful reap, a status read that then fails — is 60 + 675 + 1110 + 600 + 60
+  = **2505 s, about forty-two minutes**, after which Loom is either serving again or R13 has printed
+  why it is not (§4.5 banner 7, §14.7). The number went up because it became true. What remains
+  unbounded is named in banner 7 and is short: `record_deployed`'s `sync -f`, a `gzip` write into a
+  full filesystem, the local filesystem and `git` reads, and the whole pre-quiesce phase, where Loom
+  is still serving.
   **And one more bounded wait sits outside the quiesce:** an invocation that finds
   `deploy/.update-state` spends up to 120 s on its reconciliation's status read before it restores
   anything (§4.5 banner 2) — during which Loom is already down, because it was a killed run that left
@@ -4238,7 +4805,9 @@ Each with the reason it is out, so that a later slice can pick it up without re-
   banner 2).
 - **`deploy/.update-state` is an intent record, not a lock and not a journal.** It says what one run
   set out to do and had not finished; it holds one update at a time, is overwritten by the next run
-  and is deleted the moment the target is healthy and recorded (§4.1, §4.5 banners 2, 7 and 11).
+  and is deleted only after something has been proved — the target answering and recorded, inside
+  `start_target_and_prove`, or the previous deployment answering, inside `restore_prev` (§4.1,
+  §4.5 banners 2, 7 and 10, round 8's F2).
   **What it buys** is the one thing a `trap` cannot: a run killed by a power loss or a `SIGKILL` is
   reconciled by the *next* invocation instead of leaving a stopped Loom nobody can classify (round
   7's F2). **What it does not promise:** it is not a queue, so a reconciliation deploys nothing and
@@ -4309,9 +4878,18 @@ Each with the reason it is out, so that a later slice can pick it up without re-
   that goes green while every visitor gets a 502 (§4.5 banner 13). The escape hatch is `--bootstrap`,
   which skips **only** that check, exists for the pre-DNS first run, and is not a flag to reach for
   when a normal run fails: a failing public check means something is actually wrong.
-- **No automated test of anything in `deploy/`.** §11.6 says which mechanisms are structural rather
-  than tested, and names the one — the reload-failure restore — that nothing exercises at all
-  before the day it is needed.
+- **The automated test of `deploy/` tests one file, and tests it against stubs.** §11.7's harness
+  runs the real `live-update.sh` with stub `docker`, `git`, `curl`, `timeout` and `flock` commands
+  and asserts the branch it took, the records it left and its exit code. What that does **not**
+  promise: it says nothing about Docker's, Compose's, Caddy's or Postgres's real behaviour — a stub
+  that answers the way this spec believes Docker answers is a test of the spec's belief, and where
+  that belief has been wrong before (`up -d` replacing a container, `run` replacing a `command:`,
+  `grep -q` killing its producer) it was wrong in the spec and in the stub together. Nothing in
+  `deploy/` other than `live-update.sh` is covered at all: the compose file, the site block, the two
+  wrappers, the two texts and the two PowerShell helpers are read, and then exercised by the first
+  deployment. §11.6 says which mechanisms are structural rather than tested, and names the one — the
+  reload-failure restore against a **real** Caddy — that nothing exercises before the day it is
+  needed.
 - **No monitoring and no alerting.** Nothing watches the instance, nothing pages anyone, and a Loom
   that has been down since Tuesday is discovered by someone trying to use it. `restart:
   unless-stopped` brings it back after a crash or a reboot, and that is the whole of the
@@ -4320,7 +4898,7 @@ Each with the reason it is out, so that a later slice can pick it up without re-
   ROLLOUT.md is right that an untested restore is a guess, and proving Loom's is its own step. What
   narrows the reliance on it: the ordinary bad day — a migration that fails — does **not** need the
   dump at all, because the run's migrations roll back as one transaction and the script restarts the
-  container it stopped (§4.5's recovery procedure, R10, and §11.1 case 5). The dump is for the day something worse happens, and
+  container it stopped (§4.5's recovery procedure, R10, and §11.1 case 8). The dump is for the day something worse happens, and
   that day has not been rehearsed.
 - **Loom's root `docker-compose.yml`, its `prod` profile and its `Caddyfile` are unchanged**, and
   they remain the standalone install for a box where Loom owns 80 and 443. The gap list in DOGFOOD
@@ -4376,7 +4954,7 @@ Each with the reason it is out, so that a later slice can pick it up without re-
 
 ## 14. Deliberate risks, named
 
-Eight, because each one is a thing that could go wrong on the day and each has an answer that is
+Nine, because each one is a thing that could go wrong on the day and each has an answer that is
 better written down now than discovered then.
 
 1. **Loom shares the shop's front door.** A Loom site block that Caddy refuses would, on a reload,
@@ -4440,8 +5018,8 @@ better written down now than discovered then.
    the same command again gets the same refusal instead of proceeding on a topology the script had
    just called unsafe.
 7. **The quiesce makes every update a short outage, and it puts the instance's availability in one
-   `trap` and one file.** From §4.5 banner 7 to banner 11 Loom is not serving: the public hostname
-   answers 502, and
+   `trap` and one file.** From §4.5 banner 7 to the loopback answer Loom is not serving: the public
+   hostname answers 502, and
    anything that fails in between — Postgres not coming healthy, a failed `pg_dump`, a failed
    migration, a container that starts and never answers, a `set -e` death — would leave it that way
    if nothing restored it. The answer is the
@@ -4469,7 +5047,11 @@ better written down now than discovered then.
    only on success meant the handler returned on its first line over a stopped Loom, with no restart
    and no message. It is cleared again only when `docker inspect` positively answers that the
    container is still running, which is the one case where nothing needs starting; §11.6 rehearses
-   both directions with a `docker` stub. Four things are accepted with it. The outage is real and is stated as a promise not made (§13): seconds per
+   both directions with a `docker` stub. **And round 8's F2 is why there is now exactly one place
+   that ends the quiesce**: `start_target_and_prove`, which the normal path, R7, R11 and the
+   reconciliation's case (b) all call, because two of those four used to remove the intent record on
+   compose's exit code alone — the same mistake as `STARTED`, one level down, on the paths a human
+   meets only after something has already gone wrong. Four things are accepted with it. The outage is real and is stated as a promise not made (§13): seconds per
    update, longer if the dump grows, and nobody is told about it except whoever is watching. The
    recovery depends on the stopped container still being there — which `docker compose stop`
    guarantees and `docker compose down` beside the script would not — and on its image still being
@@ -4478,15 +5060,21 @@ better written down now than discovered then.
    dump path, which is the one F4 broke (§11.6) — and, since round 6, the **torn stop** in both its
    directions, with a stub that makes `docker compose stop` lie — and, since round 7, the **failed
    start** in both its directions and the **killed run**, with a stub that stops the new container
-   behind the script's back and a `kill -9` inside the quiesce (§11.6). **Past banner 10 the stopped
+   behind the script's back and a `kill -9` inside the quiesce (§11.6) — **and, since round 8, the
+   whole control flow against stub commands on every `pnpm test:deploy`** (§11.7), which is what
+   finally makes the branches nobody can stage live — R2, R3, R11, R13 — assertions rather than
+   prose. **Past banner 10 the stopped
    container is gone**, because `up -d loom` replaces it and compose finds its service's container by
    label rather than by name, so the restore there is a reconstruction — the recorded image **id**
-   under the deployed commit's tag, through **that commit's own** compose file (R14). **And the
-   outage the handler can hold
-   is bounded but not short:** 60 s of Postgres wait, 600 s of migrator plus a 30 s kill grace, up to
-   70 s per reap for two reaps, 120 s of status read and 30 s of loopback polling — about **sixteen**
-   minutes in the arithmetic
-   worst case, which §13's first bullet now states rather than leaving to "well under a minute". And the very first deployment has no previous container at
+   under the deployed commit's tag, through **that commit's own** compose file (R14) — **and since
+   round 8's F3 the id is what decides that**, not the tag or the SHA, because a same-SHA rebuild
+   over a newer base image leaves both records telling the truth about a container that holds a
+   different binary. **And the
+   outage the handler can hold is bounded but not short:** 60 s per bounded `docker` call, 300 + 15
+   for the dump, 600 + 30 for the migrator, 420 for a reap, 120 for the status read, 60 + 20 for the
+   loopback probe — **about forty-two minutes** on the longest reachable branch, which §13's first
+   bullet and §4.5 banner 7 now state as an arithmetic sum rather than as "sixteen minutes" over a
+   dump that had no deadline at all (round 8's F1). And the very first deployment has no previous container at
    all, so a failure there leaves the instance down until someone runs §9 step 4 again — acceptable
    only because at that moment the database holds nothing but an empty schema, which is exactly the
    window §9 step 5's text says it is.
@@ -4523,14 +5111,36 @@ better written down now than discovered then.
    manual recovery where the previous draft produced a confident wrong answer, which is more manual
    work and less risk to the event log.
    That is chosen over guessing, for the reason §13 states: a Loom serving against a schema nobody
-   has characterised costs the event log, and a 502 costs an afternoon. **R11 and R13 are
-   unexercised**
-   before the day they happen (§11.6) — they need a torn connection or a partial apply, neither of
-   which can be staged cheaply on this box — **and so are R2 and R3**, which need a filesystem that
-   refuses a tiny write and a daemon that answers selectively; all four are written as numbered steps
-   with their exact commands for that reason. **The comparison depends on `migrate --check`'s output
+   has characterised costs the event log, and a 502 costs an afternoon. **R2, R3, R11 and R13 are
+   not exercised against a real failure before the day it happens** — they need a torn connection, a
+   partial apply, a filesystem that refuses a 41-byte write, or a daemon that answers some questions
+   and not others — **but since round 8's F5 all four are exercised against stubs**, which is what
+   §11.7 is for: a scenario file can hand the script a daemon that answers `running` after a stop,
+   or a `--check` that reports nothing pending after a failed migrator, in a second and repeatably.
+   What that buys is that the *branch* is known to be reachable and to print what this document says
+   it prints; what it does not buy is any claim about how Docker or Postgres really behave in that
+   moment, which is why they are still written as a numbered procedure with their exact commands.
+   **The comparison depends on `migrate --check`'s output
    shape**, which is
-   therefore a contract in §5.2 and an assertion in §11.2 case 10 rather than a convention. And
+   therefore a contract in §5.2 and an assertion in §11.2 case 13 rather than a convention. And
    **R12's partial-apply case should now be unreachable**, because `assertTransactionSafe` refuses the
    files that could produce it (§5.1) — but it is implemented anyway, and it routes to R13, because
    "should be unreachable" is exactly the reasoning that produced this finding in the first place.
+9. **The journal check is stricter than drizzle's own migrator, and that asymmetry is the price of
+   round 8's F4.** `migrationStatus` refuses a journal whose `when` values are not strictly
+   increasing and a `__drizzle_migrations` table that is not an exact `(created_at, hash)` prefix of
+   it (§5.1); drizzle's `migrate()` applies whatever has a `when` above the table's maximum and
+   would happily skip a backdated entry. Three things follow, all accepted. **A repository state
+   drizzle tolerates now stops the deployment**, at banner 6, with Loom still serving — which is the
+   whole point, but it means the first long-lived branch to merge after a newer migration will be
+   met by a refusal rather than a deployment, and the remedy is a regenerated migration, which is a
+   commit and a merge and therefore Paw's word again. §5.1 and CONTRIBUTING say what to do; nobody
+   has done it yet. **The check depends on computing the same hash drizzle inserts**, and it takes
+   it from drizzle's own `readMigrationFiles` for exactly that reason — but a drizzle upgrade that
+   changes how the hash is derived would turn every clean database into "drift" and refuse every
+   boot and every update. §11.1 case 4 is the alarm: it applies the real migrations and reads the
+   rows back, so the upgrade that breaks the agreement fails a test rather than a deployment. And
+   **anyone who runs `drizzle-kit migrate` or drizzle's `migrate()` by hand bypasses all of it**,
+   because the refusal lives in `runMigrations` and in the migrate entry, not in the library. That is
+   stated rather than fixed: the repository has one migration path and this slice makes it refuse, and
+   a hook that could police a developer's own shell is not something this design can promise.
