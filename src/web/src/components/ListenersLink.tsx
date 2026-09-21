@@ -35,8 +35,8 @@ export function ListenersLink({ state, active, onToggle }: {
       {/* Always a button, never an anchor: it toggles a region of the page it is already on, and an
           anchor could be middle-clicked into a full page load. The address bar is put right by the
           push of spec §4.2, which is the only place that knows whether this browser may have one.
-          `aria-current` rather than `aria-pressed`, to match the thread buttons beside it
-          (ThreadList.tsx:50): one convention for "this is the one you are looking at". */}
+          `aria-current` rather than `aria-pressed`, to match `ThreadList`'s thread buttons beside
+          it: one convention for "this is the one you are looking at". */}
       <button type="button" class="listeners-line-link" aria-current={active ? "true" : undefined}
         onClick={() => onToggle()}>{label}</button>
       {state.listenerCount === undefined && state.listenerCountError && <span class="muted">count unavailable</span>}

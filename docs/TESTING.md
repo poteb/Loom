@@ -133,6 +133,10 @@ The figure before that was 1208 in 60 (core 305/22, web 484/10, server 141/9, cl
 cli 68/5, client 37/4, mcp-tools 34/1), so the listeners work as a whole has added 489 tests and six
 files. Counts change with every feature; run the suites to see current numbers.
 
+Since then, on `fix/lobby-listeners-no-thread-mark`: the no-Thread-mark fix adds **three web tests
+and no file** — `web` is **749 in 14** from `npx vitest run` in `src/web`, with `pnpm -r typecheck`
+clean. No other package was run for that fix, because it touches no other package.
+
 ## Manual smoke tests
 
 Six things the automated suites cannot cover, because they need a live Claude Code session, a live
@@ -449,8 +453,13 @@ storage and the site-data block of step 10 are keyed by).
    requests, and this line now marked as the current view) and the connection all stay exactly as
    they were — only the **main area** swaps, from the Thread to the directory under a **Listeners**
    heading. The connection indicator must not blink through *connecting*: nothing was reloaded.
-   The address bar reads `/lobby/listeners`. Press the line again to go back to the Thread, and
-   confirm the **half-written message is still in the composer**, untouched — the composer is kept
+   The address bar reads `/lobby/listeners`. With the directory open, **no Thread is marked** in the
+   Thread list: the sidebar line is the only entry in that sidebar shown as the current view, and
+   **General** is drawn like any other Thread (2026-09-21 — the first run of this step found both
+   marked at once). Press the line again to go back to the Thread, and confirm three things: the
+   **mark returns** on the Thread that was selected all along, with no click on it — the selection
+   was kept, only its mark was withheld — the sidebar line is no longer marked, and the
+   **half-written message is still in the composer**, untouched, because the composer is kept
    mounted and merely hidden while the directory is open. With the directory open, **scroll to the
    last card**: the **header**, the **sidebar** and the **connection indicator** must not move, and
    the page itself must not grow a scrollbar — only the directory scrolls, inside the layout.
@@ -531,7 +540,17 @@ storage and the site-data block of step 10 are keyed by).
     wearing it is the single worst failure this page can have. Start the server again and confirm
     the next control change recovers.
 
-*Last run 2026-09-20* on `main` at `62adf4a`, in Firefox, against a dev Lobby that already held two
+*Last run 2026-09-21* on `main` at `cbab671`, in Firefox — the first run against the rewritten test,
+and it found a **product defect** in step 3: with the directory open the Thread list still marked
+**General** beside the sidebar line's own mark, so two entries of one sidebar claimed to be the
+current view. It is fixed on `fix/lobby-listeners-no-thread-mark` — the Thread list marks nothing
+while the directory is open, the selection itself is kept — and step 3 above now carries the check.
+**Finding 4 of the 2026-09-20 run was seen again**, the nested effort row pushing the next model
+chip far to the right; it stays with the owner's separate design session, as
+[KNOWN-ISSUES.md](KNOWN-ISSUES.md) records. How far past step 3 this run went is not recorded here,
+so the 2026-09-20 paragraph below remains the only step-by-step record of the whole test.
+
+*Previously run 2026-09-20* on `main` at `62adf4a`, in Firefox, against a dev Lobby that already held two
 listeners from smoke test 4 (so every count read 62, not 60): **12 of 12 passed, no product defect.**
 **This is the run that produced the listeners-view spec**
 ([2026-09-20-loom-lobby-listeners-view-design.md](superpowers/specs/2026-09-20-loom-lobby-listeners-view-design.md)),

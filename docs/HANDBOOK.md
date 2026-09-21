@@ -235,12 +235,14 @@ enforced; this is the index.
 | `.superpowers/sdd/<plan>/progress.md` | The per-plan ledger: task outcomes, commits, totals, deviations, recorded minors. The recovery map. |
 | `Tasks/` | Paw's untracked docket of queued work. |
 
-### The current state — 2026-09-20
+### The current state — 2026-09-21
 
-`main` is at **df8cf35**; shipped through **PR #24** (the dev-cycle decisions in
-[DOGFOOD.md](DOGFOOD.md)). One branch is in play: **`feat/lobby-listeners-view`**, the approved
-listeners-view plan executed in a worktree, open as **[PR #25](https://github.com/poteb/Loom/pull/25)**
-and **awaiting Paw's merge word**.
+`main` is at **cbab671**; shipped through **[PR #25](https://github.com/poteb/Loom/pull/25)**, the
+listeners view, merged on 2026-09-21 after Paw's word. One branch is in play:
+**`fix/lobby-listeners-no-thread-mark`** — the fix for what Paw's first run of smoke test 6 on `main`
+found: with the directory open, the Thread list still marked its selected Thread beside the sidebar
+line's own mark, so two entries of one sidebar claimed to be the one being looked at. The Thread
+list now marks nothing while the directory is open; the selection itself is kept.
 
 **PR #25 is the first pull request reviewed through Loom.** On the evening of 2026-09-20 the review
 was requested in a Loom Thread, ChatGPT picked it up on the next beat of its own five-minute `inbox`
