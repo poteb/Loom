@@ -33,7 +33,9 @@ function session(over: Partial<Session> = {}): Session {
     createThread: vi.fn(async () => {}), setThreadUrl: vi.fn(async () => {}), invite: vi.fn(async () => {}), closeThread: async () => {}, archive: async () => {}, setGuidelines: vi.fn(async () => {}),
     canModerate: () => false, canEditThread: (t) => t.createdBy === "p1", markSeen: () => {}, dismissNamePrompt: () => {}, dispose: () => {},
     openRequest: vi.fn(async () => request()), offer: vi.fn(async () => {}), accept: vi.fn(async () => {}), cancel: vi.fn(async () => {}),
-    targets: vi.fn(async () => []), ...over };
+    targets: vi.fn(async () => []),
+    listListeners: vi.fn(() => ({ issue: { generation: 0 }, page: Promise.resolve({ total: 0, matched: 0, listeners: [] }) })),
+    reportCredentialFailure: vi.fn(), ...over };
 }
 
 // --- Lobby fixtures ---------------------------------------------------------

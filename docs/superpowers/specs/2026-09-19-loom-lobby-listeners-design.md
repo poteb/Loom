@@ -135,6 +135,8 @@ participant and not a listener.
    serve anyone, their owner only, or a named list.
 3. He types `fable` in the search box. 250 ms later the page says
    **Showing 12 of 12 matches (1,204 listeners)** and the chips have re-counted.
+   *(Reworded 2026-09-20 — §5.3's note: the line now reads **Showing 12 of 12 matches (out of 1,204
+   listeners)**.)*
 4. He clears the search, picks **opus-5** and then **high** beside it, and **shell** under tools.
    **Showing 50 of 87 matches**; "Show more" brings the next 50 without moving the first.
 5. He copies the address and pastes it to a colleague, who sees the same 87.
@@ -535,6 +537,8 @@ pair is the key, and the tie-break is what makes it monotonic.
   shows, and it is the number a caller asks for with `limit: 0` and no filters.
 - **`matched`** — the same predicate plus `q` and every filter. `matched === total` when nothing is
   filtering, and the header says "Showing 50 of 87 matches (1,204 listeners)".
+  *(Reworded 2026-09-20 — §5.3's note: the line now reads "Showing 50 of 87 matches (out of 1,204
+  listeners)". The two numbers and what they mean are unchanged.)*
 
 Both are `count(*)`, not `listeners.length`: a page of 50 out of 87 must not report 50, which is
 exactly the trap `LobbySummary` fell into for open requests (KNOWN-ISSUES, `LobbySummary.tsx`).
@@ -1379,6 +1383,13 @@ import from core (CONTRIBUTING §"Layering": adapters carry types only), and the
 
 ### 5.1 The Lobby sidebar
 
+> **Amended 2026-09-20** by
+> [2026-09-20-loom-lobby-listeners-view-design.md](2026-09-20-loom-lobby-listeners-view-design.md)
+> **§8** (with §2's amendment table). The count, its four states and its Lobby gate below are
+> **unchanged**. What is gone is the line's link-or-button pair: it is **always a button** now, and
+> it toggles a view rather than opening a page, carrying `aria-current` while the directory is the
+> main area. `openListenersInPlace` and its whole in-place argument are deleted.
+
 `ProfileCards` is deleted from [`WeaveView`](../../../src/web/src/components/WeaveView.tsx)'s
 sidebar and replaced by `ListenersLink` — same file position, same Lobby gate
 (`state.lobby?.weaveId === state.weave?.id`, which is id-based and needs no change):
@@ -1468,6 +1479,15 @@ Listeners (1,204)          ← a link to /lobby/listeners
 
 ### 5.2 The route
 
+> **Superseded 2026-09-20** by
+> [2026-09-20-loom-lobby-listeners-view-design.md](2026-09-20-loom-lobby-listeners-view-design.md)
+> **§4** (with §2's amendment table). Read §4 instead of the table below. `Route` loses its
+> `listeners` kind and `RouteDeps` its third mirror; `/lobby/listeners` becomes the **Lobby** route
+> carrying an initial view (`Route.lobby.view`), and `App` renders one `<WeaveRoute lobbyRoute/>` for
+> both of the Lobby's addresses. `ListenersRoute.tsx` is deleted whole. The **server's** two static
+> paths and `main.ts`'s boot line are exactly as this section states and did not change — that is
+> what makes the deep link keep working, and `static.test.ts` needed no edit.
+
 | Where | Change |
 | --- | --- |
 | [`app.tsx`](../../../src/web/src/app.tsx) `Route` | `+ { kind: "listeners" }` |
@@ -1481,6 +1501,26 @@ Still **no router library** (ARCHITECTURE §9), still no SPA fallback: an unknow
 API's JSON `{ code: "not_found" }`, which `static.test.ts` asserts.
 
 ### 5.3 The page
+
+> **Amended 2026-09-20, in three places**, by
+> [2026-09-20-loom-lobby-listeners-view-design.md](2026-09-20-loom-lobby-listeners-view-design.md)
+> **§3.3 and §9** (with §2's amendment table). Everything else in this section — search with its
+> debounce, the four facet controls, sort, the grid, **Show more**, and the empty / loading / error
+> states with "an error is never an empty state" — stands **verbatim**. The three:
+> 1. **The page header is deleted** — the wordmark, the `<h1>Listeners</h1>` and **Back to the
+>    Lobby** all go. The directory is a region of the Lobby page under an `<h2>Listeners</h2>`, and
+>    the way back to the Thread is the sidebar. `ListenersPage` takes `{ session }` and nothing else.
+> 2. **The counts line is reworded** (new spec §9, CR2). Wherever this section or the diagram below
+>    shows `Showing 50 of 87 matches (1,204 listeners)`, the line now reads
+>    **`Showing 50 of 87 matches (out of 1,204 listeners)`** — "out of" added, so both relations are
+>    named in words. The collapsed form when `matched === total` is unchanged
+>    (`Showing 50 of 1,204 listeners`), both stay locale-formatted, and a failed query or an unknown
+>    number still renders **nothing** there rather than a zero. The same rewording applies to the two
+>    earlier occurrences in this document (§1's success scenario and §2.6) and to the plan's Task
+>    note, none of which is rewritten beyond this remark.
+> 3. **Clear filters** is **always rendered**, beside the sort controls, `disabled` only while
+>    everything is at its default, and it now resets **`sort` and `dir`** along with the rest — this
+>    section keeps the sort, and the new spec overrides it.
 
 `src/web/src/components/listeners/ListenersPage.tsx` (plus small siblings: `FilterChips.tsx`,
 `SearchBox.tsx`), mounted by `ListenersRoute.tsx` which owns the credential and the query, the way
@@ -1552,6 +1592,20 @@ API's JSON `{ code: "not_found" }`, which `static.test.ts` asserts.
 
 ### 5.4 The query string, and which history API touches it
 
+> **Amended 2026-09-20** by
+> [2026-09-20-loom-lobby-listeners-view-design.md](2026-09-20-loom-lobby-listeners-view-design.md)
+> **§4** — §4.2, §4.3 and §4.5 (with §2's amendment table). The **codec stands word for word**: the
+> same four keys, the same both-directions rule, the same "nothing is dropped silently". What
+> changes is the rule around it. It is now one promise — **never `pushState` unless leaving is
+> safe** — under which the page's own query string may be rewritten with `replaceState` **whenever
+> the path is `/lobby/listeners`**, whatever `leavingIsSafe` says, because replacing the path you are
+> already on adds no entry and takes away no address (§4.5). `writeSearch` **loses its `inPlace`
+> parameter** and gains nothing in its place (§4.3). And `pushState` becomes legal — for the **view**
+> change alone, made in `WeaveMount`, only when the requested view actually changed, the current path
+> is one of the Lobby's, and `leavingIsSafe` holds at the moment the handler runs (§4.2). Back and
+> Forward are heard by one `popstate` listener, which re-seeds the directory from the entry it landed
+> on (§4.4).
+
 The search, the four filters and the sort live in the query string, in the same encoding the REST
 call uses (§4.1): `?q=…&filter=<json>&sort=…&dir=…`. `limit` and `cursor` do **not** — a link should
 reproduce a *view*, not a scroll position, and pasting someone else's cursor is meaningless.
@@ -1593,6 +1647,21 @@ So the rule here is precise, and narrower than "no history API":
   copy the link *to*. Recorded as an assumption (§12.7).
 
 ### 5.5 Credentials, live updates and failure
+
+> **Superseded 2026-09-20** by
+> [2026-09-20-loom-lobby-listeners-view-design.md](2026-09-20-loom-lobby-listeners-view-design.md)
+> **§6** (with §2's amendment table). Read §6 instead of the credential rules below. The route's own
+> resolver, its join form, its 401 rule and its refused-secret terminal state are all **deleted**:
+> the **session** owns all four, exactly as it already did for `/lobby`. What survives is the
+> principle that a recovery is **authorised by the view** — the only thing that knows whether the
+> failed query is still wanted — which is why the session exposes **two** calls rather than one:
+> `listListeners(query)` returns `{ issue, page }` and performs no side effect on either outcome, and
+> `reportCredentialFailure(e, issue)` is called by the view only after its own liveness guard and is
+> refused unless `issue.generation` is still the session's.
+>
+> **Unchanged:** the "list changed" hint, the not-persisting bar, and all three of this section's own
+> later amendments — query-string validation, **Show more**'s `facets: false`, and the refused
+> cursor.
 
 - **Getting a credential.** Exactly as `/lobby`: resolve the Lobby's id with the public
   `client.getLobby()`, then read this browser's entry for it and choose a reader with
@@ -1713,6 +1782,14 @@ render as chip labels — text, through JSX, with the same guarantee.
 path may appear in an access log and carries only the filter.
 
 ## 7. State and error handling
+
+> **Unchanged, with one correction, 2026-09-20** —
+> [2026-09-20-loom-lobby-listeners-view-design.md](2026-09-20-loom-lobby-listeners-view-design.md)
+> **§2** records this section as *unchanged* except that the page's "**four** independent cells"
+> below are now **three**: the Lobby pointer and the credential are the **session's**, not the
+> view's, so the page holds only the current query's answer and the "list changed" hint. Every other
+> rule here — no new error code, a failure in one cell never blanking another, and above all **an
+> error is never an empty state** — stands exactly as written and governs the view too.
 
 - **No new error code.** `validation`, `invalid_token`, `forbidden`, `weave_not_found` cover
   everything (§4.2).

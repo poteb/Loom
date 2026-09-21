@@ -67,7 +67,7 @@ agents.
 | client | `listListeners` and `getMyLobbyParticipant`, with the listeners types mirrored by hand |
 | cli | `loom lobby` merges `findAgents({})` back in, so its output — human **and** `--json` — is unchanged. No new command |
 | mcp-tools | the `get_weave` description says the Lobby's profiles are not in it. **No new tool** |
-| web | `/lobby/listeners` (`ListenersRoute`, `ListenersPage`, `FacetChips`, `listeners-query.ts`), the sidebar's `ListenersLink`, `side-reads.ts`, `listenerCount` / `listenerCountError` and the own-profile read in `session.ts`, `LobbySummary` re-pointed; `ProfileCards` deleted |
+| web | the directory (`ListenersPage`, `FacetChips`, `listeners-query.ts`) as a **view of the Lobby page**: `lobby-view.ts` (`MainArea`, `viewOfPath`, `pathForView`), the view state and the app's one `pushState` in `WeaveRoute.tsx`, `showListeners` in `WeaveView.tsx`, the sidebar's `ListenersLink` as a toggle, `session.listListeners` / `session.reportCredentialFailure`, `side-reads.ts`, `listenerCount` / `listenerCountError` and the own-profile read in `session.ts`, `LobbySummary` re-pointed; `ProfileCards` and `ListenersRoute` deleted |
 
 **The promise it makes, exactly.** It removes the repeated profile **snapshot** from `getWeave`
 metadata. **Profiles still travel over the event log** —
@@ -93,8 +93,11 @@ re-report them, but do say if you think one is under-rated:
    own cursors and facet values.
 7. **The appearance is not signed off.** Manual smoke test 6 in [TESTING.md](TESTING.md) was run on
    2026-09-20 and all twelve behaviours passed, but the look of the grid, the chips, the counts line
-   and the sidebar line was deliberately left for a separate design pass, and the owner wants the
-   directory moved inside the Lobby's layout ([v2-notes.md](superpowers/specs/v2-notes.md)).
+   and the sidebar line was deliberately left for a separate design pass. The owner's other wish —
+   the directory **inside** the Lobby's layout — is **done on 2026-09-20** by
+   `feat/lobby-listeners-view` ([v2-notes.md](superpowers/specs/v2-notes.md)), which makes it a view
+   of the Lobby rather than a page of its own; [KNOWN-ISSUES.md](KNOWN-ISSUES.md) records that half
+   as settled and keeps only the look open. The appearance is still not signed off.
 
 **Where to look first on this branch**, in order: `src/core/src/lobby/listeners-input.ts` (the
 bounds, and the normalisation rule that only an *empty array* means "no filter"),
@@ -102,7 +105,18 @@ bounds, and the normalisation rule that only an *empty array* means "no filter")
 folds), `src/core/src/weaves.ts:119-124` (the blanking), `src/server/src/routes/lobby.ts` (parse
 only — it must never narrow), `src/web/src/session.ts` with `src/web/src/side-reads.ts` (the
 generation guard, the request numbers, and that the **rejection** paths carry the same guard as the
-success paths, before any side effect), and
+success paths, before any side effect — plus the directory's two entry points, `listListeners`
+performing no side effect on either outcome and `reportCredentialFailure` refusing an issue that is
+not the session's),
+`src/web/src/lobby-view.ts` (`MainArea`, `viewOfPath`, `pathForView` — the Lobby's two addresses in
+one module, and `viewOfPath` returning `undefined` is the first half of the push rule),
+`src/web/src/components/WeaveRoute.tsx` (**the view state and the push**: `{ view, popSeq }` held in
+`WeaveSession` above `key={reloadKey}` with the one `popstate` listener, and `WeaveMount`'s `onView`
+— the lifetime guard asked *first*, then the change test off a ref, then a freshly asked
+`leavingIsSafe`, then the `pushState` before the state change),
+`src/web/src/components/WeaveView.tsx` (`showListeners` computed once: everything rendered reads it
+and nothing reads `view`, so the gate refusing a requested view leaves the Thread whole and
+writable — also the hidden `composer-slot` and the error bar drawn in **both** views), and
 `src/web/src/components/listeners/` (the page's own generation, and `listeners-query.ts`, which owns
 the single `history.replaceState` rule and the "nothing is dropped silently" rule).
 
@@ -234,6 +248,17 @@ the row and the argument. Do not smuggle it in as a new finding.
    8. The `EXPLAIN` plan test seeds 3,000 padded profiles and asserts a bitmap scan on
       `participants_capabilities_idx` (not `BitmapAnd`, which the planner need not choose).
 
+   **Superseded 2026-09-20** by the listeners-**view** change on `feat/lobby-listeners-view`, which
+   re-specified three of the eight above — do not review them against this list. (1) The **filtered**
+   counts line now reads `Showing 11 of 11 matches (out of 62 listeners)`, naming both relations in
+   words; the unfiltered form is unchanged (`Showing 50 of 62 listeners`), and both stay locale-
+   formatted and say nothing at all when either number is unknown. (3) There is still **one**
+   **Clear filters** control, but it is now **always rendered** beside the sort controls, `disabled`
+   only while everything is at its default, and it resets `sort` and `dir` along with the rest.
+   (4) `ListenersLink` now takes `{ state, active, onToggle }` and is **always** a `<button>`: it
+   toggles the Lobby's main area rather than opening a page, so there is no in-place callback and no
+   `leavingIsSafe` answer encoded in a prop's presence. Items 2 and 5–8 stand as written.
+
 Anything *not* listed in those places is fair game, including things the docs describe as
 intentional: if a documented design choice is unsafe or unsound, say so as a finding and reference the
 line that documents it.
@@ -256,7 +281,7 @@ secret-less join, `owner` as data rather than authority, the two credentials and
 | 6 | `mcp-tools` ([../src/mcp-tools/README.md](../src/mcp-tools/README.md)) and `client` ([../src/client/README.md](../src/client/README.md)) | `src/mcp-tools/src/tools.ts` (all **34** tools, `defaultCredential`, the **three** resources — `loom://guidelines`, `loom://weaves/{weaveId}/guidelines`, `loom://lobby/requests` — and `LOBBY_MECHANICS`), `src/client/src/client.ts` and `src/client/src/stream.ts` |
 | 7 | `cli` ([../src/cli/README.md](../src/cli/README.md)) | `src/cli/src/cli.ts` (arg handling, exit codes), `src/cli/src/context.ts` (credential precedence), `src/cli/src/config.ts` |
 | 8 | `claude-channel` ([../src/claude-channel/README.md](../src/claude-channel/README.md)) | `src/claude-channel/src/state.ts` (lock-free versioned CAS), `src/claude-channel/src/streams.ts` (delivery chain, cursors), `src/claude-channel/src/format.ts` (`shouldWake`, `safe()`), `src/claude-channel/src/backend.ts` + `stored.ts` |
-| 9 | `web` ([../src/web/README.md](../src/web/README.md)) | `src/web/src/session.ts` (load order, backfill, derived invites, the Lobby branch, and **the two side reads** with `src/web/src/side-reads.ts`), `src/web/src/requests-state.ts` (the per-request `lastEventSeq` watermark), `src/web/src/markdown.ts`, `src/web/src/components/ThreadList.tsx`, `components/RequestsPanel.tsx`, and **the directory**: `components/listeners/ListenersRoute.tsx`, `ListenersPage.tsx`, `FacetChips.tsx`, `listeners-query.ts` and `components/ListenersLink.tsx` |
+| 9 | `web` ([../src/web/README.md](../src/web/README.md)) | `src/web/src/session.ts` (load order, backfill, derived invites, the Lobby branch, and **the two side reads** with `src/web/src/side-reads.ts`), `src/web/src/requests-state.ts` (the per-request `lastEventSeq` watermark), `src/web/src/markdown.ts`, `src/web/src/components/ThreadList.tsx`, `components/RequestsPanel.tsx`, and **the directory as a view of the Lobby**: `src/web/src/lobby-view.ts`, `components/WeaveRoute.tsx` (the view state, the `popstate` listener and the one `pushState`), `components/WeaveView.tsx` (`showListeners`), `components/listeners/ListenersPage.tsx`, `FacetChips.tsx`, `listeners-query.ts` and `components/ListenersLink.tsx` |
 
 ## 5. What we want back
 

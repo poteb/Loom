@@ -1,4 +1,5 @@
-import { LoomClient, LoomClientError, type Lobby, type LoomEvent, type LoomRequest, type OpenRequestInput,
+import { LoomClient, LoomClientError, type ListenersPage, type ListenersQuery, type Lobby, type LoomEvent,
+  type LoomRequest, type OpenRequestInput,
   type Participant, type StreamHandle, type Thread, type Weave } from "@loom/client";
 import type { KeyValueStorage, WriteResult } from "./storage.js";
 import {
@@ -58,6 +59,9 @@ export type SessionState = {
 /** A Weave this browser holds a token for: what an Open-request form's target pickers offer. */
 export type TargetWeave = { weaveId: string; title: string; token: string; threads: { id: string; name: string }[] };
 
+/** What a query was issued under — which reader asked. Opaque to the view: it exists to be handed back. */
+export type QueryIssue = { readonly generation: number };
+
 export type Session = {
   getState(): SessionState; subscribe(fn: () => void): () => void;
   load(): Promise<void>; join(name: string): Promise<void>; selectThread(id: string): void;
@@ -72,6 +76,12 @@ export type Session = {
   accept(requestId: string, participantIds: string[]): Promise<void>;
   cancel(requestId: string): Promise<void>;
   targets(): Promise<TargetWeave[]>;
+  // --- The listeners directory (spec §6.1). Two entry points, because reading the directory is not
+  // the same act as spending the page's one credential recovery, and only the second needs an owner.
+  /** A pure read: the page is the caller's, and this performs no side effect on either outcome. */
+  listListeners(query: ListenersQuery): { issue: QueryIssue; page: Promise<ListenersPage> };
+  /** Told of a rejection by a caller that has **already** established the query is still wanted. */
+  reportCredentialFailure(e: unknown, issue: QueryIssue): void;
 };
 
 /** The server's own page maximum (`MAX_PAGE_LIMIT`): what "everything" is asked for as. */
@@ -913,6 +923,21 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
         } catch { /* not a target this browser can offer */ }
       }
       return out;
+    },
+    listListeners(query) {
+      // Both read before the request leaves, in one synchronous step: `issue` names the very reader
+      // this asks with. No guard on the answer, because there is nothing to guard — the session does
+      // nothing with it. The page is the view's, and the view's own guard decides whether it is wanted.
+      const issue = { generation };
+      return { issue, page: reader.listListeners(query) };
+    },
+    reportCredentialFailure(e, issue) {
+      // The reader this query was issued under is not the one the session holds now: a newer load has
+      // replaced it, or the session is disposed. Recovering here would retire a credential on the
+      // strength of a request that proves nothing about the one in hand.
+      if (disposed || issue.generation !== generation) return;
+      const recovered = recoverFromCredentialFailure(e);
+      if (recovered?.reload) void doLoad();
     },
     canModerate: () => state.me?.participant.role === "keeper" && !state.weave?.archivedAt,
     canEditThread: (t) => !!state.me && !state.weave?.archivedAt && !t.closedAt

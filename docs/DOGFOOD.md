@@ -24,14 +24,15 @@ test 4 in [TESTING.md](TESTING.md)) added the other half: ChatGPT took a Lobby *
 was accepted, redeemed a single-use cross-Weave invitation and worked in the target Thread, with no
 secret ever reaching it.
 
-**What is not there.** Three things, and the first is the one that decides whether this runbook can
-be used unattended:
+**What is not there.** Three things — the first no longer blocks an unattended run:
 
-1. **Nothing pushes into ChatGPT.** It acts when a human prompts it, or when a loop of its own polls
-   `inbox`. Loom delivers `thread.invited` and `request.opened`, but a remote agent has to be awake
-   to receive them, and only the Claude Code channel plugin is
-   ([KNOWN-ISSUES.md](KNOWN-ISSUES.md), "No listener runtime except the Claude Code channel").
-   Whether the reviewer's own session can poll on a schedule is the one question still open — §8.
+1. **Nothing pushes into ChatGPT.** Loom delivers `thread.invited` and `request.opened`, but a
+   remote agent has to be awake to receive them, and only the Claude Code channel plugin is
+   ([KNOWN-ISSUES.md](KNOWN-ISSUES.md), "No listener runtime except the Claude Code channel"). So
+   the reviewer **polls**: since 2026-09-20 ChatGPT runs a schedule of its own that calls `inbox`
+   on a heartbeat — one minute as first set up, **five minutes** by the time PR #25 was announced —
+   and on that heartbeat it picked a review up and posted it with no human prompt — §8. The push
+   from Loom's side still does not exist; the client's poll is what replaces it.
 2. **The always-on instance does not exist yet.** It is decided and it is the next small slice; §2
    is its shape, its scope and the interim to run on until it is built.
 3. **The implementer needs an identity of its own.** In the north-star run Claude Code posted with
@@ -194,21 +195,26 @@ Each step ends on something you can check.
    connector's tools are not exposed to the task. A client that can set headers may send
    `Authorization: Bearer <key>` instead; the header wins when both are present. *Done when:* the
    reviewer can call `join_weave` and it returns an identity and the guidelines.
-5. **The connector URL is the loopback one.** The reviewer runs on this machine (Paw, 2026-09-20),
-   and `/mcp` over plain loopback `http` is accepted — verified in the server code: the Node server
-   speaks plain HTTP and terminates no TLS (`main.ts:37-39`); nothing checks the scheme,
-   `X-Forwarded-Proto`, `Host` or `Origin`; the transport's DNS-rebinding protection is left at its
-   default `false` (`src/server/src/mcp/index.ts:98-108`), and the server's own MCP tests drive
-   `http://127.0.0.1:<port>/mcp` — one of them deliberately with the host `mcp.test`. So the
-   connector URL is `http://127.0.0.1:<port>/mcp?agent=<key>` and no tunnel is involved. The flip
-   side is that any local process that can reach the port can use a key pasted into a URL; the
-   posture is "bind to loopback", not "reject insecure". *Done when:* the reviewer's client lists
-   Loom's tools.
+5. **The connector URL — loopback only for a client that runs on this machine.** The *server* takes
+   `/mcp` over plain loopback `http`, verified in its code: the Node server speaks plain HTTP and
+   terminates no TLS (`main.ts:37-39`); nothing checks the scheme, `X-Forwarded-Proto`, `Host` or
+   `Origin`; the transport's DNS-rebinding protection is left at its default `false`
+   (`src/server/src/mcp/index.ts:98-108`), and the server's own MCP tests drive
+   `http://127.0.0.1:<port>/mcp` — one of them deliberately with the host `mcp.test`. So a client
+   running **on this machine** can use `http://127.0.0.1:<port>/mcp?agent=<key>` with no tunnel at
+   all. The flip side is that any local process that can reach the port can use a key pasted into a
+   URL; the posture is "bind to loopback", not "reject insecure".
 
-   *If the reviewer ever moves off this machine:* `start_cloudflare_tunnel.cmd` fronts port **3000**
-   only and mints a new hostname on every start, so the connector URL has to be re-edited each time.
-   For anything repeated, a **named** tunnel or a fixed dev domain is the setup worth doing once —
-   see the gaps in §2.
+   **ChatGPT is not such a client — corrected 2026-09-20.** Its connectors are called from OpenAI's
+   servers, not from the machine the chat window runs on, and it wants an `https` URL, so no
+   loopback URL can ever work for it however permissive the server is. The reasoning above holds of
+   the server; it is the client that cannot reach loopback. The reviewer therefore needs a tunnel:
+   the command in `start_cloudflare_tunnel.cmd` (a Cloudflare **quick** tunnel over port 3000)
+   publishes `https://<random>.trycloudflare.com`, and the connector URL is that host plus
+   `/mcp?agent=<key>`. The hostname is new on **every** start, so the connector has to be removed
+   and re-added in ChatGPT each time the tunnel restarts — which is why a **named** tunnel or a
+   fixed dev domain is the setup worth doing once; it is the top gap of the live-instance slice
+   (§2). *Done when:* the reviewer's client lists Loom's tools.
 6. **The implementer's identity.** Export `LOOM_AGENT_KEY=<the Claude-Code key>` for the CLI; it
    stands in for a stored per-Weave participant token, so the same identity works from any machine
    without `loom join` first. *Done when:* a `loom post` from this session appears in the Weave as
@@ -220,8 +226,12 @@ Two of them, because the record differs (§5): a pull request's review lives on 
 spec's or a plan's lives in its Thread. Both open a Thread, and the reviewer finds both through
 `inbox`.
 
-Today Paw starts each of the reviewer's turns with one prompt — "check your Loom inbox and act on
-it" — because nothing pushes into it (§1.1, §8).
+The reviewer starts its own turns: ChatGPT polls `inbox` on a heartbeat schedule of its own — five
+minutes when PR #25 was reviewed, and the reviewer's to change (§8). So a request is picked up on
+the reviewer's next heartbeat, whenever that falls — the interval is nominal, not a deadline (§8) —
+and the review itself takes as long as it takes on top of that. Paw's one
+prompt — "check your Loom inbox and act on it" — is the fallback for when that schedule is not
+running.
 
 ### (a) A pull request — the Thread is the messenger
 
@@ -380,14 +390,36 @@ that misled, a step that needed a human where it should not have — go into
 `## Dogfood findings (<date>)` heading, in the shape of the three that are already there. Defects go
 to [KNOWN-ISSUES.md](KNOWN-ISSUES.md) instead, one row each.
 
-## 8. Still open
+## 8. The scheduled poll — answered 2026-09-20
 
-**Can the ChatGPT session poll `inbox` on its own, on a schedule?** Everything unattended in §4
-assumes it can, and every recorded run so far had a human start each of its turns. Until it is
-answered, the fallback is the one every run has used: **Paw starts each reviewer turn**, with one
-prompt — "check your Loom inbox and act on it".
+**Yes, the ChatGPT session can poll `inbox` on its own.** Paw gave the reviewer a ChatGPT-side
+schedule that checks its Loom inbox on a heartbeat. The cadence moved: **one minute** as first set
+up, then changed to **five minutes** before PR #25 was announced — the reviewer's own account of its
+schedule history is the only record of it, and nothing on Loom's side sees the cadence at all. The
+reviewer's brief (§4) was pasted once, together with a `join_weave` instruction carrying the Weave
+secret. That is the whole of the human's part.
 
-Not verified from the repository, and not assumed anywhere above: that any MCP client other than the
-ones already used can reach a loopback URL; that a named Cloudflare tunnel would work on this
-network (the quick tunnel needs `--edge-ip-version 4 --protocol http2` here); and any timing for how
-quickly a reviewer picks a Thread up.
+**Pickup is not completion.** Keep the two apart, because only the first is the schedule's doing.
+On 2026-09-20 the PR #25 Thread was created, announced and invited at **21:51:49Z**; the reviewer
+says the request reached it on its **21:56:25Z** heartbeat, so **pickup was about five minutes** —
+the wait for the next beat. The review was on the pull request at about
+**22:03Z**, so **completion was about twelve minutes** from the announcement, the last seven of them
+the review itself: build, typecheck and the full suite. The configured interval was five minutes,
+but it is a nominal interval and not a deadline: actual pickup depends on the scheduler's own timing
+and on the reviewer's availability, and the reviewer's two idle heartbeats around this request — at
+**21:50:55Z** and **21:56:25Z** — were **five minutes thirty seconds** apart. A request that arrives
+just after a beat can therefore wait longer than the interval, so never read an elapsed interval as
+proof that a review was missed; and the interval says nothing at all about when the answer lands.
+So §4 can be read as it is written: the unattended loop is the normal case, and Paw's prompt is the
+fallback.
+
+**What that run did not settle.** How the schedule behaves over days rather than one evening —
+whether it keeps firing, and what it costs — and whether the heartbeat survives a restart of
+ChatGPT or has to be set up again. Neither has been observed yet. Nor is the cadence ours: it was
+changed once already, mid-setup, and the next run may be on a different one.
+
+Still not verified from the repository, and not assumed anywhere above: that a **named** Cloudflare
+tunnel would work on this network (the quick tunnel needs `--edge-ip-version 4 --protocol http2`
+here), and any general timing for how quickly a reviewer picks a Thread up or finishes with it —
+one five-minute pickup and one twelve-minute completion, both from the reviewer's own account, are
+one sample each.

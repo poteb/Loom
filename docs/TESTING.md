@@ -102,7 +102,7 @@ missing — `dist`.
 | `server` | 9 | REST routes (including the public `GET /api/guidelines` and `PUT /api/weaves/:id/guidelines`), auth and admin, the Lobby and request routes with their full auth matrix (`lobby-routes.test.ts`: secret-less join, capabilities, `find_agents`, the two-credential open, offers, accept, cancel, `POST /api/weaves/:id/invitations`, the secret-less `POST /api/weaves/join`, `request_closed` → 409, computed status, the injected 60 s sweep, and the two new routes — `GET /listeners` with its parse-only rules, a blank `?limit=` read as absent and a smuggled non-object `filter` refused, and `GET /participants/me` with its eight-row auth matrix), remote MCP at `/mcp` (including agent keys, `join_weave({ inviteId })`, the `loom://lobby/requests` resource and the instructions carrying the instance guidelines), the WebSocket stream (tickets, replay, mid-stream auth re-check), static hosting (`static.test.ts`: `index.html` for all nine web paths — `/`, `/lobby`, `/lobby/listeners`, `/weave/<id>` and `/w/<secret>` with and without a trailing slash — immutable `/assets/*`, the JSON 404 kept for everything else, and every one of the nine answering that 404 in an app built without `webDist`), config loading, log redaction, and one end-to-end scenario |
 | `cli` | 5 | Every command run in-process through `runCli()` against a live test server with a temp config file, asserting output, JSON shape and exit codes; the guidelines commands including the `-`-reads-stdin path; the Lobby and request commands (`lobby.test.ts`: `lobby join\|me\|find`, `request open\|list\|show\|offer\|accept\|cancel`, `invite-weave`, `join --invite`, how `read` renders each Lobby event, and that `loom lobby` still prints a profile summary per listener and still carries each profile in `--json` now that `getWeave` blanks them); plus the config store |
 | `claude-channel` | 9 | The channel end-to-end as a spawned `dist/server.js` (tools, streaming, stderr redaction), the lock-free `ChannelState`, event formatting and wake rules — including every Lobby event type in **both** wake modes, the whole opening and closing sequences, and the `requests` preference — the Lobby end-to-end (`lobby.test.ts`: two stored tokens as the requester's credentials, `offer` with `"stored"`, the `weave.invited` wake, `join_weave({ inviteId })` storing and streaming the new Weave, and the two-step leave that clears the profile first — read through `findAgents` rather than `getWeave`, which no longer carries a Lobby profile, and asserting the participant row still exists so "gone" and "profile cleared" cannot be confused), the startup fetch under its deadline and the mechanics-only fallback, the guidelines preamble on the first woken event per Weave per session, the client-backed tool backend, and log redaction |
-| `web` | 13 | Session lifecycle against a real server (including the guidelines watermark in both directions — a stale snapshot and a replayed older event — the Lobby requests the session derives from events plus snapshots, a Weave loaded from a stored participant token, and the §2.6 invalid-identity table: a 401/403 clears the identity, keeps the secret, falls back to it read-only, and a rejoin self-heals), storage on its own (`storage.test.ts`: the `durable`/`memory` verdict including a store that accepts `setItem` and keeps nothing, and the pending-override/tombstone precedence), the per-Weave entry rules (`weaves-store.test.ts`: `setIdentity` as one write, `invalidateIdentity` keeping the secret, the `mergeLegacy` and `readerFor` tables, lazy migration that drops the legacy key only on a durable write), the refresh scheduler (`refresh-queue.test.ts`: the limit held across enqueues, FIFO order, a rejecting `run`, `dispose`), the one-storage-instance guard beside the notice and change-signal units, the request reducer (`requests-state.test.ts`: the per-request `lastEventSeq` watermark, monotonic terminal states, an `accepted` set that never shrinks, derived expiry from the clock), markdown rendering, mention-composer logic, and DOM tests of the Preact components — `components.test.tsx` (the Guidelines panel: read for everyone, edit for keepers, the counter, archived read-only; the requests panel: requester Accept/Cancel, the Offer form for an eligible listener, the countdown, read-only for everyone else; `routeOf` and the `WeaveView` branches) and `main-page.test.tsx` (the main page's four independent cells, the Join-the-Lobby form with its name rule and `name_taken` suggestion, the durable-versus-in-place branch on both the join and the creation, My Weaves' row states, the total in-flight bound over a 32-row fixture, the change-signal and reported-write cases, and the save-this-link panel in both its variants). The listeners directory adds three files and touches three: `side-reads.test.ts` holds the sequencing and identity-ownership rules as pure units (`createCounter`, the monotonic watermark, `isCurrent`, the profile cache owned by a participant id **and** a token); `listeners-query.test.ts` round-trips `ListenersView` ⇄ query string both ways, with one case per validated value and one per class of silently-dropped input, each of which must set `partial`; `listeners-page.test.tsx` (happy-dom) drives the route, the page and the sidebar line over a path-keyed `fetch` stub — credential resolution and the join form, the 401 rule and the refused-secret terminal state, search and every filter with its chips, sort, Show more and its local error, the four status branches with "an error is never an empty directory", the superseded answer **and** the superseded rejection, the single `replaceState`, and the link's four count states beside the removal of the profile cards; `session.test.ts` gains the two side reads with their triggers, their ordering and ownership races and their stale rejections, `main-page.test.tsx` the Lobby summary's third read caught on its own, and `components.test.tsx` the Offer form on all three Lobby routes |
+| `web` | 14 | Session lifecycle against a real server (including the guidelines watermark in both directions — a stale snapshot and a replayed older event — the Lobby requests the session derives from events plus snapshots, a Weave loaded from a stored participant token, and the §2.6 invalid-identity table: a 401/403 clears the identity, keeps the secret, falls back to it read-only, and a rejoin self-heals), storage on its own (`storage.test.ts`: the `durable`/`memory` verdict including a store that accepts `setItem` and keeps nothing, and the pending-override/tombstone precedence), the per-Weave entry rules (`weaves-store.test.ts`: `setIdentity` as one write, `invalidateIdentity` keeping the secret, the `mergeLegacy` and `readerFor` tables, lazy migration that drops the legacy key only on a durable write), the refresh scheduler (`refresh-queue.test.ts`: the limit held across enqueues, FIFO order, a rejecting `run`, `dispose`), the one-storage-instance guard beside the notice and change-signal units, the request reducer (`requests-state.test.ts`: the per-request `lastEventSeq` watermark, monotonic terminal states, an `accepted` set that never shrinks, derived expiry from the clock), markdown rendering, mention-composer logic, and DOM tests of the Preact components — `components.test.tsx` (the Guidelines panel: read for everyone, edit for keepers, the counter, archived read-only; the requests panel: requester Accept/Cancel, the Offer form for an eligible listener, the countdown, read-only for everyone else; `routeOf` and the `WeaveView` branches) and `main-page.test.tsx` (the main page's four independent cells, the Join-the-Lobby form with its name rule and `name_taken` suggestion, the durable-versus-in-place branch on both the join and the creation, My Weaves' row states, the total in-flight bound over a 32-row fixture, the change-signal and reported-write cases, and the save-this-link panel in both its variants). The listeners directory adds four files and touches three: `side-reads.test.ts` holds the sequencing and identity-ownership rules as pure units (`createCounter`, the monotonic watermark, `isCurrent`, the profile cache owned by a participant id **and** a token); `listeners-query.test.ts` round-trips `ListenersView` ⇄ query string both ways, with one case per validated value and one per class of silently-dropped input, each of which must set `partial`; `listeners-page.test.tsx` (happy-dom) mounts the whole **Lobby page** over a `fetch` stub keyed on path **and query string** — the count side read is `limit=0` and the directory's own query is `limit=50` on the same pathname, so anything pinning a request count must tell them apart — and drives the view from there: the two addresses, the deep link and its seeding, the sidebar line as a toggle with `aria-current`, the push and the three conditions that gate it (a real change, a Lobby path, a permission re-read *when the handler runs*), a handler a join has retired doing nothing at all, Back and Forward through `popstate`, the Lobby rendered under an address that is not its own, that the session is **not** remounted across a flip (counted in requests, never in internals), picking a Thread and the draft surviving the round trip, a mutation failure visible while the directory is open, a rejoin restoring the view, then the directory's own rules — the grid, CR2's counts line, CR5's Clear filters, search and every filter with its chips, sort, Show more and its local error, the four status branches with "an error is never an empty directory", the superseded answer **and** the superseded rejection, the single `replaceState`, the live 401 that recovers exactly once, and the sidebar line's four count states. The one new file, `lobby-view-live.test.tsx`, is the only DOM test with a **real server** behind it: the directory open over a **live stream**, a Thread another client creates arriving in the sidebar while it stays open, and that doing so costs the directory no query of its own — because an unchanged request count proves a component was not rebuilt and says nothing whatever about a socket. `session.test.ts` gains the two side reads with their triggers, their ordering and ownership races and their stale rejections, plus the directory's two entry points — `listListeners` performing no side effect on either outcome, and `reportCredentialFailure` refused unless the issue still names the session's own reader; `main-page.test.tsx` gains the Lobby summary's third read caught on its own, and `components.test.tsx` the Offer form on both of the Lobby's routes |
 
 The web DOM tests use **happy-dom**, selected per file by a docblock on the first line of
 `src/web/test/components.test.tsx`:
@@ -118,13 +118,20 @@ guarded by `typeof document !== "undefined"` because the package runs Vitest wit
 
 ## Current totals
 
-As of the Lobby listeners page on `feat/lobby-listeners` (last code commit `d70817c`):
-**1663 tests in 65 files** — core 485 in 24, web 712 in 13, server 178 in 9, claude-channel 139 in 9,
+As of the Lobby listeners **view** on `feat/lobby-listeners-view` (last code commit `f4aa269`):
+**1697 tests in 66 files** — core 485 in 24, web 746 in 14, server 178 in 9, claude-channel 139 in 9,
 cli 70 in 5, client 45 in 4, mcp-tools 34 in 1 — from `pnpm -r build` then
 `pnpm --workspace-concurrency=1 -r test`, with `pnpm -r typecheck` clean.
-The previous figure was 1208 in 60 (core 305/22, web 484/10, server 141/9, claude-channel 139/9,
-cli 68/5, client 37/4, mcp-tools 34/1), so the listeners work added 455 tests and five files.
-Counts change with every feature; run the suites to see current numbers.
+The previous figure was 1663 in 65 (core 485/24, web 712/13, server 178/9, claude-channel 139/9,
+cli 70/5, client 45/4, mcp-tools 34/1), so making the directory a view of the Lobby added **34 tests
+and one file** — and moved **only `web`**. That is the measurement, not just the arithmetic: the
+change touches no core rule, no route and no client wrapper, and `server`'s unchanged **178 in 9** is
+the direct evidence that `static.test.ts` needed no edit, because the two `/lobby/listeners`
+spellings it asserts are served exactly as before. The one new file is
+`src/web/test/lobby-view-live.test.tsx`, the DOM test with a real server behind it.
+The figure before that was 1208 in 60 (core 305/22, web 484/10, server 141/9, claude-channel 139/9,
+cli 68/5, client 37/4, mcp-tools 34/1), so the listeners work as a whole has added 489 tests and six
+files. Counts change with every feature; run the suites to see current numbers.
 
 ## Manual smoke tests
 
@@ -132,6 +139,11 @@ Six things the automated suites cannot cover, because they need a live Claude Co
 third-party connector, or a real browser with its own storage settings. All are run by hand before
 calling a release done; the commands come from the [README](../README.md) and
 `src/claude-channel/README.md`.
+
+**Restart the server after every web build.** `src/server/src/app.ts` reads `index.html` once into
+`indexHtml` at boot, so a running server keeps serving the bundle it started with until it is
+restarted — a `pnpm --filter @loom/web build` alone changes nothing in the browser (it cost one
+confused check on 2026-09-20).
 
 **1. A live Claude Code channel session.**
 
@@ -386,11 +398,14 @@ looked at deliberately — and, added after the run and so never on screen at al
 Weave (`.home-back` in its in-place form, and its placement under the join form on a
 credential-less Lobby page, `.page-join-home`).
 
-**6. The Lobby listeners directory in a real browser.** What is being checked is the two things
-`listeners-page.test.tsx` cannot reach: how the page **looks** — the card grid, the facet chips, the
-counts line, the sidebar line — and how it behaves in a browser that will not keep what the page
-writes. Everything else is covered by the automated suites; the point of running it by hand is the
-appearance and steps 9 and 10. Half an hour, no agent and no tunnel needed.
+**6. The Lobby listeners directory in a real browser.** The directory is a **view of the Lobby
+page**, not a page of its own: the header and the sidebar stay, only the main area swaps, and
+`/lobby/listeners` is a deep link into that view. What is being checked is the three things the DOM
+suites cannot reach: how the page **looks** — the card grid, the facet chips, the counts line, the
+sidebar line — how a **real** Back and Forward behave over a real history stack, and how the page
+behaves in a browser that will not keep what it writes. Everything else is covered by the automated
+suites; the point of running it by hand is the appearance and steps 8, 9 and 10. Half an hour, no
+agent and no tunnel needed.
 
     run.cmd                      # Postgres + Caddy in Docker, the web bundle built, server on the host
 
@@ -425,13 +440,24 @@ storage and the site-data block of step 10 are keyed by).
    (smoke test 4 leaves two), read every "60" as "60 plus those".
 2. **Join the Lobby from the browser** if this profile has not already: open `http://127.0.0.1:3000/`
    and use the **Join the Lobby** form (smoke test 5, step 2). You land on `/lobby`.
-3. **The sidebar line.** In the Lobby's sidebar, under the requests panel, expect exactly one line
-   reading **Listeners (60)** — the 60 seeds, and *not* 61: a listener is a participant **with** a
-   profile, and the identity you joined under in step 2 has none. Expect **no profile cards**
-   anywhere on the page. Follow the line: the address bar reads `/lobby/listeners`.
+3. **The sidebar line, and what it swaps.** In the Lobby's sidebar, under the requests panel, expect
+   exactly one line reading **Listeners (60)** — the 60 seeds, and *not* 61: a listener is a
+   participant **with** a profile, and the identity you joined under in step 2 has none. Expect
+   **no profile cards** anywhere on the page. Before pressing it, **type half a message into the
+   composer and leave it there**. The line is a **button**, not a link: press it and the Weave
+   **header** (title, identity, connection indicator), the **sidebar** (threads, guidelines,
+   requests, and this line now marked as the current view) and the connection all stay exactly as
+   they were — only the **main area** swaps, from the Thread to the directory under a **Listeners**
+   heading. The connection indicator must not blink through *connecting*: nothing was reloaded.
+   The address bar reads `/lobby/listeners`. Press the line again to go back to the Thread, and
+   confirm the **half-written message is still in the composer**, untouched — the composer is kept
+   mounted and merely hidden while the directory is open. With the directory open, **scroll to the
+   last card**: the **header**, the **sidebar** and the **connection indicator** must not move, and
+   the page itself must not grow a scrollbar — only the directory scrolls, inside the layout.
 4. **Search.** Type `seed-4` into the search box: the grid narrows to the names that contain it and
-   the counts line reads `Showing <on screen> of <matched> matches (60 listeners)` — three numbers,
-   because `matched` is now below `total`. Clear it, then search `bob` —
+   the counts line reads `Showing <on screen> of <matched> matches (out of 60 listeners)` — three
+   numbers, because `matched` is now below `total`, and both relations are named in words. Clear it,
+   then search `bob` —
    that matches nothing in a name and everything whose **owner** is `bob`, which is the half of the
    search a reader is most likely to doubt. Search `%` and confirm it finds nothing rather than
    everything: the search is literal, not a wildcard.
@@ -444,21 +470,33 @@ storage and the site-data block of step 10 are keyed by).
    over the result minus its own filter", and it is the rule most likely to look wrong. Note what
    clicking **cannot** build: a combination no listener satisfies. With runtime `codex` selected the
    tool `shell` has no rows under the other filters, and an *unselected* value at zero is simply not
-   listed — so that state is reached from a link, in step 9. **Clear filters** puts everything
-   back.
+   listed — so that state is reached from a link, in step 9. **Clear filters** sits next to the sort
+   controls and is **always** there: on an untouched page it is present but **disabled**, and one
+   typed space in the search box is enough to make it live again. Press it and everything goes back
+   — the search box, every chip, **and the sort and direction**, which return to **name** /
+   **ascending** with the rest; the address bar drops back to a bare `/lobby/listeners`.
 6. **Sort.** Cycle **name**, **owner** and **joined**, each in both directions, and confirm the first
    card changes as expected. By **name** the order is a case-insensitive *string* sort, not a
    numeric one, so `seed-10` comes straight after `seed-1` and well before `seed-2` — that is right,
    and worth reading twice before reporting it. **joined** ascending starts with whoever joined
    first, which with the loop above is `seed-1`.
-7. **Show more.** With no filter, the grid holds 50 cards and a **Show more** button. Press it: the
+7. **Show more.** With no filter, the grid holds 50 cards and a **Show more** button, and the counts
+   line — unfiltered, so the two-number form — reads `Showing 50 of 60 listeners`. Press it: the
    remaining listeners are **appended** below the first 50 (the page does not jump or re-order), the
-   button disappears on the last page, and the counts line still says 60. Then change a filter and
-   confirm the grid starts again from the first page rather than appending to what was there.
-8. **The URL carries the view.** With a search, two filters and a non-default sort applied, look at
-   the address bar: it carries `q`, `filter`, `sort` and `dir`, and the browser's **Back** button
-   does *not* step through the changes (this page only ever replaces its own query string). Reload:
-   the same view comes back. Copy the URL into a second tab and confirm it renders the same thing.
+   button disappears on the last page, and the line reads `Showing 60 of 60 listeners`. Then change
+   a filter and confirm the grid starts again from the first page rather than appending to what was
+   there.
+8. **The URL carries the view, and Back means the Thread.** With a search, two filters and a
+   non-default sort applied, look at the address bar: it carries `q`, `filter`, `sort` and `dir`.
+   Reload: the same view comes back. Copy the URL into a second tab and confirm it renders the same
+   thing. Now press the browser's **Back** button **once**: it does *not* step back through the ten
+   control changes — filter, sort and search changes are still **not** history entries, because the
+   page only ever *replaces* its own query string. One Back leaves the **directory** and returns to
+   the **Thread**, on `/lobby`, in the same live session: the messages are the ones that were
+   already there, the connection indicator does not blink, and any draft in the composer survived.
+   Press **Forward**: the directory comes back with **the filters that entry carried** — the search
+   text, both chips and the sort, re-seeded from the URL, not reset to defaults. Back and Forward a
+   second time each and confirm both still do exactly that.
 9. **A hand-edited link.** Edit the address bar to add a filter key that does not exist — e.g.
    `?filter={"tools":["shell"],"nope":1}` — and load it. Expect the listeners the *valid* part asked
    for, plus one muted line saying part of the link was not understood. Repeat with a value outside
@@ -472,11 +510,17 @@ storage and the site-data block of step 10 are keyed by).
    reported, because it is not part of this page's encoding: `?limit=` and `?cursor=` in a hand-typed URL are ignored without a
    word — a link reproduces a view, not a page position.
 10. **Blocked site data.** Put a Firefox **Block** exception on `http://127.0.0.1:3000` exactly as in
-    smoke test 5 step 7, then reload `/lobby`. Now: the sidebar's **Listeners (60)** is a *button*
-    rather than a link; pressing it renders the directory **in place**, with the address bar still
-    reading `/lobby`; searching and filtering there work and the address bar **never changes**; and
-    **Back to the Lobby** on the page returns you to the Lobby in place, with the session still
-    live. Remove the exception afterwards.
+    smoke test 5 step 7, then reload `/lobby`. The **view still opens**: press the sidebar's
+    **Listeners (60)** line and the main area swaps to the directory exactly as in step 3, with the
+    header, the sidebar and the session all live. What is different is the **address bar** — it
+    **never moves**, staying on `/lobby` while the directory is open, while it filters, and while it
+    sorts, because an address this browser could not honour after a reload is one it must not be
+    sent to. There is **no "Back to the Lobby" link** on the page any more, and none is wanted: the
+    way back to the Thread is the **sidebar** — the **Listeners** line again, or picking any Thread
+    from the **Thread list**, both of which close the directory with the session still live. Confirm
+    the browser's **Back** button does *not* return to the Thread here (nothing was pushed, so it
+    leaves the page entirely) — that is the trade the blocked browser makes, and it is expected.
+    Remove the exception afterwards.
 11. **The main page's count.** Go back to `/`: the Lobby summary lists the listener count beside the
     participant and open-request counts, and it agrees with the sidebar's.
 12. **A failing read is not an empty directory.** Open `/lobby/listeners` again and leave it on
@@ -489,6 +533,12 @@ storage and the site-data block of step 10 are keyed by).
 
 *Last run 2026-09-20* on `main` at `62adf4a`, in Firefox, against a dev Lobby that already held two
 listeners from smoke test 4 (so every count read 62, not 60): **12 of 12 passed, no product defect.**
+**This is the run that produced the listeners-view spec**
+([2026-09-20-loom-lobby-listeners-view-design.md](superpowers/specs/2026-09-20-loom-lobby-listeners-view-design.md)),
+so it was run against the **previous** shape of this test, in which the directory was a page of its
+own with a wordmark of its own and a **Back to the Lobby** link. Steps 3, 4, 5, 7, 8 and 10 above
+have been rewritten since; the paragraph below is kept verbatim as the record of what was seen that
+day, and is **not** a description of how the page behaves now.
 The sidebar showed one **Listeners (62)** line and no profile cards; search matched names and,
 separately, owners, and took `%` literally; every filter narrowed as written, the other facets
 re-counting while the clicked facet kept its list; all six orderings were right, `seed-10` straight

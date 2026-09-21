@@ -1,24 +1,22 @@
 import type { SessionState } from "../session.js";
 
 /**
- * The Lobby sidebar's way into the listeners directory (spec §5.1), in the file position the stack
- * of profile cards used to hold. `getWeave` carries no Lobby profile at all now (§3.1), so the
- * sidebar has nothing left to stack — what it has is a number, and a way to the page that can
- * search, filter and page through the listeners behind it.
+ * The Lobby sidebar's way into the listeners directory (spec §8), in the file position the stack of
+ * profile cards used to hold. `getWeave` carries no Lobby profile at all now (§3.1), so the sidebar
+ * has nothing left to stack — what it has is a number, and a toggle for the region of this page
+ * that can search, filter and page through the listeners behind it.
  *
  * The Lobby gate is the cards' own, unchanged: id-based, so it needs nothing from this work. It is
  * asked together with the status because neither count cell is cleared by a load — a reload keeps
  * the Weave, the pointer and the last number on screen while it runs, and a page that is not
  * actually showing the Lobby has no directory to offer a way into.
  */
-export function ListenersLink({ state, openListenersInPlace }: {
+export function ListenersLink({ state, active, onToggle }: {
   state: SessionState;
-  /**
-   * Given only when leaving this JS context would lose the credential this page holds (spec §5.1),
-   * and then the line is a button rather than an `<a href>`. The route asks `leavingIsSafe` on
-   * every render and hands down the answer; this component renders it.
-   */
-  openListenersInPlace?: () => void;
+  /** `showListeners` — the *effective* view, never the raw one (spec §8): the line says what is on
+   *  screen, and it is the same predicate that put it there. */
+  active: boolean;
+  onToggle: () => void;
 }) {
   if (state.status !== "ready" || !state.lobby || state.lobby.weaveId !== state.weave?.id) return null;
   // `listenerCount` alone cannot say whether the number is missing because nothing has answered yet
@@ -34,11 +32,13 @@ export function ListenersLink({ state, openListenersInPlace }: {
   // the way past a single line, and the name a `section` would want is already on the control.
   return (
     <div class="listeners-line">
-      {/* A button rather than an anchor with a handler: an anchor can be middle-clicked or opened
-          in a new tab, and either one is the full page load that drops an in-memory credential. */}
-      {openListenersInPlace
-        ? <button type="button" class="listeners-line-link" onClick={() => openListenersInPlace()}>{label}</button>
-        : <a class="listeners-line-link" href="/lobby/listeners">{label}</a>}
+      {/* Always a button, never an anchor: it toggles a region of the page it is already on, and an
+          anchor could be middle-clicked into a full page load. The address bar is put right by the
+          push of spec §4.2, which is the only place that knows whether this browser may have one.
+          `aria-current` rather than `aria-pressed`, to match the thread buttons beside it
+          (ThreadList.tsx:50): one convention for "this is the one you are looking at". */}
+      <button type="button" class="listeners-line-link" aria-current={active ? "true" : undefined}
+        onClick={() => onToggle()}>{label}</button>
       {state.listenerCount === undefined && state.listenerCountError && <span class="muted">count unavailable</span>}
     </div>
   );

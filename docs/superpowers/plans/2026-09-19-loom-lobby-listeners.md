@@ -665,6 +665,12 @@ export function queryFromView(view: ListenersView, extra: { limit?: number; curs
 - [ ] **Step 2: Failing tests** in `src/web/test/listeners-page.test.tsx`, using the harness from Task 5. Where an intermediate state is asserted, the route's response is a **gated** promise the test releases by hand:
   - Renders one `ProfileCard` per listener from a single stubbed answer, and the counts line reads `Showing 2 of 2 matches`; with `matched < total` it reads `Showing 50 of 87 matches (1,204 listeners)`.
     > **Correction, 2026-09-20 (as built).** Two errors in that line. `matched === total` **collapses** to `Showing 2 of 2 listeners` — spec §5.3's wording, which governs where the plan and the spec disagree. And the numbers go through `toLocaleString()`, so the two-number form is asserted as `` `Showing 50 of 87 matches (${(1204).toLocaleString()} listeners)` ``: pinning the literal `1,204` would pin one locale, and this machine renders it `1.204`.
+    > **Superseded, 2026-09-20**, by the listeners-**view** change
+    > ([spec](../specs/2026-09-20-loom-lobby-listeners-view-design.md) §9, CR2; see the note on
+    > §5.3 of [the predecessor spec](../specs/2026-09-19-loom-lobby-listeners-design.md)). The
+    > **filtered** form gained "out of" and now reads
+    > `` `Showing 50 of 87 matches (out of ${(1204).toLocaleString()} listeners)` ``. The collapsed
+    > form, the locale rule and everything else in the correction above still hold.
   - **Debounce:** three `input` events inside 250 ms produce **one** request, carrying the last value (fake timers; advance 250 ms once).
   - **Query string → controls:** mounting at `?q=fable&filter={…}&sort=owner&dir=desc` seeds the search box, the chips and both selects, and the first request carries all of them.
   - **Controls → query string:** clicking a chip calls `history.replaceState` (spied) with the new query and **never** `pushState`, and the next request carries the filter.

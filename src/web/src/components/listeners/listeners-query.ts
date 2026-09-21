@@ -149,16 +149,17 @@ export function searchFromView(view: ListenersView): string {
  * `replaceState`, never `pushState`: ten keystrokes' worth of filtering must not become ten
  * back-button steps, and the back button leaving the directory is what a human means by it here.
  *
- * Three conditions, each for its own reason:
- * - **not `inPlace`.** A page rendered here rather than navigated to (`openListenersInPlace`) leaves
- *   the address bar entirely alone: the URL would name a view this browser could not load again.
+ * Two conditions, each for its own reason:
  * - **the path is exactly this page's**, either spelling the server serves. Rewriting the query
  *   string of the page you are already on names the same page, which is the whole argument for
  *   being allowed to do it; a `startsWith` would rewrite some other page that begins the same way.
+ *   This is also the whole of the rule now, and the permission to *leave* is deliberately not
+ *   consulted (spec §4.5): a `replaceState` onto the path the browser is **already on** adds no
+ *   entry, loads nothing, and takes away no address this browser could otherwise have survived —
+ *   so there is nothing for `leavingIsSafe` to protect, because nothing is being left.
  * - **the string would actually change.** A no-op `replaceState` is still a history write.
  */
-export function writeSearch(view: ListenersView, inPlace?: boolean): void {
-  if (inPlace) return;
+export function writeSearch(view: ListenersView): void {
   const path = location.pathname;
   if (path !== "/lobby/listeners" && path !== "/lobby/listeners/") return;
   const search = searchFromView(view);

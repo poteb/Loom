@@ -3,7 +3,7 @@ import { startTestServer, keeperToken, type TestServer } from "../../server/test
 import { LoomClient } from "@loom/client";
 import { createSession, type Session, type SessionTarget } from "../src/session.js";
 import { browserStorage, memoryStorage, type KeyValueStorage, type WriteResult } from "../src/storage.js";
-import { legacyKey, readWeaveEntry, saveWeaveEntry, setIdentity, weaveKey } from "../src/weaves-store.js";
+import { invalidateIdentity, legacyKey, readWeaveEntry, saveWeaveEntry, setIdentity, weaveKey } from "../src/weaves-store.js";
 import { DEFAULT_INSTANCE_GUIDELINES } from "@loom/core";
 
 let s: TestServer;
@@ -1968,6 +1968,8 @@ function sideReadClient(script: Record<string, Script> = {}, weaveRead: Script =
   return {
     client,
     calls: (path: string) => seen.filter((c) => c.path === path).length,
+    /** The credential the n-th call on a path carried: which reader a given request went out with. */
+    credentialOn: (path: string, nth: number) => seen.filter((c) => c.path === path)[nth - 1]?.auth,
     weaveReads: () => seen.filter((c) => isWeaveRead(c.path)).length,
     weaveReadsWith: (credential: string) =>
       seen.filter((c) => isWeaveRead(c.path) && c.auth === `Bearer ${credential}`).length,
@@ -1990,6 +1992,14 @@ const aProfile = () => ({ models: [MODEL], serves: "anyone" as const, owner: `ow
 const afterDelivery = async (delivered: Promise<void>) => {
   await delivered;
   for (let i = 0; i < 5; i++) await new Promise((done) => setTimeout(done, 0));
+};
+
+/** This browser joined as the fixture's listener: an identity that owns a profile, name and all. */
+const asListener = async (f: Awaited<ReturnType<typeof lobbyFixture>>, extra: { secret?: string } = {}) => {
+  const storage = memoryStorage();
+  setIdentity(storage, await lobbyId(),
+    { token: f.helper.token, participantId: f.helper.participant.id, name: f.helper.participant.name }, extra);
+  return storage;
 };
 
 describe("the Lobby's listener count (spec §5.1)", () => {
@@ -2231,15 +2241,158 @@ describe("the Lobby's listener count (spec §5.1)", () => {
   });
 });
 
-describe("the session's own Lobby profile (spec §3.3)", () => {
-  /** This browser joined as the fixture's listener: an identity that owns a profile, name and all. */
-  const asListener = async (f: Awaited<ReturnType<typeof lobbyFixture>>, extra: { secret?: string } = {}) => {
-    const storage = memoryStorage();
-    setIdentity(storage, await lobbyId(),
-      { token: f.helper.token, participantId: f.helper.participant.id, name: f.helper.participant.name }, extra);
-    return storage;
-  };
+// ---------------------------------------------------------------------------------------------
+// The directory's own read, and who may spend the page's one credential recovery (spec §6.1,
+// §11). `LISTENERS` is a **path**, and the session's own count read is call 1 on it, so every
+// script below numbers the directory's queries from 2. Nothing here asserts an absolute number of
+// writes or requests: a recovery's own reload writes the entry again and re-reads the Lobby, so
+// every "and then nothing happened" is settle, snapshot, act, compare — and "invalidated once" is
+// asked of the entry's **content**, which no later no-op write can fake.
 
+describe("reading the directory, and who may spend a recovery (spec §6.1)", () => {
+  it("hands the query's rejection back and writes nothing on the strength of it", async () => {
+    const f = await lobbyFixture();
+    const id = await lobbyId();
+    const storage = await asListener(f, { secret: f.secret });
+    const verdicts: WriteResult[] = [];
+    const refused = delivering(REVOKED);
+    const c = sideReadClient({ [LISTENERS]: onCall(2, refused.answer) });
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: id }, storage,
+      onWrite: (v) => verdicts.push(v) });
+    await session.load();
+    try {
+      await waitFor(() => session.getState().listenerCount !== undefined);   // the load is provably finished
+      const settled = { entry: storage.get(weaveKey(id)), writes: verdicts.length, reads: c.weaveReads() };
+      const { page } = session.listListeners({ limit: 50 });
+      await expect(page).rejects.toMatchObject({ code: "invalid_token" });
+      await afterDelivery(refused.delivered);
+      // Byte-identical entry, no write and no reload: the read path authorises nothing by itself.
+      expect([storage.get(weaveKey(id)), verdicts.length, c.weaveReads(), session.getState().status])
+        .toEqual([settled.entry, settled.writes, settled.reads, "ready"]);
+    } finally { session.dispose(); }
+  });
+
+  it("recovers only when the rejection is reported, never on the rejection alone", async () => {
+    const f = await lobbyFixture();
+    const id = await lobbyId();
+    const storage = await asListener(f, { secret: f.secret });
+    const verdicts: WriteResult[] = [];
+    const refused = delivering(REVOKED);
+    const c = sideReadClient({ [LISTENERS]: onCall(2, refused.answer) });
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: id }, storage,
+      onWrite: (v) => verdicts.push(v) });
+    await session.load();
+    try {
+      await waitFor(() => session.getState().listenerCount !== undefined);
+      const settled = { entry: storage.get(weaveKey(id)), writes: verdicts.length };
+      const { issue, page } = session.listListeners({ limit: 50 });
+      const e = await page.then(() => undefined, (err: unknown) => err);
+      await afterDelivery(refused.delivered);
+      expect([storage.get(weaveKey(id)), verdicts.length]).toEqual([settled.entry, settled.writes]);
+      // …and the second call is the whole of the difference: this is the only way in.
+      session.reportCredentialFailure(e, issue);
+      await waitFor(() => {
+        const entry = readWeaveEntry(storage, id);
+        return entry?.identity === "invalid" && entry.secret === f.secret;
+      });
+    } finally { session.dispose(); }
+  });
+
+  it("spends exactly one recovery on two rejections of one generation", async () => {
+    const f = await lobbyFixture();
+    const id = await lobbyId();
+    const storage = await asListener(f, { secret: f.secret });
+    const verdicts: WriteResult[] = [];
+    const second = delivering(REVOKED);
+    // Call 1 is the session's own count read; calls 2 and 3 are the two queries. Call 4 — the count
+    // read the recovery's own reload makes, on the secret — is let through: it is none of this
+    // test's business, and `always` would have taken call 1 with it.
+    const c = sideReadClient({ [LISTENERS]: (n) => (n === 2 ? REVOKED : n === 3 ? second.answer : undefined) });
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: id }, storage,
+      onWrite: (v) => verdicts.push(v) });
+    await session.load();
+    try {
+      await waitFor(() => session.getState().listenerCount !== undefined);
+      const a = session.listListeners({ limit: 50 });
+      const b = session.listListeners({ limit: 50 });                  // both issued before either is reported
+      const ea = await a.page.then(() => undefined, (err: unknown) => err);
+      const eb = await b.page.then(() => undefined, (err: unknown) => err);
+      // Both really are rejections. Without this, a script that numbered the two queries differently
+      // would leave one of them `undefined`, `isCredentialFailure` would refuse it, and the
+      // "nothing moved" assertion below would pass for the wrong reason.
+      expect(ea).toMatchObject({ code: "invalid_token" });
+      expect(eb).toMatchObject({ code: "invalid_token" });
+      session.reportCredentialFailure(ea, a.issue);
+      // The whole recovery, by the state it ends in and not by a number: invalidated, reloaded on
+      // the secret, and settled again.
+      await waitFor(() => session.getState().status === "ready"
+        && readWeaveEntry(storage, id)?.identity === "invalid" && c.weaveReadsWith(f.secret) > 0);
+      const settled = { entry: storage.get(weaveKey(id)), writes: verdicts.length, reads: c.weaveReads(),
+        onSecret: c.weaveReadsWith(f.secret) };
+      session.reportCredentialFailure(eb, b.issue);
+      await afterDelivery(second.delivered);
+      // What this test proves is the rule, not which mechanism enforces it: two rejections of one
+      // generation cost exactly one invalidation — no second write, no second reload, and the
+      // session still `ready`. Several guards would each refuse the second report on their own, so
+      // this one cannot say which did; test 14c ("refuses an issue taken before a completed
+      // reload") is the one that isolates the generation guard.
+      expect([storage.get(weaveKey(id)), verdicts.length, c.weaveReads(), c.weaveReadsWith(f.secret),
+        session.getState().status])
+        .toEqual([settled.entry, settled.writes, settled.reads, settled.onSecret, "ready"]);
+      const e = readWeaveEntry(storage, id)!;
+      expect([e.identity, e.token, e.participantId, e.secret]).toEqual(["invalid", undefined, undefined, f.secret]);
+    } finally { session.dispose(); }
+  });
+
+  it("refuses an issue taken before a completed reload", async () => {
+    const f = await lobbyFixture();
+    const id = await lobbyId();
+    const storage = await asListener(f, { secret: f.secret });
+    const verdicts: WriteResult[] = [];
+    const gate = makeGate();
+    const stale = delivering(parksThen(gate, REVOKED));
+    const c = sideReadClient({ [LISTENERS]: onCall(2, stale.answer) });
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: id }, storage,
+      onWrite: (v) => verdicts.push(v) });
+    await session.load();
+    try {
+      await waitFor(() => session.getState().listenerCount !== undefined);
+      const { issue, page } = session.listListeners({ limit: 50 });
+      const rejected = page.then(() => undefined, (err: unknown) => err);
+      await gate.entered;                                   // the query is out, and unanswered
+      await session.load();                                 // a full reload, and a fresh generation
+      await waitFor(() => session.getState().status === "ready");          // its own entry write is behind us
+      const settled = { entry: storage.get(weaveKey(id)), writes: verdicts.length, reads: c.weaveReads() };
+      gate.release();
+      const e = await rejected;
+      await afterDelivery(stale.delivered);
+      session.reportCredentialFailure(e, issue);
+      await afterDelivery(stale.delivered);
+      // Nothing was written for a rejection from a retired reader, and the page never went to
+      // `no-credential` on its account.
+      expect([storage.get(weaveKey(id)), verdicts.length, c.weaveReads(), session.getState().status])
+        .toEqual([settled.entry, settled.writes, settled.reads, "ready"]);
+    } finally { gate.release(); session.dispose(); }
+  });
+
+  it("reads the directory with the credential the page reads with", async () => {
+    const f = await lobbyFixture();
+    const id = await lobbyId();
+    const storage = await asListener(f, { secret: f.secret });
+    invalidateIdentity(storage, id);                        // this page has already fallen back to the secret
+    const c = sideReadClient();
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: id }, storage });
+    await session.load();
+    try {
+      await waitFor(() => session.getState().listenerCount !== undefined);
+      const { page } = session.listListeners({ limit: 50 });
+      await page;
+      expect(c.credentialOn(LISTENERS, 2)).toBe(`Bearer ${f.secret}`);
+    } finally { session.dispose(); }
+  });
+});
+
+describe("the session's own Lobby profile (spec §3.3)", () => {
   it("reads my own profile onto my own participant on an id target", async () => {
     const f = await lobbyFixture();
     const id = await lobbyId();

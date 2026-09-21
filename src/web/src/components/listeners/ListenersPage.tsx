@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { LoomClientError } from "@loom/client";
-import type { Listener, ListenersFacets, ListenersSort, LoomClient, ServesKind } from "@loom/client";
-import type { KeyValueStorage } from "../../storage.js";
-import { leavingIsSafe, type PersistenceNotice } from "../../persistence.js";
-import { isCredentialFailure, weaveKey } from "../../weaves-store.js";
+import type { Listener, ListenersFacets, ListenersSort, ServesKind } from "@loom/client";
+import type { Session } from "../../session.js";
+import { viewOfPath } from "../../lobby-view.js";
 import { ProfileCard } from "../ProfileCard.js";
 import { FacetChips, ModelChips } from "./FacetChips.js";
 import {
@@ -24,20 +23,6 @@ const DEBOUNCE_MS = 250;
 const MAX_Q = 100;
 const MAX_MODELS = 20;
 const MAX_TOOLS = 50;
-
-/** What the route settles before this page exists, plus the two things the page may do to storage. */
-export type ListenersPageProps = {
-  reader: LoomClient; lobbyId: string;
-  /** True when the page was rendered here rather than navigated to (`openListenersInPlace`), which
-   *  is what keeps its query string off the address bar (spec §5.4). */
-  inPlace?: boolean;
-  storage: KeyValueStorage; notice: PersistenceNotice;
-  openInPlace: (weaveId: string) => void;
-  openMainInPlace: () => void;
-  /** Told when a query proved this page's credential dead. The route owns the write and the reader
-   *  it is replaced with, because the route is what holds both (spec §5.5). */
-  onCredentialFailure: () => void;
-};
 
 /**
  * The page's four cells, as one value. An **error is a state of its own**, never an empty `rows`:
@@ -64,21 +49,19 @@ const SERVES: Record<string, string> = { anyone: "anyone", owner: "its owner", l
 
 /**
  * The Lobby's directory: search, four facet filters, sort, the `ProfileCard` grid and Show more
- * (spec §5.3). It opens no WebSocket and holds no session — it is a page of answers to queries it
- * makes itself, and the only live thing on it is the quiet "the list has changed" line (§5.5).
+ * (spec §5.3). One view of the Lobby page, and it reads nothing from `SessionState` — what it has
+ * is a session to ask and its own answers. The only live thing on it is the quiet "the list has
+ * changed" line, because it has no stream of its own (§5.5).
  */
-export function ListenersPage({
-  reader, lobbyId, inPlace, storage, notice, openInPlace, openMainInPlace, onCredentialFailure,
-}: ListenersPageProps) {
+export function ListenersPage({ session }: { session: Session }) {
   // The link this page was opened with, read once. `partial` latches with it: it describes that
   // link, not the controls, which the human has been driving ever since.
   //
-  // Rendered in place there is no such link: the address bar still names whatever page this browser
-  // really loaded, and reading its query string would seed this page's controls from another page's
-  // URL — and report that page's unreadable parts as this one's. It is also the URL this page then
-  // refuses to write to (`writeSearch`), so reading it would be half of a rule.
+  // Read where it is written (spec §4.3): one condition governs both halves, so there is no browser
+  // that seeds itself from an address it then refuses to keep up to date.
   const opened = useMemo(
-    () => inPlace ? { view: EMPTY_VIEW, partial: false } : viewFromSearch(location.search), []);
+    () => viewOfPath(location.pathname) === "listeners"
+      ? viewFromSearch(location.search) : { view: EMPTY_VIEW, partial: false }, []);
   const [view, setView] = useState<ListenersView>(opened.view);
   const [draft, setDraft] = useState(opened.view.q);
   // The view and the draft are also held in refs, because the debounce timer and every control read
@@ -117,7 +100,12 @@ export function ListenersPage({
     // The facets are asked for on every query but Show more's: they describe the *filters*, which
     // appending a page cannot change, and they are the most expensive read this query makes (§6).
     // The page keeps the ones it has (`page.facets ?? s.facets` below).
-    reader.listListeners(queryFromView(next, { limit: PAGE, cursor, facets: cursor === undefined })).then(
+    // Two calls, deliberately: reading the directory is not the same act as spending the page's one
+    // credential recovery, and only the second needs an owner (spec §6.1). `issue` names the very
+    // reader this request went out with, so it cannot be captured a moment too late.
+    const { issue, page: answer } = session.listListeners(
+      queryFromView(next, { limit: PAGE, cursor, facets: cursor === undefined }));
+    answer.then(
       (page) => {
         if (!live.current || n !== gen.current) return;
         if (firstTotal.current === undefined) firstTotal.current = page.total;
@@ -133,9 +121,11 @@ export function ListenersPage({
       (e: unknown) => {
         // The guard comes **first**, and it is the same guard the answer takes: a rejection nobody
         // is waiting for any more must not paint an error over newer rows, and must certainly not
-        // retire a credential on the strength of a superseded request (spec §7).
+        // spend the page's one credential recovery. Only a LIVE query may authorise one (spec §6.1).
         if (!live.current || n !== gen.current) return;
-        if (isCredentialFailure(e)) { onCredentialFailure(); return; }
+        session.reportCredentialFailure(e, issue);
+        // …and the failure is rendered either way: where it recovered, `doLoad` takes the page to
+        // `loading` and this view unmounts under the error it has just painted (spec §6.1, §6.3).
         const message = e instanceof Error ? e.message : String(e);
         // A cursor core answered with `validation` is malformed or in a format this instance no
         // longer writes, and it will be refused for as long as this page offers it (spec §7). So
@@ -152,7 +142,10 @@ export function ListenersPage({
 
   // The one query the page makes on its own: the first one, and a fresh one whenever the view or the
   // credential changes. The cursor is dropped by construction here — only "Show more" carries one.
-  useEffect(() => { run(view); }, [view, reader]);
+  // `useSession` memoises the session on `[key, client, storage]`, so it is the same object across a
+  // view flip and across a `doLoad` — the re-query after a recovery comes from the `loading` →
+  // `ready` remount (spec §6.3) and not from this dependency.
+  useEffect(() => { run(view); }, [view, session]);
 
   /**
    * The one way a control changes the page: new state, new URL, and — through the effect — one
@@ -174,7 +167,7 @@ export function ListenersPage({
     const next = update(base);
     viewRef.current = next;
     setView(next);
-    writeSearch(next, inPlace);
+    writeSearch(next);
   };
 
   const type = (value: string) => {
@@ -202,8 +195,10 @@ export function ListenersPage({
   const toggleServes = (serves: string) => apply((v) => ({ ...v,
     serves: v.serves === serves ? undefined : serves as ServesKind }));
 
-  const anySet = view.q !== "" || view.models.length > 0 || view.tools.length > 0
-    || view.runtime !== undefined || view.serves !== undefined;
+  // The raw `draft`, not a trimmed one: anything at all in the box — a space included — must leave
+  // the control live, because pressing it is also what cancels a pending debounce (spec §9).
+  const atDefaults = draft === "" && view.q === "" && view.models.length === 0 && view.tools.length === 0
+    && view.runtime === undefined && view.serves === undefined && view.sort === "name" && view.dir === "asc";
   const clear = () => {
     // The pending keystroke is cancelled *before* `apply`, not folded into it: Clear filters empties
     // the box too, so there is no text left for it to carry, and a timer left running would have
@@ -211,7 +206,9 @@ export function ListenersPage({
     if (debounce.current) { clearTimeout(debounce.current); debounce.current = undefined; }
     setDraft("");
     draftRef.current = "";
-    apply((v) => ({ q: "", models: [], tools: [], runtime: undefined, serves: undefined, sort: v.sort, dir: v.dir }));
+    // One `EMPTY_VIEW`: the sort and the direction go back too. This overrides listeners spec §5.3,
+    // which kept the sort (spec §9, CR5).
+    apply(() => ({ ...EMPTY_VIEW }));
   };
   /** What the "the list has changed" line offers: this view again, with the new count as the
    *  baseline. Never `location.reload()` — a full page load is exactly what an in-place browser
@@ -219,33 +216,17 @@ export function ListenersPage({
   const reload = () => { firstTotal.current = undefined; setChanged(false); apply((v) => ({ ...v })); };
   const showMore = () => { if (state.nextCursor && !state.appending) run(view, state.nextCursor); };
 
-  // One question, one answer, for both ways off this page: may this browser leave this JS context
-  // without losing the credential the entry on screen is about (spec §3.1)?
-  const canLeave = leavingIsSafe(storage, notice, weaveKey(lobbyId));
   const n = (v: number) => v.toLocaleString();
+  // `of` before `matched` and `out of` before `total`: three numbers in one sentence need the two
+  // relations spelled differently (spec §9, CR2). Nothing else is ever rendered here — never a zero.
   const counts = state.status !== "error" && state.total !== undefined && state.matched !== undefined
     ? state.matched === state.total
       ? `Showing ${n(state.rows.length)} of ${n(state.total)} listeners`
-      : `Showing ${n(state.rows.length)} of ${n(state.matched)} matches (${n(state.total)} listeners)`
+      : `Showing ${n(state.rows.length)} of ${n(state.matched)} matches (out of ${n(state.total)} listeners)`
     : undefined;
 
   return (
     <div class="listeners">
-      <header class="listeners-head">
-        <div>
-          {canLeave
-            ? <a class="home-link" href="/" title="Go to the main page">Loom</a>
-            : <button type="button" class="home-link" title="Go to the main page"
-                      onClick={() => openMainInPlace()}>Loom</button>}
-          <h1>Listeners</h1>
-        </div>
-        {/* The only exit to the Lobby an in-place browser has, so it is on screen in every state of
-            this page — loading, error, empty and ready alike. */}
-        {canLeave
-          ? <a class="listeners-back" href="/lobby">Back to the Lobby</a>
-          : <button type="button" class="listeners-back" onClick={() => openInPlace(lobbyId)}>Back to the Lobby</button>}
-      </header>
-
       {opened.partial && (
         <p class="listeners-partial muted">Part of this link was not understood, so it was ignored.</p>
       )}
@@ -270,7 +251,7 @@ export function ListenersPage({
             <option value="desc">desc</option>
           </select>
         </label>
-        {anySet && <button type="button" class="link" onClick={clear}>Clear filters</button>}
+        <button type="button" class="link" disabled={atDefaults} onClick={clear}>Clear filters</button>
       </div>
 
       {state.facets && (

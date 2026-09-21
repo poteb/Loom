@@ -219,6 +219,10 @@ enforced; this is the index.
   tracked file.
 - **The Edit/Write tools can decode escape sequences such as `\uXXXX` in tool input into literal
   bytes.** Never write one; after staging, check `git diff --cached --stat` for `Bin` rows.
+- **A session cannot hand Paw a credential through the conversation** — an agent key or a Weave
+  secret must not be printed into chat. Give Paw the **path** of the file that holds it
+  (`~/.loom/agent-<name>.json`) plus a one-line command that prints the connector URL, and let Paw
+  copy the value out of a terminal (Loom dogfood run, 2026-09-20).
 
 ## 6. Where the state of the project lives
 
@@ -233,19 +237,24 @@ enforced; this is the index.
 
 ### The current state — 2026-09-20
 
-`main` is at **6fe9bd5**; shipped through **PR #23** (the agent docs: this handbook, the root
-`CLAUDE.md` and [DOGFOOD.md](DOGFOOD.md)); **1663 tests in 65 files**. No feature branch and no
-worktree is in play.
+`main` is at **df8cf35**; shipped through **PR #24** (the dev-cycle decisions in
+[DOGFOOD.md](DOGFOOD.md)). One branch is in play: **`feat/lobby-listeners-view`**, the approved
+listeners-view plan executed in a worktree, open as **[PR #25](https://github.com/poteb/Loom/pull/25)**
+and **awaiting Paw's merge word**.
 
-On 2026-09-20 Paw settled the dogfood questions: the ChatGPT reviewer runs on this machine, so its
-connector is the loopback URL; **a pull request's review is the record on GitHub and its Thread
-carries only the notifications**, while a spec or plan review lives in its Thread; the old reviewer
-agent keys are revoked; and an **always-on Loom instance is wanted** — that live instance is now the
-**next small slice**, to brainstorm first ([DOGFOOD.md](DOGFOOD.md) §2 is its shape and its scope).
+**PR #25 is the first pull request reviewed through Loom.** On the evening of 2026-09-20 the review
+was requested in a Loom Thread, ChatGPT picked it up on the next beat of its own five-minute `inbox`
+heartbeat with no human prompt — about five minutes to pickup, about twelve to the posted review —
+built and ran the whole suite itself (**1697 tests in 66 files**) and posted
+`# CHATGPT REVIEW Round 1` on the pull request — Standards 0 findings, Spec 0 findings, "no
+actionable findings remain" — then the one-line notification in the Thread. It could not do a
+browser check or manual smoke test 6, and said so. The run's findings about Loom are in
+[superpowers/specs/v2-notes.md](superpowers/specs/v2-notes.md); the corrections it forced are in
+[DOGFOOD.md](DOGFOOD.md) §3 step 5 and §8.
 
-**The Lobby listeners view** (the directory becomes a view inside the Lobby layout) still has an
-**approved spec and an approved plan on `main`**:
-`docs/superpowers/specs/2026-09-20-loom-lobby-listeners-view-design.md` and
-`docs/superpowers/plans/2026-09-20-loom-lobby-listeners-view.md`, six tasks — and **Paw has said not
-to start development until told.** Do not cut `feat/lobby-listeners-view` and do not execute that
-plan before that word.
+On 2026-09-20 Paw also settled the dogfood questions: **a pull request's review is the record on
+GitHub and its Thread carries only the notifications**, while a spec or plan review lives in its
+Thread; the old reviewer agent keys were revoked and fresh `Claude-Code` and `ChatGPT` keys minted;
+and an **always-on Loom instance is wanted** — that live instance is the **next small slice**, to
+brainstorm first ([DOGFOOD.md](DOGFOOD.md) §2 is its shape and its scope), with a **stable public
+hostname** now the top item in it, because the reviewer cannot reach a loopback connector URL.

@@ -276,22 +276,35 @@ registered globally).
 `App` holds the match in `useState` rather than reading `location` on every render, because some
 transitions switch the view **in place**: a join or a creation whose credential could not be
 persisted renders its destination in this JS context instead of navigating away from the only copy
-of that credential (the URL is deliberately left alone). There are three such mirrors —
-`openInPlace(weaveId)`, `openMainInPlace()` and `openListenersInPlace()`, the last of which renders
-the listeners directory on top of the Lobby page it was opened from. One question decides all of
-them, `leavingIsSafe` in [persistence.ts](../src/web/src/persistence.ts); an in-place page never
-touches `history`.
+of that credential (the URL is deliberately left alone). There are two such mirrors —
+`openInPlace(weaveId)` and `openMainInPlace()`. One question decides both, `leavingIsSafe` in
+[persistence.ts](../src/web/src/persistence.ts); an in-place page never touches `history`.
+
+**One history rule, and `leavingIsSafe` is half of it.** The app makes exactly one `pushState`: the
+Lobby's main area swapping between the Thread and the listeners directory
+([WeaveRoute.tsx](../src/web/src/components/WeaveRoute.tsx)'s `WeaveMount`). It is made only when
+all three hold, asked inside the handler on every call — the requested view actually **changed**,
+the current `location.pathname` is one of the Lobby's own addresses, and `leavingIsSafe` is true
+**at that moment** rather than at the render that built the handler. A browser that keeps nothing
+therefore still gets the view, with the address bar left where it was: the address it would be sent
+to is one this browser could not honour after a reload. Where no push is allowed the URL and the
+view simply disagree, with no notice beyond the persistence bar already on screen. Separately, and
+under no permission at all, the directory rewrites **its own** query string with `replaceState`
+wherever `location.pathname` is already `/lobby/listeners` (either spelling): replacing the path
+you are on adds no entry, loads nothing and takes away no address, so there is nothing for
+`leavingIsSafe` to protect. Back and Forward are heard by one `popstate` listener, in `WeaveSession`,
+which sets the view from the path and re-seeds the directory from the entry it landed on.
 
 | Path | Renders | Session target |
 | --- | --- | --- |
 | `/` | the main page: instance guidelines, the Lobby summary, Join the Lobby, My Weaves, Create a Weave | none — the client and storage directly |
 | `/lobby` | the Lobby's Weave page, after the public `getLobby()` resolves its id | `{ kind: "id", weaveId }` |
-| `/lobby/listeners` | the listeners directory: search, filters, sort, Show more — **no session and no stream**, just one `listListeners` call per control change | — the route resolves the Lobby and picks a credential itself |
+| `/lobby/listeners` | the same Lobby page **with the directory open** — not a page of its own: one route, one session, one stream, and only the main area differs. The path is a deep link that seeds the initial view (`Route.lobby.view`); after that the view is state, and the path follows it by `pushState` | `{ kind: "id", weaveId }` |
 | `/weave/<uuid>` | any Weave this browser holds a credential for | `{ kind: "id", weaveId }` |
 | `/w/<43-char secret>` | unchanged from v1 in every respect | `{ kind: "secret", secret }` |
 | anything else | "No such page." and a link to `/` | — |
 
-All three Weave paths converge on one `<WeaveView/>`
+All four Weave addresses converge on one `<WeaveView/>`
 ([components/WeaveView.tsx](../src/web/src/components/WeaveView.tsx)), mounted by
 [WeaveRoute.tsx](../src/web/src/components/WeaveRoute.tsx): choosing a credential happens inside the
 session, so the view only renders what that choice produced.
@@ -371,10 +384,10 @@ session and into every test, and only that one list wants the events.
 Components: `Header` (title, archive), `ThreadList` + `ThreadTools` (artefact URL, invites),
 `MessageList`, `Composer` (with `@`-mention completion in `mention-logic.ts`), `NamePrompt` (a first
 message asks for a name, then joins), `InviteBanner`, `ListenersLink` (the Lobby sidebar's
-**Listeners (N)** line — a link, or a button that opens the directory in place), the directory
-itself under [components/listeners](../src/web/src/components/listeners) (`ListenersRoute`,
-`ListenersPage`, `FacetChips` and `listeners-query.ts`, which owns the query-string codec and the
-one `history.replaceState` rule), and under
+**Listeners (N)** line — always a button now, toggling the main area and carrying `aria-current`),
+the directory itself under [components/listeners](../src/web/src/components/listeners)
+(`ListenersPage`, which takes the session and nothing else, `FacetChips`, and `listeners-query.ts`,
+which owns the query-string codec and the one `history.replaceState` rule), and under
 [components/main](../src/web/src/components/main) the landing page: `MainPage` (four independent
 async cells), `InstanceGuidelines`, `LobbySummary`, `JoinLobbyForm`, `MyWeaves` (+ `refresh-queue.ts`,
 one FIFO scheduler per mounted list holding the six-in-flight bound across renders) and
@@ -485,6 +498,15 @@ included, so a Lobby page no longer downloads every profile on every load and ev
 that does **not** change is the event log: `participant.capabilities_changed` still carries the whole
 profile, and a load still backfills the whole history (see KNOWN-ISSUES).
 
+In the browser the directory is read through `session.listListeners(query)`, which is the page's own
+reader — the session is the Lobby page's one credential owner, so the directory asks with the very
+credential the page is already using and gets back `{ issue, page }`, where `issue` names the reader
+the query went out under and the call performs no side effect whatever, on the answer or on the
+rejection. Spending the page's one credential recovery is therefore a **second** call,
+`session.reportCredentialFailure(e, issue)`, authorised by the **view** — the only thing that knows
+whether the failed query is still wanted — and made only after its own liveness guard; the session
+refuses it unless `issue.generation` is still the one it holds.
+
 **Two credentials, one recorded authority.** A request spans two Weaves, so `openRequest(actor,
 targetActor, input)` takes the caller's Lobby identity *and* a credential proving keeper standing in
 the target Weave (an agent key is both). The target principal is recorded on the row
@@ -544,6 +566,7 @@ wake: the addressed request event beside them is what does.
 - [superpowers/specs/2026-09-16-loom-lobby-design.md](superpowers/specs/2026-09-16-loom-lobby-design.md) — v2 sub-project 3 (the Lobby)
 - [superpowers/specs/2026-09-17-loom-web-main-page-design.md](superpowers/specs/2026-09-17-loom-web-main-page-design.md) — v2 sub-project 4 (the web main page)
 - [superpowers/specs/2026-09-19-loom-lobby-listeners-design.md](superpowers/specs/2026-09-19-loom-lobby-listeners-design.md) — v2 sub-project 5 (the Lobby listeners page)
+- [superpowers/specs/2026-09-20-loom-lobby-listeners-view-design.md](superpowers/specs/2026-09-20-loom-lobby-listeners-view-design.md) — the directory as a **view** of the Lobby, which supersedes several sections of the one above
 - [adr/0001-lobby-owner-self-declared.md](adr/0001-lobby-owner-self-declared.md) — why a Lobby `owner` is self-declared
 - [superpowers/specs/v2-notes.md](superpowers/specs/v2-notes.md) — running list of v2 ideas and deferred items
 - [../src/claude-channel/README.md](../src/claude-channel/README.md) — installing and using the channel plugin

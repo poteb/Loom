@@ -1,10 +1,11 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { LoomClientError, type Lobby } from "@loom/client";
 import type { RouteDeps } from "../app.js";
 import type { SessionTarget } from "../session.js";
 import { useSession } from "../useSession.js";
 import { leavingIsSafe } from "../persistence.js";
 import { weaveKey } from "../weaves-store.js";
+import { pathForView, viewOfPath, type MainArea } from "../lobby-view.js";
 import { WeaveView } from "./WeaveView.js";
 import { HomeLink } from "./HomeLink.js";
 import { PersistenceBar } from "./PersistenceBar.js";
@@ -15,13 +16,13 @@ import { JoinLobbyForm } from "./main/JoinLobbyForm.js";
  * the unjoined-Lobby fork (§3.3).
  */
 export function WeaveRoute(props: RouteDeps & (
-  | { lobbyRoute: true; target?: never }
+  | { lobbyRoute: true; target?: never; initialView?: MainArea }
   | { lobbyRoute?: false; target: SessionTarget })) {
   // Explicitly, not `{...props}`: the two route props below are this component's own business, and
   // spreading them onto children that ignore or overwrite them would say otherwise.
-  const { client, storage, notice, openInPlace, openMainInPlace, openListenersInPlace } = props;
-  const deps: RouteDeps = { client, storage, notice, openInPlace, openMainInPlace, openListenersInPlace };
-  if (props.lobbyRoute) return <LobbyRoute {...deps} />;
+  const { client, storage, notice, openInPlace, openMainInPlace } = props;
+  const deps: RouteDeps = { client, storage, notice, openInPlace, openMainInPlace };
+  if (props.lobbyRoute) return <LobbyRoute {...deps} initialView={props.initialView} />;
   return <WeaveSession {...deps} target={props.target} />;
 }
 
@@ -36,7 +37,9 @@ type Found =
  * Every other failure is a failed *read*, and saying "no Lobby" for one would be a guess about an
  * instance that may well have a perfectly good Lobby.
  */
-export function LobbyRoute(deps: RouteDeps) {
+export function LobbyRoute({ initialView, ...deps }: RouteDeps & { initialView?: MainArea }) {
+  // The view the address bar asked for is this route's own business and is handed on explicitly,
+  // for the reason `WeaveRoute` above spreads nothing: `deps` is exactly `RouteDeps` here.
   const { client, storage, notice, openMainInPlace } = deps;
   const [found, setFound] = useState<Found>({ kind: "loading" });
   // Same reason as `WeaveMount` below: the notice is a plain page-scoped object, and the two cards
@@ -75,7 +78,8 @@ export function LobbyRoute(deps: RouteDeps) {
     );
   }
   // The pointer is known here, so the page below never has to ask for it again.
-  return <WeaveSession {...deps} target={{ kind: "id", weaveId: found.lobby.weaveId }} lobby={found.lobby} />;
+  return <WeaveSession {...deps} initialView={initialView}
+    target={{ kind: "id", weaveId: found.lobby.weaveId }} lobby={found.lobby} />;
 }
 
 /**
@@ -90,13 +94,41 @@ export function LobbyRoute(deps: RouteDeps) {
  * is no reason to — the session it would rebuild is the one this already has, and one code path is
  * easier to be sure of than two.
  */
-function WeaveSession(props: RouteDeps & { target: SessionTarget; lobby?: Lobby }) {
+function WeaveSession({ initialView, ...props }:
+  RouteDeps & { target: SessionTarget; lobby?: Lobby; initialView?: MainArea }) {
   const [reloadKey, setReloadKey] = useState(0);
-  return <WeaveMount key={reloadKey} {...props} onJoined={() => setReloadKey((n) => n + 1)} />;
+  // Above the key, deliberately: a join rebuilds everything below it, and which part of the page the
+  // human was looking at is not the join's to reset. `initialView` is read once, to seed this.
+  //
+  // `popSeq` shares this object because it has the same owner and the same lifetime: it is the
+  // directory's `key` (spec §4.4), bumped only by `popstate`.
+  const [main, setMain] = useState<{ view: MainArea; popSeq: number }>(
+    () => ({ view: initialView ?? "thread", popSeq: 0 }));
+  // One listener, registered only where a path of ours could ever be popped, and deliberately NOT
+  // conditioned on `canLeave`: storage can degrade after a push, and a listener torn down mid-life
+  // would leave Back changing the URL without changing the view. A `popstate` this page never caused
+  // is harmless — it sets the view to what the URL already says.
+  //
+  // It needs no lifetime guard of its own, unlike the handler below: `WeaveSession` is above
+  // `key={reloadKey}`, so a join does not remount it, and the effect closes over no render value —
+  // it reads `location.pathname` when the event arrives and updates through the functional setter.
+  useEffect(() => {
+    if (viewOfPath(location.pathname) === undefined) return;
+    // The bump is deliberately not conditioned on the view having changed: two entries can carry the
+    // same view and different query strings, and Back between them must re-seed the directory from
+    // the entry it landed on (spec §4.4).
+    const onPop = () => setMain((m) => ({ view: viewOfPath(location.pathname) ?? "thread", popSeq: m.popSeq + 1 }));
+    addEventListener("popstate", onPop);
+    return () => removeEventListener("popstate", onPop);
+  }, []);
+  const setView = (next: MainArea) => setMain((m) => ({ ...m, view: next }));
+  return <WeaveMount key={reloadKey} {...props} onJoined={() => setReloadKey((n) => n + 1)}
+    view={main.view} viewKey={main.popSeq} setView={setView} />;
 }
 
-function WeaveMount({ client, storage, notice, openMainInPlace, openListenersInPlace, target, lobby, onJoined }:
-  RouteDeps & { target: SessionTarget; lobby?: Lobby; onJoined: () => void }) {
+function WeaveMount({ client, storage, notice, openMainInPlace, target, lobby, onJoined, view, viewKey, setView }:
+  RouteDeps & { target: SessionTarget; lobby?: Lobby; onJoined: () => void;
+    view: MainArea; viewKey: number; setView: (next: MainArea) => void }) {
   const { session, state } = useSession(target, { client, storage, onWrite: notice.note });
   // The notice is a plain page-scoped object, so a subscription is what turns a failed write —
   // raised by this session's own §10.9 entry write, or by the form that rendered this page in
@@ -134,6 +166,50 @@ function WeaveMount({ client, storage, notice, openMainInPlace, openListenersInP
   const weaveId = state.weave?.id ?? (target.kind === "id" ? target.weaveId : undefined);
   const canLeave = leavingIsSafe(storage, notice, weaveId === undefined ? undefined : weaveKey(weaveId));
 
+  // What the handler below must read *now* rather than from the render that closed over it.
+  // `storage` and `notice` are the same objects for the life of the page — `RouteDeps` hands one of
+  // each. `setView` is a fresh closure on every render of `WeaveSession`, but it closes over nothing
+  // render-varying and updates the state functionally, so a stale one behaves like a live one and it
+  // needs no ref either. Only the two render-varying values do.
+  const now = useRef({ view, weaveId });
+  now.current = { view, weaveId };
+  // This mount's own lifetime, because the handler below can outlive it. `WeaveSession`'s
+  // `key={reloadKey}` retires this component on a join, while the view, its setter and the
+  // `popstate` listener stay with the parent — which does NOT remount. So a callback captured
+  // before the join still reaches the live page, holding a `now` that stopped updating the moment
+  // this mount came off screen. Named `mounted` rather than `live`: the discovery effect above has
+  // a `let live` of its own, and two different things under one name in one component is a line a
+  // reader gets wrong exactly once.
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
+  // The app's first `pushState` (spec §4.2). It loads nothing — same document, same session, same
+  // storage — and the address it writes is one this browser can honour. Written BEFORE the state
+  // change, so the view mounts with `location` already on the new path and §4.3's seeding rule needs
+  // no special case. No query string: the filters belong to the entry the directory rewrites in place.
+  const onView = (next: MainArea) => {
+    // Dead with the mount that owns it, and asked FIRST — before the equality test, before
+    // `leavingIsSafe`, before any `pushState` and before `setView`. A retired handler's `now` is a
+    // snapshot of a page that is no longer on screen, so every line below this one would be
+    // deciding the live page's view from a dead mount's inputs (spec §4.2, lifetime amendment).
+    if (!mounted.current) return;
+    // Nothing happened, so nothing is recorded. `onPick` calls this on EVERY Thread selection and
+    // every successful creation (spec §3.4), the directory closed as often as open, and an
+    // unguarded push would make Back walk through a human's Thread clicks one duplicate `/lobby` at
+    // a time. Read from the ref, never from `view`: see above.
+    if (next === now.current.view) return;
+    // Asked here and not taken from `canLeave` above it. `canLeave` is a render's answer to
+    // "may this browser be left?", and this handler can outlive that render; the same predicate, the
+    // same key, asked at the moment the view actually changes (spec §4.2, "re-read per click").
+    const id = now.current.weaveId;
+    const mayLeave = leavingIsSafe(storage, notice, id === undefined ? undefined : weaveKey(id));
+    if (viewOfPath(location.pathname) !== undefined && mayLeave) history.pushState(null, "", pathForView(next));
+    // The ref leads the state by a beat on purpose: two calls in one turn — a creation that selects
+    // the Thread it made — must see the first one's decision, and the render that would refresh it
+    // has not happened yet.
+    now.current = { view: next, weaveId: id };
+    setView(next);
+  };
+
   const here = lobby ?? discovered;
   const isLobby = !!here && target.kind === "id" && here.weaveId === target.weaveId;
   // While the question is open the page has no honest card to show: the explanation is the wrong one
@@ -144,6 +220,13 @@ function WeaveMount({ client, storage, notice, openMainInPlace, openListenersInP
     : here && isLobby
       ? (
         <div class="page-join">
+          {/* Why the form is here, when there is a reason. This element replaces the generic
+              no-credential card whole, and the two generic cards in `WeaveView.tsx` (the error card
+              and the no-credential card) are the only other places `state.error` is drawn, so
+              without this line a Lobby identity retired mid-page — by a query refused 401, or by a
+              write that reached only memory — would leave a human staring at a join form that
+              appeared for no stated reason. */}
+          {state.error && <p class="error page-join-invalid">{state.error}</p>}
           <JoinLobbyForm client={client} storage={storage} notice={notice}
             lobby={{ weaveId: here.weaveId, title: here.title }}
             onJoined={onJoined} onJoinedInPlace={onJoined} />
@@ -161,10 +244,10 @@ function WeaveMount({ client, storage, notice, openMainInPlace, openListenersInP
   // warning the human needs would be latched and never drawn. `App` hands every route the same
   // notice and mounts one route at a time, so it stays one bar, and one dismissal, per page load.
   //
-  // The sidebar's way into the directory is decided by the same `canLeave`, and for the same reason
-  // (spec §5.1): an anchor to `/lobby/listeners` can be middle-clicked, and on this browser that is
-  // the page load which drops the only copy of the credential. The view renders the answer.
+  // `onView` is the seam the view change goes through, and it is opened here rather than below so
+  // that nothing under this mount ever gains a history decision of its own: this is where `storage`,
+  // `notice` and the Weave id `canLeave` is computed from already are (spec §4.2).
   return <WeaveView session={session} state={state} banner={<PersistenceBar notice={notice} />}
     noCredential={noCredential} openMainInPlace={canLeave ? undefined : openMainInPlace}
-    openListenersInPlace={canLeave ? undefined : openListenersInPlace} />;
+    view={view} viewKey={viewKey} onView={onView} />;
 }
