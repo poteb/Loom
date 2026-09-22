@@ -162,6 +162,16 @@ function offendingKeyword(words: readonly string[]): string | undefined {
   return undefined;
 }
 
+/** A letter, `_` or any non-ASCII character: what PostgreSQL lets an unquoted identifier begin with. */
+function isIdentifierStart(c: string): boolean {
+  return /[A-Za-z_]/.test(c) || c.charCodeAt(0) >= 0x80;
+}
+
+/** What may continue an unquoted identifier: the start characters, a digit, or `$`. */
+function isIdentifierPart(c: string): boolean {
+  return isIdentifierStart(c) || /[0-9$]/.test(c);
+}
+
 /**
  * Splits `text` into statements, collecting for each one only the characters seen in the CODE
  * state. A comment is only a comment in the code state; a `;` only ends a statement in the code
@@ -232,6 +242,17 @@ function statements(text: string): Statement[] {
         if (text[i] === '"') { if (text[i + 1] === '"') { i += 2; continue; } i += 1; break; }
         i += 1;
       }
+      continue;
+    }
+    if (isIdentifierStart(c)) {                            // an unquoted identifier or keyword
+      // Read as one token, because PostgreSQL lets `$` continue an identifier: `t$tag$` is a single
+      // name, and a scan that met its `$` on its own would open a dollar quote with no closer and
+      // skip the rest of the file. So a `$` reached below always stands at a token boundary.
+      let end = i + 1;
+      while (end < text.length && isIdentifierPart(text[end]!)) end += 1;
+      if (start === -1) start = i;
+      code += text.slice(i, end);
+      i = end;
       continue;
     }
     if (c === "$") {                                       // dollar-quoted body, tag-matched

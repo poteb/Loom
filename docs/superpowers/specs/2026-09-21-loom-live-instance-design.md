@@ -3487,7 +3487,18 @@ the phases are gone. The states, and the only transitions out of each:
 | **block comment** | `/*` **in code**, or `/*` while already in a block comment (depth + 1) | `*/`, at depth 1; deeper nestings only decrement | nothing but `/*` and `*/`, for the depth |
 | **single-quoted string** | `'` **in code** | a `'` that is not doubled — `''` is an escaped quote and stays inside — and, in an `E'…'` literal, not a `'` preceded by an odd number of backslashes | nothing |
 | **double-quoted identifier** | `"` **in code** | a `"` that is not doubled (`""`) | nothing |
-| **dollar-quoted body** | `$tag$` **in code**, `tag` empty or an identifier | the **same** `$tag$`, tag-matched, so a `$$` inside a `$body$ … $body$` does not end it | nothing |
+| **dollar-quoted body** | `$tag$` **in code at a token boundary** — never inside an unquoted identifier — `tag` empty or an identifier | the **same** `$tag$`, tag-matched, so a `$$` inside a `$body$ … $body$` does not end it | nothing |
+
+**A dollar quote opens only at a token boundary, and that is PR #28's review round 1.** PostgreSQL
+lets `$` continue an unquoted identifier after its first character, so `t$tag$` is one name. A scan
+that meets that `$` as if it stood alone opens a `$tag$` body that nothing closes, skips the rest of
+the file, and accepts `CREATE TABLE t$tag$ (id int); COMMIT; SELECT nonexistent_function();` — whose
+`COMMIT` the server executes. So the code state reads an unquoted identifier — a letter, `_` or a
+non-ASCII character, then letters, digits, `_` and `$` — as **one token**, and a `$` inside it is an
+identifier character. A `$` the pass meets on its own is therefore always at a token boundary, and
+only there does the dollar-body state open: `$$ … $$`, `$tag$ … $tag$`, `($$ … $$)` and
+`DO $$ BEGIN … END $$;` read exactly as before. A double-quoted `"t$tag$"` needed no change: its `$`
+is already inside the double-quoted state. §11.1 case 10 is the test.
 
 Four properties follow from the table, and they are the whole of the fix. **Comments are recognised
 only in the code state**, so a `--` or a `/*` inside any quoted form is content and cannot remove

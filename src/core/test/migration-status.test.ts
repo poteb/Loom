@@ -369,6 +369,17 @@ select nonexistent_function();`,
     expect(message).toContain("may not contain ABORT");
     expect(await regclass(db, "public.t_enclosed")).toBeNull();
   });
+
+  it("case 10: a COMMIT after an identifier holding dollar signs is refused before anything runs", async () => {
+    const folder = writeFolder([{
+      tag: "0000_dollar_ident", when: 100, sql: `CREATE TABLE t$tag$ (id int); COMMIT; SELECT nonexistent_function();`,
+    }]);
+    const db = await freshDatabase();
+    const message = await rejectionMessage(runMigrations(db, folder));
+    expect(message).toContain("0000_dollar_ident.sql");
+    expect(message).toContain("may not contain COMMIT");
+    expect(await regclass(db, "public.t$tag$")).toBeNull();
+  });
 });
 
 /**
@@ -479,6 +490,38 @@ describe("case 10: a comment opener inside a quoted form hides nothing", () => {
     const message = refusal(statement);
     expect(message).toContain(FILE);
     expect(message).toContain("may not contain COMMIT");
+  });
+});
+
+/**
+ * PostgreSQL lets `$` continue an unquoted identifier, so `t$tag$` is one name and opens nothing: a
+ * dollar quote begins only where no identifier is running. One rule per case.
+ */
+describe("case 10: a dollar sign inside an identifier opens no dollar quote", () => {
+  it("refuses the COMMIT after an unquoted identifier holding dollar signs", () => {
+    const message = refusal("CREATE TABLE t$tag$ (id int); COMMIT;");
+    expect(message).toContain(FILE);
+    expect(message).toContain("may not contain COMMIT");
+  });
+
+  it("refuses the COMMIT after a quoted identifier holding dollar signs", () => {
+    const message = refusal(`CREATE TABLE "t$tag$" (id int); COMMIT;`);
+    expect(message).toContain(FILE);
+    expect(message).toContain("may not contain COMMIT");
+  });
+
+  it("refuses the COMMIT after a real tagged dollar quote", () => {
+    const message = refusal("SELECT $tag$ ... $tag$; COMMIT;");
+    expect(message).toContain(FILE);
+    expect(message).toContain("may not contain COMMIT");
+  });
+
+  it("accepts a COMMIT inside a dollar quote that opens after a parenthesis", () => {
+    accepts("INSERT INTO t VALUES ($$ commit; $$);");
+  });
+
+  it("accepts a DO block whose body is dollar-quoted", () => {
+    accepts("DO $$ BEGIN PERFORM 1; END $$;");
   });
 });
 

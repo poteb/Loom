@@ -183,19 +183,21 @@ guarded by `typeof document !== "undefined"` because the package runs Vitest wit
 
 As of the **live instance** on `feat/live-instance` (measured at code commit `6cbcc7a`, the fix
 wave's core commit; the later `65e684d` changes only `deploy/test/` and `.dockerignore`, which no
-vitest suite reads):
-**1814 tests in 68 files** — core 569 in 25, web 749 in 14, server 208 in 10, claude-channel 139 in
+vitest suite reads; core re-measured after PR #28's review round 1, which touches core alone):
+**1820 tests in 68 files** — core 575 in 25, web 749 in 14, server 208 in 10, claude-channel 139 in
 9, cli 70 in 5, client 45 in 4, mcp-tools 34 in 1 — from `pnpm -r build` then
 `pnpm --workspace-concurrency=1 -r test`, with `pnpm -r typecheck` clean.
 The previous figure was 1700 in 66 (core 485/24, web 749/14, server 178/9, claude-channel 139/9,
-cli 70/5, client 45/4, mcp-tools 34/1), so the live instance added **114 tests and two files**.
+cli 70/5, client 45/4, mcp-tools 34/1), so the live instance added **120 tests and two files**.
 **Only `core` and `server` moved, and that is the measurement rather than the arithmetic**: core
-gains `migration-status.test.ts` (one file, +84 with the db-guard rewrite, which adds tests to an
+gains `migration-status.test.ts` (one file, +90 with the db-guard rewrite, which adds tests to an
 existing file) and server gains `migrate.test.ts` (one file, +30 with the config, boot and MCP
 cases). The last **seven** of core's are the whole-branch review's fix wave, all inside
 `migration-status.test.ts` and no new file: the statement locator, the database-ahead drift, the two
 new `CONCURRENTLY` forms with their look-alikes, and `assertPendingTransactionSafe`'s two direct
-cases. `web`, `client`, `cli`, `mcp-tools` and `claude-channel` are **unchanged to the test**, which
+cases. The **six** after them are PR #28's review round 1, also inside `migration-status.test.ts`: a
+`$` inside an unquoted identifier opens no dollar quote — five guard cases and one run refused before
+anything is applied. `web`, `client`, `cli`, `mcp-tools` and `claude-channel` are **unchanged to the test**, which
 is the direct evidence that this slice touched no route, no client wrapper, no CLI command, no MCP
 tool registration and nothing the channel reads — the change is a rule about the database, an entry
 point, a boot switch, one status code, and a directory of files nothing imports.
