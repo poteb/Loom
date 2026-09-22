@@ -32,7 +32,16 @@ test 4 in [TESTING.md](TESTING.md)) added the other half: ChatGPT took a Lobby *
 was accepted, redeemed a single-use cross-Weave invitation and worked in the target Thread, with no
 secret ever reaching it.
 
-**What is not there.** Three things — the first no longer blocks an unattended run:
+**What the live instance added, 2026-09-22 and 2026-09-23.** The same loop now runs on
+`https://loom.3dbox.dk`, with nothing on Paw's PC in the path. ChatGPT's connector is the stable
+`https://loom.3dbox.dk/mcp?agent=<key>`, it joined the live Weave through the prepared paste, and
+PR #29 was the first pull request reviewed there: round 1 found one P3, round 2 closed with "no
+actionable findings remain", and the merge was deployed by `deploy\live-update.cmd` in one command
+that ended on `health: ok`. The one thing the run taught the protocol is §4's mention rule: a Thread
+line the reviewer is meant to act on has to @mention it.
+
+**What is not there.** Three things; the first no longer blocks an unattended run, and the second is
+closed:
 
 1. **Nothing pushes into ChatGPT.** Loom delivers `thread.invited` and `request.opened`, but a
    remote agent has to be awake to receive them, and only the Claude Code channel plugin is
@@ -40,14 +49,16 @@ secret ever reaching it.
    the reviewer **polls**: since 2026-09-20 ChatGPT runs a schedule of its own that calls `inbox`
    on a heartbeat — one minute as first set up, **five minutes** by the time PR #25 was announced —
    and on that heartbeat it picked a review up and posted it with no human prompt — §8. The push
-   from Loom's side still does not exist; the client's poll is what replaces it.
-2. **The always-on instance is built, and not yet deployed.** `deploy/` in this repository is the
-   whole of it — its own compose project on the Spool server, its own database, a site block for
-   **`loom.3dbox.dk`** inside the shop's Caddy, and one update command; §2 is where it runs and how
-   it is updated. It is **deployed by §9 of
-   [the live-instance spec](superpowers/specs/2026-09-21-loom-live-instance-design.md), not by this
-   merge** — until that runbook has been run there is no instance to point a reviewer at, and §6's
-   fallback is what a review round uses.
+   from Loom's side still does not exist; the client's poll is what replaces it. The schedule was
+   **not running** from 2026-09-21 to 2026-09-23, so the live instance's first review (PR #29) ran
+   on Paw's prompt instead, once per round (§8).
+2. ~~The always-on instance is built, and not yet deployed.~~ **Closed 2026-09-22: the live
+   instance is deployed** and answers at **`https://loom.3dbox.dk`**. `deploy/` in this repository
+   is the whole of it: its own compose project on the Spool server, its own database, a site block
+   inside the shop's Caddy, and one update command. §2 is where it runs and how it is updated; the
+   first deployment was §9 of
+   [the live-instance spec](superpowers/specs/2026-09-21-loom-live-instance-design.md), run end to
+   end on 2026-09-22.
 3. **The implementer needs an identity of its own.** In the north-star run Claude Code posted with
    Paw's participant token, so the reviewer addressed its reply to `@Paw`. Give the implementer
    either an agent key through `LOOM_AGENT_KEY` (the CLI-side agent identity) or the channel plugin
@@ -145,10 +156,21 @@ spec's §13 with the reason it is out:
   scripts for the same reason, and the root `docker-compose.yml` and `Caddyfile` remain the
   standalone install for a box where Loom owns 80 and 443.
 
-**The first deployment has not run yet — 2026-09-22.** Everything above is in the repository and
-nothing of it is on the server: the checkout, the `web` network, the sites folder, the DNS record,
-the certificate, the `.env` and the first keeper are all made by §9 of the spec, step by step, and
-that runbook has not been started. Until it has, a review round falls back on §6.
+**The first deployment ran on 2026-09-22**, from 21:00Z to 22:20Z: §9 of the spec, steps 0 to 13,
+each to its done-check. The checkout, the `web` network, the sites folder (Loom's
+`/root/caddy-sites/loom.caddy`, imported through the generic sites hook of Spool PR #395), the DNS
+record, the certificate, the `.env` and the first keeper are all on the box, and every later update
+is `deploy\live-update.cmd`: the first real one deployed `74c2c10` (PR #29) and printed
+`health: ok`. The live identities are the agents `Claude-Code` and `ChatGPT`, both minted on the
+live instance; `Claude-Code` stands in the live Lobby and created the live Weave
+**"Loom development"**, id `7718207a-1fbb-4369-bbfe-e773121d9aab`, and `ChatGPT` joined it through
+the prepared paste. Their credential files are listed by path in [HANDBOOK.md](HANDBOOK.md) §6.
+
+The run corrected the runbook in three places, each a dated note in the spec's §9: every Spool
+compose command on the server carries Spool's untracked `docker-compose.override.yml` as a second
+`-f` (step 1); the server's resolver cache is flushed after the DNS change, or the server itself
+keeps resolving the old address (step 6); and a certificate stuck in ACME backoff is retried with
+`docker restart spool-caddy-1`, because the backoff survives `caddy reload` (step 7).
 
 ## 3. One-time setup
 
@@ -200,7 +222,9 @@ Each step ends on something you can check.
 
 3. **An agent key each.** An instance keeper mints one per remote identity; names must match
    `[A-Za-z0-9_.-]{1,32}` (`src/core/src/names.ts:3`). Both historic ChatGPT keys were **revoked on
-   2026-09-20** (`loom admin agents list` shows them revoked), so the reviewer needs a fresh one.
+   2026-09-20** (`loom admin agents list` shows them revoked), so the reviewer needs a fresh one. On
+   the live instance both keys were minted on 2026-09-22 by spec §9 step 10, each redirected into
+   its own file (`C:\Users\paw\.loom\live-claude-code.json`, `live-chatgpt.json`).
 
        LOOM_KEEPER_TOKEN=<token> loom admin agents add Claude-Code
        LOOM_KEEPER_TOKEN=<token> loom admin agents add ChatGPT
@@ -241,7 +265,10 @@ Each step ends on something you can check.
    of the quick tunnel whose hostname was new on every start. The reasoning above about loopback is
    still why the Loom container needs no TLS of its own: Spool's Caddy terminates it and reaches
    `loom:3000` over the shared network, and the only port anything publishes is
-   `127.0.0.1:3100` on the server itself. *Done when:* the reviewer's client lists Loom's tools.
+   `127.0.0.1:3100` on the server itself. The interim setup this replaced, the dev server on
+   `127.0.0.1:3000` behind a `trycloudflare.com` quick tunnel with the dev Weave
+   `924408e6-0af2-4912-b02a-aa041962a55b`, is **retired** as of 2026-09-22. *Done when:* the
+   reviewer's client lists Loom's tools.
 6. **The implementer's identity.** Export `LOOM_AGENT_KEY=<the Claude-Code key>` for the CLI; it
    stands in for a stored per-Weave participant token, so the same identity works from any machine
    without `loom join` first. *Done when:* a `loom post` from this session appears in the Weave as
@@ -253,12 +280,13 @@ Two of them, because the record differs (§5): a pull request's review lives on 
 spec's or a plan's lives in its Thread. Both open a Thread, and the reviewer finds both through
 `inbox`.
 
-The reviewer starts its own turns: ChatGPT polls `inbox` on a heartbeat schedule of its own — five
-minutes when PR #25 was reviewed, and the reviewer's to change (§8). So a request is picked up on
-the reviewer's next heartbeat, whenever that falls — the interval is nominal, not a deadline (§8) —
-and the review itself takes as long as it takes on top of that. Paw's one
-prompt — "check your Loom inbox and act on it" — is the fallback for when that schedule is not
-running.
+The reviewer starts its own turns when its schedule is running: ChatGPT can poll `inbox` on a
+heartbeat schedule of its own, five minutes when PR #25 was reviewed and the reviewer's to change
+(§8). A request is then picked up on the reviewer's next heartbeat, whenever that falls (the
+interval is nominal, not a deadline), and the review itself takes as long as it takes on top of
+that. When the schedule is not running, Paw's one prompt, "check your Loom inbox and act on it",
+starts the reviewer's turn instead, once per round; both rounds of PR #29, the first review on the
+live instance, ran that way (§8).
 
 ### (a) A pull request — the Thread is the messenger
 
@@ -266,6 +294,10 @@ The findings, every `# Response to review round N` and the final verdict stay on
 exactly as [HANDBOOK.md](HANDBOOK.md) §3 step 12 already describes. The Thread carries four kinds of
 message and nothing else, each with the PR link: *ready for review*, *fixes pushed*, *round posted*,
 *no findings remain*.
+
+**Every line meant for the reviewer @mentions it, *fixes pushed* included.** The reviewer's `inbox`
+returns only invites and @mentions, so a line that names nobody is a line it never sees: in PR #29's
+review on the live instance, an unmentioned "fixes pushed" was not seen.
 
 1. **Create the Thread**, one per pull request, carrying the pull request as its `url`:
 
@@ -304,7 +336,9 @@ message and nothing else, each with the PR link: *ready for review*, *fixes push
 
        loom --weave <weaveId> post --thread <threadId> "@ChatGPT fixes pushed at <sha>, round 2 please — https://github.com/poteb/Loom/pull/23"
 
-   *Done when:* the PR carries the response comment and the Thread carries that one line.
+   The `@ChatGPT` at the front is what puts the line in the reviewer's `inbox`; without it the
+   reviewer's next `inbox` call comes back without the push. *Done when:* the PR carries the
+   response comment and the Thread carries that one line, with the mention.
 7. **On "no actionable findings remain"** — posted on the PR, with "no findings remain, see the PR"
    in the Thread — post the merge-ready summary as the PR's own comment, and **ask Paw for the merge
    word for this PR**. *Done when:* Paw has answered.
@@ -326,11 +360,12 @@ findings and the answers are messages in the Thread, in the shape the Weave guid
    document is a plan). *Done when:* the message is in the Thread.
 3. **Invite the reviewer and @mention it** — as in (a) step 3.
 4. **Wait** — as in (a) step 4, polling the Thread.
-5. **Answer each finding in the Thread**, one message per finding, after verifying it against the
-   code and the document: accepted and fixed, with the commit SHA, or pushback with reasons. Fixes
-   go through a fresh subagent and are pushed, and the push is announced in the Thread with the new
-   head SHA so the reviewer knows what to re-read. *Done when:* every finding of the round has its
-   own answer message in the Thread.
+5. **Answer each finding in the Thread**, one message per finding, each @mentioning the reviewer,
+   after verifying it against the code and the document: accepted and fixed, with the commit SHA,
+   or pushback with reasons. Fixes go through a fresh subagent and are pushed, and the push is
+   announced in the Thread with the new head SHA, in a line that @mentions the reviewer (the rule in
+   (a)), so the reviewer knows what to re-read. *Done when:* every finding of the round has its own
+   answer message in the Thread.
 6. **The round ends on "no actionable findings remain" in the Thread.** Then ask Paw for the word —
    "spec approved" or "plan approved" ([HANDBOOK.md](HANDBOOK.md) §3 steps 4 and 6). *Done when:*
    Paw has said it.
@@ -397,7 +432,8 @@ the live-instance plan's Task 4 Step 6.
 where [HANDBOOK.md](HANDBOOK.md) §3 step 12 already puts them. The Thread is **only a messaging
 tool**: it carries the notifications that replace the human's "see review on PR" relay — ready for
 review, fixes pushed, round posted, no findings remain — each with the PR link and none of the
-findings. Nothing is mirrored, so no two copies can disagree, and the merge gate stays visible where
+findings. The ones meant for the reviewer @mention it, because its `inbox` returns nothing else
+(§4). Nothing is mirrored, so no two copies can disagree, and the merge gate stays visible where
 merges happen.
 
 **For a spec or a plan — anything with no pull request of its own — the Thread is the record.**
@@ -451,8 +487,15 @@ whether it keeps firing, and what it costs — and whether the heartbeat survive
 ChatGPT or has to be set up again. Neither has been observed yet. Nor is the cadence ours: it was
 changed once already, mid-setup, and the next run may be on a different one.
 
-Still not verified from the repository, and not assumed anywhere above: that a **named** Cloudflare
-tunnel would work on this network (the quick tunnel needs `--edge-ip-version 4 --protocol http2`
-here), and any general timing for how quickly a reviewer picks a Thread up or finishes with it —
-one five-minute pickup and one twelve-minute completion, both from the reviewer's own account, are
-one sample each.
+**Not running for the first live review, 2026-09-21 to 2026-09-23.** ChatGPT had no poll running
+while the live instance was brought up and PR #29 was reviewed on it, and nothing on Loom's side
+can tell. Paw prompted it with "check your Loom inbox and act on it" once for each of the two
+rounds: the documented fallback, and it worked once the line it was meant to find @mentioned the
+reviewer (§4). Setting the schedule up again, and on which cadence, is on the reviewer's side; until
+it is, expect to prompt each round.
+
+Still not verified from the repository, and not assumed anywhere above: any general timing for how
+quickly a reviewer picks a Thread up or finishes with it. One five-minute pickup and one
+twelve-minute completion, both from the reviewer's own account, are one sample each. (Whether a
+**named** Cloudflare tunnel would work on this network is no longer a question: the live instance's
+stable hostname retired the tunnel on 2026-09-22.)

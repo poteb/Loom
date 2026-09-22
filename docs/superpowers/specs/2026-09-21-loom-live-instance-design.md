@@ -4198,6 +4198,14 @@ In practice the session runs these itself in the worktree; Paw's own typing is s
    print `Valid configuration`, `docker compose ls` still shows the effective project name `spool`
    and nothing called `deploy` or `loom`, `docker network inspect web` lists `spool-caddy-1`, and
    `https://shop.3dbox.dk` still serves the shop.
+
+   **Correction, 2026-09-22 (first run).** Spool's server checkout has an untracked
+   `docker-compose.override.yml` beside its compose file (`docker compose ls` lists both for
+   `spool`), so every Spool compose command on the server carries both files:
+   `-f /root/git/Spool/deploy/docker-compose.yml -f /root/git/Spool/deploy/docker-compose.override.yml`.
+   Step 1.5's command above omits the override and was run with it added; step 7's log command
+   needs it as well. `live-update.sh` is unaffected, because it reaches Spool's Caddy with
+   `docker exec spool-caddy-1` rather than through compose.
 2. **Clone Loom.** `git clone https://github.com/poteb/Loom.git ~/git/Loom` — no credentials, the
    repository is public — the asymmetry with Spool's bundle origin is stated in step 1. *Done when:*
    `git -C ~/git/Loom rev-parse HEAD` equals **`$deploySha` from step 0.2** — the same commit Paw's
@@ -4316,6 +4324,11 @@ In practice the session runs these itself in the worktree; Paw's own typing is s
    and half the requests would miss Loom. This is also the check that keeps §13's "**No IPv6**"
    honest: that bullet is a decision not to *serve* IPv6, and it is only true if nothing publishes
    an AAAA for the host.
+
+   **Note, 2026-09-22 (first run).** Once the record has changed, flush the server's own resolver
+   cache: `resolvectl flush-caches` (systemd-resolved, answering on `127.0.0.53`). Otherwise the
+   server's own `curl https://loom.3dbox.dk` and the update script's public health check keep
+   resolving the old address until the old record's TTL expires.
 7. **Watch the certificate.**
    `docker compose -p spool --env-file /root/git/Spool/deploy/.env -f /root/git/Spool/deploy/docker-compose.yml logs -f caddy 2>&1 | redact_logs`
    — or re-reload Caddy to skip the accumulated ACME backoff, which is the trick Spool's own cutover
@@ -4326,6 +4339,13 @@ In practice the session runs these itself in the worktree; Paw's own typing is s
    it as a `--tail 200` snapshot instead. *Done when:* the log carries a successful certificate obtain
    for `loom.3dbox.dk`, and `curl -fsS https://loom.3dbox.dk/api/guidelines` answers 200 with no
    certificate warning.
+
+   **Correction, 2026-09-22 (first run).** "Re-reload Caddy to skip the accumulated ACME backoff"
+   is wrong: the backoff survives `caddy reload`. The first attempt failed because Let's Encrypt
+   still resolved the old A record, and Caddy set the retry 600 s out (`retrying_in`);
+   `docker restart spool-caddy-1` forces a fresh attempt, and it got the certificate in about ten
+   seconds with the shop unaffected. The log command above also needs Spool's override file (the
+   step 1 correction).
 8. **Rerun the update in normal mode — from Paw's PC, through the wrapper**, which is what finishes
    the first deployment. This is the round-4 F6 change: the command is
 

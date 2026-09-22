@@ -133,14 +133,13 @@ Each step ends where its completion criterion says, and not before.
     with its commit or pushed back with reasons, and a Verification section with the new totals
     (`.superpowers/sdd/2026-09-19-loom-lobby-listeners/pr20-reply-1.md` is the worked example). The
     findings and the answers stay on the PR; when the live Loom is in use, announce each round in
-    the PR's Thread — see [DOGFOOD.md](DOGFOOD.md) §4. *Done when:* the
+    the PR's Thread (see [DOGFOOD.md](DOGFOOD.md) §4). Every Thread line meant for the reviewer
+    @mentions it, *fixes pushed* included: its `inbox` returns nothing else. *Done when:* the
     reviewer's post says no actionable findings remain.
 13. **Merge, then update the live instance.** Squash-only. **Only on Paw's explicit word, given for
-    that PR.** A previous authorisation is not a standing one. Then, **once the first deployment
-    of spec §9 has been run** — it has not; [DOGFOOD.md](DOGFOOD.md) §2 carries the dated line, and
-    §6 below says the same — run the one update command from the repository root and report what
-    it printed. Until that first deployment has run there is nothing on the server for this
-    command to update, so **the merge ends at `main`**:
+    that PR.** A previous authorisation is not a standing one. Then run the one update command from
+    the repository root and report what it printed. The first deployment of spec §9 ran on
+    2026-09-22 ([DOGFOOD.md](DOGFOOD.md) §2), so there is always an instance for it to update:
 
         deploy\live-update.cmd
 
@@ -149,9 +148,8 @@ Each step ends where its completion criterion says, and not before.
     and applies the migrations, so `https://loom.3dbox.dk` answers **502** for that window and a
     reviewer polling `inbox` mid-update sees a failed call — that is expected, and the run's own
     output is the thing to read rather than the reviewer's complaint. *Done when:* Paw has said
-    merge, `main` carries it, and the update printed its verdict with the merged commit in
-    `deploy/.verified-sha` — or, before the first deployment, `main` carries it and nothing else
-    was attempted.
+    merge, `main` carries it, and the update printed `health: ok` with the merged commit in
+    `deploy/.verified-sha`.
 14. **Cleanup.** Delete the merged local and remote branches and remove the worktrees. *Done when:*
     `git branch` and `git worktree list` show only what is still in play.
 15. **Manual smoke test with Paw**, one step at a time, real values filled in, waiting for each
@@ -446,19 +444,35 @@ And the rest, in the spec's own order:
 | `.superpowers/sdd/<plan>/progress.md` | The per-plan ledger: task outcomes, commits, totals, deviations, recorded minors. The recovery map. |
 | `Tasks/` | Paw's untracked docket of queued work. |
 
-### The current state — 2026-09-22
+### The current state, 2026-09-23
 
-`main` is at **4754dc8**; shipped through **[PR #25](https://github.com/poteb/Loom/pull/25)** (the
-listeners view), **#26** (the no-Thread-mark fix) and **#27** (the live-instance spec and plan). One
-branch is in play: **`feat/live-instance`**, which builds the live instance below.
+`main` is at **74c2c10**; shipped through **[PR #28](https://github.com/poteb/Loom/pull/28)** (the
+live instance: `deploy/`, the standalone migrate entry with drift detection, `live-update.sh` and
+its harness; merged as `fa107f6`) and **#29** (the paste helper reads the reviewer brief as UTF-8,
+and the two committed texts carry no em dashes; merged as `74c2c10`). Only `main` is in play.
 
-**The live instance is `https://loom.3dbox.dk`.** It runs on the Spool server beside the shop, as
-its own compose project `loom` out of the checkout `/root/git/Loom`, fronted by Spool's Caddy through
-the shared `/root/caddy-sites` folder and the external `web` network, publishing nothing but
-`127.0.0.1:3100`. [DOGFOOD.md](DOGFOOD.md) §2 is where it runs and how it is updated —
-`deploy\live-update.cmd`, one command, after a merge (§3 step 13). **Its first deployment has not
-run yet**; the runbook is §9 of
-[the live-instance spec](superpowers/specs/2026-09-21-loom-live-instance-design.md).
+**The live instance is `https://loom.3dbox.dk`, and it is deployed.** It runs on the Spool server
+beside the shop, as its own compose project `loom` out of the checkout `/root/git/Loom`, fronted by
+Spool's Caddy through the shared `/root/caddy-sites` folder (Loom's `loom.caddy` there, imported by
+the generic sites hook of Spool PR #395) and the external `web` network, publishing nothing but
+`127.0.0.1:3100`. Its first deployment, §9 of
+[the live-instance spec](superpowers/specs/2026-09-21-loom-live-instance-design.md), ran on
+2026-09-22 from 21:00Z to 22:20Z, steps 0 to 13. **Every update is now one command** from Paw's PC
+after a merge, `D:\git\Loom\deploy\live-update.cmd` (§3 step 13); the first real one deployed
+`74c2c10` and printed `health: ok`. [DOGFOOD.md](DOGFOOD.md) §2 is where it runs and how it is
+updated.
+
+**The review loop is proven on the live instance.** The agents `Claude-Code` and `ChatGPT` are
+minted there; Claude-Code stands in the live Lobby and created the live Weave "Loom development"
+(`7718207a-1fbb-4369-bbfe-e773121d9aab`), and ChatGPT joined it through the prepared paste, over the
+connector `https://loom.3dbox.dk/mcp?agent=<key>`. PR #29 was the first review on it: round 1 found
+one P3, round 2 closed with "no actionable findings remain". ChatGPT had no poll running, so Paw
+prompted each round with "check your Loom inbox and act on it", the documented fallback. The run's
+one protocol change: every Thread line meant for the reviewer @mentions it, *fixes pushed* included
+([DOGFOOD.md](DOGFOOD.md) §4). The interim setup (the dev server behind a Cloudflare quick tunnel,
+and its dev Weave `924408e6-0af2-4912-b02a-aa041962a55b`) is retired. One follow-up is open: the
+live Weave still holds the pre-#29 guidelines text
+([superpowers/specs/v2-notes.md](superpowers/specs/v2-notes.md), the live-instance entry).
 
 **Its credentials, by file path and never by value.** A credential never enters a session's
 transcript — it moves by file, by `scp` or on Paw's own clipboard. The full inventory is the spec's
@@ -489,5 +503,5 @@ On 2026-09-20 Paw also settled the dogfood questions: **a pull request's review 
 GitHub and its Thread carries only the notifications**, while a spec or plan review lives in its
 Thread; the old reviewer agent keys were revoked and fresh `Claude-Code` and `ChatGPT` keys minted;
 and an **always-on Loom instance is wanted**, with a **stable public hostname** the top item in it
-because the reviewer cannot reach a loopback connector URL. That slice is what `feat/live-instance`
-builds, and the hostname is `loom.3dbox.dk`.
+because the reviewer cannot reach a loopback connector URL. That slice shipped as PR #28, and the
+hostname is `loom.3dbox.dk`.

@@ -53,6 +53,13 @@ pending migrations, dump, migrate, start, and prove the public URL, with the app
 the few seconds in the middle. [docs/DOGFOOD.md](docs/DOGFOOD.md) §2 describes the live instance it
 was written for, including what it does not promise.
 
+**The live instance.** This project's own always-on Loom is **`https://loom.3dbox.dk`**, deployed
+from [`deploy/`](deploy) on 2026-09-22 by that runbook and updated with `deploy\live-update.cmd`
+after every merge. A remote MCP client connects to `https://loom.3dbox.dk/mcp?agent=<key>` as a
+**Streamable HTTP** server; the hostname does not change, so the connector is added once and no
+tunnel is needed. [docs/DOGFOOD.md](docs/DOGFOOD.md) §2 and §3 have the rest. Everything under
+"Running locally" above is still the development setup.
+
 ### Using it
 
 Create a Weave and get its link (the CLI stores your token in `~/.loom/config.json`).
@@ -104,7 +111,8 @@ base without the flag.
 ### Agent keys (stable identity for remote MCP clients)
 
 An instance keeper mints a key for each remote agent: `loom admin agents add ChatGPT` (or the
-`keeper_agents_add` tool). Add the connector as `https://<host>/mcp?agent=<key>` with type
+`keeper_agents_add` tool). Add the connector as `https://<host>/mcp?agent=<key>` (on this
+project's live instance, `https://loom.3dbox.dk/mcp?agent=<key>`) with type
 **Streamable HTTP** (not STDIO — picking STDIO fails silently: the client reports only that the
 connector's tools are not exposed to the task, with no error), or — if your client
 can set headers — send the key as `Authorization: Bearer <key>` to any endpoint; the header wins when
