@@ -3233,7 +3233,9 @@ was never told there was anything to tell. The previous draft *noted* this case 
 migrator's behaviour, not something this function may paper over". Reporting it as applied **is** the
 papering over.
 
-So `migrationStatus` validates instead, and the validation is two properties:
+So `migrationStatus` validates instead, and the validation is three properties — the third added by
+PR #27's plan review round 1 F2, and numbered last so that the two the rest of this document already
+names keep their numbers, though it is the one checked **first**:
 
 1. **The journal's `when` values are strictly increasing in file order.** Equal or decreasing is
    drift, and it is caught with no database read at all: it is a property of the repository, so it
@@ -3245,12 +3247,20 @@ So `migrationStatus` validates instead, and the validation is two properties:
    comparing timestamps** — and on a clean prefix that is the same set the migrator's own rule
    selects, because a strictly increasing journal makes "greater than the maximum `created_at`"
    and "after the prefix" the same line.
+3. **The folder's `*.sql` files and the journal's tags are the same set.** Read the directory, take
+   every name ending in `.sql`, strip the suffix and compare it with the journal's tags: a file with
+   no entry and an entry with no file are both drift, both named in the message. Like property 1 it
+   needs no database, so it is checked first and on every machine; unlike property 1 it cannot be
+   delegated to drizzle's reader, which loops over the journal and therefore cannot see a file the
+   journal does not mention. The second detail of the read below is why.
 
 **Anything else is a drift state, and a drift state has no status.** `migrationStatus` **throws**,
 naming the first mismatch — the position, the journal entry's tag and `when`, and what the row at
-that position actually held. Four shapes reach it: a backdated entry appended after an applied newer
+that position actually held. Six shapes reach it: a backdated entry appended after an applied newer
 one (property 1), a missing row so that the rows are not a prefix, a duplicate `when` (property 1
-again, since equality is not increasing), and a row whose `hash` is not the journal file's. Both
+again, since equality is not increasing), a row whose `hash` is not the journal file's, an **orphan
+`.sql` file** with no journal entry, and a **journal entry with no `.sql` file** — the last two
+being the folder inventory of the second detail below, which is checked before any row is read. Both
 forms of the migrate entry exit **1** on it (§5.2), so `live-update.sh` stops at banner 6 —
 **before the quiesce, with Loom still serving, nothing dumped and nothing migrated** — which is the
 same gate `assertTransactionSafe` already has and for the same reason: a repository defect must not
@@ -3352,18 +3362,36 @@ drift instead. §10 puts all of this in CONTRIBUTING's `## Migrations` section, 
 transaction rule, because it binds every future migration and a rule that lives only in this
 document is a rule the next author will not read.
 
-Three details of the read:
+Four details of the read:
 
 - **The hash comes from drizzle's own reader, not from a digest reimplemented here.** The journal
   file carries `tag` and `when` but no hash; drizzle computes the hash when it reads the migration
   files. So `migrationStatus` takes the hashes from **`readMigrationFiles` in
   `drizzle-orm/migrator`** — the same helper `migrate()` is given the output of — matching each
   entry by its `folderMillis` to the journal's `when`, so the hash this check compares is by
-  construction the hash the migrator would have inserted. A journal entry with no file, or a file
-  with no journal entry, is itself drift. The implementation task confirms that export's shape
-  against `drizzle-orm@0.45.2` and, if it differs there, computes the digest the way that version's
-  migrator does — and either way §11.1 case 4 pins the agreement empirically, by applying the real
-  migrations and reading the rows back rather than by trusting this paragraph.
+  construction the hash the migrator would have inserted. The implementation task confirms that
+  export's shape against `drizzle-orm@0.45.2` and, if it differs there, computes the digest the way
+  that version's migrator does — and either way §11.1 case 4 pins the agreement empirically, by
+  applying the real migrations and reading the rows back rather than by trusting this paragraph.
+
+- **The folder's `*.sql` files are inventoried independently of the journal, and that is PR #27's
+  plan review round 1 F2.** "A journal entry with no file, or a file with no journal entry, is
+  itself drift" was already this section's rule, and the previous draft left it to
+  `readMigrationFiles` to notice — which it cannot, in one direction, by construction.
+  `readMigrationFiles` **loops over the journal's entries** and reads one file per entry
+  (`drizzle-orm@0.45.2`'s `migrator.js:12-28`, read rather than assumed), so the list it returns is
+  always exactly as long as the journal and an **orphan** `.sql` file — one drizzle-kit wrote whose
+  journal entry a merge conflict or a hand-edit dropped — is invisible to it. That is the shape this
+  section calls drift and the one that costs the most: the file is in the repository, no journal
+  entry means no pending tag, `migrate --check` reports nothing to apply, §4.5 banner 6 skips the
+  migrator, and the deployment is recorded healthy against a schema the branch's code expects to
+  have changed. So `migrationStatus` **reads the directory itself** — every `*.sql` in the
+  migrations folder, non-recursively — and compares that set with the journal's tags **before** it
+  asks drizzle for anything: a file with no entry and an entry with no file are both refused, both
+  named in the message, and both are drift with no status to report. The other direction is refused
+  here too rather than left to drizzle, whose own message for it (`No file <path> found in <folder>
+  folder`) says nothing about the journal, the prefix or the remedy. §11.1 case 12 is the test, in
+  both directions.
 
 - The table may not exist on a fresh database. `migrationStatus` asks
   `select to_regclass('drizzle.__drizzle_migrations')` first and treats a null answer as "nothing
@@ -3460,16 +3488,38 @@ the phases are gone. The states, and the only transitions out of each:
 | **double-quoted identifier** | `"` **in code** | a `"` that is not doubled (`""`) | nothing |
 | **dollar-quoted body** | `$tag$` **in code**, `tag` empty or an identifier | the **same** `$tag$`, tag-matched, so a `$$` inside a `$body$ … $body$` does not end it | nothing |
 
-Three properties follow from the table, and they are the whole of the fix. **Comments are recognised
+Four properties follow from the table, and they are the whole of the fix. **Comments are recognised
 only in the code state**, so a `--` or a `/*` inside any quoted form is content and cannot remove
-anything. **Statements are split on `;` only in the code state**, so a semicolon inside a string, an
-identifier, a dollar body or a comment does not end a statement. And **the keyword check runs on each
+anything. **A comment that is skipped leaves a separator behind** — see the paragraph below, which
+is PR #27's plan review round 1 F1. **Statements are split on `;` only in the code state**, so a
+semicolon inside a string, an identifier, a dollar body or a comment does not end a statement. And
+**the keyword check runs on each
 split statement's leading tokens** — the text between the previous split and this `;`, with its
 comments and quoted runs already accounted for by the pass, leading whitespace and leading comments
 skipped, matched case-insensitively against the table. Drizzle's own `--> statement-breakpoint` needs
 no rule of its own: it *is* a line comment, and the `;` before it has already ended the statement, so
 the previous draft's "split on the marker and then on `;`" is one step the single pass removes rather
 than a step it has to keep.
+
+**A skipped comment must leave a separator behind, and that is PR #27's plan review round 1 F1.**
+PostgreSQL's lexer treats a comment as whitespace: `COMMIT/**/WORK;` is the ordinary
+`COMMIT WORK;`, and the server executes it as a commit. A scan that *removes* the comment instead of
+replacing it joins the tokens on either side — the statement's words become the single word
+`COMMITWORK`, no leading-keyword sequence matches, and the file the guard exists to refuse is
+accepted. The consequence is the whole of §4.5's recovery contract: that commit ends drizzle's
+transaction, a later failure in the same run leaves the committed schema change behind, the journal
+row is never inserted, the status read afterwards still reports the tag pending, and R6 declares a
+rollback that did not happen. So the rule is stated as part of the pass: **skipping a line comment
+or a block comment emits exactly one space into the statement's code text**, and a line comment
+additionally leaves its terminating newline in the code text, because the scan stops *at* the
+newline rather than past it. One space is enough — the words are extracted by a token regex, so a
+separator of any width separates — and it is the minimum that cannot itself create a keyword.
+The same rule is what refuses `ROLLBACK/* x */TO SAVEPOINT s;`, `END/**/TRANSACTION;`,
+`ABORT--x` followed by `WORK;` on the next line, and `CREATE INDEX/**/CONCURRENTLY i ON t (c);`,
+which the removing form accepted as `INDEXCONCURRENTLY`. It refuses nothing new that PostgreSQL
+would have accepted: a comment inside a statement whose leading keyword is not on the table —
+`ALTER TABLE t/* comment */RENAME COLUMN a TO b;` — is still accepted, because the separator changes
+the word boundaries and nothing else. §11.1 case 11 is the test.
 
 **The honesty note stands, unchanged and important: this is still not a PostgreSQL parser, and none
 is promised.** The pass makes the guard immune to the *lexical* deceptions above — which is what it
@@ -3539,7 +3589,7 @@ line, then a line that is
 **exactly** `pending:`, then the pending tags, **one bare tag per line, nothing after them**. With
 nothing pending, stdout is the single `migrations: N applied, nothing to apply` line and no
 `pending:` line at all. That is what makes `sed -n '/^pending:$/,$p'` a sound extraction, and
-§11.2 case 13 asserts the shape — and, since round 5's F2, the extraction itself over both an empty
+§11.2 case 15 asserts the shape — and, since round 5's F2, the extraction itself over both an empty
 and a non-empty result — rather than only the words, because the reconciliation of §4.5's recovery
 procedure is only as good as this listing.
 
@@ -4592,9 +4642,16 @@ cases need a database with *no* migrations applied at all, and the shared one is
 run by `freshDb()`. The container comes from **`src/core/test/pg-container.ts`**, this package's own
 fixture (§11.2 for why there are two), and the file stops it in `afterAll`. It imports `@loom/core`
 and nothing else from this repository; applying is done by core's own `runMigrations`, never by the
-server entry. The `assertTransactionSafe` cases (9 and 10) need no database at all and are in this
-file because they test the same module, and so does the journal half of cases 5 and 7 — a `when`
-sequence that is not strictly increasing is refused before anything is read.
+server entry. The `assertTransactionSafe` cases (9, 10 and 11) need no database at all and are in
+this file because they test the same module, and so does the journal half of cases 5, 7 and 12 — a
+`when` sequence that is not strictly increasing, and a folder that disagrees with its journal, are
+both refused before anything is read.
+
+**Cases 11 and 12 are appended rather than inserted**, although 12 belongs with the drift family of
+cases 5 to 7 and 11 with the guard cases 9 and 10. Appending is what keeps every existing
+cross-reference to cases 1 to 10 — in this document, in the plan and in the commit history of both —
+pointing at the case it was written about. The groups that follow are renumbered, because they must
+stay contiguous.
 
 1. **A fresh database lists every journal entry as pending and nothing as applied** — the count
    equals the journal's entry count, the order is the journal's, and
@@ -4623,7 +4680,7 @@ sequence that is not strictly increasing is refused before anything is read.
    nothing** — `to_regclass` for both files' tables is null afterwards. That second half is the
    answer to F4's question about whether core should refuse as well: it must, because drizzle's
    `migrate()` would otherwise apply by its own maximum rule and skip `X` exactly as the finding
-   describes. The process-level half — both forms of the migrate entry exiting 1 — is §11.2 case 16.
+   describes. The process-level half — both forms of the migrate entry exiting 1 — is §11.2 case 18.
 6. **A row that is not where the journal says is drift, and so is a gap.** Take case 4's clean
    prefix and (a) change one remaining row's `hash` to a different 64-hex string, (b) instead delete
    a row from the **middle** so the rows are no longer a prefix. Both are expected to reject, and the
@@ -4675,7 +4732,7 @@ sequence that is not strictly increasing is refused before anything is read.
    `to_regclass('public.t_first')` is **null**: the refusal happened over the whole pending set
    *before* anything was applied, not part-way through it, which is the ordering §5.1 specifies and
    the only ordering that is any use. The process-level half of this needs no case of its own —
-   `migrate.ts` reports a thrown error through `logError` and exits 1, which §11.2 case 15 already
+   `migrate.ts` reports a thrown error through `logError` and exits 1, which §11.2 case 17 already
    asserts as a process contract — and the deployment-level half is `live-update.sh` step 5 running
    `--check`, which §11.6 lists among the mechanisms that are structural rather than tested.
 10. **`assertTransactionSafe` rejects each form, and is not fooled by the look-alikes.** Unit cases,
@@ -4750,6 +4807,33 @@ sequence that is not strictly increasing is refused before anything is read.
    is null again, and the rejection names the file and `ABORT` — which is the pair F6 asked for: the
    escape is impossible because the guard refuses it, and the enclosure is real when the guard
    accepts.
+11. **A comment between two keywords does not join them — PR #27's plan review round 1 F1, and the
+    reason the pass emits a separator.** Unit cases, no database, and each asserted to throw naming
+    the file and the keyword: `COMMIT/**/WORK;`, `ROLLBACK/* x */TO SAVEPOINT s;`,
+    `END/**/TRANSACTION;`, `CREATE INDEX/**/CONCURRENTLY i ON t (c);`, and `ABORT--x` with `WORK;`
+    on the next line, which is the same rule across a **line** comment. PostgreSQL reads every one
+    of these as the ordinary spaced statement and executes it; a scan that deletes the comment
+    instead of replacing it sees `COMMITWORK` and accepts the file. The line-comment form is
+    included although the pass answers it correctly either way — it stops *at* the newline, so the
+    newline is the separator — because what the case pins is the rule, not the implementation
+    detail that happens to satisfy it today. **And the accepted look-alike is the other half:** a
+    comment sitting inside a statement whose leading keyword is not on §5.1's table must still be
+    accepted — `ALTER TABLE t/* comment */RENAME COLUMN a TO b;`,
+    `INSERT INTO t(c)/**/VALUES ('commit');` and
+    `SELECT CASE WHEN x THEN 1 ELSE 2 END/**/FROM t;` — so the separator is shown to change word
+    boundaries and nothing else.
+12. **An orphan `.sql` file and a journal entry with no file are both drift — PR #27's plan review
+    round 1 F2, and the case the previous draft's check could not fail.** Two sub-cases over
+    temporary folders (the mechanism case 8 introduced), neither needing a database beyond the one
+    the call is handed: (a) a journal of one entry beside **two** `.sql` files —
+    `migrationStatus(db, folder)` rejects, naming the orphan file, and `runMigrations(db, folder)`
+    rejects too, applying nothing; (b) a journal of two entries beside **one** `.sql` file — both
+    reject, naming the entry whose file is missing, and the message is **this check's**, naming the
+    journal and the remedy, rather than drizzle's `No file … found in … folder`. Sub-case (a) is the
+    one that matters: `readMigrationFiles` loops over journal entries, so with two files and one
+    entry it returns **one**, and a check that compares its length with the journal's length can
+    never fail in that direction. The case is written to assert the **refusal**, so an implementation
+    that reintroduces the length comparison fails it.
 **And the one signature change cases 5 to 8 need, decided here rather than left to the plan.**
 `runMigrations(db)` resolves its folder internally today, so a test cannot give it one. It becomes
 `runMigrations(db, folder = migrationsFolder())` — the same helper §5.1 extracts, as the **default**,
@@ -4807,12 +4891,12 @@ avoid duplicating one constructor call. Two four-line files that can drift apart
 cheaper answer, and if they ever need to agree on something that matters, *that* is the moment to
 make a package.
 
-11. **No flag, nothing pending:** prints `migrations: 5 applied, nothing to apply` on stdout,
+13. **No flag, nothing pending:** prints `migrations: 5 applied, nothing to apply` on stdout,
    exit **0**.
-12. **No flag, some pending:** prints the applied count, then `applying:` and each pending tag on its
+14. **No flag, some pending:** prints the applied count, then `applying:` and each pending tag on its
    own line, applies them, then the `migrations: applied 2 (…)` summary; exit **0**, and the
    database is migrated afterwards.
-13. **`--check` applies nothing, and its output has the shape `live-update.sh` parses.** With
+15. **`--check` applies nothing, and its output has the shape `live-update.sh` parses.** With
    migrations pending it prints the same listing with `pending:` in place of `applying:`, leaves
    `to_regclass('drizzle.__drizzle_migrations')` as it found it, and exits **0** — the convention of
    §5.2, that `--check` answers *what would you do* and is not a gate. With nothing pending it
@@ -4834,11 +4918,11 @@ make a package.
    result there is — a fully migrated database, which is every rerun and the whole of the first
    bootstrap. An extraction whose failure mode is "the update stops after the build, before the
    quiesce, with nothing wrong" has to be pinned at both ends.
-14. **An unknown argument exits 2** and prints the usage line to **stderr**, with nothing on stdout
+16. **An unknown argument exits 2** and prints the usage line to **stderr**, with nothing on stdout
    and no connection attempted — a mistyped invocation must be distinguishable from a failure.
-15. **`DATABASE_URL` absent** fails with the same message `loadConfig` already gives, and exits
+17. **`DATABASE_URL` absent** fails with the same message `loadConfig` already gives, and exits
    **1**.
-16. **A drifted journal exits 1 in both forms, and prints no status — new in answer to review round
+18. **A drifted journal exits 1 in both forms, and prints no status — new in answer to review round
     8's F4.** The child process is given a `LOOM_MIGRATIONS_FOLDER`-free, ordinary invocation against
     a database the case has drifted by deleting a row from the middle of `__drizzle_migrations`
     (§11.1 case 6's shape). Both `node dist/migrate.js` and `node dist/migrate.js --check` exit
@@ -4847,48 +4931,48 @@ make a package.
     drift message naming the first mismatch is on stderr through `logError`. This is the case that
     makes §4.5 banner 6 a gate rather than a hope: without it a drift would be reported as a healthy
     "nothing to apply" and the update would proceed through the quiesce.
-17. **The process ends on every path.** Each of the cases above is asserted to exit within the
+19. **The process ends on every path.** Each of the cases above is asserted to exit within the
     suite's timeout rather than being killed, which is what proves `closeDb` runs — a migrate
     container that never exits would hang `docker compose run --rm migrate` and therefore hang the
     update, with the lock of §4.5 banner 2 still held.
 
 ### 11.3 The boot switch — `src/server/test/config.test.ts` and the server boot suite
 
-18. **Default true.** `loadConfig({ DATABASE_URL: … })` gives `migrateOnBoot: true`; `"true"` and
+20. **Default true.** `loadConfig({ DATABASE_URL: … })` gives `migrateOnBoot: true`; `"true"` and
     `"false"` (in any case, with surrounding whitespace) parse to the obvious values.
-19. **Anything else throws** — `"0"`, `"no"`, `""`, `"yes"` — with the variable name in the message.
-20. **`false` with migrations pending refuses to start**, with the message of §5.3 naming the count
+21. **Anything else throws** — `"0"`, `"no"`, `""`, `"yes"` — with the variable name in the message.
+22. **`false` with migrations pending refuses to start**, with the message of §5.3 naming the count
     and the pending tags, and the process exits non-zero. Against a database migrated to an earlier
     point than the journal (the row-deletion trick of case 4).
-21. **`false` with nothing pending starts normally** and serves a request — the case that proves the
+23. **`false` with nothing pending starts normally** and serves a request — the case that proves the
     refusal is not simply "false never boots".
-22. **`true` is unchanged**: a server booted against an unmigrated database migrates it and serves,
+24. **`true` is unchanged**: a server booted against an unmigrated database migrates it and serves,
     exactly as today.
 
 ### 11.4 The MCP guard — `src/server/test/mcp.test.ts`
 
-23. **Session-less `GET /mcp?agent=<key>` answers 400 `{ code: "validation" }`** — with a valid agent
+25. **Session-less `GET /mcp?agent=<key>` answers 400 `{ code: "validation" }`** — with a valid agent
     key, and with `Accept: text/event-stream`, because that is the request the real connector sends.
-24. **Session-less `DELETE /mcp` answers 400** the same way.
-25. **A session-less `GET` with a revoked key is still 400, not 401** — the guard runs before any
+26. **Session-less `DELETE /mcp` answers 400** the same way.
+27. **A session-less `GET` with a revoked key is still 400, not 401** — the guard runs before any
     credential resolution (§5.4).
-26. **A bogus `mcp-session-id` is still 404 `not_found`** — the existing case, unchanged.
-27. **A full `initialize` over `POST` still works**, and the two concurrent session-less `PUT`
+28. **A bogus `mcp-session-id` is still 404 `not_found`** — the existing case, unchanged.
+29. **A full `initialize` over `POST` still works**, and the two concurrent session-less `PUT`
     requests of `mcp.test.ts:95` still get two connect attempts and two 405s — the coverage the
     guard's method list exists to preserve.
 
 ### 11.5 The truncate guard — `src/core/test/db-guard.test.ts`
 
-28. **Refused:** a URL whose database is `loom`; one whose database is `spool`; one whose database is
+30. **Refused:** a URL whose database is `loom`; one whose database is `spool`; one whose database is
     `loom_live`; one whose database is `postgres`; and an unparseable URL.
-29. **Allowed:** `loom_test`; any other `<name>_test`; and the **named testcontainer URL** of §6
+31. **Allowed:** `loom_test`; any other `<name>_test`; and the **named testcontainer URL** of §6
     (`.../loom_test`) — replacing the old case that asserted a bare `test` database was allowed.
-30. **Not fooled by the name elsewhere in the URL** — `postgres://loom:loom@loom:5432/loom_test` is
+32. **Not fooled by the name elsewhere in the URL** — `postgres://loom:loom@loom:5432/loom_test` is
     allowed. The existing case, kept.
-31. **`fallbackTestUrl` is unchanged** — both existing cases stand.
-32. **The whole suite still runs.** Not a test but a verification step the plan must name: after
+33. **`fallbackTestUrl` is unchanged** — both existing cases stand.
+34. **The whole suite still runs.** Not a test but a verification step the plan must name: after
     `.withDatabase("loom_test")`, `pnpm --workspace-concurrency=1 -r test` passes on the normal
-    Testcontainers path *and* on the fallback path. Case 29 would pass while every other test in the
+    Testcontainers path *and* on the fallback path. Case 31 would pass while every other test in the
     repository refused to start, which is precisely the failure §6 exists to prevent.
 
 ### 11.6 What no unit test covers, said plainly
@@ -5042,7 +5126,7 @@ secret it handled. What stands in for automation on the rest:
   can move them, which is what lets §11.7 run the real script without being able to touch the live
   server's `.env`, sites folder, backups or lock (F1).
 - **What is structural but one-sided, said rather than implied.** The reconciliation of §4.5's
-  recovery procedure is only as good as `migrate --check`'s output shape, which is why §11.2 case 13
+  recovery procedure is only as good as `migrate --check`'s output shape, which is why §11.2 case 15
   asserts that shape and not merely its words. And R11 and R13 — the "committed but unacknowledged"
   and "cannot tell" branches — are reachable only by a torn connection or a partial apply, so
   **neither is exercised by anything before the day it happens**; R2 (`record-failed`) and R3
@@ -5120,7 +5204,7 @@ secret it handled. What stands in for automation on the rest:
   real `docker start` of a real container really does serve again.
 - **The shell contract checks that need no server and no Docker are now a harness, not two
   snippets — §11.7.** Round 6's F2 check (the topology guard against a 1.2 MB diff) and round 5's
-  F2 check (`pending_tags` over an empty result, §11.2 case 13) were the first two, written as
+  F2 check (`pending_tags` over an empty result, §11.2 case 15) were the first two, written as
   pasteable snippets because there was nowhere to put them. §11.7 is that place, they are two of its
   cases, and every later round's finding has somewhere to land.
 - **The torn stop is rehearsed by hand on the first day — round 6's F5 — and both directions are, in
@@ -5429,7 +5513,7 @@ round found that branch by reading rather than by running:
 | Record failure → `record-failed` | the fake `deploy/` is made unwritable: `record_failed_message` is printed, **nothing** is started, exit non-zero |
 | Caddy reload failure → `.prev` restored | the reload call exits non-zero: `loom.caddy` on disk equals what it was before the run, or is absent when there was no previous file, and exit non-zero |
 | Public health failure → no `.verified-sha` | the public probe fails: `.verified-sha` is **not** written, `.deployed-sha` **is** the target, `.update-state` is gone, exit non-zero — the two-record invariant of round 4's F2 as a case |
-| `pending_tags` over an empty and a non-empty `--check` output | round 5's F2, moved here from §11.6 and kept as §11.2 case 13's shell half: the pipeline prints the expected tags and exits 0, and prints nothing and still exits 0 |
+| `pending_tags` over an empty and a non-empty `--check` output | round 5's F2, moved here from §11.6 and kept as §11.2 case 15's shell half: the pipeline prints the expected tags and exits 0, and prints nothing and still exits 0 |
 | **The production defaults, asserted by reading** | round 9's F1: the case **does not run the script**. It reads `deploy/live-update.sh` and asserts that the constants block assigns exactly `LOOM_DEPLOY_DIR=/root/git/Loom/deploy`, `SPOOL_DEPLOY_DIR=/root/git/Spool/deploy`, `SITES_DIR=/root/caddy-sites`, `BACKUP_DIR=/root/backups/loom` and `LOCK_FILE=/run/lock/loom-live-update.lock`; that those five assignments are guarded by nothing (they are the unconditional defaults); that the only `LIVE_UPDATE_TEST_ROOT` branch is the one that re-points them; and that **no other line in the file contains an absolute path outside a printed message** — the check that keeps a sixth hard-coded path from being added later. Running the script could never assert this, because a run that asserted the production values would be a run pointed at them. **Round 12's F1 adds one more line to the same case:** it asserts that `dump_verdict`'s in-container wrapper matches on `pgrep -x pg_dump` and that the file contains no `pgrep -f` inside an `sh -c` wrapper, because a `-f` there matches the wrapper's own command line and answers `DUMP_RUNNING` forever (§11.6 runs the wrapper itself; this line only keeps the file from drifting back). The bare `pgrep -af` and `pkill -TERM -f` that Compose execs directly are explicitly allowed by the assertion, having no wrapper shell to match |
 | **Nothing outside the temporary root was read or written** | round 9's F1: the happy path with a migration, run whole, with `$TEST_ROOT/.mark` touched first. Afterwards the case asserts (a) no stub wrote a `VIOLATION` line — so every host path handed to `docker`, `git` or `curl` was under the root — and (b) `find "$TEST_ROOT" -newer "$TEST_ROOT/.mark"` lists exactly the files the case expects (the records, the dump, the site block, the lock, the temporaries) and nothing else. The `docker` stub also fails the case if any `-v`'s host side, `--env-file`, `--project-directory` or `-f` names a path outside the root |
 | Timed-out volume inspection → stop and restore | round 9's F3: the `docker` stub makes `volume inspect loom_pgdata` return **124** with empty stderr. The case asserts that `$CALLS` contains **no** `pg_dump`, **no** migrator run and **no** `up -d --no-build loom`, that `inspection unanswered` was printed, that the run took R6 and restored the previous deployment, and that the words `first deployment` appear **nowhere** in the output — the exact wrong turn the previous listing would have taken |
@@ -6045,7 +6129,7 @@ better written down now than discovered then.
    moment, which is why they are still written as a numbered procedure with their exact commands.
    **The comparison depends on `migrate --check`'s output
    shape**, which is
-   therefore a contract in §5.2 and an assertion in §11.2 case 13 rather than a convention. And
+   therefore a contract in §5.2 and an assertion in §11.2 case 15 rather than a convention. And
    **R12's partial-apply case should now be unreachable**, because `assertTransactionSafe` refuses the
    files that could produce it (§5.1) — but it is implemented anyway, and it routes to R13, because
    "should be unreachable" is exactly the reasoning that produced this finding in the first place.

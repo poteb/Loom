@@ -49,7 +49,7 @@ Every task's requirements implicitly include this section. The quoted rules are 
 - **`src/server/test/mcp.test.ts`'s two concurrent session-less `PUT` requests are unchanged.** They are the deterministic test for the per-session connect gate, and a method allowlist that only let `POST` through would turn them into 400s with no connect and delete the coverage. The guard names **`GET` and `DELETE`** — the two methods the transport actually throws for — and nothing else.
 - **Visual design is out of scope.** Nothing in this slice renders anything.
 - **TOOLING TRAP.** The Edit/Write tools decode `\uXXXX` escapes in tool input into literal bytes. Nothing this plan writes needs one — but `deploy/live-update.sh` carries `sed -E` expressions full of backslashes and character classes, and both the harness's stubs and the SQL lexer of Task 1 carry backslash escapes, so after every commit run `git show --stat HEAD` and check for a `Bin` row: a text file reported as binary means an escape was decoded into a control byte. Fix it before moving on.
-- **LF, not CRLF, for everything a Linux shell executes.** `core.autocrlf` is `true` on Paw's PC, so a `.sh` written here is normalised on commit — but the working tree is what `bash -n` and `pnpm test:deploy` read, and a CRLF shebang fails on the server with `bad interpreter: /usr/bin/env bash^M`. Task 4 adds two `.gitattributes` lines that pin it on every platform, which is **one step beyond the spec's letter** and is argued where it is written.
+- **LF, not CRLF, for everything a Linux shell executes.** `core.autocrlf` is `true` on Paw's PC, so a `.sh` written here is normalised on commit — but the working tree is what `bash -n` and `pnpm test:deploy` read, and a CRLF shebang fails on the server with `bad interpreter: /usr/bin/env bash^M`. Task 4 adds **three** `.gitattributes` lines that pin it on every platform — the third for Task 5's extensionless stubs, which no `*.sh` pattern can match — which is **one step beyond the spec's letter** and is argued where it is written.
 
 ## File structure
 
@@ -59,19 +59,19 @@ Every task's requirements implicitly include this section. The quoted rules are 
 | `src/core/src/db/index.ts` (modify, `:22-27`) | `runMigrations(db, folder = migrationsFolder())`: drift refusal, then the guard over the pending set, then drizzle's `migrate()`. The inlined folder resolution moves into `migrations.ts` |
 | `src/core/src/index.ts` (modify, the export block) | `migrationStatus`, `assertTransactionSafe`, `assertPendingTransactionSafe`, `migrationsFolder`, `type MigrationStatus` beside `createDb, runMigrations, closeDb` |
 | `src/core/test/pg-container.ts` (new) | Four lines: a `PostgreSqlContainer("postgres:17-alpine").withDatabase("loom_test")` of this suite's own, stopped by the caller |
-| `src/core/test/migration-status.test.ts` (new) | §11.1 cases 1–10 |
+| `src/core/test/migration-status.test.ts` (new) | §11.1 cases 1–12 |
 | `src/core/test/db-guard.ts` (modify) | `isProtectedDatabase` inverted to an allow-list: protected unless the database name ends in `_test` |
 | `src/core/test/global-setup.ts` (modify, `:26`) | `.withDatabase("loom_test")` on the testcontainer |
-| `src/core/test/db-guard.test.ts` (modify) | §11.5 cases 28–31 |
+| `src/core/test/db-guard.test.ts` (modify) | §11.5 cases 30–33 |
 | `src/server/src/migrate.ts` (new) | The standalone entry: load `DATABASE_URL`, ask core, print, exit 0/1/2 |
 | `src/server/src/config.ts` (modify) | `migrateOnBoot: boolean`, default **true**, parsed strictly |
 | `src/server/src/main.ts` (modify, `:15`) | `migrateOnBoot ? runMigrations(db) : refuse if anything is pending` |
 | `src/server/src/mcp/index.ts` (modify, the session-less branch) | A session-less `GET` or `DELETE` answers **400** before any transport is built and before any credential is resolved |
 | `src/server/package.json` (modify) | One script: `"migrate": "node dist/migrate.js"`, beside `start` |
 | `src/server/test/pg-container.ts` (new) | The same four lines, owned by this package (§11.2's F1 answer) |
-| `src/server/test/migrate.test.ts` (new) | §11.2 cases 11–17, and §11.3 cases 20–22 (the boot cases, which need a spawned `dist/main.js`) |
-| `src/server/test/config.test.ts` (modify) | §11.3 cases 18–19 (20–22 are boot cases and live in `migrate.test.ts`) |
-| `src/server/test/mcp.test.ts` (modify) | §11.4 cases 23–27 |
+| `src/server/test/migrate.test.ts` (new) | §11.2 cases 13–19, and §11.3 cases 22–24 (the boot cases, which need a spawned `dist/main.js`) |
+| `src/server/test/config.test.ts` (modify) | §11.3 cases 20–21 (22–24 are boot cases and live in `migrate.test.ts`) |
+| `src/server/test/mcp.test.ts` (modify) | §11.4 cases 25–29 |
 | `deploy/docker-compose.yml` (new) | Compose project `loom` on the server: postgres, a one-shot migrate gating loom, one loopback port |
 | `deploy/loom.caddy` (new) | The site block installed into Spool's Caddy, with Loom's **own** HSTS |
 | `deploy/.env.example` (new) | Every variable, with the `openssl` command that generates each secret |
@@ -82,7 +82,7 @@ Every task's requirements implicitly include this section. The quoted rules are 
 | `deploy/prepare-chatgpt-paste.ps1`, `deploy/connector-url-to-clipboard.ps1` (new) | The two onboarding helpers: both read a secret, neither prints one |
 | `deploy/test/run.sh`, `deploy/test/stubs/*`, `deploy/test/cases/*.sh` (new) | The §11.7 harness: the real script, stub `docker`/`git`/`curl`/`timeout`/`flock`, one case per branch |
 | `.gitignore` (modify) | Eight explicit lines for the five server-written records and the three atomic-write temporaries |
-| `.gitattributes` (modify) | `deploy/*.sh text eol=lf` and `deploy/test/**/*.sh text eol=lf` — see Task 4 Step 9 for why |
+| `.gitattributes` (modify) | `deploy/*.sh text eol=lf`, `deploy/test/**/*.sh text eol=lf` and `deploy/test/stubs/* text eol=lf` — the third for the extensionless stubs, see Task 4 Step 9 for why |
 | `package.json` (modify) | `"test:deploy": "bash deploy/test/run.sh"` |
 | docs | `docs/DOGFOOD.md` §1.2, §2, §3 steps 2 and 5, §4, the preamble; `docs/HANDBOOK.md` §3 step 13, §5, §6; `docs/ARCHITECTURE.md` §10; `README.md`; `docs/TESTING.md` §1 and a new section; `docs/KNOWN-ISSUES.md`; `docs/superpowers/specs/v2-notes.md`; `CONTRIBUTING.md`'s new `## Migrations` |
 | `D:\git\Spool` (a **different repository**) | `deploy/Caddyfile` gains one `import` line; `deploy/docker-compose.yml`'s `caddy` service gains one read-only mount and two networks, and the file gains a top-level `networks` block. Its own branch, its own PR, Paw's own merge word |
@@ -106,9 +106,9 @@ Every task's requirements implicitly include this section. The quoted rules are 
 
 ### Task 1: core — the migration status, the transaction guard, and a `runMigrations` that refuses
 
-Spec §5.1 (both functions, the two validation properties, the stateful scan and the rejected forms), §11.1 (cases 1–10 and the signature change cases 5 to 8 need), §11.6's first paragraph (why case 8 is the claim every recovery branch stands on).
+Spec §5.1 (both functions, the three validation properties, the stateful scan with its separator rule, and the rejected forms), §11.1 (cases 1–12 and the signature change cases 5 to 8 need), §11.6's first paragraph (why case 8 is the claim every recovery branch stands on).
 
-**This task carries spec §11 cases 1, 2, 3, 4, 5, 6, 7, 8, 9 and 10.**
+**This task carries spec §11 cases 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 and 12.**
 
 **Files:** Create `src/core/src/db/migrations.ts`, `src/core/test/pg-container.ts`, `src/core/test/migration-status.test.ts`; Modify `src/core/src/db/index.ts` (`:22-27`), `src/core/src/index.ts` (the export block at the foot of the file).
 
@@ -167,7 +167,7 @@ export async function startPgContainer(): Promise<StartedPostgreSqlContainer> {
   - **Case 3 — a second run applies nothing.** `await runMigrations(db)` again: `pending` is empty and `select count(*) from drizzle.__drizzle_migrations` is unchanged. The assertion is the **rule**, never an exact write count.
   - **Case 4 — a clean prefix is the happy path, and the hash is what proves the check is real.** Apply every real migration, then `delete from drizzle.__drizzle_migrations where created_at = (select max(created_at) from drizzle.__drizzle_migrations)` and ask again: the first n-1 tags are `applied`, the last is `pending`. Rows are **deleted** rather than inserted on purpose — the rows that remain carry drizzle's **own** `created_at` and `hash`, so a case that passes proves `migrationStatus` computes the same `(created_at, hash)` pair drizzle inserted. This case is the alarm for a drizzle upgrade that changes how the hash is derived.
 
-  Cases 5, 7 and 8 need a **temporary migrations folder the test writes**, which is the mechanism the rest of the file reuses. Add one helper beside the container fixture, in the test file:
+  Cases 5, 7, 8 and 12 need a **temporary migrations folder the test writes**, which is the mechanism the rest of the file reuses (case 12 through the second, independent writer given with it). Add one helper beside the container fixture, in the test file:
 ```ts
 /**
  * A migrations folder of the test's own: `meta/_journal.json` plus one `.sql` per entry, in the
@@ -211,6 +211,32 @@ SELECT $tag$/*$tag$; COMMIT; DROP TABLE events;
     **And one execution case.** On a fresh database, `runMigrations(db, folder)` against a single file whose **first** statement is valid DDL (`create table t_enclosed (id int);`) and whose **later** statement Postgres rejects (`select nonexistent_function();`) **rejects**, and `to_regclass('public.t_enclosed')` is **null** — the enclosing transaction held, over a file the guard *accepted*. Then the same file with `ABORT;` between the two statements is **refused by `assertTransactionSafe` before anything runs**: `to_regclass('public.t_enclosed')` is null again and the rejection names the file and `ABORT`.
 
     **And the honesty note is a comment on the test file, not a case:** these cases pin the *lexical* states of §5.1, and passing them does not make the guard a PostgreSQL parser. A `DO` block that issues `COMMIT` through `EXECUTE` is still invisible. Write that where the next person to add a case will read it.
+  - **Case 11 — a comment between two keywords does not join them.** Unit cases, no database. **Rejected**, each naming the file and the keyword: `COMMIT/**/WORK;` → `COMMIT`; `ROLLBACK/* x */TO SAVEPOINT s;` → `ROLLBACK`; `END/**/TRANSACTION;` → `END`; `CREATE INDEX/**/CONCURRENTLY i ON t (c);` → `CONCURRENTLY`; and `ABORT--x` with `WORK;` on the next line → `ABORT`, which is the same rule across a **line** comment. PostgreSQL reads a comment as whitespace, so every one of those is the ordinary spaced statement and it executes it. The line-comment form is included although the scan answers it correctly either way — it stops *at* the newline, so the newline is already the separator — because the case pins the **rule**, not the implementation detail that happens to satisfy it. **Accepted**, so the separator is shown to change word boundaries and nothing else: `ALTER TABLE t/* comment */RENAME COLUMN a TO b;`, `INSERT INTO t(c)/**/VALUES ('commit');` and `SELECT CASE WHEN x THEN 1 ELSE 2 END/**/FROM t;` — a comment inside a statement whose leading keyword is not on the table.
+  - **Case 12 — an orphan `.sql` file and a journal entry with no file are both drift.** Two sub-cases over temporary folders, through a second helper beside `writeFolder` that writes the journal and the files **independently**, because `writeFolder` writes one file per entry by construction and therefore cannot express either shape:
+```ts
+/**
+ * A journal and a set of `.sql` files written INDEPENDENTLY of each other. `fileTags` is exactly
+ * the set of files that exist; each holds valid DDL, because what these cases are about is the
+ * folder disagreeing with its journal and nothing else.
+ */
+function writeFolderRaw(
+  entries: ReadonlyArray<{ tag: string; when: number }>,
+  fileTags: readonly string[],
+): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "loom-migrations-"));
+  fs.mkdirSync(path.join(dir, "meta"));
+  fs.writeFileSync(path.join(dir, "meta", "_journal.json"), JSON.stringify({
+    version: "7", dialect: "postgresql",
+    entries: entries.map((e, idx) => ({ idx, version: "7", when: e.when, tag: e.tag, breakpoints: true })),
+  }));
+  for (const tag of fileTags) fs.writeFileSync(path.join(dir, `${tag}.sql`), `create table t_${tag} (id int);`);
+  return dir;
+}
+```
+    - **(a) the orphan:** `writeFolderRaw([{ tag: "0000_a", when: 100 }], ["0000_a", "0001_orphan"])` — one journal entry, **two** `.sql` files. `migrationStatus(db, folder)` **rejects** and the message names `0001_orphan`; `runMigrations(db, folder)` rejects too and applies nothing — `to_regclass('public.t_0000_a')` is null afterwards.
+    - **(b) the missing file:** `writeFolderRaw([{ tag: "0000_a", when: 100 }, { tag: "0001_b", when: 200 }], ["0000_a"])` — **two** journal entries, one `.sql` file. Both reject and the message names `0001_b`, and it is **this check's** message — naming the journal and the remedy — not drizzle's `No file … found in … folder`, which the case asserts by matching on the text the guard produces.
+
+    Sub-case (a) is the one that matters and the one the previous draft could not fail: `readMigrationFiles` loops over the journal's entries, so with two files and one entry it returns **one**, and a check comparing its length with the journal's length passes. The case is written to assert the **refusal**, so an implementation that reintroduces the length comparison fails it.
 - [ ] **Step 2: Run the tests to verify they fail**
 
   Run: `pnpm --filter @loom/core build && cd src/core && npx vitest run test/migration-status.test.ts`
@@ -248,9 +274,29 @@ function readJournal(folder: string): JournalEntry[] {
   return (JSON.parse(raw) as { entries?: JournalEntry[] }).entries ?? [];
 }
 
-/** The journal, with drizzle's own hash for each entry, after both repository-side checks. */
+/** The journal, with drizzle's own hash for each entry, after all three repository-side checks. */
 function expectedMigrations(folder: string): ReadonlyArray<{ tag: string; when: number; hash: string }> {
   const entries = readJournal(folder);
+  // Property 3, checked FIRST because it needs nothing and because drizzle's reader cannot see half
+  // of it: readMigrationFiles loops over the JOURNAL's entries (drizzle-orm@0.45.2's
+  // migrator.js:12-28), so it returns one entry per journal entry and an orphan .sql file is
+  // invisible both to it and to any comparison of its length with the journal's.
+  const onDisk = fs.readdirSync(folder)
+    .filter((name) => name.endsWith(".sql"))
+    .map((name) => name.slice(0, -".sql".length))
+    .sort();
+  const tags = entries.map((e) => e.tag);
+  const orphans = onDisk.filter((tag) => !tags.includes(tag));
+  const missing = tags.filter((tag) => !onDisk.includes(tag));
+  if (orphans.length > 0 || missing.length > 0) {
+    throw new Error(
+      `${folder} disagrees with its journal: ${orphans.length} .sql file(s) with no journal entry ` +
+      `[${orphans.join(", ")}] and ${missing.length} journal entry/entries with no .sql file ` +
+      `[${missing.join(", ")}]. A migration runs only when the journal names it AND the file is ` +
+      `there, so either half of this disagreement is a migration that never runs while the branch ` +
+      `that added it expects the schema to have changed. Fix the repository, not the database ` +
+      `(CONTRIBUTING.md, "Migrations").`);
+  }
   // Property 1: strictly increasing in FILE order. Equal or decreasing is drift, and it is a
   // property of the repository, so it is the same answer on every machine and needs no database.
   for (let i = 1; i < entries.length; i++) {
@@ -266,14 +312,14 @@ function expectedMigrations(folder: string): ReadonlyArray<{ tag: string; when: 
   }
   // The hash is drizzle's own reader's, not a digest reimplemented here, so what this compares is
   // by construction what the migrator would have inserted. It is matched to the journal by
-  // `folderMillis` === `when`; a journal entry with no file makes readMigrationFiles throw.
+  // `folderMillis` === `when`. The length comparison an earlier draft made here is GONE: it could
+  // never fail, for the reason the inventory above gives, and it read as a check that it was not.
   const files = readMigrationFiles({ migrationsFolder: folder });
-  if (files.length !== entries.length) {
-    throw new Error(`${folder} holds ${files.length} migration files for ${entries.length} journal entries`);
-  }
   const hashes = new Map(files.map((f) => [f.folderMillis, f.hash]));
   return entries.map((e) => {
     const hash = hashes.get(e.when);
+    // Unreachable once the inventory and property 1 have passed; kept because a Map lookup is typed
+    // as possibly undefined and a non-null assertion here would hide a future bug rather than fail.
     if (hash === undefined) throw new Error(`journal entry ${e.tag} (when ${e.when}) has no migration file in ${folder}`);
     return { tag: e.tag, when: e.when, hash };
   });
@@ -315,7 +361,7 @@ export async function migrationStatus(db: Db, folder: string = migrationsFolder(
   };
 }
 ```
-  Then the guard, in the same file. **One left-to-right pass with a single state variable** — the phases of an earlier draft are gone, because a comment stripper that does not understand quoting deletes the statement the guard exists to find:
+  Then the guard, in the same file. **One left-to-right pass with a single state variable** — the phases of an earlier draft are gone, because a comment stripper that does not understand quoting deletes the statement the guard exists to find — and **the pass emits a single space in place of every comment it skips**, because a comment is whitespace to PostgreSQL and a scan that removes one instead joins the tokens either side of it: `COMMIT/**/WORK;` is a commit, and a scan that reads it as the single word `COMMITWORK` accepts the file (spec §5.1, and review round 1's F1):
 ```ts
 /**
  * Leading-keyword sequences that are refused, longest first so the message names the longest match.
@@ -352,7 +398,8 @@ function offendingKeyword(words: readonly string[]): string | undefined {
  * Splits `text` into statements, collecting for each one only the characters seen in the CODE
  * state. A comment is only a comment in the code state; a `;` only ends a statement in the code
  * state; and a quoted run contributes nothing at all, so a keyword inside a string, an identifier,
- * a dollar body or a comment can neither be matched nor removed.
+ * a dollar body or a comment can neither be matched nor removed. A comment contributes ONE SPACE,
+ * because PostgreSQL reads it as whitespace and two keywords either side of it are two keywords.
  */
 function statements(text: string): Statement[] {
   const out: Statement[] = [];
@@ -371,11 +418,16 @@ function statements(text: string): Statement[] {
     const c = text[i]!;
     const next = text[i + 1];
     if (c === "-" && next === "-") {                       // line comment, to the newline
+      // A comment is WHITESPACE to PostgreSQL, so skipping it must leave a separator behind: remove
+      // it and `ABORT--x` + `WORK` become the single word ABORTWORK, which matches nothing. The
+      // scan stops AT the newline, so that newline is added as ordinary code on the next pass too.
+      code += " ";
       const nl = text.indexOf("\n", i);
       i = nl === -1 ? text.length : nl;
       continue;
     }
     if (c === "/" && next === "*") {                       // block comment, nesting
+      code += " ";                                         // the same separator: COMMIT/**/WORK
       let depth = 1;
       i += 2;
       while (i < text.length && depth > 0) {
@@ -444,6 +496,52 @@ export function assertPendingTransactionSafe(pending: readonly string[], folder:
 }
 ```
   Note for the reviewer: `import type { Db } from "./index.js"` is erased at compile time, so `migrations.ts` and `db/index.ts` have no runtime cycle — the runtime dependency goes one way, `index.ts` → `migrations.ts`.
+- [ ] **Step 3a: Repeat the two checks this code has already been put through, which take a minute each and do not need the suite.** Both were run while answering review round 1, against the code exactly as it stands above, and both are recorded here so that an implementer who changes a character of the scanner or the inventory can see the answer change rather than reason about it.
+
+  **The scanner, in a scratch file.** Copy `LEADING`, `offendingKeyword`, `statements` and `assertTransactionSafe` from Step 3 into `scan.ts` outside the repository, append a handful of `try { assertTransactionSafe(sql, "0006_x.sql") } catch` calls over case 11's inputs, and run it with Node's own TypeScript support (`npx tsx scan.ts` does the same job). The harness below prints each input's verdict with the message cut at the dash, so the keyword is the whole of what is compared:
+
+```
+$ node --experimental-strip-types scan.ts
+OK    COMMIT/**/WORK;  ->  rejected: 0006_x.sql: a migration may not contain COMMIT
+OK    ROLLBACK/* x */TO SAVEPOINT s;  ->  rejected: 0006_x.sql: a migration may not contain ROLLBACK
+OK    ABORT--x<newline>WORK;  ->  rejected: 0006_x.sql: a migration may not contain ABORT
+OK    END/**/TRANSACTION;  ->  rejected: 0006_x.sql: a migration may not contain END
+OK    CREATE INDEX/**/CONCURRENTLY i ON t (c);  ->  rejected: 0006_x.sql: a migration may not contain CONCURRENTLY
+OK    ALTER TABLE t/* commit the rename */RENAME COLUMN a TO b;  ->  accepted
+OK    INSERT INTO t(c)/**/VALUES ('commit');  ->  accepted
+OK    SELECT CASE WHEN x THEN 1 ELSE 2 END/**/FROM t;  ->  accepted
+OK    nested block comment  ->  rejected: 0006_x.sql: a migration may not contain BEGIN
+OK    closed comment then COMMIT  ->  rejected: 0006_x.sql: a migration may not contain COMMIT
+OK    comment opener in a literal  ->  rejected: 0006_x.sql: a migration may not contain COMMIT
+OK    literal alone  ->  accepted
+OK    DO block  ->  accepted
+ALL PASS
+```
+  And the failing direction, which is what makes the two `code += " "` lines a fix rather than a decoration — the same file with those two lines deleted:
+
+```
+$ sed '/code += " ";/d' scan.ts > scan-before.ts && node --experimental-strip-types scan-before.ts
+FAIL  COMMIT/**/WORK;  ->  accepted
+FAIL  ROLLBACK/* x */TO SAVEPOINT s;  ->  accepted
+OK    ABORT--x<newline>WORK;  ->  rejected: 0006_x.sql: a migration may not contain ABORT
+FAIL  END/**/TRANSACTION;  ->  accepted
+FAIL  CREATE INDEX/**/CONCURRENTLY i ON t (c);  ->  accepted
+...                                                   (the eight look-alike and regression lines, all OK)
+4 FAILED
+```
+  The `ABORT` line **passes in both directions**, and the plan says so rather than claiming five fixes: the line-comment branch stops at the newline and that newline is already a separator. The case is kept because it pins the rule across the other comment form, not because it was broken.
+
+  **The inventory, against the installed drizzle.** `readMigrationFiles`'s loop is `for (const journalEntry of journal.entries)` — `drizzle-orm@0.45.2`'s `migrator.js:12-28`, read rather than assumed — so a temporary folder with **two** `.sql` files and **one** journal entry makes it return **one**, which is the whole of the gap. Run over such a folder, with the inventory of Step 3 beside it:
+
+```
+$ node f2.mjs
+orphan: sql files on disk = 2, readMigrationFiles = 1, journal entries = 1
+orphan caught: <folder> disagrees with its journal: 1 .sql file(s) with no journal entry [0001_orphan] and 0 journal entry/entries with no .sql file []. A migration runs only when …
+missing caught: <folder> disagrees with its journal: 0 .sql file(s) with no journal entry [] and 1 journal entry/entries with no .sql file [0001_b]. A migration runs only when …
+missing, drizzle instead: No file <folder>/0001_b.sql found in <folder> folder
+```
+  (The two caught lines are elided at the remedy sentence, which is the same in both and is written out in Step 3's code. `<folder>` is the temporary directory, replaced so the line is stable.)
+  The last line is why the missing-file direction is refused here too rather than left to drizzle: its message names a path and nothing else — not the journal, not the prefix, not the remedy — and it is thrown from inside `expectedMigrations`, so without this check it is what the developer and `live-update.sh` would see on a drift `migrationStatus` is supposed to explain.
 - [ ] **Step 4: Rewrite `runMigrations` in `src/core/src/db/index.ts`.** The inline folder resolution (`:22-27`) is replaced by the shared helper, and the refusals come first:
 ```ts
 import { assertPendingTransactionSafe, migrationsFolder, migrationStatus } from "./migrations.js";
@@ -485,16 +583,16 @@ git commit
 
 ### Task 2: server — the migrate entry, the boot switch, and the session-less `/mcp` guard
 
-Spec §5.2 (the entry, its table and its exit-code convention), §5.3 (`LOOM_MIGRATE_ON_BOOT`), §5.4 (the defect and the three precise points about the fix), §11.2 (cases 11–17), §11.3 (cases 18–22), §11.4 (cases 23–27).
+Spec §5.2 (the entry, its table and its exit-code convention), §5.3 (`LOOM_MIGRATE_ON_BOOT`), §5.4 (the defect and the three precise points about the fix), §11.2 (cases 13–19), §11.3 (cases 20–24), §11.4 (cases 25–29).
 
-**This task carries spec §11 cases 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26 and 27.** §11.4 is here rather than in Task 3 because this is the task that writes the guard, and a test in a different task from its code cannot be RED before it is GREEN.
+**This task carries spec §11 cases 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28 and 29.** §11.4 is here rather than in Task 3 because this is the task that writes the guard, and a test in a different task from its code cannot be RED before it is GREEN.
 
 **Files:** Create `src/server/src/migrate.ts`, `src/server/test/pg-container.ts`, `src/server/test/migrate.test.ts`; Modify `src/server/src/config.ts`, `src/server/src/main.ts` (`:12-16`), `src/server/src/mcp/index.ts` (the session-less branch at `:73-81`), `src/server/package.json` (scripts); Test `src/server/test/config.test.ts`, `src/server/test/mcp.test.ts`.
 
-**Where cases 20 to 22 live, decided here rather than left open.** They are about a **boot**, and `src/server/test/`'s existing suites build the app through `startTestServer()` rather than running `main.ts`, so there is no "server boot suite" to add them to: `main()` is not exported and the rules being tested are "the process refuses to start" and "the process starts and serves". They therefore go in **`migrate.test.ts`**, beside the entry cases, because that is the one file in this package that spawns a **built** entry as a child process and it already has the dedicated container they need. It gains a second helper beside `runMigrate`, and the two share everything else.
+**Where cases 22 to 24 live, decided here rather than left open.** They are about a **boot**, and `src/server/test/`'s existing suites build the app through `startTestServer()` rather than running `main.ts`, so there is no "server boot suite" to add them to: `main()` is not exported and the rules being tested are "the process refuses to start" and "the process starts and serves". They therefore go in **`migrate.test.ts`**, beside the entry cases, because that is the one file in this package that spawns a **built** entry as a child process and it already has the dedicated container they need. It gains a second helper beside `runMigrate`, and the two share everything else.
 
 **Interfaces:**
-- *Consumes:* `migrationStatus`, `assertPendingTransactionSafe`, `runMigrations`, `createDb`, `closeDb` from `@loom/core` (Task 1); `loadConfig` from `./config.js`; `logError` from `./log.js`; `startPgContainer` from this package's own new `test/pg-container.ts`; the existing `app.all("/mcp")` handler's `sessionId` const.
+- *Consumes:* `migrationStatus`, `assertPendingTransactionSafe`, `runMigrations`, `migrationsFolder`, `createDb`, `closeDb` from `@loom/core` (Task 1); `loadConfig` from `./config.js`; `logError` from `./log.js`; `startPgContainer` from this package's own new `test/pg-container.ts`; the existing `app.all("/mcp")` handler's `sessionId` const.
 - *Produces:*
 ```ts
 // src/server/src/config.ts
@@ -525,46 +623,77 @@ export async function startPgContainer(): Promise<StartedPostgreSqlContainer> {
 }
 ```
 
-  **`src/server/test/migrate.test.ts`** — cases 11 to 17. Every case spawns the **built** entry as a child process (`node dist/migrate.js …` from `src/server`, with `DATABASE_URL` in its environment), because the exit code, the stream each line goes to and **the fact that the process ends at all** are the contract `live-update.sh` depends on and none of them can be observed by calling a function. One helper at the top of the file, used by every case:
+  **`src/server/test/migrate.test.ts`** — cases 13 to 19. Every case spawns the **built** entry as a child process (`node dist/migrate.js …` from `src/server`, with `DATABASE_URL` in its environment), because the exit code, the stream each line goes to and **the fact that the process ends at all** are the contract `live-update.sh` depends on and none of them can be observed by calling a function. One helper at the top of the file, used by every case:
 ```ts
 /** Runs the built entry and captures both streams and the exit code. Rejects only if it never ends. */
 async function runMigrate(args: string[], env: Record<string, string | undefined>):
   Promise<{ code: number | null; stdout: string; stderr: string }>;
 ```
-  - **Case 11 — no flag, nothing pending:** against a fully migrated database, stdout is exactly `migrations: 5 applied, nothing to apply`, exit **0**.
-  - **Case 12 — no flag, some pending:** against a database migrated to an earlier point (case 4's row-deletion trick), stdout carries the applied count, then `applying:`, then each pending tag on its own line, then `migrations: applied 1 (0004_furry_captain_stacy)`; exit **0**; and `migrationStatus` afterwards reports nothing pending.
-  - **Case 13 — `--check` applies nothing, and its output has the shape `live-update.sh` parses.** With migrations pending: the same listing with `pending:` in place of `applying:`, `to_regclass('drizzle.__drizzle_migrations')` and the row count exactly as it found them, exit **0** — the convention of §5.2, that `--check` answers *what would you do* and is not a gate. With nothing pending: the nothing-to-apply line, no `pending:` line at all, exit 0. **And the shape is asserted, not just the words:** one line of stdout is **exactly** `pending:`, every line after it is a bare journal tag with no decoration, the set of those lines equals the expected pending tags, and **nothing follows them**.
+  - **Case 13 — no flag, nothing pending:** against a fully migrated database, stdout is exactly `migrations: 5 applied, nothing to apply`, exit **0**.
+  - **Case 14 — no flag, some pending, against a GENUINELY earlier schema.** Not case 4's row-deletion trick: deleting the newest `__drizzle_migrations` row leaves that migration's **schema change** in place, and `0004_furry_captain_stacy.sql` is one unconditional statement — `CREATE INDEX "participants_capabilities_idx" ON "participants" …`, with no `IF NOT EXISTS` — so re-applying it fails with `relation "participants_capabilities_idx" already exists` and the case would assert exit 0 against a process that exits 1. That is review round 1's F3, and the row-deletion trick **stays** where it belongs: in the tests that read a status and apply nothing (case 15's `--check`, case 18's drift, case 22's boot refusal), where the leftover schema change is never touched.
+
+    So the fixture applies a **journal prefix** to a fresh database, with core's own `runMigrations`, and then lets the entry under test run against the **real** folder — one helper beside `runMigrate`:
+```ts
+/**
+ * A database migrated to the journal's first `count` entries, genuinely: the prefix is APPLIED, not
+ * simulated. The first `count` `.sql` files and a journal truncated to the same `count` entries are
+ * copied into a temporary folder and applied with core's own `runMigrations`, so the schema, the
+ * rows, drizzle's `created_at` and drizzle's `hash` are all exactly what an earlier deployment left
+ * behind — and the REAL folder is then exactly `entries.length - count` migrations ahead, which is
+ * what the entry under test has to apply. The copy carries nothing but those files, which is also
+ * what §11.1 case 12's inventory requires of any folder either function is pointed at.
+ * Returns the tags that are pending against the real folder.
+ */
+async function migrateToPrefix(db: Db, count: number): Promise<string[]> {
+  const real = migrationsFolder();
+  const journal = JSON.parse(fs.readFileSync(path.join(real, "meta", "_journal.json"), "utf8")) as {
+    version: string; dialect: string;
+    entries: ReadonlyArray<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }>;
+  };
+  const kept = journal.entries.slice(0, count);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "loom-prefix-"));
+  fs.mkdirSync(path.join(dir, "meta"));
+  fs.writeFileSync(path.join(dir, "meta", "_journal.json"), JSON.stringify({ ...journal, entries: kept }));
+  for (const e of kept) fs.copyFileSync(path.join(real, `${e.tag}.sql`), path.join(dir, `${e.tag}.sql`));
+  await runMigrations(db, dir);
+  return journal.entries.slice(count).map((e) => e.tag);
+}
+```
+    The files are **copied**, not rewritten, because the hash drizzle records is a digest of the file's bytes and the `created_at` it records is the journal entry's `when`: copy both and the rows the prefix leaves behind are an exact prefix of the **real** journal, which is the only thing that makes the last migration pending rather than the whole database drifted.
+
+    The case itself, on a fresh database: `const pending = await migrateToPrefix(db, 4)` — the count is read from the journal (`entries.length - 1`), never hard-coded to 4 — then `runMigrate([], { DATABASE_URL })` against the real folder. Stdout carries the applied count, then a line that is exactly `applying:`, then each pending tag on its own line, then `migrations: applied 1 (0004_furry_captain_stacy)`; exit **0**; `migrationStatus` afterwards reports **nothing** pending and `applied` equal to every journal tag; and `select to_regclass('public.participants_capabilities_idx')` is **non-null**, which is the assertion that the pending migration really ran rather than the entry merely printing that it had.
+  - **Case 15 — `--check` applies nothing, and its output has the shape `live-update.sh` parses.** With migrations pending: the same listing with `pending:` in place of `applying:`, `to_regclass('drizzle.__drizzle_migrations')` and the row count exactly as it found them, exit **0** — the convention of §5.2, that `--check` answers *what would you do* and is not a gate. With nothing pending: the nothing-to-apply line, no `pending:` line at all, exit 0. **And the shape is asserted, not just the words:** one line of stdout is **exactly** `pending:`, every line after it is a bare journal tag with no decoration, the set of those lines equals the expected pending tags, and **nothing follows them**.
 
     **And the case pins the extraction itself, in both directions.** It runs spec §4.5's `pending_tags` pipeline — those exact commands, under `bash -o pipefail -e` — over the two **captured** outputs: over the non-empty one it must print the expected tags, one per line, sorted, and exit **0**; over the nothing-pending one it must print **nothing** and still exit **0**. The second half is the one that matters: an extraction whose failure mode is "the update stops after the build, before the quiesce, with nothing wrong" has to be pinned at both ends. (Task 5's harness runs the same pipeline over **fixture** text with no server behind it; neither replaces the other — this one proves the real entry's output is what the pipeline was written for.)
-  - **Case 14 — an unknown argument exits 2** and prints the usage line to **stderr**, with **nothing on stdout** and no connection attempted. Assert the empty stdout: a mistyped invocation must be distinguishable from a failure.
-  - **Case 15 — `DATABASE_URL` absent** fails with the same message `loadConfig` already gives, and exits **1**.
-  - **Case 16 — a drifted journal exits 1 in both forms, and prints no status.** Against a database drifted by deleting a row from the **middle** of `__drizzle_migrations` (case 6's shape), both `node dist/migrate.js` and `node dist/migrate.js --check` exit **1**, stdout carries **no** `migrations: N applied` line and **no** `pending:` line, and the drift message naming the first mismatch is on **stderr** through `logError`. This is the case that makes spec §4.5 banner 6 a gate rather than a hope.
-  - **Case 17 — the process ends on every path.** Each case above is asserted to **exit** within the suite's timeout rather than being killed, which is what proves `closeDb` runs: a migrate container that never exits would hang `docker compose run --rm migrate` and therefore hang the update with the lock still held. Implement it as a shared assertion inside `runMigrate` (a child that has to be killed fails the case with a message saying so), and name the rule once in the file.
+  - **Case 16 — an unknown argument exits 2** and prints the usage line to **stderr**, with **nothing on stdout** and no connection attempted. Assert the empty stdout: a mistyped invocation must be distinguishable from a failure.
+  - **Case 17 — `DATABASE_URL` absent** fails with the same message `loadConfig` already gives, and exits **1**.
+  - **Case 18 — a drifted journal exits 1 in both forms, and prints no status.** Against a database drifted by deleting a row from the **middle** of `__drizzle_migrations` (case 6's shape), both `node dist/migrate.js` and `node dist/migrate.js --check` exit **1**, stdout carries **no** `migrations: N applied` line and **no** `pending:` line, and the drift message naming the first mismatch is on **stderr** through `logError`. This is the case that makes spec §4.5 banner 6 a gate rather than a hope.
+  - **Case 19 — the process ends on every path.** Each case above is asserted to **exit** within the suite's timeout rather than being killed, which is what proves `closeDb` runs: a migrate container that never exits would hang `docker compose run --rm migrate` and therefore hang the update with the lock still held. Implement it as a shared assertion inside `runMigrate` (a child that has to be killed fails the case with a message saying so), and name the rule once in the file.
 
-  **`src/server/test/config.test.ts`** — cases 18 and 19, pure units beside the existing `loadConfig` describe:
-  - **Case 18 — default true.** `loadConfig({ DATABASE_URL: … })` gives `migrateOnBoot: true`; `"true"` and `"false"` parse to the obvious values in any casing and with surrounding whitespace.
-  - **Case 19 — anything else throws**, with the variable name in the message: `"0"`, `"no"`, `""`, `"yes"`.
+  **`src/server/test/config.test.ts`** — cases 20 and 21, pure units beside the existing `loadConfig` describe:
+  - **Case 20 — default true.** `loadConfig({ DATABASE_URL: … })` gives `migrateOnBoot: true`; `"true"` and `"false"` parse to the obvious values in any casing and with surrounding whitespace.
+  - **Case 21 — anything else throws**, with the variable name in the message: `"0"`, `"no"`, `""`, `"yes"`.
 
-  **`src/server/test/migrate.test.ts`** — cases 20 to 22, through a second child-process helper beside `runMigrate`. It picks a free port by opening a `net` server on 0, reading the port and closing it (`config.ts` refuses `PORT=0`, so the port has to be chosen rather than delegated), spawns `node dist/main.js` with that `PORT`, `LOOM_HOST=127.0.0.1` and the case's `DATABASE_URL` and `LOOM_MIGRATE_ON_BOOT`, and resolves either when the process **exits** or when its stdout carries `loom server listening on http://127.0.0.1:<port>` — whichever comes first. Every case kills the child in a `finally`, so a case that fails leaves no server behind:
+  **`src/server/test/migrate.test.ts`** — cases 22 to 24, through a second child-process helper beside `runMigrate`. It picks a free port by opening a `net` server on 0, reading the port and closing it (`config.ts` refuses `PORT=0`, so the port has to be chosen rather than delegated), spawns `node dist/main.js` with that `PORT`, `LOOM_HOST=127.0.0.1` and the case's `DATABASE_URL` and `LOOM_MIGRATE_ON_BOOT`, and resolves either when the process **exits** or when its stdout carries `loom server listening on http://127.0.0.1:<port>` — whichever comes first. Every case kills the child in a `finally`, so a case that fails leaves no server behind:
 ```ts
 /** Spawns the built server and settles on either its exit or its own "listening" line. */
 async function runServer(env: Record<string, string | undefined>):
   Promise<{ outcome: "exited" | "listening"; code: number | null; port: number; stdout: string; stderr: string; kill: () => void }>;
 ```
-  - **Case 20 — `false` with migrations pending refuses to start.** Against a database migrated to an earlier point than the journal (case 4's row-deletion trick): the outcome is `exited`, the code is **non-zero**, and stderr carries §5.3's message naming the count **and** the pending tags. Nothing is applied — `migrationStatus` afterwards reports the same pending set.
-  - **Case 21 — `false` with nothing pending starts normally** and serves: the outcome is `listening`, and `GET http://127.0.0.1:<port>/api/guidelines` answers 200. This is the case that proves the refusal is not simply "false never boots".
-  - **Case 22 — `true` is unchanged**: against an **unmigrated** database the server migrates it and serves — the outcome is `listening`, `/api/guidelines` answers 200, and `migrationStatus` afterwards reports nothing pending.
+  - **Case 22 — `false` with migrations pending refuses to start.** Against a database migrated to an earlier point than the journal (case 4's row-deletion trick, which is the right fixture here because the refusal applies nothing): the outcome is `exited`, the code is **non-zero**, and stderr carries §5.3's message naming the count **and** the pending tags. Nothing is applied — `migrationStatus` afterwards reports the same pending set.
+  - **Case 23 — `false` with nothing pending starts normally** and serves: the outcome is `listening`, and `GET http://127.0.0.1:<port>/api/guidelines` answers 200. This is the case that proves the refusal is not simply "false never boots".
+  - **Case 24 — `true` is unchanged**: against an **unmigrated** database the server migrates it and serves — the outcome is `listening`, `/api/guidelines` answers 200, and `migrationStatus` afterwards reports nothing pending.
 
-  **`src/server/test/mcp.test.ts`** — cases 23 to 27, added to the existing file:
-  - **Case 23 — session-less `GET /mcp?agent=<key>` answers 400 `{ code: "validation" }`** — with a **valid** agent key and with `Accept: text/event-stream`, because that is the request the real connector sends.
-  - **Case 24 — session-less `DELETE /mcp` answers 400** the same way.
-  - **Case 25 — a session-less `GET` with a revoked key is still 400, not 401** — the guard runs before any credential resolution, so the answer is "malformed" before "unauthorised" and nothing leaks about whether the key is good.
-  - **Case 26 — a bogus `mcp-session-id` is still 404 `not_found`** — the existing case, unchanged.
-  - **Case 27 — a full `initialize` over `POST` still works**, and the two concurrent session-less **`PUT`** requests at `mcp.test.ts:95` still get **two connect attempts and two 405s**. That test is **not edited**; confirm it, do not touch it.
+  **`src/server/test/mcp.test.ts`** — cases 25 to 29, added to the existing file:
+  - **Case 25 — session-less `GET /mcp?agent=<key>` answers 400 `{ code: "validation" }`** — with a **valid** agent key and with `Accept: text/event-stream`, because that is the request the real connector sends.
+  - **Case 26 — session-less `DELETE /mcp` answers 400** the same way.
+  - **Case 27 — a session-less `GET` with a revoked key is still 400, not 401** — the guard runs before any credential resolution, so the answer is "malformed" before "unauthorised" and nothing leaks about whether the key is good.
+  - **Case 28 — a bogus `mcp-session-id` is still 404 `not_found`** — the existing case, unchanged.
+  - **Case 29 — a full `initialize` over `POST` still works**, and the two concurrent session-less **`PUT`** requests at `mcp.test.ts:95` still get **two connect attempts and two 405s**. That test is **not edited**; confirm it, do not touch it.
 - [ ] **Step 2: Run the tests to verify they fail**
 
   Run: `pnpm --filter @loom/core build && pnpm --filter @loom/server build && cd src/server && npx vitest run test/migrate.test.ts test/config.test.ts test/mcp.test.ts`
-  Expected: FAIL — `Cannot find module dist/migrate.js` for the entry cases, `migrateOnBoot` undefined for the config cases, and 500 rather than 400 for cases 23 to 25.
+  Expected: FAIL — `Cannot find module dist/migrate.js` for the entry cases, `migrateOnBoot` undefined for the config cases, and 500 rather than 400 for cases 25 to 27.
 - [ ] **Step 3: Write `src/server/src/migrate.ts`.** A thin adapter: load `DATABASE_URL`, ask core, print, exit.
 ```ts
 import { assertPendingTransactionSafe, closeDb, createDb, migrationStatus, runMigrations } from "@loom/core";
@@ -687,9 +816,9 @@ git commit
 
 ### Task 3: test infrastructure — the truncate guard generalised
 
-Spec §6 (the inversion, the change it forces, and the two alternatives rejected), §11.5 (cases 28–32).
+Spec §6 (the inversion, the change it forces, and the two alternatives rejected), §11.5 (cases 30–34).
 
-**This task carries spec §11 cases 28, 29, 30, 31 and 32.**
+**This task carries spec §11 cases 30, 31, 32, 33 and 34.**
 
 **Files:** Modify `src/core/test/db-guard.ts`, `src/core/test/global-setup.ts` (`:26`), `docs/TESTING.md` (§1, the two sentences that describe this change); Test `src/core/test/db-guard.test.ts`.
 
@@ -706,10 +835,10 @@ export function isProtectedDatabase(url: string): boolean;
 ```
 
 - [ ] **Step 1: Write the failing tests** in `src/core/test/db-guard.test.ts`. The `isProtectedDatabase` describe is rewritten; the `fallbackTestUrl` describe is untouched.
-  - **Case 28 — refused:** a URL whose database is `loom`; one whose database is `spool`; one whose database is `loom_live`; one whose database is `postgres`; and an **unparseable** URL. The last is the direction that matters: `dbName` answers `undefined`, so an unparseable URL is now **protected** where it used to be allowed, and failing closed in front of a `truncate` is the only defensible direction.
-  - **Case 29 — allowed:** `loom_test`; any other `<name>_test`; and the **named testcontainer URL** of §6 — `postgres://test:test@localhost:54923/loom_test` — **replacing** the existing case at `db-guard.test.ts:25`, which asserts a bare `test` database is allowed and is exactly the assertion this change reverses. Add a companion assertion that the **old** bare `test` name is now refused, so the reversal is stated rather than merely implied by a deleted line.
-  - **Case 30 — not fooled by the name elsewhere in the URL:** `postgres://loom:loom@loom:5432/loom_test` is allowed. The existing case, kept.
-  - **Case 31 — `fallbackTestUrl` is unchanged:** both existing cases stand, untouched.
+  - **Case 30 — refused:** a URL whose database is `loom`; one whose database is `spool`; one whose database is `loom_live`; one whose database is `postgres`; and an **unparseable** URL. The last is the direction that matters: `dbName` answers `undefined`, so an unparseable URL is now **protected** where it used to be allowed, and failing closed in front of a `truncate` is the only defensible direction.
+  - **Case 31 — allowed:** `loom_test`; any other `<name>_test`; and the **named testcontainer URL** of §6 — `postgres://test:test@localhost:54923/loom_test` — **replacing** the existing case at `db-guard.test.ts:25`, which asserts a bare `test` database is allowed and is exactly the assertion this change reverses. Add a companion assertion that the **old** bare `test` name is now refused, so the reversal is stated rather than merely implied by a deleted line.
+  - **Case 32 — not fooled by the name elsewhere in the URL:** `postgres://loom:loom@loom:5432/loom_test` is allowed. The existing case, kept.
+  - **Case 33 — `fallbackTestUrl` is unchanged:** both existing cases stand, untouched.
 - [ ] **Step 2: Run the tests to verify they fail**
 
   Run: `cd src/core && npx vitest run test/db-guard.test.ts`
@@ -738,10 +867,10 @@ export function isProtectedDatabase(url: string): boolean {
     // `loom_test`, so after this both paths agree.
     container = await new PostgreSqlContainer("postgres:17-alpine").withDatabase("loom_test").start();
 ```
-- [ ] **Step 5: Run the tests to verify they pass, and that the whole repository still starts — case 32.**
+- [ ] **Step 5: Run the tests to verify they pass, and that the whole repository still starts — case 34.**
 
   Run: `cd src/core && npx vitest run test/db-guard.test.ts` — PASS.
-  Then the verification the spec asks for by name, because case 29 would pass while every other test in the repository refused to start: `pnpm -r build && pnpm --workspace-concurrency=1 -r test` must pass **on the normal Testcontainers path**. Then prove the **fallback** path too — bring the compose Postgres up (`run.cmd`, or `docker compose up -d postgres`; ask Paw to start Docker Desktop if the daemon is not answering) and run one DB-backed package with the container path made unavailable, confirming the setup logs `testcontainer unavailable (…)` and that the suite runs against `loom_test`. Record both results in the commit body.
+  Then the verification the spec asks for by name, because case 31 would pass while every other test in the repository refused to start: `pnpm -r build && pnpm --workspace-concurrency=1 -r test` must pass **on the normal Testcontainers path**. Then prove the **fallback** path too — bring the compose Postgres up (`run.cmd`, or `docker compose up -d postgres`; ask Paw to start Docker Desktop if the daemon is not answering) and run one DB-backed package with the container path made unavailable, confirming the setup logs `testcontainer unavailable (…)` and that the suite runs against `loom_test`. Record both results in the commit body.
 - [ ] **Step 6: The two `docs/TESTING.md` §1 sentences that describe this change** — and only these two; everything else in spec §10's TESTING rows is Task 6's.
   - The guard paragraph: `isProtectedDatabase()` now returns true for **every** database whose name does not end in `_test`, so `loom`, `spool`, `loom_live` and `postgres` are all refused and an unparseable URL is refused too; point `TEST_DATABASE_URL` at a database whose name ends in `_test`, or set it explicitly and own the consequences (the `LOOM_TEST_DATABASE_URL_USER_SET` marker, unchanged).
   - The Testcontainers bullet: the container is `new PostgreSqlContainer("postgres:17-alpine").withDatabase("loom_test")`, so its connection URI names **`loom_test`** and not the package default `test`.
@@ -1844,7 +1973,7 @@ Write-Output "connector URL is on the clipboard"
 ```
   *Checked for both helpers:* every byte is ASCII —
   `perl -ne 'print "$ARGV:$.: $_" if /[^\x00-\x7f]/' deploy/*.ps1 deploy/*.cmd` prints nothing (any equivalent check is fine; the rule is the one that matters, not the tool).
-- [ ] **Step 9: `.gitignore`, and two `.gitattributes` lines.** Eight explicit lines beside the existing `.env`, **not** a glob — a reviewer should be able to read what is ignored, and a `deploy/.deployed-*` glob would have covered neither `.update-state` nor `.dump-in-progress`:
+- [ ] **Step 9: `.gitignore`, and three `.gitattributes` lines.** Eight explicit lines beside the existing `.env`, **not** a glob — a reviewer should be able to read what is ignored, and a `deploy/.deployed-*` glob would have covered neither `.update-state` nor `.dump-in-progress`:
 ```
 deploy/.deployed-sha
 deploy/.verified-sha
@@ -1857,14 +1986,38 @@ deploy/.update-state.new
 ```
   All eight are server state written into the checkout, and an untracked file there would trip the script's own `--untracked-files=all` clean-tree check — including one a killed run left behind between the `>` and the `mv`, which is why the three temporaries are named too.
 
-  Then `.gitattributes`, **one step beyond the spec's letter and argued here**: the spec requires `deploy/live-update.sh` to be committed executable, which it says because `git clone` is what creates the server checkout — and the same sentence is true of its line endings, which the spec does not mention. `core.autocrlf` is `true` on the machine this is written on, so a `.sh` written here is normalised on commit; but the **working tree** is what `bash -n` and `pnpm test:deploy` read, and a CRLF shebang fails on the server with `bad interpreter: /usr/bin/env bash^M` — a failure mode with no message worth reading. Two lines, beside the existing `*.sql` pair and with the same kind of comment:
+  Then `.gitattributes`, **one step beyond the spec's letter and argued here**: the spec requires `deploy/live-update.sh` to be committed executable, which it says because `git clone` is what creates the server checkout — and the same sentence is true of its line endings, which the spec does not mention. `core.autocrlf` is `true` on the machine this is written on, so a `.sh` written here is normalised on commit; but the **working tree** is what `bash -n` and `pnpm test:deploy` read, and a CRLF shebang fails on the server with `bad interpreter: /usr/bin/env bash^M` — a failure mode with no message worth reading. **Three** lines, beside the existing `*.sql` pair and with the same kind of comment:
 ```
 # deploy/ carries shell that Linux executes: the server's checkout is a plain `git clone` and a
 # CRLF shebang there fails as `bad interpreter`. Keep it LF in the working tree on every platform,
-# whatever the developer's core.autocrlf setting.
+# whatever the developer's core.autocrlf setting. The third line is for Task 5's stubs, which are
+# executables with NO extension: docker, git, curl, timeout, flock.
 deploy/*.sh text eol=lf
 deploy/test/**/*.sh text eol=lf
+deploy/test/stubs/* text eol=lf
 ```
+  **The third line is review round 1's F4**, and it is the one that matters most: Task 5's stubs are found on `PATH` under the names `docker`, `git`, `curl`, `timeout` and `flock`, so **no pattern ending in `.sh` can ever match them**, and with `core.autocrlf=true` a fresh checkout gives each of them a `#!/usr/bin/env bash^M` shebang — a harness that fails on a colleague's machine for a reason that is invisible in the diff. The other three paths the finding lists need no line of their own, and this is checked rather than assumed: `deploy/live-update.sh` is matched by `deploy/*.sh`, and `deploy/test/run.sh` and `deploy/test/cases/*.sh` are matched by `deploy/test/**/*.sh`, because `**` matches zero or more path components. The stubs line is written as `deploy/test/stubs/*` rather than as a list of five names so that a sixth stub is covered the day it is added.
+
+  *Checked, in a throwaway repository with `core.autocrlf=true`, both before and after adding the third line* — the reproduction the finding describes, and the two commands are worth keeping because they are the only way to see this without a colleague's checkout:
+```
+$ git ls-files --eol deploy/test/stubs/docker deploy/test/run.sh      # before, in a fresh clone
+i/lf    w/crlf  attr/                   deploy/test/stubs/docker
+i/lf    w/lf    attr/text eol=lf        deploy/test/run.sh
+$ od -c deploy/test/stubs/docker | head -2                            # before: the shebang is CRLF
+0000000   #   !   /   u   s   r   /   b   i   n   /   e   n   v       b
+0000020   a   s   h  \r  \n   e   c   h   o       d   o   c   k   e   r
+$ git ls-files --eol deploy/test/stubs/docker                         # after the third line
+i/lf    w/lf    attr/text eol=lf        deploy/test/stubs/docker
+$ od -c deploy/test/stubs/docker | head -2                            # after: LF
+0000000   #   !   /   u   s   r   /   b   i   n   /   e   n   v       b
+0000020   a   s   h  \n   e   c   h   o       d   o   c   k   e   r
+```
+  The index side (`i/lf`) is LF either way — that is `core.autocrlf`'s commit-time normalisation, and it is why this defect is invisible to a reviewer reading the diff. Only the **working tree** side (`w/`) changes, and only on a fresh checkout, which is why the check below reads `git ls-files --eol` rather than the file that happens to be on this machine.
+- [ ] **Step 9a: The line-ending check, as a step rather than a hope.** From the repository root, over what this task has added — the stubs do not exist yet and get their own check in Task 5 Step 4a:
+```bash
+git ls-files --eol deploy
+```
+  *Checked:* **every** row prints `i/lf` and `w/lf`, and the `.sh` rows' `attr/` column says `text eol=lf`. A blank `attr/` on a file Linux executes means no pattern matched it and the next fresh checkout will give it CRLF; `i/lf` alone proves nothing, because `core.autocrlf` normalises the **index** either way, which is exactly why this defect is invisible in a diff.
 - [ ] **Step 10: The executable bit.** `git add deploy/live-update.sh deploy/test` is not enough on Windows, where `core.filemode` is false:
 ```bash
 git update-index --chmod=+x deploy/live-update.sh
@@ -1920,6 +2073,8 @@ deploy/test/cases/*.sh      one file per case: the scenario, and what it asserts
 
   **The scenario is a shell function the case defines**, one per stubbed command — `answer_docker`, `answer_git`, `answer_curl`, `answer_timeout`, `answer_flock` — each a `case " $* " in … esac` that prints what the scenario wants on stdout and returns the status it wants. That **is** spec §11.7's "table of: when the arguments match this pattern, print this, exit with this status"; writing it as a sourced `case` rather than as a parsed table means there is no parser of the harness's own to get wrong, and a case file reads as the branch it is about. The runner exports the case's functions to the stubs through a file the stubs source (`$TEST_ROOT/scenario.sh`), because the stubs are separate processes.
 
+  **The five stubs are extensionless executables, and Task 4 Step 9's third `.gitattributes` line is what keeps them runnable.** They are found on `PATH` as `docker`, `git`, `curl`, `timeout` and `flock`, so `deploy/test/**/*.sh` does not match them and `deploy/test/stubs/* text eol=lf` does; without it a fresh checkout with `core.autocrlf=true` hands them a `#!/usr/bin/env bash^M` shebang and every case fails with `bad interpreter`. Two consequences for this step: a stub added later under a sixth name is covered automatically by that glob, and a stub must not be given a `.sh` extension to "fix" its line endings — the name on `PATH` is the contract.
+
   Every stub, before it answers:
   - **appends its full argument list to `$CALLS`, in call order** — that file is what a case's assertions read;
   - **screens the host paths it was handed.** A stub knows which of its arguments are **host** paths because the commands' own grammar says so: the part **before the first colon** of each `-v`, and the values of `--env-file`, `--project-directory` and `-f`. Everything from the image or service name onward is the container's own argv (`/etc/caddy/Caddyfile`, `dist/migrate.js`) and is not a host path at all. Any host path that is **absolute and not under `$TEST_ROOT`** makes the stub write a `VIOLATION <path>` line into `$CALLS`, and the case fails. `strace -f -e trace=file` would prove more and is deliberately **not** used: Linux-only, needs privileges the repository cannot assume, and a harness a developer cannot run on their own machine is a harness that stops being run.
@@ -1973,6 +2128,11 @@ deploy/test/cases/*.sh      one file per case: the scenario, and what it asserts
   - `pnpm test:deploy` — every case passes, the runner prints a pass/fail count, and it leaves **no** temporary directory behind.
   - Then prove the harness can fail: change one thing in a scratch copy of the script (for example delete the `-x` from `dump_verdict`'s `pgrep`) and confirm case `21` **fails**; put it back and confirm it passes again. A harness whose failing direction has never been seen is a harness nobody has tested. Record what you changed and what failed in the commit body; **commit nothing but the harness**.
   - `bash -n` over every new file under `deploy/test/`.
+- [ ] **Step 4a: The line endings, checked on the stubs themselves.** Task 4 Step 9a could not cover them, because they did not exist yet:
+```bash
+git ls-files --eol deploy/test/stubs
+```
+  *Checked:* every one of the five rows prints `i/lf`, `w/lf` and `attr/text eol=lf`. A blank `attr/` column means the `deploy/test/stubs/*` line is missing or misspelled and the stubs will be checked out with CRLF shebangs on any machine with `core.autocrlf=true` — this machine included, on the next fresh clone.
 - [ ] **Step 5: Commit**
 
 ```bash
@@ -2110,8 +2270,8 @@ git commit
 - **§1** (the problem, the five pieces, the eight success scenarios, the non-goals) → the shape of the whole plan. The five pieces map one-to-one: the deployment → Tasks 4 and 5; the standalone migrate entry → Tasks 1 and 2; the boot switch → Task 2; the session-less `GET`/`DELETE` fix → Task 2; the truncate guard → Task 3. Nothing in any task touches the root `docker-compose.yml`, the root `Caddyfile`, `run.*`, `start_cloudflare_tunnel.cmd` or `.claude/launch.json`, and Task 6 asserts the last of those by name. Nothing renders anything.
 - **§2** the decisions, and §3 what is already parameterised → Task 4 builds against them rather than re-deciding them: the Hetzner box, the hostname, the one command, the generic Caddy hook, the shared `web` network, the credential-free clone, `-p` on every compose command and `--env-file` on every Spool one. §3's three read-rather-than-assumed facts — the server is fully environment-driven, **the image needs no change at all**, and `runMigrations` finds its own folder — are Task 4's "the Dockerfile is untouched" and Task 1's `migrationsFolder()` respectively.
 - **§4** the ten files and the five records → Task 4, file by file, with the records as `.gitignore` lines. **§4.1** every path → the five constants in the transcribed listing, asserted by Task 5's case `21` **by reading the file**. **§4.2** → Task 4 Step 1, with the compose `config` check of Step 11 proving `name: loom`, the per-commit tag, the one loopback port and the `:?` refusal. **§4.3** → Step 2. **§4.4** → Step 3. **§4.5** → Step 4, **verbatim**. **§4.6** → Step 5, and §9 step 8 is what first exercises it (Task 7). **§4.7** → Steps 6 to 8, with the ASCII check.
-- **§5.1** → Task 1: `migrationStatus`'s two validation properties, the three details of the read (drizzle's own hash via `readMigrationFiles`, the `to_regclass` probe, the one shared folder helper), `assertTransactionSafe`'s one stateful pass with its six states, the rejected-forms table taken **whole**, and `runMigrations` refusing on both. The remedy for drift — three deletions and `git restore` — is Task 6's CONTRIBUTING section, because it binds every future migration. **§5.2** → Task 2's `migrate.ts`, its seven-row table and its exit-code convention including **both** carve-outs. **§5.3** → Task 2's `parseBoolean`, default **true**, and `main.ts`'s refusal thrown from `main()` so the existing `main().catch` path is the only failure mechanism. **§5.4** → Task 2's guard, with its three precise points each an assertion in §11.4.
-- **§6** the truncate guard, the change it forces, and the two rejected alternatives → Task 3, with the whole-repository verification (case 32) as its own step and the two TESTING sentences beside it.
+- **§5.1** → Task 1: `migrationStatus`'s **three** validation properties — the strictly increasing journal, the exact `(created_at, hash)` prefix, and the folder inventory that answers review round 1's F2 — the four details of the read (drizzle's own hash via `readMigrationFiles`, the independent `*.sql` inventory that its journal-driven loop cannot provide, the `to_regclass` probe, the one shared folder helper), `assertTransactionSafe`'s one stateful pass with its six states **and its separator rule** (round 1's F1: a skipped comment emits one space, so `COMMIT/**/WORK` is a `COMMIT`), the rejected-forms table taken **whole**, and `runMigrations` refusing on both. The remedy for drift — three deletions and `git restore` — is Task 6's CONTRIBUTING section, because it binds every future migration. **§5.2** → Task 2's `migrate.ts`, its seven-row table and its exit-code convention including **both** carve-outs. **§5.3** → Task 2's `parseBoolean`, default **true**, and `main.ts`'s refusal thrown from `main()` so the existing `main().catch` path is the only failure mechanism. **§5.4** → Task 2's guard, with its three precise points each an assertion in §11.4.
+- **§6** the truncate guard, the change it forces, and the two rejected alternatives → Task 3, with the whole-repository verification (case 34) as its own step and the two TESTING sentences beside it.
 - **§7** the Spool change → Task 6's second, separate pull request in `D:\git\Spool`, with its exact diff, its branch name (`feat/caddy-sites-hook`), its PR title, the one thing it must not do (`COMPOSE_PROJECT_NAME=spool` left in place) and its standing as a **dependency of the first deployment, not of this branch's tests**. The two server-side prerequisites (`docker network create web`, `install -d -m 755 /root/caddy-sites`) are Task 7 step 1, in the order §7 requires, because an `external: true` network that does not exist makes `docker compose up` refuse and that would take the shop down.
 - **§8** who does what, and **§8.1** every credential → Task 7: Paw's two items are steps 6 and 12 and nothing else; every other step is the session's over SSH; hand-run steps go one at a time with real values filled in. The credential guarantee is a Global Constraint in the words it holds in, and the eight-file inventory is what Task 6 puts in `HANDBOOK.md` §6 **by path, never by value**.
 - **§9** the fourteen steps → Task 7, steps 0 to 13 with their done-checks, plus §11.6's rehearsals as step 8a (placed where §11.6 places them: after step 8 and **before** step 10 mints any key) and the interim's retirement with the **interim** credentials as the closing step.
@@ -2120,19 +2280,20 @@ git commit
 
   | Spec cases | Task | What carries them |
   | --- | --- | --- |
-  | §11.1 — 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 | **Task 1** | `src/core/test/migration-status.test.ts`, against a dedicated container from `src/core/test/pg-container.ts`, with the temporary-folder mechanism cases 5, 7, 8, 9 and 10 need and the `runMigrations(db, folder)` signature change that makes it possible |
-  | §11.2 — 11, 12, 13, 14, 15, 16, 17 | **Task 2** | `src/server/test/migrate.test.ts`, each case spawning the **built** entry as a child process, against `src/server/test/pg-container.ts` |
-  | §11.3 — 18, 19, 20, 21, 22 | **Task 2** | 18 and 19 in `src/server/test/config.test.ts` as units; 20 to 22 in `migrate.test.ts` through a second child-process helper, because they are about a **boot** and this package has no suite that runs `main.ts` |
-  | §11.4 — 23, 24, 25, 26, 27 | **Task 2** | `src/server/test/mcp.test.ts`, with 26 and 27's `PUT` half asserted as **unchanged** |
-  | §11.5 — 28, 29, 30, 31, 32 | **Task 3** | `src/core/test/db-guard.test.ts`, and 32 as the named whole-repository verification step on both provisioning paths |
+  | §11.1 — 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 | **Task 1** | `src/core/test/migration-status.test.ts`, against a dedicated container from `src/core/test/pg-container.ts`, with the temporary-folder mechanism cases 5, 7, 8, 9, 10 and 12 need — `writeFolder`, and `writeFolderRaw` for case 12's two halves, which by construction `writeFolder` cannot express — and the `runMigrations(db, folder)` signature change that makes it possible. Cases 11 and 12 are round 1's F1 and F2, appended rather than inserted so every existing reference to cases 1 to 10 still names the case it was written about |
+  | §11.2 — 13, 14, 15, 16, 17, 18, 19 | **Task 2** | `src/server/test/migrate.test.ts`, each case spawning the **built** entry as a child process, against `src/server/test/pg-container.ts` |
+  | §11.3 — 20, 21, 22, 23, 24 | **Task 2** | 20 and 21 in `src/server/test/config.test.ts` as units; 22 to 24 in `migrate.test.ts` through a second child-process helper, because they are about a **boot** and this package has no suite that runs `main.ts` |
+  | §11.4 — 25, 26, 27, 28, 29 | **Task 2** | `src/server/test/mcp.test.ts`, with 28 and 29's `PUT` half asserted as **unchanged** |
+  | §11.5 — 30, 31, 32, 33, 34 | **Task 3** | `src/core/test/db-guard.test.ts`, and 34 as the named whole-repository verification step on both provisioning paths |
   | §11.6 (not numbered) | **Task 7** step 8a | The by-hand rehearsals, in the spec's own order, on the first day. The `dump_verdict` wrapper's own two container runs are already recorded in §11.6 and are not re-run |
   | §11.7 (not numbered) | **Task 5** | One case file per table row, 27 files, plus the runner and five stubs |
 
-  **The one place two tasks touch the same assertion, named rather than left to be discovered:** spec §11.2 case 13 requires the `pending_tags` pipeline to be run over the **real entry's** two outputs, and §11.7 has a row of the same name over **fixture** text with no server. Case 13 is Task 2's, whole; Task 5's row is a separate case file, and neither replaces the other — one proves the entry's output is what the pipeline was written for, the other proves the pipeline survives an empty result inside the harness where every later shell case lives.
+  **The one place two tasks touch the same assertion, named rather than left to be discovered:** spec §11.2 case 15 requires the `pending_tags` pipeline to be run over the **real entry's** two outputs, and §11.7 has a row of the same name over **fixture** text with no server. Case 15 is Task 2's, whole; Task 5's row is a separate case file, and neither replaces the other — one proves the entry's output is what the pipeline was written for, the other proves the pipeline survives an empty result inside the harness where every later shell case lives.
 - **§12** the security notes → each is a property some task makes true and none is left to prose: the mode-600 `.env` and its `stat` check (Task 7 step 3); no secret in the repository (Task 4's `.env.example`, and the Global Constraint); the five records carrying no credential and being git-ignored for a different reason (Task 4 Step 9); `C:\Users\paw\.loom` and its profile ACL with **no `icacls` call** (Task 7); the live CLI's own config file (Task 7's prelude); the disposable Caddy given **two strings** and not Spool's environment (Task 4's transcribed banner 4, Task 7 step 1's preflight); Postgres publishing nothing and staying off `web` (Task 4 Step 1); 3100 loopback-only; the `web` network's stated trust posture; Loom's **own** HSTS (Task 4 Step 2); agent keys in the URL over TLS with Caddy's log **not** redacted, stated as a known property; every log read through `redact_logs` and two done-checks that read no log at all; backups being secret-bearing, `install -d -m 700`, `umask 077`, dot-prefixed until complete, taken with Loom **stopped**; and the two helpers that read secrets and print none (Task 4 Steps 7 and 8).
 - **§13** what this does not promise → nothing in any task promises any of it, and Task 6 moves the ones that are still true of the live instance into DOGFOOD §2's short list rather than deleting them. In particular no task adds a ceiling on the outage: §13's withdrawal of that claim is carried in the transcribed listing's own comments and in the DOGFOOD list.
 - **§14** the nine deliberate risks → each is already answered by a step rather than by a sentence: the staged Caddy validation and the `.prev` restore (Task 4 Step 2 and the listing; the reload-failure restore against a **real** Caddy is exercised by nothing and §14.1 says so); the build's cost on the shop's CPUs; the disk nobody watches; the lock's benign failure mode; the first-run secret on Paw's clipboard, deleted in step 12.4 with the clipboard cleared; the topology guard's over-triggering and its unrehearsed manual path; the quiesce resting on one trap and one file; the classified migrator failure whose own failure mode is Loom left down on purpose; and the journal check being stricter than drizzle's own migrator.
-- **Placeholder scan.** No "TBD", no "implement later", no "add appropriate error handling", no "similar to Task N", no "write tests for the above", no "etc." standing in for a list. Every code step carries the code: Task 1 carries `migrations.ts` and the new `runMigrations` whole, Task 2 carries `migrate.ts`, `parseBoolean`, the `main.ts` branch and the `/mcp` guard whole, Task 3 carries the predicate and the container line, Task 4 carries every one of the ten files (the largest **verbatim** from the spec, and the two committed texts as the two commands that extract them byte-for-byte), Task 5 carries the runner's four responsibilities, the stubs' two duties and one row per case, Task 6 carries each document's edit by section, and Task 7 carries each runbook step with the done-check that closes it. Every test is described by its rule and its assertion; every deleted or changed thing is named by file, and by line where the line is what identifies it.
-- **Type and name consistency**, each symbol checked for one definition and one spelling everywhere. `migrationsFolder()`, `MigrationStatus`, `migrationStatus(db, folder?)`, `assertTransactionSafe(sql, file)` and `assertPendingTransactionSafe(pending, folder?)` are defined **once**, in Task 1's `src/core/src/db/migrations.ts`, exported once from `src/core/src/index.ts`, and consumed by exactly three callers: `runMigrations` (Task 1), `migrate.ts` (Task 2) and `main.ts` (Task 2). `runMigrations(db, folder = migrationsFolder())` has that one signature after Task 1, and every existing caller — `main.ts`, `freshDb()` — passes nothing and is unaware. `migrateOnBoot` is the field, `LOOM_MIGRATE_ON_BOOT` the variable, and `parseBoolean` is defined once in `config.ts` and used once. `isProtectedDatabase(url)` keeps its name and its signature and changes only its rule; `dbName` and `fallbackTestUrl` are untouched. `startPgContainer()` has that one name in **two** files that never import each other, which is the point of §11.2's F1 answer. On the shell side: `LOOM_DEPLOY_DIR`, `SPOOL_DEPLOY_DIR`, `SITES_DIR`, `BACKUP_DIR` and `LOCK_FILE` are the five constants and the only absolute paths, `LIVE_UPDATE_TEST_ROOT` is the one thing that moves them, `LOOM_IMAGE_TAG` is the exported tag, `loom-live:<short SHA>` is the image name, `loom-loom-1` / `loom-postgres-1` / `loom-migrate-1` are the container names and `loom_pgdata` the volume — every one of them spelled that way in the compose file, in the transcribed script, in Task 5's cases and in Task 7's done-checks, and asserted mechanically by case `21` and by the compose `config` check. `deploy/.deployed-sha`, `.verified-sha`, `.deployed-image`, `.update-state` and `.dump-in-progress` have those five spellings in the script, in `.gitignore`, in §12's row and in the harness. `test:deploy` is the one script name. `feat/live-instance` is this branch; `feat/caddy-sites-hook` is Spool's; `docs/live-instance-run` is Task 7's.
-- **The three departures from the brief's suggested decomposition, each argued where it lands and repeated here so a reviewer can find them:** §11.4's cases are **Task 2's**, not the test-infrastructure task's, because that is the task that writes the guard and RED-then-GREEN requires it; core gains a **third** exported function, `assertPendingTransactionSafe`, because without it `migrate --check` cannot be the gate spec §5.2 requires while the server still keeps its hands off migration files; and Task 4 adds **two `.gitattributes` lines**, which the spec does not ask for, because the same sentence that makes the executable bit necessary — the server checkout is a plain `git clone` — makes LF necessary, and a CRLF shebang there fails as `bad interpreter` with nothing worth reading in the message.
+- **Placeholder scan.** No "TBD", no "implement later", no "add appropriate error handling", no "similar to Task N", no "write tests for the above", no "etc." standing in for a list. Every code step carries the code: Task 1 carries `migrations.ts` and the new `runMigrations` whole — including the folder inventory and the comment separator, with Step 3a carrying the recorded **output** of the two runs that prove them rather than a claim that they were run — Task 2 carries `migrateToPrefix` whole rather than describing the fixture, Task 2 carries `migrate.ts`, `parseBoolean`, the `main.ts` branch and the `/mcp` guard whole, Task 3 carries the predicate and the container line, Task 4 carries every one of the ten files (the largest **verbatim** from the spec, and the two committed texts as the two commands that extract them byte-for-byte), Task 5 carries the runner's four responsibilities, the stubs' two duties and one row per case, Task 6 carries each document's edit by section, and Task 7 carries each runbook step with the done-check that closes it. Every test is described by its rule and its assertion; every deleted or changed thing is named by file, and by line where the line is what identifies it.
+- **Type and name consistency**, each symbol checked for one definition and one spelling everywhere. `migrationsFolder()`, `MigrationStatus`, `migrationStatus(db, folder?)`, `assertTransactionSafe(sql, file)` and `assertPendingTransactionSafe(pending, folder?)` are defined **once**, in Task 1's `src/core/src/db/migrations.ts`, exported once from `src/core/src/index.ts`, and consumed by exactly three callers: `runMigrations` (Task 1), `migrate.ts` (Task 2) and `main.ts` (Task 2). `runMigrations(db, folder = migrationsFolder())` has that one signature after Task 1, and every existing caller — `main.ts`, `freshDb()` — passes nothing and is unaware. `migrateOnBoot` is the field, `LOOM_MIGRATE_ON_BOOT` the variable, and `parseBoolean` is defined once in `config.ts` and used once. `isProtectedDatabase(url)` keeps its name and its signature and changes only its rule; `dbName` and `fallbackTestUrl` are untouched. `startPgContainer()` has that one name in **two** files that never import each other, which is the point of §11.2's F1 answer. The three fixture helpers the test files add are `writeFolder` and `writeFolderRaw` in `src/core/test/migration-status.test.ts` and `migrateToPrefix` in `src/server/test/migrate.test.ts`, each defined once, each used only in its own file, and `migrateToPrefix` is the one fixture in the plan that applies a **prefix of the real journal** rather than deleting a row (round 1's F3). On the shell side: `LOOM_DEPLOY_DIR`, `SPOOL_DEPLOY_DIR`, `SITES_DIR`, `BACKUP_DIR` and `LOCK_FILE` are the five constants and the only absolute paths, `LIVE_UPDATE_TEST_ROOT` is the one thing that moves them, `LOOM_IMAGE_TAG` is the exported tag, `loom-live:<short SHA>` is the image name, `loom-loom-1` / `loom-postgres-1` / `loom-migrate-1` are the container names and `loom_pgdata` the volume — every one of them spelled that way in the compose file, in the transcribed script, in Task 5's cases and in Task 7's done-checks, and asserted mechanically by case `21` and by the compose `config` check. `deploy/.deployed-sha`, `.verified-sha`, `.deployed-image`, `.update-state` and `.dump-in-progress` have those five spellings in the script, in `.gitignore`, in §12's row and in the harness. `test:deploy` is the one script name. `feat/live-instance` is this branch; `feat/caddy-sites-hook` is Spool's; `docs/live-instance-run` is Task 7's.
+- **The three departures from the brief's suggested decomposition, each argued where it lands and repeated here so a reviewer can find them:** §11.4's cases are **Task 2's**, not the test-infrastructure task's, because that is the task that writes the guard and RED-then-GREEN requires it; core gains a **third** exported function, `assertPendingTransactionSafe`, because without it `migrate --check` cannot be the gate spec §5.2 requires while the server still keeps its hands off migration files; and Task 4 adds **three `.gitattributes` lines**, which the spec does not ask for, because the same sentence that makes the executable bit necessary — the server checkout is a plain `git clone` — makes LF necessary, and a CRLF shebang there fails as `bad interpreter` with nothing worth reading in the message. The third of them covers Task 5's stubs, which are executables with no extension and which review round 1's F4 found uncovered; Task 4 Step 9a and Task 5 Step 4a check all of them with `git ls-files --eol`.
+- **The four findings of PR #27's plan review round 1, and where each one is answered.** **F1 (P1)** — the scanner now emits one space in place of every comment it skips (Task 1 Step 3, and spec §5.1's fourth property), §11.1 case 11 pins it in both directions, and Task 1 Step 3a records the run that shows `COMMIT/**/WORK;` refused and the same file accepted with the two lines removed. **F2 (P2)** — `migrationStatus` inventories the folder's `*.sql` files independently of the journal (Task 1 Step 3's property 3, spec §5.1's third property and second detail of the read), §11.1 case 12 covers the orphan and the missing file, and Step 3a records the reproduction: two files, one journal entry, `readMigrationFiles` returns one. **F3 (P2)** — Task 2's case 14 builds a genuine earlier schema with `migrateToPrefix`, applying a truncated journal to a fresh database with core's own `runMigrations`, and the row-deletion trick is kept only where nothing is applied (cases 15, 18 and 22). **F4 (P2)** — `.gitattributes` gains `deploy/test/stubs/* text eol=lf` (Task 4 Step 9), Task 5 Step 1 says why a stub may not be renamed to `.sh`, and two check steps read `git ls-files --eol` (Task 4 Step 9a, Task 5 Step 4a). One deviation, named: the finding's other three paths get no line of their own, because `deploy/*.sh` and `deploy/test/**/*.sh` already match `deploy/live-update.sh`, `deploy/test/run.sh` and `deploy/test/cases/*.sh` — checked with `git ls-files --eol`, not assumed. **Nothing else in the plan changed**, and the §11 renumbering (§11.2 onwards, +2) is carried in the spec and in this plan together.
 - **What no task in this plan does, said plainly so it is not mistaken for an omission.** Nothing here changes what Loom **logs** — the first-boot Lobby link stays unredacted at the writer and becomes a KNOWN-ISSUES row and a v2-notes note instead (spec §10). Nothing here touches the **CLI**; the `commands/lobby.ts` row stays deferred and Task 7 step 10 works around it. Nothing here rehearses **R14**, and §11.6 says why. Nothing here tests **Docker, Compose, Caddy, Postgres or the network**: Task 5 stubs every one of them, and the only things that meet reality are Task 7's first deployment and its by-hand rehearsals. And nothing here promises a **restore**: the dumps are taken and none has ever been restored from, which is §13's and stays §13's.
