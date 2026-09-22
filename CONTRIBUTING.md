@@ -159,7 +159,8 @@ instance's recovery design rests on all four.
   cannot run inside a transaction block.** Refused, by leading keyword: `BEGIN`, `COMMIT`, `END`,
   `ROLLBACK`, `ABORT`, `START TRANSACTION`, `SET TRANSACTION`, `PREPARE TRANSACTION`, `SAVEPOINT`,
   `RELEASE`, `DISCARD`, `VACUUM`, `ALTER SYSTEM`, `CREATE DATABASE`, `DROP DATABASE`,
-  `CREATE TABLESPACE`; plus `CREATE`/`DROP INDEX … CONCURRENTLY` and `REINDEX … CONCURRENTLY`, and
+  `CREATE TABLESPACE`; plus `CREATE`/`DROP INDEX … CONCURRENTLY`, `REINDEX … CONCURRENTLY`,
+  `REFRESH MATERIALIZED VIEW … CONCURRENTLY` and `ALTER TABLE … DETACH PARTITION CONCURRENTLY`, and
   `ALTER TYPE … ADD VALUE` (legal since PG 12, but the new label cannot be used in the same
   transaction and the run is one). `assertTransactionSafe` in
   [`src/core/src/db/migrations.ts`](src/core/src/db/migrations.ts) enforces it; `runMigrations` and

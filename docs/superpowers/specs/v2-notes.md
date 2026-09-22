@@ -344,6 +344,25 @@ deliberately **unchanged**: `deploy/` makes a second instance possible without p
 development stack, and the launch harness staying on port 3000 is the right behaviour rather than a
 gap. **The first deployment has not run yet** — it is the spec's section 9, step by step.
 
+**Follow-ups the whole-branch review left open** (none of them a defect this slice shipped):
+
+- **`console.error` then `process.exit` can truncate stderr on a pipe.** Node does not flush an
+  asynchronous stderr before `process.exit`, so a refusal read through a pipe can lose its last
+  line. `src/server/src/migrate.ts` and `main.ts` take the shape every entry point in the
+  repository already takes, so changing it is a repo-wide convention decision rather than this
+  slice's. Not seen in practice: the harness reads the migrate entry's output through a file.
+- **postgres-js prints driver `NOTICE` lines on stdout during `migrate()`.** They are the reason
+  spec §11.2 case 14 pins the four contract lines instead of the whole of stdout. The fix belongs
+  in core's `createDb` as an `onnotice` handler, one line, and it touches no parse contract
+  today — `--check` never calls `migrate()`.
+- **Open question for Paw: should a package that spawns a built entry run `pnpm build && vitest
+  run` as its `test` script?** `src/server/test/migrate.test.ts` runs `dist/migrate.js` as a child
+  process, so a **stale** `dist` gives a silent false green; the suite catches a *missing* build,
+  not an old one. `@loom/claude-channel` already uses `"test": "pnpm build && vitest run"`, so
+  the precedent exists. [../../TESTING.md](../../TESTING.md) documents the hazard and the
+  build-before-test rule instead; adopting the script convention across the packages that need it
+  is a decision, not a fix.
+
 ### Gate the first-boot Lobby link behind a flag (live-instance slice, 2026-09-22) — **decided: a later slice**
 
 `main.ts` prints the Lobby's `/w/<43-character secret>` link **unredacted** on the boot that creates

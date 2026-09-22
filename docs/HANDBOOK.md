@@ -136,8 +136,11 @@ Each step ends where its completion criterion says, and not before.
     the PR's Thread — see [DOGFOOD.md](DOGFOOD.md) §4. *Done when:* the
     reviewer's post says no actionable findings remain.
 13. **Merge, then update the live instance.** Squash-only. **Only on Paw's explicit word, given for
-    that PR.** A previous authorisation is not a standing one. Then run the one update command from
-    the repository root and report what it printed:
+    that PR.** A previous authorisation is not a standing one. Then, **once the first deployment
+    of spec §9 has been run** — it has not; [DOGFOOD.md](DOGFOOD.md) §2 carries the dated line, and
+    §6 below says the same — run the one update command from the repository root and report what
+    it printed. Until that first deployment has run there is nothing on the server for this
+    command to update, so **the merge ends at `main`**:
 
         deploy\live-update.cmd
 
@@ -147,7 +150,8 @@ Each step ends where its completion criterion says, and not before.
     reviewer polling `inbox` mid-update sees a failed call — that is expected, and the run's own
     output is the thing to read rather than the reviewer's complaint. *Done when:* Paw has said
     merge, `main` carries it, and the update printed its verdict with the merged commit in
-    `deploy/.verified-sha`.
+    `deploy/.verified-sha` — or, before the first deployment, `main` carries it and nothing else
+    was attempted.
 14. **Cleanup.** Delete the merged local and remote branches and remove the worktrees. *Done when:*
     `git branch` and `git worktree list` show only what is still in play.
 15. **Manual smoke test with Paw**, one step at a time, real values filled in, waiting for each
