@@ -4745,7 +4745,9 @@ stay contiguous.
    `PREPARE TRANSACTION 'gid';`, `COMMIT PREPARED 'gid';`, `ROLLBACK PREPARED 'gid';`,
    `SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;`, `SET TRANSACTION SNAPSHOT '000003A1-1';`,
    `DISCARD ALL;`, `DISCARD PLANS;`, `CREATE INDEX CONCURRENTLY i ON t (c);`,
-   `DROP INDEX CONCURRENTLY i;`, `REINDEX INDEX CONCURRENTLY i;`, `VACUUM;`,
+   `DROP INDEX CONCURRENTLY i;`, `REINDEX INDEX CONCURRENTLY i;`,
+   `REFRESH MATERIALIZED VIEW CONCURRENTLY mv;`, `ALTER TABLE t DETACH PARTITION p CONCURRENTLY;`,
+   `VACUUM;`,
    `CREATE DATABASE d;`, `DROP DATABASE d;`, `ALTER SYSTEM SET work_mem = '4MB';`,
    `CREATE TABLESPACE ts LOCATION '/x';` and `ALTER TYPE mood ADD VALUE 'ok';` — each asserted to
    throw with **the file name and the offending keyword in the message**, because that message is
@@ -4756,7 +4758,8 @@ stay contiguous.
    that is how a real file would carry it. And the accepted look-alikes, which are what stop the
    guard from being a nuisance: `SELECT CASE WHEN x THEN 1 ELSE 2 END FROM t;`;
    `DO $$ BEGIN RAISE NOTICE 'x'; END $$;`; `-- commit this later` and `/* BEGIN */` as comments;
-   `INSERT INTO t (c) VALUES ('commit');` as a string literal; `CREATE INDEX i ON t (c);` without
+   `INSERT INTO t (c) VALUES ('commit');` as a string literal; `CREATE INDEX i ON t (c);`,
+   `REFRESH MATERIALIZED VIEW mv;` and `ALTER TABLE t DETACH PARTITION p;` without
    `CONCURRENTLY`; and a column or table actually named `"end"` or `"commit"` in double quotes. Each
    of those is asserted **not** to throw. §5.1 states what the scan cannot see; these cases pin what
    it must not falsely see.
