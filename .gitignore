@@ -4,3 +4,12 @@ dist/
 *.log
 caddy-data/
 *.tsbuildinfo
+
+deploy/.deployed-sha
+deploy/.verified-sha
+deploy/.deployed-image
+deploy/.update-state
+deploy/.dump-in-progress
+deploy/.deployed-sha.new
+deploy/.verified-sha.new
+deploy/.update-state.new

@@ -1,0 +1,57 @@
+name: loom
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: loom
+      POSTGRES_USER: loom
+      POSTGRES_PASSWORD: ${LOOM_DB_PASSWORD:?LOOM_DB_PASSWORD is required}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U loom -d loom"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  migrate:
+    image: loom-live:${LOOM_IMAGE_TAG:-latest}
+    build:
+      context: ..
+      dockerfile: src/server/Dockerfile
+    restart: "no"
+    command: ["node", "dist/migrate.js"]
+    environment:
+      DATABASE_URL: postgres://loom:${LOOM_DB_PASSWORD:?LOOM_DB_PASSWORD is required}@postgres:5432/loom
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  loom:
+    image: loom-live:${LOOM_IMAGE_TAG:-latest}
+    build:
+      context: ..
+      dockerfile: src/server/Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://loom:${LOOM_DB_PASSWORD:?LOOM_DB_PASSWORD is required}@postgres:5432/loom
+      LOOM_KEEPER_TOKENS: ${LOOM_KEEPER_TOKENS:-}
+      LOOM_MIGRATE_ON_BOOT: "false"
+      PORT: "3000"
+    ports:
+      - "127.0.0.1:3100:3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - default
+      - web
+
+volumes:
+  pgdata:
+
+networks:
+  web:
+    external: true
