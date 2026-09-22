@@ -46,9 +46,9 @@ while IFS= read -r ROW; do
     || fail "line $N mentions LIVE_UPDATE_TEST_ROOT outside the one branch: $TEXT"
 done < "$HARNESS/mentions"
 
-# no other line carries an absolute path that could be the live server own, outside a message.
+# no other line carries an absolute path that could be the live server's own, outside a message.
 # /etc/caddy/Caddyfile and /etc/caddy/sites are allowed: they are paths INSIDE the container the
-# script runs, named in that container own argv, and are not host paths at all.
+# script runs, named in that container's own argv, and are not host paths at all.
 grep -n -E '/(root|run|var|home|srv|opt|mnt|etc|usr|tmp)/' "$SCRIPT" > "$HARNESS/abs"
 while IFS= read -r ROW; do
   N="${ROW%%:*}"
@@ -70,7 +70,7 @@ done < "$HARNESS/abs"
 
 # round 12 F1, kept from drifting back: the in-container wrapper matches on the executable name
 grep -F -q -- 'pgrep -x pg_dump' "$SCRIPT" || fail "dump_verdict no longer matches on pgrep -x pg_dump"
-grep -F -q -- 'pgrep -f' "$SCRIPT" && fail "the file contains a pgrep -f, which inside an sh -c wrapper matches the wrapper own command line"
+grep -F -q -- 'pgrep -f' "$SCRIPT" && fail "the file contains a pgrep -f, which inside an sh -c wrapper matches the wrapper's own command line"
 sed -n '/^dump_verdict()/,/^}/p' "$SCRIPT" > "$HARNESS/verdict-fn"
 grep -F -q -- 'pgrep -x pg_dump' "$HARNESS/verdict-fn" || fail "dump_verdict body has no pgrep -x pg_dump"
 grep -F -q -- 'pgrep -f' "$HARNESS/verdict-fn" && fail "dump_verdict body contains a pgrep -f"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# deploy/test/run.sh — the shell contract harness for deploy/live-update.sh (spec 11.7).
+# deploy/test/run.sh -- the shell contract harness for deploy/live-update.sh (spec 11.7).
 #
 # WHAT THIS IS. It runs the REAL deploy/live-update.sh with a directory of stub commands first on
 # PATH, inside a temporary directory, and asserts three things per case: the sequence of `docker`
@@ -257,6 +257,10 @@ answer_install() {               # THE ONE STUB THAT IS NOT A SCENARIO: a compat
 # --- what a case may call ----------------------------------------------------------------------
 
 fail() {                         # the one way a case fails: say why, then show the evidence
+  exec 1>&2                      # a caller may have redirected stdout (docker_calls_after writes
+                                 #   to a file), and a FAIL that prints nothing is worse than no
+                                 #   FAIL at all. fd 2 is untouched by every caller, and `main`
+                                 #   captures the case with 2>&1, so the diagnostic always lands.
   printf 'ASSERTION FAILED: %s\n' "$*"
   if [ -n "${OUT:-}" ] && [ -f "$OUT" ]; then
     printf -- '--- the run output, last 40 lines of %s ---\n' "$OUT"
@@ -271,10 +275,13 @@ fail() {                         # the one way a case fails: say why, then show 
 }
 
 command_not_found_handle() {     # a mistyped helper name is an ASSERTION THAT NEVER RAN. Without
-  : > "$HARNESS/command-not-found" 2>/dev/null || true   # this, bash prints `foo: command not
-  fail "unknown command: $1"     #   found` to a stream the runner discards on a passing case and
-}                                #   the case runs on to its end and reports PASS -- which is how
-                                 #   assert_same came to be called by two cases and defined by none
+                                 #   this, bash prints `foo: command not found` to a stream the
+                                 #   runner discards on a passing case and the case runs on to its
+  : > "${HARNESS:-/dev/null}/command-not-found" 2>/dev/null || true
+  fail "unknown command: $1"     #   end and reports PASS -- which is how assert_same came to be
+}                                #   called by two cases and defined by none. `${HARNESS:-...}`
+                                 #   because under `set -u` an unset HARNESS is a fatal expansion
+                                 #   error that `|| true` does not catch.
 
 harness_err() {                  # the ERR trap, armed only while a case file is sourced. It fires
   local rc="$1" cmd="$2"         #   wherever errexit would have exited, so the assert helpers'
@@ -421,7 +428,7 @@ build_world() {
 }
 
 run_one_case() {                 # in a subshell: a failed assertion exits it, nothing leaks out
-  local file="$1" rc=0
+  local file="$1"
   CASE_FILE="$file"
   TEST_ROOT="$(mktemp -d)"
   export TEST_ROOT
@@ -445,13 +452,12 @@ run_one_case() {                 # in a subshell: a failed assertion exits it, n
   set -E                         # errtrace: the ERR trap is inherited by the case's own functions
   trap 'harness_err "$?" "$BASH_COMMAND"' ERR
   # shellcheck disable=SC1090
-  . "$file"
-  rc=$?                          # the case's own status, not a blanket 0
-  trap - ERR
-  set +E
-  chmod -R u+rwx "$TEST_ROOT" 2>/dev/null || true
-  rm -rf "$TEST_ROOT"
-  return "$rc"
+  . "$file"                      # a case FAILs by `fail` (which exits 1), by the ERR trap or by
+  trap - ERR                     #   command_not_found_handle -- each of which exits this subshell
+  set +E                         #   before the next line runs. The status the sourced file RETURNS
+  chmod -R u+rwx "$TEST_ROOT" 2>/dev/null || true   # is not a verdict: `[ -e x ] && fail "..."` is
+  rm -rf "$TEST_ROOT"            #   the suite's own idiom and returns 1 exactly when it PASSES, so
+  return 0                       #   propagating it would report a FAIL with an empty body.
 }
 
 main() {                         # an argument, if there is one, selects the cases whose file
