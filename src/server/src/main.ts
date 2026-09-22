@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
-import { closeDb, createCore, createDb, runMigrations } from "@loom/core";
+import { closeDb, createCore, createDb, migrationStatus, runMigrations } from "@loom/core";
 import { loadConfig, describeSeeding } from "./config.js";
 import { buildApp } from "./app.js";
 import { TicketStore } from "./tickets.js";
@@ -12,7 +12,23 @@ import { attachWebSocket } from "./ws.js";
 async function main() {
   const config = loadConfig(process.env);
   const db = createDb(config.databaseUrl);
-  await runMigrations(db);
+  if (config.migrateOnBoot) {
+    await runMigrations(db);
+  } else {
+    // A drifted journal throws out of migrationStatus here exactly as it does inside
+    // runMigrations, so the server does not start against a database whose history it cannot
+    // characterise whichever way the switch is set (spec §5.1, §5.3).
+    const { pending } = await migrationStatus(db);
+    if (pending.length > 0) {
+      // Thrown from main(), so the existing main().catch path logs it through logError and exits 1
+      // — no new failure mechanism. A server running against a schema older than its own code does
+      // not fail once, visibly; it fails per request while `docker compose ps` says `running`.
+      throw new Error(
+        `LOOM_MIGRATE_ON_BOOT=false and ${pending.length} migration${pending.length === 1 ? "" : "s"} ` +
+        `${pending.length === 1 ? "is" : "are"} pending (${pending.join(", ")}). ` +
+        "Run `node dist/migrate.js` against this database before starting the server.");
+    }
+  }
   const core = createCore(db);
   // Say what the seed did, not what was configured: seeding is skipped whole on a non-empty table.
   const seeding = describeSeeding(await core.seedKeepers(config.keeperTokens), config.keeperTokens.length);

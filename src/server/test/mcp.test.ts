@@ -206,6 +206,37 @@ describe("remote MCP at /mcp", () => {
     expect(await res.json()).toMatchObject({ code: "not_found" });
   });
 
+  it("refuses a session-less GET /mcp?agent=<key> with a 400 validation, not a 500", async () => {
+    // Exactly the request the real connector sends on every reconnect: an agent key in the query
+    // and Accept: text/event-stream, with no mcp-session-id. app.all used to treat it as a fresh
+    // initialize, and the transport threw — five 500s in ChatGPT's first hour on 2026-09-20.
+    const { key } = await s!.core.addAgent(await s!.core.resolveCredential(keeperToken("k1")), `Reconnector-${Date.now()}`);
+    const url = new URL(`${s!.baseUrl}/mcp`);
+    url.searchParams.set("agent", key);
+    const res = await fetch(url, { method: "GET", headers: { accept: "text/event-stream" } });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: "validation" });
+  });
+
+  it("refuses a session-less DELETE /mcp with a 400 validation", async () => {
+    const res = await fetch(`${s!.baseUrl}/mcp`, { method: "DELETE" });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: "validation" });
+  });
+
+  it("answers a session-less GET with a revoked key 400, not 401: the guard runs before any credential is resolved", async () => {
+    const keeper = await s!.core.resolveCredential(keeperToken("k1"));
+    const { agent, key } = await s!.core.addAgent(keeper, `Revoked-${Date.now()}`);
+    await s!.core.revokeAgent(keeper, agent.id);
+    const url = new URL(`${s!.baseUrl}/mcp`);
+    url.searchParams.set("agent", key);
+    const res = await fetch(url, { method: "GET", headers: { accept: "text/event-stream" } });
+    // Malformed before unauthorised: nothing leaks about whether the key is good, and the poll
+    // never touches the database.
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: "validation" });
+  });
+
   it("evicts a session after it has been idle longer than the configured ttl", async () => {
     const fresh = await startFreshApp(s!.core, { mcpSessionTtlMs: 50 });
     const clientTransport = new StreamableHTTPClientTransport(fresh.mcpUrl);

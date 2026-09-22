@@ -79,6 +79,18 @@ export function mountMcp(app: Hono<Env>, core: Core, opts?: MountMcpOptions): { 
       return session.transport.handleRequest(c);
     }
 
+    // A real connector sends `GET /mcp?agent=<key>` on every reconnect and `DELETE /mcp` when it
+    // closes. app.all treats anything without a known session as a fresh `initialize`, and the
+    // transport throws for either of those two — which app.ts turns into a 500 (five of them in
+    // ChatGPT's first hour on 2026-09-20). Refuse before ANY work: no transport is built and
+    // `core.resolveCredential` is not called, so a reconnect poll no longer touches the database at
+    // all and a revoked key gets the same 400 as a good one. `POST` without a session id is the
+    // initialize handshake and is untouched; so is every other method, which is what keeps the two
+    // concurrent session-less PUTs of mcp.test.ts:95 testing the per-session connect gate.
+    if (c.req.method === "GET" || c.req.method === "DELETE") {
+      return c.json({ code: "validation", message: "mcp-session-id header is required for GET and DELETE /mcp" }, 400);
+    }
+
     // No session id: this must be a fresh session's `initialize` request (the transport itself
     // rejects anything else sent without one). Build a brand-new server + transport and connect
     // them before handling the request — that's this session's own, independent connect attempt.

@@ -6,7 +6,23 @@ export type Config = {
   databaseUrl: string;
   keeperTokens: string[];
   webDist: string | undefined;
+  /** Whether `main.ts` migrates at boot. Default TRUE, so every existing use is unchanged. */
+  migrateOnBoot: boolean;
 };
+
+/**
+ * Exactly "true" or "false", trimmed and lower-cased; anything else throws. This file already
+ * throws on a malformed PORT and on a malformed keeper token rather than guessing, and a permissive
+ * parser that read "0", "no" or "False" as some default is exactly the kind of value that only
+ * reveals itself in production — on the one variable whose whole job is to stop a migration.
+ */
+function parseBoolean(raw: string | undefined, name: string, fallback: boolean): boolean {
+  if (raw === undefined) return fallback;
+  const v = raw.trim().toLowerCase();
+  if (v === "true") return true;
+  if (v === "false") return false;
+  throw new Error(`${name} must be exactly "true" or "false"`);
+}
 
 const TOKEN_HELP =
   "LOOM_KEEPER_TOKENS entries must be 43-character base64url strings (32 random bytes); " +
@@ -26,7 +42,11 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
   // Two keepers sharing a token cannot be told apart, and revoking one would revoke both.
   if (new Set(keeperTokens).size !== keeperTokens.length) throw new Error("LOOM_KEEPER_TOKENS contains duplicate tokens");
   const webDist = env.LOOM_WEB_DIST;
-  return { port, host, databaseUrl, keeperTokens, webDist };
+  // Default TRUE so every existing use — the dev server, run.cmd, the root compose file's prod
+  // profile, the preview harness and every test that boots a server — behaves exactly as it does
+  // today with nothing set. Only deploy/ turns it off, and it does so in its compose file.
+  const migrateOnBoot = parseBoolean(env.LOOM_MIGRATE_ON_BOOT, "LOOM_MIGRATE_ON_BOOT", true);
+  return { port, host, databaseUrl, keeperTokens, webDist, migrateOnBoot };
 }
 
 /** The boot report for one seed run: one line always, plus a warning when something needs saying. */
