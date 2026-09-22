@@ -41,7 +41,25 @@
 # and prints the reason. That is for a platform limit -- Windows does not honour a read-only
 # directory -- and never for a case that merely fails.
 #
+# A SKIP IS NOT A PASS ON THE MACHINE THAT CAN RUN THE CASE. With LIVE_UPDATE_TEST_STRICT=1 in the
+# environment, a run that skipped anything exits non-zero and names every case it skipped. On
+# LINUX -- the server, and any Linux checkout -- the harness is meant to be run that way:
+#
+#     LIVE_UPDATE_TEST_STRICT=1 bash deploy/test/run.sh
+#
+# There the read-only directory is honoured, case 17 (record_failure) EXECUTES, and nothing is
+# skipped, so STRICT is the gate that keeps a Windows skip from becoming a permanent hole.
+# Without it the default stands: a skip is reported, and the run still passes.
+#
+# A CASE THAT ERRORS IS A CASE THAT FAILS. The runner sets no `set -e` -- the assert helpers are
+# built on `&&` and `||` and errexit would misread them -- so instead it traps ERR inside the
+# sourced case (any command IN THE CASE FILE that fails and is checked by nothing fails the case),
+# defines `command_not_found_handle` (a mistyped helper name fails the case instead of being
+# skipped silently), propagates the case's own exit status, and refuses a case pattern that
+# matches no file. A harness that reports PASS for a case that never ran is worse than no harness.
+#
 # ONE CASE AT A TIME: `bash deploy/test/run.sh 21` runs the cases whose file name contains 21.
+# A pattern that matches nothing is an error: the runner prints "no case matched" and exits 2.
 #
 # RUNTIME is a few minutes: the cases where a probe never answers let the script's own retry loop
 # run to its 60s or 120s deadline, because `sleep` is deliberately NOT stubbed -- a stubbed sleep
@@ -79,9 +97,10 @@ stub_path_ok() {                 # a host path is fine when it is relative, or u
 }
 
 stub_screen() {                  # the host paths a command was handed, by the command's own
-  local a want=""                #   grammar: the part before the first colon of each -v, and the
-  for a in "$@"; do              #   values of --env-file, --project-directory, -f, and of the -C
-    case "$want" in              #   that is the only host path git is ever handed here.
+  local cmd="$1"; shift          #   grammar: the part before the first colon of each -v, and the
+  local a want=""                #   values of --env-file, --project-directory, -f, and of the -C
+  for a in "$@"; do              #   that is the only host path git is ever handed here.
+    case "$want" in              #
       volume) a="${a%%:*}"
               stub_path_ok "$a" || printf 'VIOLATION %s\n' "$a" >> "$CALLS" ;;
       path)   stub_path_ok "$a" || printf 'VIOLATION %s\n' "$a" >> "$CALLS" ;;
@@ -95,6 +114,12 @@ stub_screen() {                  # the host paths a command was handed, by the c
         stub_path_ok "$a" || printf 'VIOLATION %s\n' "$a" >> "$CALLS" ;;
     esac                                              #   both hand -f something relative.
   done
+  case "$cmd" in                 # `install`'s grammar puts the DESTINATION last, and it is always
+    install)                     #   a host path -- the backup directory, or the site block's home
+      [ "$#" -gt 0 ] || return 0 #   in the sites folder. Screened, so a hard-coded /root/... in
+      a="${*: -1}"               #   either call raises a VIOLATION rather than waiting for case
+      stub_path_ok "$a" || printf 'VIOLATION %s\n' "$a" >> "$CALLS" ;;   # 21's reading check.
+  esac
 }
 
 stub_record() {                  # one call per line, in call order, arguments joined by a space.
@@ -127,7 +152,7 @@ stub_observe() {                 # two observations no case can lose by redefini
 stub_main() {                    # every stub is three lines: source $SCENARIO, then call this
   local name="$1"; shift
   stub_record "$name" "$@"
-  stub_screen "$@"
+  stub_screen "$name" "$@"
   stub_observe "$name" "$@"
   local rc=0
   case "$name" in
@@ -194,10 +219,11 @@ answer_flock()   { return 0; }   # the lock is free
 
 answer_install() {               # THE ONE STUB THAT IS NOT A SCENARIO: a compatibility shim.
   local real="" d rc=0 mode="" dashd=0 a       # `install` is not a command this harness has any
-  local -a args=()                             # reason to fake -- the script uses it to make the
-  for d in ${PATH//:/ }; do                    # backup directory 700 and to place the site block
-    case "$d" in "$STUB_DIR") continue ;; esac # -- but MSYS (Git Bash) REFUSES to take 700 off a
-    [ -x "$d/install" ] && { real="$d/install"; break; }
+  local -a args=() dirs=()                     # reason to fake -- the script uses it to make the
+  IFS=: read -r -a dirs <<< "$PATH"            # backup directory 700 and to place the site block
+  for d in "${dirs[@]}"; do                    # -- but MSYS (Git Bash) REFUSES to take 700 off a
+    case "$d" in "$STUB_DIR") continue ;; esac #    (`IFS=:` and a quoted expansion, because a
+    [ -x "$d/install" ] && { real="$d/install"; break; }   # PATH entry on Windows carries spaces
   done                                         # directory, so `install -d -m 700` fails there and
   if [ -n "$real" ]; then                      # every case that reaches the dump would be
     "$real" "$@" && return 0                   # unrunnable on Windows. So: run the REAL install
@@ -244,6 +270,22 @@ fail() {                         # the one way a case fails: say why, then show 
   exit 1
 }
 
+command_not_found_handle() {     # a mistyped helper name is an ASSERTION THAT NEVER RAN. Without
+  : > "$HARNESS/command-not-found" 2>/dev/null || true   # this, bash prints `foo: command not
+  fail "unknown command: $1"     #   found` to a stream the runner discards on a passing case and
+}                                #   the case runs on to its end and reports PASS -- which is how
+                                 #   assert_same came to be called by two cases and defined by none
+
+harness_err() {                  # the ERR trap, armed only while a case file is sourced. It fires
+  local rc="$1" cmd="$2"         #   wherever errexit would have exited, so the assert helpers'
+  case "${BASH_SOURCE[1]:-}" in  #   `&&` / `||` idiom is untouched -- but a bare command in a
+    "$CASE_FILE") ;;             #   case that fails and is checked by nothing fails the case.
+    *) return 0 ;;               #   Only commands whose source file IS the case file count: the
+  esac                           #   `. "$file"` that runs it, and the helpers defined here, are
+  [ -e "$HARNESS/command-not-found" ] && exit 1   # the handler above already said which name
+  fail "a command in the case failed with status $rc and nothing checked it: $cmd"
+}                                #   the runner's own business and guard themselves.
+
 skip() {
   printf 'SKIPPED: %s\n' "$*"
   chmod -R u+rwx "$TEST_ROOT" 2>/dev/null || true
@@ -273,9 +315,8 @@ run_script() {                   # one run of the real script; $RC and $OUT are 
                answer_docker answer_git answer_curl answer_timeout answer_flock answer_install
   } > "$SCENARIO"
   OUT="$HARNESS/out.$RUNS"
-  bash "$DEPLOY/live-update.sh" "$@" > "$OUT" 2>&1
-  RC=$?
-  return 0
+  if bash "$DEPLOY/live-update.sh" "$@" > "$OUT" 2>&1; then RC=0; else RC=$?; fi
+  return 0                       # a non-zero run is the NORMAL case here: $RC is the assertion
 }
 
 assert_rc()         { [ "$RC" = "$1" ] || fail "exit code is $RC, expected $1"; }
@@ -286,8 +327,11 @@ refute_call() { grep -F -q -- "$1" "$CALLS" && fail "a recorded call contains: $
 assert_out()  { grep -F -q -- "$1" "$OUT"   || fail "the output does not contain: $1"; }
 refute_out()  { grep -F -q -- "$1" "$OUT"   && fail "the output contains: $1"; return 0; }
 
-line_of() {                      # the line number of the first call containing $1, or nothing
-  grep -F -n -- "$1" "$CALLS" | sed -n 1p | cut -d: -f1
+line_of() {                      # the line number of the first call containing $1, or nothing.
+  local n                        #   No match is an answer, not an error: the caller decides.
+  n="$(grep -F -n -- "$1" "$CALLS" | sed -n 1p | cut -d: -f1)" || n=""
+  printf '%s' "$n"
+  return 0
 }
 
 assert_order() {                 # $1 must be called before $2
@@ -311,7 +355,11 @@ docker_calls_after() {           # only the `docker` calls after the first one c
                                  #   further record of $1 itself is dropped, because `dk` records
                                  #   the bounded `timeout 60 docker ...` line AND the `docker ...`
                                  #   line it then runs, and both are the same call.
-  calls_after "$1" | grep -F -v -- "$1" | sed -n 's/^docker /docker /p'
+  calls_after "$1" > "$HARNESS/after-docker"   # NOT a pipeline: `calls_after` may `fail`, and a
+                                               #   `fail` inside a pipeline's subshell would only
+                                               #   kill the subshell and let the case carry on.
+  grep -F -v -- "$1" "$HARNESS/after-docker" | sed -n 's/^docker /docker /p'
+  return 0
 }
 
 refute_call_after() {            # $2 appears in no call after the first one containing $1
@@ -337,6 +385,10 @@ assert_record_absent() { [ -e "$DEPLOY/$1" ] && fail "$1 exists and should not";
 assert_record_exists() { [ -f "$DEPLOY/$1" ] || fail "$1 does not exist"; return 0; }
 
 assert_equal() { [ "$1" = "$2" ] || fail "${3:-value} is '$1', expected '$2'"; }
+
+assert_same() {                  # two files are byte for byte the same; a missing file is not
+  cmp -s "$1" "$2" || fail "$1 and $2 are not byte for byte the same file"
+}
 
 assert_sha_at_up() {             # what .deployed-sha held when the Nth `up -d --no-build loom` ran
   local got                      #   ($1 = N, $2 = the expected content, or the word none)
@@ -369,7 +421,8 @@ build_world() {
 }
 
 run_one_case() {                 # in a subshell: a failed assertion exits it, nothing leaks out
-  local file="$1"
+  local file="$1" rc=0
+  CASE_FILE="$file"
   TEST_ROOT="$(mktemp -d)"
   export TEST_ROOT
   export LIVE_UPDATE_TEST_ROOT="$TEST_ROOT"
@@ -389,16 +442,21 @@ run_one_case() {                 # in a subshell: a failed assertion exits it, n
   OUT=""
   build_world
   set_check_pending
+  set -E                         # errtrace: the ERR trap is inherited by the case's own functions
+  trap 'harness_err "$?" "$BASH_COMMAND"' ERR
   # shellcheck disable=SC1090
   . "$file"
+  rc=$?                          # the case's own status, not a blanket 0
+  trap - ERR
+  set +E
   chmod -R u+rwx "$TEST_ROOT" 2>/dev/null || true
   rm -rf "$TEST_ROOT"
-  return 0
+  return "$rc"
 }
 
 main() {                         # an argument, if there is one, selects the cases whose file
   local pass=0 failed=0 skipped=0 f name rc out started   # name contains it, for working on one
-  local pattern="${1:-}"
+  local pattern="${1:-}" matched=0 skipped_names=""
 
   for f in docker git curl timeout flock install; do
     [ -f "$STUB_DIR/$f" ] || { echo "missing stub $STUB_DIR/$f" >&2; exit 2; }
@@ -414,6 +472,8 @@ main() {                         # an argument, if there is one, selects the cas
   echo
 
   for f in "$CASE_DIR"/*"$pattern"*.sh; do
+    [ -f "$f" ] || continue      # an unmatched glob is the pattern itself: counted by nothing
+    matched=$((matched + 1))
     name="$(basename "$f")"
     started="$SECONDS"
     printf '  %-42s ' "$name"
@@ -423,6 +483,7 @@ main() {                         # an argument, if there is one, selects the cas
       0)  pass=$((pass + 1))
           printf 'PASS  %ss\n' "$((SECONDS - started))" ;;
       77) skipped=$((skipped + 1))
+          skipped_names="$skipped_names $name"
           printf 'SKIP  %ss\n' "$((SECONDS - started))"
           printf '%s\n' "$out" | sed 's/^/        /' ;;
       *)  failed=$((failed + 1))
@@ -431,9 +492,19 @@ main() {                         # an argument, if there is one, selects the cas
     esac
   done
 
+  if [ "$matched" -eq 0 ]; then
+    echo "no case matched '$pattern' in $CASE_DIR" >&2
+    exit 2
+  fi
+
   echo
   echo "  $((pass + failed + skipped)) cases, $pass passed, $failed failed, $skipped skipped"
   [ "$failed" -eq 0 ] || return 1
+  if [ "$skipped" -gt 0 ] && [ -n "${LIVE_UPDATE_TEST_STRICT:-}" ]; then
+    echo "  LIVE_UPDATE_TEST_STRICT is set and these cases did not run:$skipped_names" >&2
+    echo "  a skip is a hole, not a pass; run the harness on Linux, where nothing is skipped" >&2
+    return 1
+  fi
   return 0
 }
 
