@@ -22,4 +22,6 @@ Weave $($w.weave.id), "$($w.weave.title)".
 
 "@
 
-Set-Content -LiteralPath $outFile -Value ($join + (Get-Content $briefFile -Raw)) -Encoding utf8
+# -Encoding UTF8 on the read: the brief is BOM-less UTF-8 and Windows PowerShell 5.1 otherwise decodes
+# it as the ANSI code page, so every em dash and curly quote came out as three garbage characters.
+Set-Content -LiteralPath $outFile -Value ($join + (Get-Content $briefFile -Raw -Encoding UTF8)) -Encoding utf8
