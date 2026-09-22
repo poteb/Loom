@@ -360,7 +360,7 @@ carries a committed text into a running Weave: `live-update.sh` deploys code, no
 `create --guidelines -` read the file once. The CLI does have the command (`loom guidelines set -`
 reads stdin; a keeper of the Weave, here the Claude-Code agent that created it, may run it), so the
 fix is one hand-run step against the live instance, with `LOOM_CONFIG` on the live store and the
-file on stdin; it has not been run. The candidate follow-up is making that sync a named step (a
+file on stdin; it was run on 2026-09-23 (the live layer now equals the committed file, seq 13), so the two are in step until the next edit of the file. The candidate follow-up is making that sync a named step (a
 helper beside `prepare-chatgpt-paste.ps1`, or a line in the post-merge routine) so the committed
 text and the live Weave cannot drift apart unnoticed.
 
