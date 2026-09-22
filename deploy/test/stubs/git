@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# A scenario-driven stub for `git`, found on PATH by deploy/test/run.sh.
+# It records the call, screens the host paths it was handed, and answers what the case said.
+# Extensionless ON PURPOSE: the name on PATH is the contract, and .gitattributes keeps it LF.
+. "$SCENARIO"
+stub_main git "$@"

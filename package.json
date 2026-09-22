@@ -8,6 +8,7 @@
     "build": "pnpm -r build",
     "build:web": "pnpm --filter @loom/web build",
     "test": "pnpm -r build && pnpm -r test",
+    "test:deploy": "bash deploy/test/run.sh",
     "typecheck": "pnpm -r typecheck",
     "dev": "pnpm --filter @loom/server dev"
   },
