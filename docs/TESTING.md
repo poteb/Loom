@@ -17,8 +17,9 @@ which every DB-backed package loads as its `globalSetup`, in this order:
 1. **`TEST_DATABASE_URL` already set** — used as-is, and
    `LOOM_TEST_DATABASE_URL_USER_SET=1` is set as a marker: a URL the developer or CI supplied is
    trusted even if it looks protected.
-2. **Testcontainers** — `new PostgreSqlContainer("postgres:17-alpine").start()`, and its
-   connection URI becomes `TEST_DATABASE_URL`. This is the normal path and it needs Docker
+2. **Testcontainers** — `new PostgreSqlContainer("postgres:17-alpine").withDatabase("loom_test")`,
+   and its connection URI — which names **`loom_test`**, not the package default `test` — becomes
+   `TEST_DATABASE_URL`. This is the normal path and it needs Docker
    running (`teardown()` stops the container).
 3. **Fallback to the compose Postgres** — if the container cannot start, the setup logs
    `testcontainer unavailable (…)`, creates a dedicated **`loom_test`** database on the compose
@@ -32,10 +33,13 @@ The host port is **5433**, not the default 5432: compose publishes the dev Postg
 `127.0.0.1:5433` so a second Postgres already using 5432 on the same machine can coexist with it.
 
 **The guard.** `freshDb()` truncates every table, so it must never run against the compose
-*application* database. `isProtectedDatabase()` returns true when the URL's database name is
-`loom`, and [`src/core/test/helpers.ts`](../src/core/test/helpers.ts) refuses to proceed in that
-case — unless `LOOM_TEST_DATABASE_URL_USER_SET` is set, i.e. you pointed `TEST_DATABASE_URL` at it
-yourself on purpose. The guard has its own tests (`src/core/test/db-guard.test.ts`).
+*application* database. `isProtectedDatabase()` returns true for **every** database whose name does
+not end in `_test` — so `loom`, `spool`, `loom_live` and `postgres` are all refused, and a URL that
+does not parse is refused too — which means you must point `TEST_DATABASE_URL` at a database whose
+name ends in `_test`, or set it explicitly and own the consequences.
+[`src/core/test/helpers.ts`](../src/core/test/helpers.ts) refuses to proceed against a protected
+database — unless `LOOM_TEST_DATABASE_URL_USER_SET` is set, i.e. you pointed `TEST_DATABASE_URL` at
+it yourself on purpose. The guard has its own tests (`src/core/test/db-guard.test.ts`).
 
 **Per-test isolation.** `freshDb()` creates the connection once per process, runs migrations once,
 and then, on every call, executes

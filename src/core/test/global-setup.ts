@@ -23,7 +23,12 @@ export async function setup() {
     return;
   }
   try {
-    container = await new PostgreSqlContainer("postgres:17-alpine").start();
+    // Named, because the guard now allow-lists `<name>_test` and @testcontainers/postgresql's
+    // default database is `test`, which does not match — every test in the repository would refuse
+    // to run. A second escape hatch for this path was considered and rejected: it would weaken the
+    // guard for the case it is most often run under (spec §6). The fallback path already produces
+    // `loom_test`, so after this both paths agree.
+    container = await new PostgreSqlContainer("postgres:17-alpine").withDatabase("loom_test").start();
     process.env.TEST_DATABASE_URL = container.getConnectionUri();
   } catch (e) {
     const why = e instanceof Error ? e.message.split("\n")[0] : "unknown error";
