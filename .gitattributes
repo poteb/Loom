@@ -4,3 +4,11 @@
 # every platform, whatever the developer's autocrlf setting.
 *.sql text eol=lf
 src/core/drizzle/** text eol=lf
+
+# deploy/ carries shell that Linux executes: the server's checkout is a plain `git clone` and a
+# CRLF shebang there fails as `bad interpreter`. Keep it LF in the working tree on every platform,
+# whatever the developer's core.autocrlf setting. The third line is for Task 5's stubs, which are
+# executables with NO extension: docker, git, curl, timeout, flock.
+deploy/*.sh text eol=lf
+deploy/test/**/*.sh text eol=lf
+deploy/test/stubs/* text eol=lf

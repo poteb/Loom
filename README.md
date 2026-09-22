@@ -36,6 +36,23 @@ server says so at boot (`keepers: 1 already present, LOOM_KEEPER_TOKENS ignored 
 `loom admin keepers add` from an existing keeper instead. Then run
 `docker compose --profile prod up -d --build`.
 
+That production paragraph is the **standalone** install: Loom owns ports 80 and 443 on the box and
+terminates its own TLS.
+
+**Deploying beside another Caddy.** When the host already has a front door — another project's Caddy
+— use [`deploy/`](deploy) instead. It is a compose project of its own (`loom`) that publishes only
+`127.0.0.1:3100` and is reached through the neighbour's Caddy: a site block dropped into a host
+folder the neighbour imports, plus a shared Docker network. Set it up once with §9 of
+[the live-instance spec](docs/superpowers/specs/2026-09-21-loom-live-instance-design.md), and after
+that every update is one command run from this repository root:
+
+    deploy\live-update.cmd
+
+which ssh's into the server and runs `deploy/live-update.sh` there — fast-forward, build, check the
+pending migrations, dump, migrate, start, and prove the public URL, with the application stopped for
+the few seconds in the middle. [docs/DOGFOOD.md](docs/DOGFOOD.md) §2 describes the live instance it
+was written for, including what it does not promise.
+
 ### Using it
 
 Create a Weave and get its link (the CLI stores your token in `~/.loom/config.json`).

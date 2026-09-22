@@ -411,12 +411,33 @@ defaults to `127.0.0.1` ([../src/server/src/config.ts](../src/server/src/config.
 
 `LOOM_KEEPER_TOKENS` is validated at startup (43-char base64url, no duplicates) and seeded only into
 an empty `keepers` table ([../src/core/src/keepers.ts](../src/core/src/keepers.ts)); afterwards
-keepers are managed through the admin API. Migrations run on every boot in `main.ts`.
+keepers are managed through the admin API. **Migrations run at boot in `main.ts` when
+`LOOM_MIGRATE_ON_BOOT` is true, which is its default** — so the dev server, the run scripts, the
+`prod` profile and every test behave as they always have. Set it to `false` and the boot instead
+*asks*: it reads the migration status and refuses to start when anything is pending, naming the
+pending files and telling the operator to run `node dist/migrate.js` first. Either way a **drifted**
+journal — applied rows that are not an exact prefix of the journal — stops the boot, because a
+schema whose history cannot be characterised is not one to serve from.
 
 Locally: [../build.ps1](../build.ps1) / [../build.sh](../build.sh) install and build everything;
 [../run.cmd](../run.cmd), [../run.ps1](../run.ps1), [../run.sh](../run.sh) bring up Postgres and
 Caddy in Docker, build the web bundle, and run the server on the host in watch mode
 (`https://localhost` through Caddy, `http://127.0.0.1:3000` direct).
+
+**Those two root-level profiles are the *standalone* install**, for a box where Loom owns ports 80
+and 443 and terminates its own TLS. [../deploy/](../deploy) is the other one: the **beside another
+Caddy** install, which is how the live instance runs on a host that already has a front door. There
+Loom's compose project (`loom`, named in the file *and* on every command) runs postgres, a one-shot
+`migrate` service that gates the app, and the server — with `LOOM_MIGRATE_ON_BOOT=false`, because on
+that deployment applying the migration is the one-shot's job and the update script's gate, not the
+server's — and publishes **only** `127.0.0.1:3100`. TLS, the certificate and port 443 belong to the
+neighbour's Caddy, which is joined two ways: a host folder it imports (`import
+/etc/caddy/sites/*.caddy` over `/root/caddy-sites`, mounted read-only, into which the update script
+installs [../deploy/loom.caddy](../deploy/loom.caddy)), and a shared Docker network named `web`,
+declared `external: true` by both projects so neither owns it and neither `down` removes it. That
+site block's `reverse_proxy loom:3000` resolves over `web`; everything else in each project stays on
+its own default network. [DOGFOOD.md](DOGFOOD.md) §2 is the operational half — the update command,
+the records it writes, and what it does not promise.
 
 ## 11. Guidelines
 

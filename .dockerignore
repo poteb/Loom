@@ -4,3 +4,4 @@ node_modules
 **/*.tsbuildinfo
 .git
 caddy-data
+**/.env

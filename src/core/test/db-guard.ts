@@ -1,11 +1,3 @@
-/**
- * Database name reserved for real, non-test data. `freshDb()` truncates every table it touches,
- * so tests must never be pointed at this database.
- */
-const PROTECTED_DB_NAME = "loom";
-
-/** The database name `docker compose` gives the application database, dedicated to real data. */
-
 function dbName(url: string): string | undefined {
   try {
     return new URL(url).pathname.replace(/^\//, "");
@@ -25,7 +17,15 @@ export function fallbackTestUrl(composeUrl: string): string {
   return u.toString();
 }
 
-/** True when `url`'s database name is reserved for real (non-test) data. */
+/**
+ * True unless `url`'s database name ends in `_test`. `freshDb()` truncates every table, so the
+ * guard allow-lists the one naming convention every test database in this repository follows,
+ * instead of denying the handful of real names someone happened to think of: once a live instance
+ * exists on a box that also runs `spool`, "the one name we thought of" is not a guard. An
+ * unparseable URL is protected, because failing closed is the only defensible direction in front of
+ * a truncate. The escape hatch is unchanged: LOOM_TEST_DATABASE_URL_USER_SET still bypasses this
+ * entirely when the developer or CI supplied TEST_DATABASE_URL themselves.
+ */
 export function isProtectedDatabase(url: string): boolean {
-  return dbName(url) === PROTECTED_DB_NAME;
+  return !/_test$/.test(dbName(url) ?? "");
 }

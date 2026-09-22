@@ -13,8 +13,25 @@ describe("loadConfig", () => {
       databaseUrl: "postgres://x",
       keeperTokens: [TOKEN_A, TOKEN_B],
       webDist: undefined,
+      migrateOnBoot: true,
     });
   });
+  it("defaults migrateOnBoot to true, so every existing use is unchanged with nothing set", () => {
+    expect(loadConfig({ DATABASE_URL: "postgres://x" }).migrateOnBoot).toBe(true);
+  });
+  it.each([
+    ["true", true], ["TRUE", true], ["True", true], ["  true  ", true],
+    ["false", false], ["FALSE", false], ["False", false], ["  false  ", false],
+  ])("parses LOOM_MIGRATE_ON_BOOT=%j as %s", (raw, expected) => {
+    expect(loadConfig({ DATABASE_URL: "postgres://x", LOOM_MIGRATE_ON_BOOT: raw }).migrateOnBoot).toBe(expected);
+  });
+  it.each(["0", "1", "no", "yes", "", " ", "off"])(
+    "rejects LOOM_MIGRATE_ON_BOOT=%j rather than guessing a default", (raw) => {
+      // The one variable whose whole job is to stop a migration: a permissive parser here is a
+      // value that only reveals itself in production.
+      expect(() => loadConfig({ DATABASE_URL: "postgres://x", LOOM_MIGRATE_ON_BOOT: raw }))
+        .toThrow(/LOOM_MIGRATE_ON_BOOT/);
+    });
   it("reads LOOM_WEB_DIST", () => {
     expect(loadConfig({ DATABASE_URL: "postgres://x", LOOM_WEB_DIST: "/srv/web" }).webDist).toBe("/srv/web");
   });

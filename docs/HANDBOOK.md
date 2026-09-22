@@ -135,8 +135,23 @@ Each step ends where its completion criterion says, and not before.
     findings and the answers stay on the PR; when the live Loom is in use, announce each round in
     the PR's Thread — see [DOGFOOD.md](DOGFOOD.md) §4. *Done when:* the
     reviewer's post says no actionable findings remain.
-13. **Merge.** Squash-only. **Only on Paw's explicit word, given for that PR.** A previous
-    authorisation is not a standing one. *Done when:* Paw has said merge, and `main` carries it.
+13. **Merge, then update the live instance.** Squash-only. **Only on Paw's explicit word, given for
+    that PR.** A previous authorisation is not a standing one. Then, **once the first deployment
+    of spec §9 has been run** — it has not; [DOGFOOD.md](DOGFOOD.md) §2 carries the dated line, and
+    §6 below says the same — run the one update command from the repository root and report what
+    it printed. Until that first deployment has run there is nothing on the server for this
+    command to update, so **the merge ends at `main`**:
+
+        deploy\live-update.cmd
+
+    It is `ssh SpoolServer` into `~/git/Loom/deploy/live-update.sh` and nothing else
+    ([DOGFOOD.md](DOGFOOD.md) §2). It **stops Loom for a few seconds** while it dumps the database
+    and applies the migrations, so `https://loom.3dbox.dk` answers **502** for that window and a
+    reviewer polling `inbox` mid-update sees a failed call — that is expected, and the run's own
+    output is the thing to read rather than the reviewer's complaint. *Done when:* Paw has said
+    merge, `main` carries it, and the update printed its verdict with the merged commit in
+    `deploy/.verified-sha` — or, before the first deployment, `main` carries it and nothing else
+    was attempted.
 14. **Cleanup.** Delete the merged local and remote branches and remove the worktrees. *Done when:*
     `git branch` and `git worktree list` show only what is still in play.
 15. **Manual smoke test with Paw**, one step at a time, real values filled in, waiting for each
@@ -224,6 +239,202 @@ enforced; this is the index.
   (`~/.loom/agent-<name>.json`) plus a one-line command that prints the connector URL, and let Paw
   copy the value out of a terminal (Loom dogfood run, 2026-09-20).
 
+### Deployment, shell and migrations — the live-instance slice, 2026-09-22
+
+Every one of these was paid for in writing that slice's spec and in answering its twelve review
+rounds; the spec's §10 is where each keeps its full reasoning. **The first twelve were paid for
+twice** — each one survived a reading, shipped, and had to be fixed again.
+
+- **`pgrep -f` matches the shell that runs it.** `-f` searches whole *command lines*, so a verdict
+  wrapper written as `sh -c '… pgrep -f pg_dump …'` finds its own parent shell (`pgrep` excludes only
+  itself, never the process that launched it) and answers "a dump is still running" on an empty
+  container, every time and for good: a hazard marker cleared only by the opposite answer latches
+  shut permanently. Match the process **name** with `pgrep -x`, which a full path or a long argument
+  list cannot change — and note that the bare `pgrep -af` / `pkill -f` a container runs *as its own
+  argv*, with no wrapper shell, are not the same case and are still right.
+- **A one-word fix to a string a container executes is verified by executing it in a container**, in
+  both of the states it must tell apart, because that defect was invisible to three readings.
+- **A reaper that guards one run does not guard the next one.** The run that finds an interrupted
+  update on disk is not the run that started the migrator, so the applying container can still be
+  alive while the *new* process asks the database what happened: reap it, with the same proof the
+  original run required, **before** the cheap "is it already healthy" probe and before any status is
+  read, and refuse without restoring when the reap proves nothing.
+- **A marker whose lifetime is the box's must not live inside a record whose lifetime is one run's.**
+  The run that records "a `pg_dump` may still be running" is the run whose recovery then removes its
+  own intent record, taking the marker with it — so the hazard goes in a file of its own and is
+  cleared only by the check that disproves it.
+- **`drizzle-kit generate` diffs against the newest snapshot file, not against the journal.** Deleting
+  a migration's `.sql` and its journal entry and leaving `meta/<NNNN>_snapshot.json` behind makes the
+  regeneration see its own change as already present and emit nothing at all, so restore `meta/` to
+  the merged baseline as well ([CONTRIBUTING.md](../CONTRIBUTING.md) §"Migrations").
+- **`git checkout <ref> -- <dir>` does not restore a directory, it overlays one** — it rewrites the
+  files the ref has and leaves every branch-only file exactly where it was, so the obsolete snapshot
+  survives the command written to remove it. Use `git restore --source=<ref> --staged --worktree --
+  <dir>`, which is non-overlay by default.
+- **A migrator's own rule is not a safety property.** Drizzle applies what is newer than the newest
+  applied row, so a migration generated on a long-lived branch and merged after a newer one is
+  reported applied and silently skipped — a healthy deployment with a missing table in it. Validate
+  that the journal increases and that the rows are an exact prefix of it, and refuse instead of
+  reporting.
+- **`cmd | grep -q` under `pipefail` can report 141.** `grep -q` exits on the first match, the
+  producer dies of `SIGPIPE`, and a guard written as `producer | grep -q … && refuse` therefore waves
+  through the very case it was written to catch — **and collecting the output into a variable is not
+  the fix**, because `printf '%s\n' "$VAR" | grep -q …` has the same defect with `printf` as the
+  victim. The pipe itself has to go: `grep -q … <<<"$VAR"`, or a variable and a `case`, and then the
+  *whole* file audited for the shape, because one instance is never the population.
+- **`docker compose run <service> <args>` replaces the service's `command:`** rather than appending to
+  it, so a status flag on its own becomes the program the container tries to execute. Name the whole
+  command.
+- **A failure to ask is not an answer.** `docker inspect … || return 0` reads a daemon that is not
+  answering as "the container is not there", which is precisely the outage that left the container
+  running — so classify the error text and treat anything but "No such object" as unknown. **And one
+  classified call site does not classify the file:** put the three-way classification in one helper
+  and route every inspection through it, so the next call site cannot be written the old way.
+- **"The container was created" is not "the application is serving".** `up -d` returns 0 as soon as
+  Docker has started the process, so a state variable set there disarms a recovery on the strength of
+  nothing. Only a request the application answered may do that.
+- **A trap cannot recover an interruption that is not an exit.** A power loss or a `SIGKILL` runs no
+  handler at all, so write an intent record before the first irreversible step, reconcile it at the
+  top of every later invocation, and remove it only once the thing it intended is a durable fact.
+
+And the rest, in the spec's own order:
+
+- **An environment aimed at one instance stays aimed at it.** A runbook that ends by touching a
+  *different* instance has to select that instance's config store, identity and URL explicitly and
+  then put the first one back, because the CLI resolves its Weave and its token from `$LOOM_CONFIG`
+  and `LOOM_AGENT_KEY` and will otherwise fail with `no_weave` on a Weave it has never heard of.
+- **A `timeout` is not a bound when the kernel will not kill the child.** A process wedged in
+  uninterruptible I/O on a stalled or full filesystem survives `TERM` and `KILL`, and `timeout` then
+  waits for it — so a deadline on every command is still not a ceiling on the outage. Sum the
+  deadlines if you like, but say which waits sit outside the sum and who ends them.
+- **A signal sent is not a process gone.** `pkill` inside a container proves only that a signal was
+  delivered somewhere, so ask afterwards, treat anything but a definite "gone" as still running, and
+  leave a durable marker that makes the *next* run refuse rather than queue behind it.
+- **A remote command's exit status is not the remote command's answer.** `docker compose exec …
+  pgrep` returns 1 with empty stdout both when `pgrep` matched nothing and when Compose never ran it
+  at all, so a gate that reads that as "nothing matched" clears its own hazard on a daemon error:
+  make the container print a verdict token of its own, require a successful transport *and* that
+  token, and treat every other shape — non-zero exit, empty stdout, unrecognised stdout, a timeout —
+  as unanswered and therefore as the hazard.
+- **A path spelled in a script is a path a test cannot avoid touching.** Absolute literals make a
+  harness either unrunnable on a laptop or dangerous on the server, so make every operational path a
+  constant with its production default, move them only under one explicit test-mode variable that
+  announces itself, and assert the defaults by *reading* the file rather than by running it.
+- **A timeout on a client is not a timeout on the work.** `docker compose exec … pg_dump` under a
+  killed client leaves `pg_dump` running inside the container, holding a snapshot of the database the
+  script is about to migrate — so kill the server side too, and bound that as well.
+- **An exit handler is not a timeout.** A script blocked in a command has not exited, so no trap
+  runs, the lock stays held and the outage has no end: put a deadline on every command that runs while
+  the application is stopped, and state the ones that still have none.
+- **A retry count is not a deadline.** `for _ in $(seq 1 30); do curl …` bounds nothing when one call
+  can hang, so give the call `--connect-timeout` / `--max-time` and the loop an absolute clock.
+- **A mutable tag and a canonical name do not identify a container.** The same commit rebuilt over a
+  newer base image is a different image id under the same tag, so a recovery that starts "the previous
+  deployment" by name starts the wrong binary while every record tells the truth. Compare the
+  recorded **image id**.
+- **`docker compose up <service>` returns 0 even when the service failed**, and `--exit-code-from`
+  implies `--abort-on-container-exit`, which would stop the live database — use `docker compose run
+  --rm`.
+- **HSTS `includeSubDomains` does not cover a sibling host**, so `loom.3dbox.dk` needs its own.
+- **A compose project is named after its directory unless the file says otherwise** — two `deploy/`
+  directories are two projects called `deploy`, so put `name:` in the file.
+- **And `name:` is not enough** — `COMPOSE_PROJECT_NAME` outranks it, so pass `-p <project>` on every
+  command and refuse to run with that variable set.
+- **`git pull --ff-only` does not mean "the checkout equals origin".** It succeeds over a local commit
+  the remote has not passed and leaves a dirty tracked file alone, so assert `HEAD ==
+  refs/remotes/origin/main` on a clean tree instead.
+- **A stopped Postgres container is not an empty database** — ask the volume, or a migration runs with
+  no dump behind it.
+- **A checkout whose `origin` is a local bundle cannot see a commit merged on GitHub.** A `pull` says
+  "already up to date" and the prerequisite is silently not deployed, so re-bundle and `scp` it.
+- **A backup is worth only the window between it and the change it insures against** — dump
+  immediately before the migration, not before a two-minute build.
+- **"Wait until it is healthy" with no bound is a hang holding a lock** — poll with a timeout, fail
+  fast on `unhealthy`, and print the logs.
+- **`--env-file` hands a container every line of the file**, so build a two-variable temporary file
+  instead of passing a neighbour's whole environment.
+- **`-f` does not move compose's `.env` lookup** — it follows the caller's directory, so a `-f`-only
+  command run from elsewhere silently takes every default in the file, and `--env-file` belongs beside
+  every `-p`.
+- **A guard placed after the mutation it guards is disarmed by a retry** — compare against the
+  deployed state *before* fast-forwarding, and persist what is deployed.
+- **A dump taken while the application still accepts writes is a snapshot with a live tail** — stop
+  the application, or stop claiming the restore loses nothing.
+- **A single mutable image tag means there is no previous image** — tag per commit if a failure has to
+  be able to go back.
+- **`grep | cut` under `set -euo pipefail` defeats the `${VAR:-default}` on the next line.** `grep`
+  exits 1 on no match, `pipefail` propagates it and `set -e` kills the script before the default is
+  read — use `sed -n 's/^KEY=//p'`, which exits 0.
+- **`git fetch origin` does not move the local `main`** — a bundle cut afterwards advertises the stale
+  branch while containing the new commit, so `switch` and `pull --ff-only` before bundling.
+- **An instance keeper is not a Lobby participant** — `loom lobby` needs a stored Lobby token or an
+  agent key, so join before reading, and read as the keeper because only a keeper is told the Lobby's
+  secret ([KNOWN-ISSUES.md](KNOWN-ISSUES.md), `commands/lobby.ts`).
+- **A non-zero exit from a database client does not prove the transaction rolled back.** PostgreSQL
+  can commit and the connection can drop before the client hears it, so record the pending set before
+  migrating and *ask* afterwards instead of asserting.
+- **One record cannot hold two facts** — "which commit's image and schema are active" and "which
+  commit was proved over the public hostname" have different lifetimes, and a single file holding both
+  will aim a recovery at an image the schema has moved past.
+- **An old image inside a new compose definition is not the old deployment** — `stop` keeps the
+  container with its image id, command, environment and networks, so `docker start` it rather than
+  re-`up`-ing a tag through a file that has changed.
+- **A guarantee a future merge can void from inside a file is not a guarantee** — one `COMMIT` or
+  `CREATE INDEX CONCURRENTLY` in a migration ends the transaction everything else relies on, so
+  enforce it in code and test it over the real files.
+- **An A record that resolves is not a complete DNS answer** — a stale or wildcard `AAAA` sends ACME's
+  validator and every IPv6 client elsewhere while the A check passes, and a `CNAME` beside an `A` is
+  invalid outright.
+- **A runbook that reads files out of a local checkout has to say which commit that checkout is on**,
+  or it fails three-quarters of the way through on a missing helper.
+- **Running a deployment's steps by hand is not running the deployment** — exercise the wrapper the
+  merge will actually use, on the first day, or its first real use is the test.
+- **A shell pipeline that ends in `grep` fails on the empty result** — `grep -v '^$'` exits 1 with
+  nothing to filter, and under `pipefail` the most ordinary outcome there is kills the script, so
+  delete blank lines with `sed` instead.
+- **`docker compose run` allocates a pseudo-TTY when its stdin is a terminal**, so output a script
+  parses arrives CR-terminated from an interactive SSH shell and matches nothing — pass `-T` on
+  anything whose output is read, and keep its stderr out of the file being parsed.
+- **A record written before the thing it records is live is a record that lies** — with no migration
+  to apply, the new commit is only deployed once its container is actually up, so write the record
+  after the start, not at the quiesce.
+- **A trap armed half-way down a script reads variables the script may not have assigned yet** — under
+  `set -u` the handler dies instead of recovering, so initialise every input first and install one
+  handler at the top, and clear `errexit` before classifying inside it.
+- **`timeout` bounds the client, not the container** — a killed `docker compose run` leaves the
+  one-off running with its transaction open, so name the container, kill it, wait for it under a bound
+  and reap it before asking the database anything, and bound that question too. **And reap on every
+  non-success, not only on the timeout's exit codes**, because a client that loses its connection to
+  the daemon exits 1 while the container keeps running.
+- **`ABORT` is PostgreSQL's alias for `ROLLBACK`** — a guard that lists the transaction-control
+  statements by sample rather than taking the group whole will miss one, and one is enough.
+- **`docker compose ps` omits stopped containers** — a completed one-shot is invisible without
+  `--all`, so a correct startup can fail a done-check written against plain `ps`.
+- **A line an application prints on purpose is still a credential when somebody else reads the log.**
+  Loom's first boot prints the Lobby's secret link by design, so a session running `docker compose
+  logs` over SSH puts it in the controller's transcript: redact at the **reader** as well as at the
+  writer, and let a done-check match on the server and print only its verdict.
+- **Arm a recovery before the command it recovers from, never after it** — `docker compose stop` can
+  stop the container and still exit non-zero, and a flag set only on success leaves the handler
+  disarmed over a stopped application, so set it first and clear it again only on positive evidence
+  that nothing was stopped.
+- **A comment stripper that does not understand quoting deletes the statement the guard exists to
+  find** — `VALUES ('--')` turns the rest of the line into a comment for any scanner that strips
+  comments as a phase, so a SQL guard must be one stateful pass in which a comment is only a comment
+  in the code state.
+- **A printed recovery command is only a recovery if it works in the shell that reads it** — a `docker
+  compose …` that relies on the script's own working directory fails in the `/root` shell the operator
+  actually opens, so print `cd <absolute path> && …`, name the environment file, and name every record
+  by its absolute path.
+- **A stop you did not verify is not a stop** — `docker stop`, `docker kill` and `docker wait` can all
+  fail quietly, so re-inspect and require `exited` or `dead` before believing anything about the
+  database, and make the unprovable case its own state rather than a warning.
+- **`docker compose up -d <service>` REPLACES that service's container** — compose finds it by project
+  and service *labels*, stops it, renames it aside and removes it, so the container a recovery meant to
+  restart is gone the moment the new one is created — **and `docker rename` does not hide it**, because
+  the labels are what the lookup uses. Keep the *image id* and the *deployed commit's own compose file*
+  instead, and reconstruct from those two.
+
 ## 6. Where the state of the project lives
 
 | Where | What it holds |
@@ -235,14 +446,34 @@ enforced; this is the index.
 | `.superpowers/sdd/<plan>/progress.md` | The per-plan ledger: task outcomes, commits, totals, deviations, recorded minors. The recovery map. |
 | `Tasks/` | Paw's untracked docket of queued work. |
 
-### The current state — 2026-09-21
+### The current state — 2026-09-22
 
-`main` is at **cbab671**; shipped through **[PR #25](https://github.com/poteb/Loom/pull/25)**, the
-listeners view, merged on 2026-09-21 after Paw's word. One branch is in play:
-**`fix/lobby-listeners-no-thread-mark`** — the fix for what Paw's first run of smoke test 6 on `main`
-found: with the directory open, the Thread list still marked its selected Thread beside the sidebar
-line's own mark, so two entries of one sidebar claimed to be the one being looked at. The Thread
-list now marks nothing while the directory is open; the selection itself is kept.
+`main` is at **4754dc8**; shipped through **[PR #25](https://github.com/poteb/Loom/pull/25)** (the
+listeners view), **#26** (the no-Thread-mark fix) and **#27** (the live-instance spec and plan). One
+branch is in play: **`feat/live-instance`**, which builds the live instance below.
+
+**The live instance is `https://loom.3dbox.dk`.** It runs on the Spool server beside the shop, as
+its own compose project `loom` out of the checkout `/root/git/Loom`, fronted by Spool's Caddy through
+the shared `/root/caddy-sites` folder and the external `web` network, publishing nothing but
+`127.0.0.1:3100`. [DOGFOOD.md](DOGFOOD.md) §2 is where it runs and how it is updated —
+`deploy\live-update.cmd`, one command, after a merge (§3 step 13). **Its first deployment has not
+run yet**; the runbook is §9 of
+[the live-instance spec](superpowers/specs/2026-09-21-loom-live-instance-design.md).
+
+**Its credentials, by file path and never by value.** A credential never enters a session's
+transcript — it moves by file, by `scp` or on Paw's own clipboard. The full inventory is the spec's
+§8.1; these are the paths:
+
+| File | Holds |
+| --- | --- |
+| `/root/git/Loom/deploy/.env` (server, mode 600) | the live Postgres password and the instance keeper tokens |
+| `C:\Users\paw\.loom\live.env` | the only copy of those two lines off the server |
+| `C:\Users\paw\.loom\live-keeper.json` | the live URL and one keeper token |
+| `C:\Users\paw\.loom\live-claude-code.json`, `…\live-chatgpt.json` | each agent's id, name and key |
+| `C:\Users\paw\.loom\live-lobby.json` | the Lobby's weave id and its secret |
+| `C:\Users\paw\.loom\live-weave.json` | the development Weave's id, secret, participant and token |
+| `C:\Users\paw\.loom\live-config.json` | the CLI's own store for the live instance — set `LOOM_CONFIG` to it for every live command, so live tokens never land in the dev store |
+| `C:\Users\paw\.loom\live-chatgpt-paste.md` | the reviewer brief plus the Weave secret, ready to paste — **deleted** the moment it has been pasted |
 
 **PR #25 is the first pull request reviewed through Loom.** On the evening of 2026-09-20 the review
 was requested in a Loom Thread, ChatGPT picked it up on the next beat of its own five-minute `inbox`
@@ -257,6 +488,6 @@ browser check or manual smoke test 6, and said so. The run's findings about Loom
 On 2026-09-20 Paw also settled the dogfood questions: **a pull request's review is the record on
 GitHub and its Thread carries only the notifications**, while a spec or plan review lives in its
 Thread; the old reviewer agent keys were revoked and fresh `Claude-Code` and `ChatGPT` keys minted;
-and an **always-on Loom instance is wanted** — that live instance is the **next small slice**, to
-brainstorm first ([DOGFOOD.md](DOGFOOD.md) §2 is its shape and its scope), with a **stable public
-hostname** now the top item in it, because the reviewer cannot reach a loopback connector URL.
+and an **always-on Loom instance is wanted**, with a **stable public hostname** the top item in it
+because the reviewer cannot reach a loopback connector URL. That slice is what `feat/live-instance`
+builds, and the hostname is `loom.3dbox.dk`.

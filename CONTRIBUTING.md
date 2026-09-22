@@ -146,6 +146,67 @@ help and version return 0. `src/cli/src/main.ts` assigns the returned code to `p
   compare-and-swap on the version number). When another process wins, `fn` is run again on a fresh
   snapshot — so `fn` must depend only on the config it is handed, and must have no side effects.
 
+## Migrations
+
+Drizzle SQL under [`src/core/drizzle/`](src/core/drizzle), authored with `drizzle-kit generate` and
+applied by `runMigrations` or by the server package's `dist/migrate.js`. Four rules, and the live
+instance's recovery design rests on all four.
+
+- **A run is one transaction.** Every pending migration is applied inside one, which is what makes a
+  failed migration a **no-op** — the database is exactly where it was, so the deployment can put the
+  previous image back and the previous schema is still under it.
+- **So a migration file may not contain a transaction-control statement, or a statement PostgreSQL
+  cannot run inside a transaction block.** Refused, by leading keyword: `BEGIN`, `COMMIT`, `END`,
+  `ROLLBACK`, `ABORT`, `START TRANSACTION`, `SET TRANSACTION`, `PREPARE TRANSACTION`, `SAVEPOINT`,
+  `RELEASE`, `DISCARD`, `VACUUM`, `ALTER SYSTEM`, `CREATE DATABASE`, `DROP DATABASE`,
+  `CREATE TABLESPACE`; plus `CREATE`/`DROP INDEX … CONCURRENTLY`, `REINDEX … CONCURRENTLY`,
+  `REFRESH MATERIALIZED VIEW … CONCURRENTLY` and `ALTER TABLE … DETACH PARTITION CONCURRENTLY`, and
+  `ALTER TYPE … ADD VALUE` (legal since PG 12, but the new label cannot be used in the same
+  transaction and the run is one). `assertTransactionSafe` in
+  [`src/core/src/db/migrations.ts`](src/core/src/db/migrations.ts) enforces it; `runMigrations` and
+  **both** forms of the migrate entry call it over the pending set **before anything is applied**,
+  and the test suite runs it over every real migration file in the repository. `ABORT` is
+  PostgreSQL's alias for `ROLLBACK`, which is why the group is taken whole rather than by sample.
+- **A migration that genuinely needs to be non-transactional is a guarded hand-run deployment** — a
+  human stops the application, takes a dump, applies the statement with the dump in reach, records
+  the commit and starts it again. There is no override flag and none will be added: a switch that
+  turns the single transaction off turns the recovery into a guess. `deploy/live-update.sh` never
+  accepts one as an input.
+- **The journal's `when` values must be strictly increasing in file order**, because the applied rows
+  in the database are validated as an exact **prefix** of the journal. A migration generated on a
+  long-lived branch and merged **after** a newer one is otherwise reported as applied and silently
+  skipped — a healthy deployment with a missing table in it — and once it is merged the live
+  database's rows are no longer a prefix, so `migrationStatus` refuses and the deployment stops with
+  the application still serving. **The fix is to regenerate, and that is three deletions, not two:**
+  the unmerged migration's `.sql` file, its `_journal.json` entry, **and its
+  `meta/<NNNN>_snapshot.json`** — restoring `meta/` to the merged-`main` baseline:
+
+      git fetch origin
+      git restore --source=origin/main --staged --worktree -- src/core/drizzle/meta
+
+  then re-run `drizzle-kit generate` and commit that. Use that command only when the **only**
+  unmerged migration is yours; otherwise remove that one snapshot file by hand, because it would
+  discard a second unmerged migration's snapshot too.
+
+  **`git restore` and not `git checkout`.** `git checkout <ref> -- <path>` is *overlay* mode: it
+  rewrites the files the ref has and leaves every branch-only file exactly where it is, so the
+  obsolete snapshot survives the very command meant to remove it and the regeneration then emits
+  nothing. `git restore` is non-overlay by default and stages the deletion. On Git older than 2.23,
+  `git rm -r --cached` + `rm -rf` + `git checkout origin/main -- src/core/drizzle/meta` is the
+  equivalent.
+
+  **Why the snapshot must go at all:** `drizzle-kit generate` diffs against the **newest snapshot
+  file in `meta/`**, chosen by name and independently of the journal. A snapshot left behind already
+  contains the change, so the diff is empty, `generate` prints `No schema changes, nothing to
+  migrate`, and it emits **no replacement at all** — leaving the author with a deleted migration and
+  nothing to merge.
+
+  **Already-deployed migrations are never touched**: their file, their journal entry and their
+  snapshot all stay, because the live database's rows are matched against them by
+  `(created_at, hash)`. And editing the `when` by hand is not the fix: the entry's hash is recorded
+  beside it, so a stamp edited after the file has been applied anywhere produces a hash mismatch
+  instead.
+
 ## Logging
 
 `redact()` in [`src/server/src/log.ts`](src/server/src/log.ts) and

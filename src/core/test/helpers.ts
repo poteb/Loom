@@ -13,7 +13,7 @@ export async function freshDb(): Promise<Db> {
   if (isProtectedDatabase(url) && !process.env.LOOM_TEST_DATABASE_URL_USER_SET) {
     throw new Error(
       `refusing to run tests against protected database (TEST_DATABASE_URL=${url}); ` +
-      "this looks like the compose application database, and freshDb() truncates every table. " +
+      "its name does not end in _test, and freshDb() truncates every table. " +
       "Set TEST_DATABASE_URL explicitly if this is really what you want.",
     );
   }

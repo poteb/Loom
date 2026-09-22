@@ -125,6 +125,7 @@ export function createCore(db: Db) {
 export { LoomError, errors, type ErrorCode } from "./errors.js";
 export { assertCanRead } from "./actors.js";
 export { createDb, runMigrations, closeDb, type Db } from "./db/index.js";
+export { migrationsFolder, migrationStatus, assertTransactionSafe, assertPendingTransactionSafe, type MigrationStatus } from "./db/migrations.js";
 export { KEEPER_TOKEN_RE } from "./ids.js";
 export { MAX_PAGE_LIMIT, validatePage, type PageOptions } from "./paging.js";
 export { DEFAULT_INSTANCE_GUIDELINES } from "./guidelines-default.js";

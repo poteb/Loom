@@ -132,7 +132,7 @@ know it was considered and dropped.
 | Loom runs on the **Hetzner server that hosts 3dbox.dk** (repo `D:\git\Spool`), in Docker, not on Paw's PC | The server exists, is always on, is already deployed to over SSH with a key Paw holds, and has the headroom: 4 vCPU, 7.7 GB, 29 GB free, against a shop taking about 50 visitors a day |
 | Hostname `loom.3dbox.dk` | A subdomain of a domain Paw already controls, so there is **no tunnel and no domain to buy**, and the DNS record is one entry in Paw's own DanDomain panel |
 | **Superseded:** a Cloudflare *named* tunnel with a domain bought at Cloudflare (about 10 USD/yr) | It was the answer while the host was Paw's PC. The Hetzner server has a public address and a domain already, so the tunnel buys nothing and costs a moving part |
-| **One command** after each merge (`live-update`), run by the session as the last merge step, and by Paw when he wants | The update is the step that will be done most often and is the one with a database in it. A script is the only form that can be idempotent, ordered and stoppable |
+| **One command** after each merge (`live-update`), run by the session as the last merge step, and by Paw on demand | The update is the step that will be done most often and is the one with a database in it. A script is the only form that can be idempotent, ordered and stoppable |
 | Spool's Caddy serves Loom through **one generic hook**: `import /etc/caddy/sites/*.caddy` plus a mounted host folder; Loom's deploy drops `loom.caddy` there and reloads | Spool must not have to change again for the next site. One hook, once; after that a new site is a file in a folder |
 | Loom's container joins a **shared external Docker network** with Spool's Caddy | Caddy has to reach Loom by name without either project publishing a port to the world |
 | The Loom repository is **public**, so the server clones `https://github.com/poteb/Loom.git` with **no credentials** | Unlike Spool, whose server checkout has the local bundle `/root/spool.bundle` as its origin because no GitHub credential is allowed on that box by policy — so a Spool change reaches the server by re-bundling and `scp`, which §9 step 1 spells out. Loom needs no credential, so the ordinary clone, and an ordinary `fetch` from GitHub, is fine |
@@ -3091,7 +3091,7 @@ promise twice: it said the session "assembles" `live-chatgpt-paste.md` and that 
 and ChatGPT's agent key — are the two most sensitive in the runbook, and an unwritten step leaves
 only bad options: a session that improvises a one-liner substituting the secret into a command puts
 the secret in the controller's transcript, which is the one thing §8.1 forbids, and a session that
-refuses to touch the files leaves Paw with no command at all on the step he is meant to run himself.
+refuses to touch the files leaves Paw with no command at all on the step that is Paw's own to run.
 Two committed scripts settle it. They are read once, in review, like everything else in `deploy/`.
 
 **`deploy/prepare-chatgpt-paste.ps1`** — run by the **session** (it needs no human decision, and it
@@ -3137,8 +3137,8 @@ machine and the file is pasted into another application. The output path is the 
 and §9 step 12.4 deletes. The brief comes from `$PSScriptRoot`, so the script and its template are
 one reviewed unit and cannot be pointed at something else by the caller's directory.
 
-**`deploy/connector-url-to-clipboard.ps1`** — run by **Paw**, because it puts something on his
-clipboard and he is the one about to paste it:
+**`deploy/connector-url-to-clipboard.ps1`** — run by **Paw**, because it puts something on
+Paw's clipboard and Paw is the one about to paste it:
 
 ```powershell
 $ErrorActionPreference = "Stop"
@@ -3438,7 +3438,7 @@ mid-statement:
 | `PREPARE TRANSACTION`, `COMMIT PREPARED`, `ROLLBACK PREPARED` | Two-phase commit. `PREPARE TRANSACTION` dissociates the open transaction from the session and leaves it prepared on the server — so drizzle's later `COMMIT` has nothing to commit, the run's work survives as a prepared transaction no migration ever finishes, and the database holds a lock nobody can see in a migration file. The other two act on somebody else's prepared transaction, which a schema migration has no business doing |
 | `SET TRANSACTION`, `SET TRANSACTION SNAPSHOT` | Changes the isolation level, read-only flag or snapshot of the transaction drizzle opened, from inside one of its files. Legal SQL, and a silent change to the guarantee every other migration in the run was written under |
 | `DISCARD ALL` | PostgreSQL refuses it inside a transaction block, and it resets the session — prepared statements, temporary tables and all — which is not something one migration may do to the rest of a run |
-| `CREATE INDEX CONCURRENTLY`, `DROP INDEX CONCURRENTLY`, `REINDEX … CONCURRENTLY` | PostgreSQL refuses these inside a transaction block |
+| `CREATE INDEX CONCURRENTLY`, `DROP INDEX CONCURRENTLY`, `REINDEX … CONCURRENTLY`, `REFRESH MATERIALIZED VIEW CONCURRENTLY`, `ALTER TABLE … DETACH PARTITION CONCURRENTLY` | PostgreSQL refuses these inside a transaction block. The last two are the whole-branch review's P3 #5: they are in the same PostgreSQL set, this table listed only the first three, and the guard was faithful to the table. The guard now gates `CONCURRENTLY` on `CREATE`, `DROP`, `REINDEX`, `REFRESH` and `ALTER`, and their `CONCURRENTLY`-less look-alikes (`REFRESH MATERIALIZED VIEW mv;`, `ALTER TABLE t DETACH PARTITION p;`) stay accepted |
 | `VACUUM` | Refused inside a transaction block |
 | `CREATE DATABASE`, `DROP DATABASE`, `CREATE TABLESPACE` | Refused inside a transaction block |
 | `ALTER SYSTEM` | Refused inside a transaction block, and has no business in a schema migration |
@@ -3451,8 +3451,9 @@ the SQL command reference lists as `BEGIN`, `START TRANSACTION`, `SAVEPOINT`, `R
 `ROLLBACK TO SAVEPOINT`, `COMMIT`, `END`, `ROLLBACK`, `ABORT`, `SET TRANSACTION`,
 `PREPARE TRANSACTION`, `COMMIT PREPARED` and `ROLLBACK PREPARED` — taken **whole** rather than
 sampled, together with the statements PostgreSQL documents as *not* runnable inside a transaction
-block (`CREATE`/`DROP INDEX CONCURRENTLY`, `REINDEX … CONCURRENTLY`, `VACUUM`,
-`CREATE`/`DROP DATABASE`, `CREATE TABLESPACE`, `ALTER SYSTEM`, `DISCARD`) and the one judgement call
+block (`CREATE`/`DROP INDEX CONCURRENTLY`, `REINDEX … CONCURRENTLY`,
+`REFRESH MATERIALIZED VIEW CONCURRENTLY`, `ALTER TABLE … DETACH PARTITION CONCURRENTLY`,
+`VACUUM`, `CREATE`/`DROP DATABASE`, `CREATE TABLESPACE`, `ALTER SYSTEM`, `DISCARD`) and the one judgement call
 this spec makes on its own (`ALTER TYPE … ADD VALUE`). Round 4 listed a sample of the first group and
 round 5's F6 found the alias it had missed; taking the group whole is what stops that being a
 recurring finding. The optional noise words (`WORK`, `TRANSACTION`) are covered because the match is
@@ -3486,7 +3487,18 @@ the phases are gone. The states, and the only transitions out of each:
 | **block comment** | `/*` **in code**, or `/*` while already in a block comment (depth + 1) | `*/`, at depth 1; deeper nestings only decrement | nothing but `/*` and `*/`, for the depth |
 | **single-quoted string** | `'` **in code** | a `'` that is not doubled — `''` is an escaped quote and stays inside — and, in an `E'…'` literal, not a `'` preceded by an odd number of backslashes | nothing |
 | **double-quoted identifier** | `"` **in code** | a `"` that is not doubled (`""`) | nothing |
-| **dollar-quoted body** | `$tag$` **in code**, `tag` empty or an identifier | the **same** `$tag$`, tag-matched, so a `$$` inside a `$body$ … $body$` does not end it | nothing |
+| **dollar-quoted body** | `$tag$` **in code at a token boundary** — never inside an unquoted identifier — `tag` empty or an identifier | the **same** `$tag$`, tag-matched, so a `$$` inside a `$body$ … $body$` does not end it | nothing |
+
+**A dollar quote opens only at a token boundary, and that is PR #28's review round 1.** PostgreSQL
+lets `$` continue an unquoted identifier after its first character, so `t$tag$` is one name. A scan
+that meets that `$` as if it stood alone opens a `$tag$` body that nothing closes, skips the rest of
+the file, and accepts `CREATE TABLE t$tag$ (id int); COMMIT; SELECT nonexistent_function();` — whose
+`COMMIT` the server executes. So the code state reads an unquoted identifier — a letter, `_` or a
+non-ASCII character, then letters, digits, `_` and `$` — as **one token**, and a `$` inside it is an
+identifier character. A `$` the pass meets on its own is therefore always at a token boundary, and
+only there does the dollar-body state open: `$$ … $$`, `$tag$ … $tag$`, `($$ … $$)` and
+`DO $$ BEGIN … END $$;` read exactly as before. A double-quoted `"t$tag$"` needed no change: its `$`
+is already inside the double-quoted state. §11.1 case 10 is the test.
 
 Four properties follow from the table, and they are the whole of the fix. **Comments are recognised
 only in the code state**, so a `--` or a `/*` inside any quoted form is content and cannot remove
@@ -3741,7 +3753,7 @@ consequences* — and the testcontainer's database name is corrected there.
 
 Spool is another repository (`D:\git\Spool`). This spec **describes** its change and does not make
 it; it lands as its own small pull request there, and §9 step 1 will not proceed until Paw has given
-his merge word for it. Three edits, one thing the PR must leave alone, and two server-side
+Paw's merge word for it. Three edits, one thing the PR must leave alone, and two server-side
 prerequisites the session runs.
 
 **`deploy/Caddyfile`** — one line at top level, above the `{$SITE_ADDRESS}` block:
@@ -3840,10 +3852,10 @@ typing. Hand-run steps go to Paw **one at a time, with the real values already s
 waiting for each result before the next is sent ([HANDBOOK.md](../../HANDBOOK.md) §4).
 
 **This is a correction.** An earlier draft said here that Paw's two items were DNS and the
-connector, and then said in §9 that steps 1 and 6 were Paw's — which handed him a batch of root
+connector, and then said in §9 that steps 1 and 6 were Paw's — which handed Paw a batch of root
 `docker` commands and left the one step the session genuinely cannot perform, the connector, marked
 as the session's. A session reading §8 would have waited for Paw to do step 1; a session reading §9
-would have sent him the batch. The rule is the one §8 already implied: a step is Paw's when it is in
+would have sent Paw the batch. The rule is the one §8 already implied: a step is Paw's when it is in
 a panel or an application the session cannot reach, and only then.
 
 **Paw, item 1 — the DNS record**, at DanDomain, in Paw's own panel:
@@ -3859,7 +3871,7 @@ TTL 300 because this record may need to be corrected during the first deployment
 cache is the difference between a retry and an afternoon. It can be raised later; nothing depends on
 it being low.
 
-**And one thing to remove while he is in the panel, which is round 4's F7: any `AAAA` or `CNAME`
+**And one thing to remove while that panel is open, which is round 4's F7: any `AAAA` or `CNAME`
 record for `loom`, including one inherited from a wildcard.** The A record above must be the *only*
 answer for that host. An `AAAA` left in place sends every IPv6-capable client — and Let's Encrypt's
 validator, which prefers IPv6 when a host publishes it — to whatever that address is, so the
@@ -4475,7 +4487,7 @@ In practice the session runs these itself in the worktree; Paw's own typing is s
        rendered into the controller's transcript (§8.1). *Checkable without reading the secret:*
        `Test-Path C:\Users\paw\.loom\live-chatgpt-paste.md` is `True` and
        `Select-String -Path … -Pattern 'join_weave' -Quiet` is `True`.
-    2. **Paw puts the connector URL on his clipboard** with the other committed script (§4.7),
+    2. **Paw puts the connector URL on the clipboard** with the other committed script (§4.7),
        which prints one line and not the URL:
 
            powershell -NoProfile -ExecutionPolicy Bypass -File D:\git\Loom\deploy\connector-url-to-clipboard.ps1
@@ -4485,7 +4497,7 @@ In practice the session runs these itself in the worktree; Paw's own typing is s
        `live-chatgpt.json`; the agent key therefore never appears on a screen, in a scrollback or
        in any transcript.
     3. Paw copies the paste file's contents and pastes them into the ChatGPT session.
-    4. **Paw deletes the paste file and clears his clipboard**:
+    4. **Paw deletes the paste file and clears the clipboard**:
        `Remove-Item C:\Users\paw\.loom\live-chatgpt-paste.md` and
        `Set-Clipboard -Value ' '`. The file's whole purpose ended when it was pasted, and it is the
        only file in the §8.1 inventory that is deleted rather than kept: everything else in
@@ -4744,7 +4756,9 @@ stay contiguous.
    `PREPARE TRANSACTION 'gid';`, `COMMIT PREPARED 'gid';`, `ROLLBACK PREPARED 'gid';`,
    `SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;`, `SET TRANSACTION SNAPSHOT '000003A1-1';`,
    `DISCARD ALL;`, `DISCARD PLANS;`, `CREATE INDEX CONCURRENTLY i ON t (c);`,
-   `DROP INDEX CONCURRENTLY i;`, `REINDEX INDEX CONCURRENTLY i;`, `VACUUM;`,
+   `DROP INDEX CONCURRENTLY i;`, `REINDEX INDEX CONCURRENTLY i;`,
+   `REFRESH MATERIALIZED VIEW CONCURRENTLY mv;`, `ALTER TABLE t DETACH PARTITION p CONCURRENTLY;`,
+   `VACUUM;`,
    `CREATE DATABASE d;`, `DROP DATABASE d;`, `ALTER SYSTEM SET work_mem = '4MB';`,
    `CREATE TABLESPACE ts LOCATION '/x';` and `ALTER TYPE mood ADD VALUE 'ok';` — each asserted to
    throw with **the file name and the offending keyword in the message**, because that message is
@@ -4755,7 +4769,8 @@ stay contiguous.
    that is how a real file would carry it. And the accepted look-alikes, which are what stop the
    guard from being a nuisance: `SELECT CASE WHEN x THEN 1 ELSE 2 END FROM t;`;
    `DO $$ BEGIN RAISE NOTICE 'x'; END $$;`; `-- commit this later` and `/* BEGIN */` as comments;
-   `INSERT INTO t (c) VALUES ('commit');` as a string literal; `CREATE INDEX i ON t (c);` without
+   `INSERT INTO t (c) VALUES ('commit');` as a string literal; `CREATE INDEX i ON t (c);`,
+   `REFRESH MATERIALIZED VIEW mv;` and `ALTER TABLE t DETACH PARTITION p;` without
    `CONCURRENTLY`; and a column or table actually named `"end"` or `"commit"` in double quotes. Each
    of those is asserted **not** to throw. §5.1 states what the scan cannot see; these cases pin what
    it must not falsely see.
@@ -5583,8 +5598,8 @@ Short, and each one a property a reviewer can check.
   and Spool's `.env` — which carries the shop's `DB_PASSWORD` — is not a file any case can open. The
   previous design left that path absolute, which on the one machine that has the file would have had
   a test reading it.
-- **The copies on Paw's PC live in `C:\Users\paw\.loom`**, inside his own profile, whose inherited
-  ACL grants him and the local administrators access and nobody else — the same protection
+- **The copies on Paw's PC live in `C:\Users\paw\.loom`**, inside Paw's own profile, whose inherited
+  ACL grants Paw and the local administrators access and nobody else — the same protection
   `~/.loom/config.json` already relies on for every per-Weave token the CLI stores. **Eight files,
   inventoried row by row in §8.1** with what each holds and who can read it — among them `live.env`,
   the only copy of the server's `.env` off the server, and `live-config.json`, which is the CLI's own

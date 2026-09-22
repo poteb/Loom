@@ -320,24 +320,69 @@ which stays docketed for the owner's separate design session. How far past step 
 not recorded; the dated run paragraphs under smoke test 6 in [../../TESTING.md](../../TESTING.md)
 are the record.
 
-### A live Loom instance for the project's own use (Paw, 2026-09-20) — **wanted; not built**
+### A live Loom instance for the project's own use (Paw, 2026-09-20) — **built on `feat/live-instance`, 2026-09-22**
 
-An always-on Loom that holds the project's own review conversation, separate from development: a
-checkout or worktree pinned to `main` with its own database, its own port and its own keeper,
+An always-on Loom that holds the project's own review conversation, separate from development,
 updated only after a merge, so no feature branch's migration touches the room the reviews live in.
-The scope is what the repository does not do today, all of it in the scaffolding rather than the
-product — `docker-compose.yml` cannot publish a second Postgres (literal host ports, literal
-database name, user and password), `run.ps1`/`run.cmd`/`run.sh` bring up the dev stack and assume
-port 3000, the dev Caddy's upstream port is a literal, `start_cloudflare_tunnel.cmd` hard-codes
-:3000 and mints a fresh hostname on every start, there is **no standalone migration command** at all
-(migrations run only inside the server's boot, so "migrate, check, then start" does not exist), a
-suite run from the live checkout can fall back onto a real database unless `TEST_DATABASE_URL` is
-set, and `.claude/launch.json` is pinned to 3000. [../../DOGFOOD.md](../../DOGFOOD.md) §2 has each
-of those with its file and the reason, plus the interim to run on meanwhile. The **stable public
-hostname** is now the top item of the lot rather than a convenience: the 2026-09-20 dogfood run
-showed the ChatGPT reviewer cannot reach a loopback connector URL at all, so every review session
-currently begins by restarting a quick tunnel and re-adding the connector under its new hostname.
-**The next small slice — brainstorm it first.**
+It is **`https://loom.3dbox.dk`**, and it runs on the Spool server beside the shop: its own compose
+project, its own Postgres, its own keeper, publishing nothing but `127.0.0.1:3100` and reached
+through the shop's Caddy over a host folder of site blocks and a shared `web` network. Everything it
+needs is in **[`deploy/`](../../../deploy)** — the compose project, the site block, the one update
+command `deploy\live-update.cmd`, the two committed texts and the shell contract tests — and the
+design document is
+[2026-09-21-loom-live-instance-design.md](2026-09-21-loom-live-instance-design.md).
+[../../DOGFOOD.md](../../DOGFOOD.md) §2 is where it runs, how it is updated and what it does not
+promise.
+
+The slice also closed the gaps this entry used to list: there is now a **standalone migration
+command** (`node dist/migrate.js`, with `--check`), the boot's migration is a switch
+(`LOOM_MIGRATE_ON_BOOT`, default true), a drifted journal refuses instead of silently skipping, a
+migration file is checked for transaction safety before anything is applied, and the truncate guard
+protects **every** database whose name does not end in `_test` rather than only `loom`. The root
+`docker-compose.yml`, the `run` scripts, `start_cloudflare_tunnel.cmd` and `.claude/launch.json` are
+deliberately **unchanged**: `deploy/` makes a second instance possible without parameterising the
+development stack, and the launch harness staying on port 3000 is the right behaviour rather than a
+gap. **The first deployment has not run yet** — it is the spec's section 9, step by step.
+
+**Follow-ups the whole-branch review left open** (none of them a defect this slice shipped):
+
+- **`console.error` then `process.exit` can truncate stderr on a pipe.** Node does not flush an
+  asynchronous stderr before `process.exit`, so a refusal read through a pipe can lose its last
+  line. `src/server/src/migrate.ts` and `main.ts` take the shape every entry point in the
+  repository already takes, so changing it is a repo-wide convention decision rather than this
+  slice's. Not seen in practice: the harness reads the migrate entry's output through a file.
+- **postgres-js prints driver `NOTICE` lines on stdout during `migrate()`.** They are the reason
+  spec §11.2 case 14 pins the four contract lines instead of the whole of stdout. The fix belongs
+  in core's `createDb` as an `onnotice` handler, one line, and it touches no parse contract
+  today — `--check` never calls `migrate()`.
+- **Open question for Paw: should a package that spawns a built entry run `pnpm build && vitest
+  run` as its `test` script?** `src/server/test/migrate.test.ts` runs `dist/migrate.js` as a child
+  process, so a **stale** `dist` gives a silent false green; the suite catches a *missing* build,
+  not an old one. `@loom/claude-channel` already uses `"test": "pnpm build && vitest run"`, so
+  the precedent exists. [../../TESTING.md](../../TESTING.md) documents the hazard and the
+  build-before-test rule instead; adopting the script convention across the packages that need it
+  is a decision, not a fix.
+
+### Gate the first-boot Lobby link behind a flag (live-instance slice, 2026-09-22) — **decided: a later slice**
+
+`main.ts` prints the Lobby's `/w/<43-character secret>` link **unredacted** on the boot that creates
+the Lobby. That is deliberate and documented in the README: nobody created that Lobby, so nobody was
+handed its secret, and the printed link is the only way a first operator learns where it is. The
+cost is that the secret is then in whatever reads that boot's log — and a session running
+`docker compose logs` over SSH puts it straight into the controlling session's transcript, which is
+exactly what the credential rule forbids.
+
+**The idea:** gate that one line behind an explicit flag — `LOOM_PRINT_LOBBY_LINK=1`, say — so the
+secret is printed only when somebody asked for it, and have the unflagged boot print the Lobby's
+**id** alone.
+
+**This slice's decision: not now, and the reason is worth keeping.** Redacting at the *reader* closes
+the hole this slice is responsible for — every log the live-instance work reads goes through one
+`sed` filter, and the first deployment's done-check asserts a shape on the server instead of printing
+a log — so the transcript is safe without touching what Loom prints. Changing the line itself alters
+an interface the README documents and a first-run path nothing else has exercised, which is a change
+that wants its own slice and its own test rather than a passenger on a deployment one. The defect
+statement is a row in [../../KNOWN-ISSUES.md](../../KNOWN-ISSUES.md); this is the idea.
 
 ## Deferred from v1
 
@@ -576,6 +621,11 @@ the PR — no findings remain — see the PR"*, with the review's link.
   retires the "no MCP client sends that request" reason the existing
   [../../KNOWN-ISSUES.md](../../KNOWN-ISSUES.md) row carried — that row is updated rather than
   duplicated. Fix: answer a session-less `GET` or `DELETE` with 400 before building a transport.
+  **Fixed on `feat/live-instance` (commit `4d38ef2`, the live-instance pull request):** a session-less
+  `GET` or `DELETE /mcp` now answers 400 before any transport is built and before any credential is
+  resolved, and the KNOWN-ISSUES row is deleted. Only those two methods are named — they are the two
+  the transport actually throws for, and a broader allowlist would have turned the existing
+  concurrent session-less `PUT` tests into 400s and deleted the coverage they exist for.
 - **The server serves the `index.html` it read at boot.** `src/server/src/app.ts` reads it once into
   `indexHtml`, so after a `pnpm --filter @loom/web build` the running server keeps serving the old
   bundle until it is restarted. It cost one confused browser check on the night; a sentence says so
