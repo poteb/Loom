@@ -364,7 +364,7 @@ findings and the answers are messages in the Thread, in the shape the Weave guid
 >
 > **Where to write it.** For a **pull request**: publish the review on GitHub, exactly as you do
 > today, and post one short message in the Thread, "review round N posted on the PR" with the link,
-> — keeping the findings themselves off the Thread. For a **spec or a plan**: there is no pull
+> keeping the findings themselves off the Thread. For a **spec or a plan**: there is no pull
 > request, so the Thread is the record: post the findings in the Thread you were addressed in, one
 > finding per `post_message`.
 >
