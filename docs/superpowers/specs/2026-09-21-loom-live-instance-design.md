@@ -264,8 +264,8 @@ record**:
                              run reconciles it before it fetches anything (§4.5 banners 2, 7 and 10,
                              review round 7's F2 and round 8's F2).
     deploy/.dump-in-progress a pre-update pg_dump that could NOT be proven gone inside the Postgres
-                             container. Written by the timed-out dump, removed only by a later
-                             invocation's `pgrep` answering "nothing matched". It outlives the run
+                             container. Written by the timed-out dump, removed only when a later
+                             invocation's in-container check answers `DUMP_GONE`. It outlives the run
                              that wrote it, and outlives the intent record that run's restore
                              removes, which is why it is a file of its own (§4.5 banners 2 and 8,
                              review round 10's F2).
@@ -301,8 +301,8 @@ failed, so its recovery is R6 — which restores the previous deployment and the
 `.update-state`, correctly, because the update it described has been undone. A marker that lived
 inside that record therefore died with it, and the next invocation walked straight into the dump
 the marker existed to prevent. Two lifetimes, two files: the intent record is removed by whatever
-proves the intent settled, and the hazard file is removed only by a `pgrep` that proves the
-process gone (§4.5 banners 2 and 8).
+proves the intent settled, and the hazard file is removed only by a check in which the container
+itself says the process is gone (§4.5 banners 2 and 8).
 
 **Why the two approved texts and the two onboarding scripts are committed files, which is a
 correction twice over.** The guidelines half was answered in round 1 and is below; the brief and the
@@ -340,7 +340,7 @@ can move them, and there is no per-path override.
 | The verified-commit record | `~/git/Loom/deploy/.verified-sha`, one line holding the short SHA of the last commit that answered the **public** health check. Written at the very end of a normal run (§4.5 banner 13) and by nothing else; a `--bootstrap` run never writes it. It is the public proof, for a human and for §9's done-checks — **no mechanism reads it**, deliberately, so a failing public check can never misdirect a recovery. Git-ignored |
 | The previous image id | `~/git/Loom/deploy/.deployed-image`, one line holding `docker inspect --format '{{.Image}}' loom-loom-1` as captured in §4.5 banner 3, before the build. It is an immutable image id, not a tag, so it still names the old image after a same-commit rebuild has re-pointed `loom-live:<SHA>`. The run itself holds that id in `PREV_IMAGE` and the intent record carries it across an interruption as `old_image=`, so **no mechanism reads this file any more** — it is the human's copy of which image the previous deployment was, and the value `.update-state` is written from. **And `PREV_IMAGE` is now the *only* thing that identifies the previous deployment**: `restore_prev` compares it with the running container's own `{{.Image}}` and reconstructs rather than `docker start`ing whenever the two differ, which is review round 8's F3. Git-ignored |
 | The update-state record | `~/git/Loom/deploy/.update-state`, six `key=value` lines and no more — `old_sha`, `old_image`, `target_sha`, `target_tag`, `pending` (the journal tags outstanding when the run began, space-separated, empty when there were none) and `started_at` (a UTC timestamp). **Since round 10's F2 there is no seventh key**: the unresolved-dump marker is its own file, below, because it outlives this record. Written atomically and durably **before the quiesce** (§4.5 banner 7) and removed in exactly two places, both of which have proved something first: inside `start_target_and_prove`, once the target has answered the loopback check **and** `.deployed-sha` durably names it, and inside `restore_prev`, once the previous deployment has answered it (§4.5 banner 10, round 8's F2). Its presence is the only thing that says "a run did not finish", and it is read by exactly one thing: every invocation's reconciliation, right after the lock, the dump-marker check and before the fetch (§4.5 banner 2, review round 7's F2). `key=value` and not JSON, because this box has no `jq` and the script already reads `key=value` lines with `sed -n 's/^key=//p' … \| tail -1`, which exits 0 on a missing key — one idiom, used twice. Git-ignored |
-| The unresolved-dump marker | `~/git/Loom/deploy/.dump-in-progress`, one line holding `1`, and its **presence** is the whole of its content. Written and `sync`ed by §4.5 banner 8 when a timed-out `pg_dump`'s in-container process could not be proven gone, and removed in exactly one place: banner 2 of a later invocation, when a bounded `docker compose -p loom exec -T postgres pgrep -f pg_dump` answers with `pgrep`'s own "nothing matched" (exit 1, empty output). While it exists, every invocation refuses before the fetch — no dump, no migration, and **not even a reconciliation of an interrupted update** (§4.5 banner 2). It is a separate file rather than a key in `.update-state` because the run that writes it is on the R6 path, whose successful restore removes `.update-state` and would have taken the marker with it — round 10's F2. Git-ignored |
+| The unresolved-dump marker | `~/git/Loom/deploy/.dump-in-progress`, one line holding `1`, and its **presence** is the whole of its content. Written and `sync`ed by §4.5 banner 8 when a timed-out `pg_dump`'s in-container process could not be proven gone, and removed in exactly one place: banner 2 of a later invocation, when the bounded in-container check of `dump_verdict` — a `sh -c` wrapper that reads `pgrep`'s own exit status inside the container and prints `DUMP_RUNNING`, `DUMP_GONE` or a token naming why it could not tell — exits 0 with `DUMP_GONE` on stdout. Round 11's F1 is why the verdict is a **token the container prints** rather than `pgrep`'s exit status read through Docker: a Compose or daemon failure can exit 1 with empty stdout too, so the old "exit 1, empty output" rule cleared the hazard on a transport error. While it exists, every invocation refuses before the fetch — no dump, no migration, and **not even a reconciliation of an interrupted update** (§4.5 banner 2). It is a separate file rather than a key in `.update-state` because the run that writes it is on the R6 path, whose successful restore removes `.update-state` and would have taken the marker with it — round 10's F2. Git-ignored |
 | The per-commit images | `loom-live:<short SHA>` in the host's image store, one per deployed commit, built by `live-update.sh` step 4 and never pruned by it — the previous one *is* the rollback (§13) |
 | Database backups | `/root/backups/loom/loom-pre-update-<UTC timestamp>.sql.gz` — the constant `BACKUP_DIR`, not `$HOME`, since round 9's F1 — created by `live-update.sh` in a directory it creates with `install -d -m 700`. Root-only, like Spool's dumps |
 | The update lock | `/run/lock/loom-live-update.lock`, the constant `LOCK_FILE`, held for the whole of one `live-update.sh` run (§4.5 banner 2). `/run/lock` is a tmpfs on Ubuntu, so the file is not persistent state and a lock held by a killed shell is released by the kernel when the descriptor closes |
@@ -701,7 +701,11 @@ LOOM_IMAGE_TAG=""; export LOOM_IMAGE_TAG
 STAGE=""; CADDYENV=""; TMP=""; PENDING_BEFORE=""; PENDING_AFTER=""; PREVCOMPOSE=""
 CLASSIFY_OUT=""                  # classify_inspect's stdout, read by its caller on a 0
 CLASSIFY_ERR=""                  # classify_inspect's stderr, printed by whoever stops the run
-INSPECT_ERR="$(mktemp)"          # that stderr's one sink, removed by cleanup
+INSPECT_ERR="$(mktemp)"          # the one stderr sink classify_inspect AND dump_verdict write to,
+                                 #   removed by cleanup
+DUMP_VERDICT=""                  # round 11's F1: the verdict TOKEN the Postgres container printed
+DUMP_ERR=""                      #   dump_verdict's stderr, already through redact_logs
+DUMP_RC=0                        #   the transport's own exit status, printed beside the token
 PUBLIC_URL=https://loom.3dbox.dk/api/guidelines
 LOCAL_URL=http://127.0.0.1:3100/api/guidelines
 STATE=./.update-state            # the intent record: written before the quiesce, removed when HEALTHY
@@ -738,6 +742,25 @@ classify_inspect() {             # round 9's F3: the ONE way any inspect's resul
   esac
   return 2                       # 124 from the timeout, a daemon error, a permission failure,
 }                                #   an empty message, anything a future Docker invents
+
+dump_verdict() {                 # round 11's F1: the ONE way "is a pg_dump still alive inside
+  local rc=0                     #   loom-postgres-1" is asked. The CONTAINER prints the verdict,
+  DUMP_VERDICT=""; DUMP_ERR=""   #   so "gone" is something it SAID and never something inferred
+  DUMP_RC=0                      #   from an exit status the transport uses for its own failures.
+  DUMP_VERDICT="$(dk compose -p loom exec -T postgres sh -c \
+    'command -v pgrep >/dev/null 2>&1 || { echo DUMP_NO_PGREP; exit 0; }
+     pgrep -f pg_dump >/dev/null 2>&1; p=$?
+     case "$p" in 0) echo DUMP_RUNNING ;; 1) echo DUMP_GONE ;; *) echo "DUMP_PGREP_$p" ;; esac' \
+    2>"$INSPECT_ERR")" || rc=$?
+  DUMP_ERR="$(tr '\n' ' ' < "$INSPECT_ERR" 2>/dev/null | redact_logs)" || DUMP_ERR=""
+  DUMP_RC="$rc"
+  [ "$rc" -eq 0 ] || return 2    # exec refused, daemon down, no such container, the 60 s bound:
+  case "$DUMP_VERDICT" in        #   the wrapper never ran, so there is no verdict to read
+    DUMP_GONE)    return 0 ;;    # 0 = GONE:      pgrep itself said "nothing matched"
+    DUMP_RUNNING) return 1 ;;    # 1 = RUNNING:   pgrep itself found one
+    *)            return 2 ;;    # 2 = UNANSWERED: DUMP_NO_PGREP, DUMP_PGREP_<n>, empty, anything
+  esac                           #   else — it ran and did not answer the question
+}
 
 fail_and_restore() {             # round 9's F3: an unanswered question ends the run here. The one
   echo "$1 — stopping the run" >&2   # exit handler then recovers if anything had been quiesced,
@@ -1189,17 +1212,25 @@ exec 9>"$LOCK_FILE"
 flock -n 9 || { echo "another live-update is running" >&2; exit 1; }
 
 if [ -f "$DUMPMARK" ]; then      # round 10's F2: the hazard is asked about FIRST, and it is asked
-  PGREP_RC=0                     #   about whether or not an intent record survived beside it
-  STILL="$(dk compose -p loom exec -T postgres pgrep -f pg_dump 2>/dev/null)" || PGREP_RC=$?
-  if [ "$PGREP_RC" -eq 1 ] && [ -z "$STILL" ]; then
-    rm -f "$DUMPMARK"            # pgrep's own "nothing matched": the ONLY thing that clears it
-    echo "a previous run's pg_dump was never proven gone; pgrep finds nothing now, so"
-    echo "$LOOM_DEPLOY_DIR/.dump-in-progress is cleared and this run continues"
+  DV=0                           #   about whether or not an intent record survived beside it
+  dump_verdict || DV=$?          # round 11's F1: a verdict, not an exit status read as one
+  if [ "$DV" -eq 0 ]; then
+    rm -f "$DUMPMARK"            # the container's own DUMP_GONE: the ONLY thing that clears it
+    echo "a previous run's pg_dump was never proven gone; loom-postgres-1 answers DUMP_GONE now,"
+    echo "so $LOOM_DEPLOY_DIR/.dump-in-progress is cleared and this run continues"
   else
+    if [ "$DV" -eq 1 ]; then
+      WHY="loom-postgres-1 answered DUMP_RUNNING"
+    else
+      WHY="the check was NOT answered (exit $DUMP_RC, stdout '${DUMP_VERDICT:-none}')"
+    fi
     echo "REFUSING TO RUN — a previous update's pg_dump was NOT proven to have stopped inside" >&2
-    echo "  loom-postgres-1 (pgrep exit $PGREP_RC, output '${STILL:-none}'), so it may still hold" >&2
+    echo "  loom-postgres-1: $WHY, so it may still hold" >&2
     echo "  a snapshot and locks on the live database. Nothing is dumped, nothing is migrated," >&2
     echo "  and no interrupted update is reconciled until this is settled." >&2
+    if [ "$DV" -eq 2 ] && [ -n "$DUMP_ERR" ]; then
+      echo "  what the check itself said, redacted: $DUMP_ERR" >&2
+    fi
     echo "  look for it, whole:" >&2
     echo "    cd $LOOM_DEPLOY_DIR && docker compose -p loom --env-file $LOOM_DEPLOY_DIR/.env \\" >&2
     echo "      exec -T postgres pgrep -af pg_dump" >&2
@@ -1408,17 +1439,25 @@ if [ "$VOL" -eq 0 ]; then        # the volume is there, so a dump is mandatory
            "write; the client is gone, so the server-side pg_dump is signalled and then LOOKED FOR" >&2
       dk compose -p loom exec -T postgres pkill -TERM -f pg_dump >/dev/null 2>&1 \
         || echo "NOTE: no server-side pg_dump answered the signal; it may already be gone" >&2
-      PGREP_RC=0                   # round 9's F2: a signal sent is not a process gone. Empty
-      STILL="$(dk compose -p loom exec -T postgres pgrep -f pg_dump 2>/dev/null)" || PGREP_RC=$?
-      if [ "$PGREP_RC" -eq 1 ] && [ -z "$STILL" ]; then
-        echo "the server-side pg_dump is gone: pgrep found nothing" >&2
-      else                         # a pid, a timeout, no pgrep in the image, a daemon error:
-        echo "WARNING: the in-container pg_dump was NOT proven gone (pgrep exit $PGREP_RC," \
-             "output '${STILL:-none}'); it may still hold a snapshot and locks" >&2
+      DV=0                         # round 9's F2: a signal sent is not a process gone — and round
+      dump_verdict || DV=$?        #   11's F1: only the container's OWN "gone" may skip the marker
+      if [ "$DV" -eq 0 ]; then
+        echo "the server-side pg_dump is gone: loom-postgres-1 answered DUMP_GONE" >&2
+      else                         # DUMP_RUNNING, or a check that was never answered at all:
+        if [ "$DV" -eq 1 ]; then
+          echo "WARNING: the in-container pg_dump is STILL RUNNING — loom-postgres-1 answered" \
+               "DUMP_RUNNING; it holds a snapshot and locks on the database this run was about" \
+               "to migrate" >&2
+        else
+          echo "WARNING: the in-container pg_dump was NOT proven gone — the check itself was not" \
+               "answered (exit $DUMP_RC, stdout '${DUMP_VERDICT:-none}', stderr" \
+               "'${DUMP_ERR:-none}'); it may still hold a snapshot and locks" >&2
+        fi
         printf '1\n' > "$DUMPMARK" && sync -f "$DUMPMARK" \
           && echo "WARNING: $LOOM_DEPLOY_DIR/.dump-in-progress is now on disk, so the NEXT" \
-                  "invocation refuses to dump, migrate or reconcile until a pgrep proves it" \
-                  "gone — and it outlives the restore that is about to remove $STATE" >&2 \
+                  "invocation refuses to dump, migrate or reconcile until the container itself" \
+                  "answers DUMP_GONE — and it outlives the restore that is about to remove" \
+                  "$STATE" >&2 \
           || echo "WARNING: $LOOM_DEPLOY_DIR/.dump-in-progress could not be written; tell the" \
                   "next operator by hand" >&2
       fi
@@ -1756,14 +1795,13 @@ somebody else's record.** If `deploy/.dump-in-progress` exists, a previous run's
 `pg_dump` timed out and could not be proven gone inside the Postgres container (banner 8), so a
 process may still hold a snapshot and locks that a new dump would queue behind and a migration
 would fight. The script therefore asks, before anything else: one bounded, in-container
-`docker compose -p loom exec -T postgres pgrep -f pg_dump`, classified exactly as narrowly as
-banner 8 classifies it — **exit 1 with empty output, `pgrep`'s own way of saying it matched
-nothing, is the only answer that counts as gone.** On that answer the marker is removed, one line
-says so, and the run carries on into the two questions below. On any other answer — a pid, a
-timeout, no `pgrep` in the image, a daemon error — it prints and stops:
+`dump_verdict`, classified exactly as banner 8 classifies it — **the container must say `DUMP_GONE`
+itself, and nothing else counts.** On that answer the marker is removed, one line says so, and the
+run carries on into the two questions below. On `DUMP_RUNNING`, and on every answer that is not an
+answer at all, it prints and stops:
 
     REFUSING TO RUN — a previous update's pg_dump was NOT proven to have stopped inside
-      loom-postgres-1 (pgrep exit 0, output '412'), so it may still hold
+      loom-postgres-1: loom-postgres-1 answered DUMP_RUNNING, so it may still hold
       a snapshot and locks on the live database. Nothing is dumped, nothing is migrated,
       and no interrupted update is reconciled until this is settled.
       look for it, whole:
@@ -1772,6 +1810,54 @@ timeout, no `pgrep` in the image, a daemon error — it prints and stops:
       when that prints nothing, just run this command again — it clears the marker itself.
       only if the container is gone and cannot be asked, clear it by hand, whole:
         rm -f /root/git/Loom/deploy/.dump-in-progress
+
+**Why the container prints a verdict instead of the script reading `pgrep`'s exit status, which is
+round 11's F1.** The previous draft ran `dk compose -p loom exec -T postgres pgrep -f pg_dump` and
+took **exit 1 with empty output** for `pgrep`'s own "nothing matched". That inference is wrong,
+because the exit status the script sees is not `pgrep`'s — it is whatever came back through
+`timeout`, `docker` and Compose, and **a Compose or daemon failure exits 1 with empty stdout too**,
+putting its diagnosis on stderr, which that command threw away. So a transient exec failure — the
+container restarting, the daemon busy, a permission error — deleted the hazard marker and announced
+that `pgrep` had found nothing, during exactly the outage in which a `pg_dump` is most likely to be
+alive. F1 reproduced it against a Docker stub that exits 1 with stderr only.
+
+The fix is that the **container itself** answers, in words of its own:
+
+    dk compose -p loom exec -T postgres sh -c \
+      'command -v pgrep >/dev/null 2>&1 || { echo DUMP_NO_PGREP; exit 0; }
+       pgrep -f pg_dump >/dev/null 2>&1; p=$?
+       case "$p" in 0) echo DUMP_RUNNING ;; 1) echo DUMP_GONE ;; *) echo "DUMP_PGREP_$p" ;; esac'
+
+The wrapper **always exits 0 when it ran at all**, so a non-zero status now means exactly one
+thing — the check never happened — and the verdict is carried by a token on stdout rather than by a
+number two different layers can both produce. `dump_verdict` classifies that into three, the same
+shape `classify_inspect` gives an inspection, and for the same reason:
+
+| The answer | The verdict | What happens |
+| --- | --- | --- |
+| exit 0, stdout exactly `DUMP_GONE` | **gone** | banner 2 clears the marker and the run continues; banner 8 does not write one |
+| exit 0, stdout exactly `DUMP_RUNNING` | **still running** | the marker is kept or written, and banner 2 refuses |
+| anything else — non-zero exit, empty stdout, `DUMP_NO_PGREP`, `DUMP_PGREP_<n>`, any other stdout, the 60 s bound | **unanswered** | treated exactly as "still running": the marker is kept or written, banner 2 refuses, and the check's own stderr is printed through `redact_logs` so the operator can see what actually failed |
+
+**Why the wrapper is three lines and not the obvious one.**
+`if pgrep -f pg_dump >/dev/null; then echo DUMP_RUNNING; else echo DUMP_GONE; fi` reads every
+non-zero exit as "nothing matched" — which reintroduces round 9's F2 one layer further in. An image
+without `pgrep` makes `sh` fail the condition with 127 and the `else` branch then prints
+**`DUMP_GONE`**: a confident, false acquittal, and precisely the class of mistake this finding is
+about. So the wrapper asks whether `pgrep` exists before it trusts it, and reads `pgrep`'s exit
+status by number rather than by truthiness — inside the container, where that status really *is*
+`pgrep`'s, which is the whole difference from the command it replaces. `DUMP_NO_PGREP` and
+`DUMP_PGREP_<n>` are not extra verdicts; they fall into "unanswered" like everything else, and
+exist only so the printed message names the thing the operator has to fix. `postgres:17-alpine`
+does ship busybox's `pgrep`, so neither is expected — but "expected" is what the previous two
+findings were also about.
+
+The stderr is worth the two lines it costs: "exit 1, nothing on stdout" is the same picture for a
+container that is not running, a daemon that is not answering and a socket the operator has no
+permission on, and the message that names which one is the difference between a two-minute fix and
+an hour. It goes through `redact_logs` because everything this script prints does (§8.1). And the
+rule that makes the whole marker worth having is unchanged and is now enforceable: **only a
+definite `DUMP_GONE` clears the hazard; a question that was not answered is not an answer.**
 
 **Why a separate file, which is round 10's F2 accepted with the simpler of the two shapes it
 offered.** The previous draft appended `dump_in_progress=1` as a seventh key to
@@ -1786,8 +1872,8 @@ removing the rest, would work and is **not** taken: it makes `.update-state` a f
 depends on which of its keys is present, and every reader of it would then have to know that. The
 invariant is cleaner said in two files — **`.update-state` is the intent of one run, and
 `.dump-in-progress` is a hazard that outlives runs** — and each is then removed by the one thing
-that has disproved it: the intent by a proved target or a proved restore, the hazard by a `pgrep`
-that answered "nothing matched". It is written where banner 8 wrote the key, atomically enough (a
+that has disproved it: the intent by a proved target or a proved restore, the hazard by a container
+that answered `DUMP_GONE`. It is written where banner 8 wrote the key, atomically enough (a
 41-byte `printf` and a `sync -f`; a torn write still leaves the file, and the file is the marker)
 and it is checked here, at the top of banner 2, **whether or not an intent record survived beside
 it** — which is the whole point.
@@ -2214,7 +2300,7 @@ one of them is a constant in the listing:
 | Phase, after the quiesce | Deadline, as the listing enforces it |
 | --- | --- |
 | The stop | `dk compose stop loom` = **60** |
-| The backup | volume inspect 60 + running inspect 60 + `up -d postgres` 60 + the health loop's absolute 60 (plus at most one 60 s inspect in flight) + mounts inspect 60 + the dump pipeline's `timeout --signal=TERM --kill-after=15 330` = **705**, and on a dump that times out a further **120** for the `pkill` and the `pgrep` that looks for what the `pkill` was aimed at |
+| The backup | volume inspect 60 + running inspect 60 + `up -d postgres` 60 + the health loop's absolute 60 (plus at most one 60 s inspect in flight) + mounts inspect 60 + the dump pipeline's `timeout --signal=TERM --kill-after=15 330` = **705**, and on a dump that times out a further **120** for the `pkill` and the `dump_verdict` check that looks for what the `pkill` was aimed at |
 | The migration | name-clearing `rm -f` 60 + `timeout --signal=TERM --kill-after=30 600` = **690**, and on any non-success a reap of at most **420** (seven `dk` calls: inspect, stop, kill, wait, logs, inspect, rm) |
 | R8's status read | `rm -f` 60 + `timeout 120` = **180**, and **600** if that read itself fails and its container has to be reaped |
 | Starting and proving a target | `timeout 120` on the `up` + the loopback loop's 60 (plus at most one 20 s `curl` in flight) = **200** |
@@ -2369,15 +2455,21 @@ Three lines answer it:
   anything else. The `pkill` is **busybox's**, which is what `postgres:17-alpine` ships; the
   `|| echo NOTE` is there so that an image without it produces a note rather than a second failure
   mode. **But a signal sent is not a process gone, which is the second half of round 9's F2**, so
-  the script then asks: `dk compose -p loom exec -T postgres pgrep -f pg_dump`, and classifies that
-  answer as narrowly as it classifies an inspection. **Exit 1 with empty output is the only thing
-  that counts as "gone"** — that is `pgrep`'s own way of saying it matched nothing. A pid, a
-  timeout, an image with no `pgrep` (exit 127), a daemon error: none of those is proof, and every
-  one of them is treated as *not gone*.
+  the script then asks — through `dump_verdict`, the one helper banner 2 also asks with, because
+  the two call sites have to classify identically or the marker means different things at the two
+  ends of its life. **Only a definite `DUMP_GONE` skips the marker.** `DUMP_RUNNING` writes it, and
+  so does every answer that is not an answer: a non-zero exit, empty stdout, stdout the script does
+  not recognise, an image with no `pgrep` (`DUMP_NO_PGREP`), a `pgrep` that failed for some other
+  reason (`DUMP_PGREP_<n>`), the 60 s bound, a daemon error. **That is round 11's F1 on this side
+  of the marker's life**: the previous draft read exit 1
+  with empty output as proof of absence here too, so a Compose failure in the middle of a timed-out
+  dump would have *skipped writing the marker* — the worst of the two directions, because the next
+  run then has nothing to refuse on. Banner 2 states the classification in full and the reason for
+  each of its three cases.
 - **When it is not proven gone, the next invocation is told, durably — and in a file of its own,
   which is round 10's F2.** The run writes `deploy/.dump-in-progress` and `sync -f`s it, and prints
   that it has done so. Banner 2 of the **next** invocation reads that file before anything else,
-  asks `pgrep` once more, and either clears it because the answer is "nothing matched" or refuses
+  asks the container once more, and either clears it because the answer was `DUMP_GONE` or refuses
   the whole run: no fetch, no dump, no migration, and not even a reconciliation of an interrupted
   update. That is the answer to "if pg_dump cannot be proved gone, leave a marker that makes the
   next update refuse rather than proceed". **Why it is not a seventh key in `deploy/.update-state`,
@@ -2387,7 +2479,9 @@ Three lines answer it:
   into exactly the dump the marker existed to prevent. The two facts have different lifetimes, so
   they are two files (banner 2). The cost of a false positive is unchanged: one operator running
   one `pgrep`, against the cost of a second dump queueing behind a snapshot nobody knew was open,
-  or a migration deadlocking on it.
+  or a migration deadlocking on it — and since round 11's F1 that false positive is *paid for
+  honestly*, because an unanswered check is now marked as such and says so, instead of being
+  mistaken for a clean one.
 - **A failed dump is the existing recovery and nothing new.** The `exit 1` lands in the one exit
   handler with `MIGRATE_STATE` still `not-attempted` and `CREATED` still 0, which is **R6**: the
   previous deployment is restored — by the recorded image id, and proved by the loopback check
@@ -3172,12 +3266,44 @@ has to be taken from.
 **How to do the third deletion, and the one case where the short form is wrong.** When the only
 unmerged migration is yours, the whole of it is
 
-    git checkout origin/main -- src/core/drizzle/meta
+    git fetch origin
+    git restore --source=origin/main --staged --worktree -- src/core/drizzle/meta
 
 which puts `meta/` back to exactly what merged `main` has — journal and snapshots together, so
 deletion 2 comes with it. When it is not — a second unmerged migration is in the tree, or `main`
 has moved on — that command would throw away somebody else's work, so **remove that one snapshot
 file by hand** (`rm src/core/drizzle/meta/<NNNN>_snapshot.json`) and edit the journal entry out.
+
+**Why `git restore` and not `git checkout`, which is review round 11's F2.** The previous draft
+wrote `git checkout origin/main -- src/core/drizzle/meta`, and that command **does not restore a
+directory; it overlays one.** `git checkout <tree-ish> -- <path>` is overlay mode: it writes the
+files the tree-ish has and **leaves every file the tree-ish does not have exactly where it is**. So
+on a branch that added `meta/0002_snapshot.json`, the command rewrites `_journal.json` and
+`0001_snapshot.json` from `main` and `0002_snapshot.json` **survives** — still tracked, still the
+lexicographic maximum, still the file `preparePrevSnapshot` will pick as the previous schema. The
+draft therefore advertised the third deletion while performing two, and the regeneration failed in
+exactly the way the paragraph above describes: `No schema changes, nothing to migrate`.
+`git restore --source=<ref> --staged --worktree -- <path>` is **non-overlay by default** — that
+asymmetry is the whole reason `git restore` was split out of `git checkout` — so it deletes the
+branch-only snapshot from the worktree and stages the deletion in one command. Verified in a
+throwaway repository against exactly the shape above: a baseline commit holding
+`meta/0001_snapshot.json`, a branch commit adding `meta/0002_snapshot.json`, and after the command
+`0002_snapshot.json` gone from the worktree, staged as `D`, and `0001_snapshot.json` and
+`_journal.json` back at the baseline's contents. The same throwaway repository reproduces the
+finding: after `git checkout origin/main -- src/core/drizzle/meta`, `0002_snapshot.json` is still
+there.
+
+Two notes on the command. **`git fetch origin` comes first** because `origin/main` is a remote
+tracking ref and a stale one restores a stale baseline — the same trap §9 pays for with the
+deployment's bundle. And **`git restore` needs Git 2.23 or newer** (2019); on anything older the
+equivalent is the three-step
+
+    git rm -r --quiet --cached src/core/drizzle/meta
+    rm -rf src/core/drizzle/meta
+    git checkout origin/main -- src/core/drizzle/meta
+
+which is verified to produce the identical result, and is not the recommended form only because it
+is three commands with a window in the middle where `meta/` does not exist at all.
 
 **And migrations that are already deployed are never touched.** The three deletions apply to the
 unmerged migration and to nothing else: an applied file's `.sql`, its journal entry and its
@@ -4394,7 +4520,7 @@ that ships the code without it leaves the repository describing a world that no 
 | [DOGFOOD.md](../../DOGFOOD.md) §4 | One line under the "brief to paste" block: the same text is committed as `deploy/reviewer-brief.md`, which is what `deploy/prepare-chatgpt-paste.ps1` reads (§4.7), and the two must stay byte-identical |
 | [HANDBOOK.md](../../HANDBOOK.md) §6 "current state" | The live instance, its hostname, and where its credentials' file paths are |
 | [HANDBOOK.md](../../HANDBOOK.md) §3 step 13 | Merge gains its last action: run `deploy\live-update.cmd` and report what it printed — including, in one clause, that the update stops Loom for a few seconds while it dumps and migrates, so a reviewer mid-poll may see a 502 and that is expected (§4.5 banner 7) |
-| [HANDBOOK.md](../../HANDBOOK.md) §5 traps | Fifty-four new ones, all paid for in writing this spec and in answering its ten review rounds: **a reaper that guards one run does not guard the next one** — the run that finds an interrupted update on disk is not the run that started the migrator, so the applying container can still be alive while the *new* process asks the database what happened: reap it, with the same proof the original run required, **before** the cheap "is it already healthy" probe and before any status is read, and refuse without restoring when the reap proves nothing; **a marker whose lifetime is the box's must not live inside a record whose lifetime is one run's** — the run that records "a `pg_dump` may still be running" is the run whose recovery then removes its own intent record, taking the marker with it, so the hazard goes in a file of its own and is cleared only by the check that disproves it; **`drizzle-kit generate` diffs against the newest snapshot file, not against the journal** — deleting a migration's `.sql` and its journal entry and leaving `meta/<NNNN>_snapshot.json` behind makes the regeneration see its own change as already present and emit nothing at all, so restore `meta/` to the merged baseline as well; **an environment aimed at one instance stays aimed at it** — a runbook that ends by touching a *different* instance has to select that instance's config store, identity and URL explicitly and then put the first one back, because the CLI resolves its Weave and its token from `$LOOM_CONFIG` and `LOOM_AGENT_KEY` and will otherwise fail with `no_weave` on a Weave it has never heard of; **a `timeout` is not a bound when the kernel will not kill the child** — a process wedged in uninterruptible I/O on a stalled or full filesystem survives `TERM` and `KILL`, and `timeout` then waits for it, so a deadline on every command is still not a ceiling on the outage: sum the deadlines if you like, but say which waits sit outside the sum and who ends them; **a signal sent is not a process gone** — `pkill` inside a container proves only that a signal was delivered somewhere, so ask afterwards (`pgrep`), treat anything but "nothing matched" as still running, and leave a durable marker that makes the *next* run refuse rather than queue behind it; **a path spelled in a script is a path a test cannot avoid touching** — absolute literals make a harness either unrunnable on a laptop or dangerous on the server, so make every operational path a constant with its production default, move them only under one explicit test-mode variable that announces itself, and assert the defaults by *reading* the file rather than by running it; **a timeout on a client is not a timeout on the work** — `docker compose exec … pg_dump` under a killed client leaves `pg_dump` running inside the container, holding a snapshot of the database the script is about to migrate, so kill the server side too and bound that as well; **an exit handler is not a timeout** — a script blocked in a command has not exited, so no trap runs, the lock stays held and the outage has no end: put a deadline on every command that runs while the application is stopped, and state the ones that still have none; **a retry count is not a deadline** — `for _ in $(seq 1 30); do curl …` bounds nothing when one call can hang, so give the call `--connect-timeout`/`--max-time` and the loop an absolute clock; **a mutable tag and a canonical name do not identify a container** — the same commit rebuilt over a newer base image is a different image id under the same tag, so a recovery that starts "the previous deployment" by name starts the wrong binary while every record tells the truth: compare the recorded **image id**; **and a migrator's own rule is not a safety property** — drizzle applies what is newer than the newest applied row, so a migration generated on a long-lived branch and merged after a newer one is reported applied and silently skipped, which is a healthy deployment with a missing table in it: validate that the journal increases and that the rows are an exact prefix of it, and refuse instead of reporting; `docker compose up <service>` **returns 0 even when the service failed**, and `--exit-code-from` implies `--abort-on-container-exit`, which would stop the live database — use `docker compose run --rm`; **HSTS `includeSubDomains` does not cover a sibling host**, so `loom.3dbox.dk` needs its own; **a compose project is named after its directory unless the file says otherwise** — two `deploy/` directories are two projects called `deploy`, so put `name:` in the file; **and `name:` is not enough** — `COMPOSE_PROJECT_NAME` outranks it, so pass `-p <project>` on every command and refuse to run with that variable set; **`git pull --ff-only` does not mean "the checkout equals origin"** — it succeeds over a local commit the remote has not passed and leaves a dirty tracked file alone, so assert `HEAD == refs/remotes/origin/main` on a clean tree instead; **a stopped Postgres container is not an empty database** — ask the volume, or a migration runs with no dump behind it; **a checkout whose `origin` is a local bundle cannot see a commit merged on GitHub** — a `pull` says "already up to date" and the prerequisite is silently not deployed, so re-bundle and `scp` it; **a backup is worth only the window between it and the change it insures against** — dump immediately before the migration, not before a two-minute build; **"wait until it is healthy" with no bound is a hang holding a lock** — poll with a timeout, fail fast on `unhealthy`, and print the logs; **`--env-file` hands a container every line of the file**, so build a two-variable temporary file instead of passing a neighbour's whole environment; **`-f` does not move compose's `.env` lookup** — it follows the caller's directory, so a `-f`-only command run from elsewhere silently takes every default in the file, and `--env-file` belongs beside every `-p`; **a guard placed after the mutation it guards is disarmed by a retry** — compare against the deployed state *before* fast-forwarding, and persist what is deployed; **a dump taken while the application still accepts writes is a snapshot with a live tail** — stop the application, or stop claiming the restore loses nothing; **a single mutable image tag means there is no previous image** — tag per commit if a failure has to be able to go back; **`grep | cut` under `set -euo pipefail` defeats the `${VAR:-default}` on the next line** — `grep` exits 1 on no match, `pipefail` propagates it and `set -e` kills the script before the default is read, so use `sed -n 's/^KEY=//p'`, which exits 0; **`git fetch origin` does not move the local `main`** — a bundle cut afterwards advertises the stale branch while containing the new commit, so `switch` and `pull --ff-only` before bundling; **an instance keeper is not a Lobby participant** — `loom lobby` needs a stored Lobby token or an agent key, so join before reading, and read as the keeper because only a keeper is told the Lobby's secret; **a non-zero exit from a database client does not prove the transaction rolled back** — PostgreSQL can commit and the connection can drop before the client hears it, so record the pending set before migrating and *ask* afterwards instead of asserting; **one record cannot hold two facts** — "which commit's image and schema are active" and "which commit was proved over the public hostname" have different lifetimes, and a single file holding both will aim a recovery at an image the schema has moved past; **an old image inside a new compose definition is not the old deployment** — `stop` keeps the container with its image id, command, environment and networks, so `docker start` it rather than re-`up`-ing a tag through a file that has changed; **a guarantee a future merge can void from inside a file is not a guarantee** — one `COMMIT` or `CREATE INDEX CONCURRENTLY` in a migration ends the transaction everything else relies on, so enforce it in code and test it over the real files; **an A record that resolves is not a complete DNS answer** — a stale or wildcard `AAAA` sends ACME's validator and every IPv6 client elsewhere while the A check passes, and a `CNAME` beside an `A` is invalid outright; **a runbook that reads files out of a local checkout has to say which commit that checkout is on**, or it fails three-quarters of the way through on a missing helper; **running a deployment's steps by hand is not running the deployment** — exercise the wrapper the merge will actually use, on the first day, or its first real use is the test; **`docker compose run <service> <args>` replaces the service's `command:`** rather than appending to it, so a status flag on its own becomes the program the container tries to execute — name the whole command; **a shell pipeline that ends in `grep` fails on the empty result** — `grep -v '^$'` exits 1 with nothing to filter, and under `pipefail` the most ordinary outcome there is kills the script, so delete blank lines with `sed` instead; **`cmd | grep -q` under `pipefail` can report 141** — `grep -q` exits on the first match, the producer dies of `SIGPIPE`, and a guard written as `producer | grep -q … && refuse` therefore waves the very case through that it was written to catch, **and collecting the output into a variable is not the fix** — `printf '%s\n' "$VAR" | grep -q …` has the same defect with `printf` as the victim, so the pipe itself has to go: `grep -q … <<<"$VAR"`, or a variable and a `case`, and then the *whole* file audited for the shape, because one instance is never the population; **`docker compose run` allocates a pseudo-TTY when its stdin is a terminal**, so output a script parses arrives CR-terminated from an interactive SSH shell and matches nothing — pass `-T` on anything whose output is read, and keep its stderr out of the file being parsed; **a record written before the thing it records is live is a record that lies** — with no migration to apply, the new commit is only deployed once its container is actually up, so write the record after the start, not at the quiesce; **a trap armed half-way down a script reads variables the script may not have assigned yet** — under `set -u` the handler dies instead of recovering, so initialise every input first and install one handler at the top, and clear `errexit` before classifying inside it; **`timeout` bounds the client, not the container** — a killed `docker compose run` leaves the one-off running with its transaction open, so name the container, kill it, wait for it under a bound and reap it before asking the database anything, and bound that question too — **and reap on every non-success, not only on the timeout's exit codes**, because a client that loses its connection to the daemon exits 1 while the container keeps running, and a reconciliation run alongside a live migrator can restart the old image just in time for the migrator to commit the new schema under it; **`ABORT` is PostgreSQL's alias for `ROLLBACK`** — a guard that lists the transaction-control statements by sample rather than taking the group whole will miss one, and one is enough; **`docker compose ps` omits stopped containers** — a completed one-shot is invisible without `--all`, so a correct startup can fail a done-check written against plain `ps`; **a line an application prints on purpose is still a credential when somebody else reads the log** — Loom's first boot prints the Lobby's secret link by design, so a session running `docker compose logs` over SSH puts it in the controller's transcript: redact at the **reader** as well as at the writer, and let a done-check match on the server and print only its verdict; **arm a recovery before the command it recovers from, never after it** — `docker compose stop` can stop the container and still exit non-zero, and a flag set only on success leaves the handler disarmed over a stopped application, so set it first and clear it again only on positive evidence that nothing was stopped; **a comment stripper that does not understand quoting deletes the statement the guard exists to find** — `VALUES ('--')` turns the rest of the line into a comment for any scanner that strips comments as a phase, so a SQL guard must be one stateful pass in which a comment is only a comment in the code state; **a printed recovery command is only a recovery if it works in the shell that reads it** — a `docker compose …` that relies on the script's own working directory fails in the `/root` shell the operator actually opens, so print `cd <absolute path> && …`, name the environment file, and name every record by its absolute path; **a failure to ask is not an answer** — `docker inspect … || return 0` reads a daemon that is not answering as "the container is not there", which is precisely the outage that left the container running, so classify the error text and treat anything but "No such object" as unknown — **and one classified call site does not classify the file**, because the same `|| true` was still deciding whether a backup got taken and whether a previous deployment existed: put the three-way classification in one helper and route every inspection through it, so the next call site cannot be written the old way; **a stop you did not verify is not a stop** — `docker stop`, `docker kill` and `docker wait` can all fail quietly, so re-inspect and require `exited` or `dead` before believing anything about the database, and make the unprovable case its own state rather than a warning; **`docker compose up -d <service>` REPLACES that service's container** — compose finds it by project and service *labels*, stops it, renames it aside and removes it, so the container a recovery meant to restart is gone the moment the new one is created, **and `docker rename` does not hide it**, because the labels are what the lookup uses: keep the *image id* and the *deployed commit's own compose file* instead, and reconstruct from those two; **"the container was created" is not "the application is serving"** — `up -d` returns 0 as soon as Docker has started the process, so a state variable set there disarms a recovery on the strength of nothing, and only a request the application answered may do that; and **a trap cannot recover an interruption that is not an exit** — a power loss or a `SIGKILL` runs no handler at all, so write an intent record before the first irreversible step, reconcile it at the top of every later invocation, and remove it only once the thing it intended is a durable fact |
+| [HANDBOOK.md](../../HANDBOOK.md) §5 traps | Fifty-five new ones, all paid for in writing this spec and in answering its eleven review rounds: **a reaper that guards one run does not guard the next one** — the run that finds an interrupted update on disk is not the run that started the migrator, so the applying container can still be alive while the *new* process asks the database what happened: reap it, with the same proof the original run required, **before** the cheap "is it already healthy" probe and before any status is read, and refuse without restoring when the reap proves nothing; **a marker whose lifetime is the box's must not live inside a record whose lifetime is one run's** — the run that records "a `pg_dump` may still be running" is the run whose recovery then removes its own intent record, taking the marker with it, so the hazard goes in a file of its own and is cleared only by the check that disproves it; **`drizzle-kit generate` diffs against the newest snapshot file, not against the journal** — deleting a migration's `.sql` and its journal entry and leaving `meta/<NNNN>_snapshot.json` behind makes the regeneration see its own change as already present and emit nothing at all, so restore `meta/` to the merged baseline as well — **and `git checkout <ref> -- <dir>` does not restore a directory, it overlays one**, rewriting the files the ref has and leaving every branch-only file exactly where it was, so the snapshot survives the command written to remove it: use `git restore --source=<ref> --staged --worktree -- <dir>`, which is non-overlay by default; **an environment aimed at one instance stays aimed at it** — a runbook that ends by touching a *different* instance has to select that instance's config store, identity and URL explicitly and then put the first one back, because the CLI resolves its Weave and its token from `$LOOM_CONFIG` and `LOOM_AGENT_KEY` and will otherwise fail with `no_weave` on a Weave it has never heard of; **a `timeout` is not a bound when the kernel will not kill the child** — a process wedged in uninterruptible I/O on a stalled or full filesystem survives `TERM` and `KILL`, and `timeout` then waits for it, so a deadline on every command is still not a ceiling on the outage: sum the deadlines if you like, but say which waits sit outside the sum and who ends them; **a signal sent is not a process gone** — `pkill` inside a container proves only that a signal was delivered somewhere, so ask afterwards, treat anything but a definite "gone" as still running, and leave a durable marker that makes the *next* run refuse rather than queue behind it; **and a remote command's exit status is not the remote command's answer** — `docker compose exec … pgrep` returns 1 with empty stdout both when `pgrep` matched nothing and when Compose never ran it at all, so a gate that reads that as "nothing matched" clears its own hazard on a daemon error: make the container print a verdict token of its own, require a successful transport *and* that token, and treat every other shape — non-zero exit, empty stdout, unrecognised stdout, a timeout — as unanswered and therefore as the hazard; **a path spelled in a script is a path a test cannot avoid touching** — absolute literals make a harness either unrunnable on a laptop or dangerous on the server, so make every operational path a constant with its production default, move them only under one explicit test-mode variable that announces itself, and assert the defaults by *reading* the file rather than by running it; **a timeout on a client is not a timeout on the work** — `docker compose exec … pg_dump` under a killed client leaves `pg_dump` running inside the container, holding a snapshot of the database the script is about to migrate, so kill the server side too and bound that as well; **an exit handler is not a timeout** — a script blocked in a command has not exited, so no trap runs, the lock stays held and the outage has no end: put a deadline on every command that runs while the application is stopped, and state the ones that still have none; **a retry count is not a deadline** — `for _ in $(seq 1 30); do curl …` bounds nothing when one call can hang, so give the call `--connect-timeout`/`--max-time` and the loop an absolute clock; **a mutable tag and a canonical name do not identify a container** — the same commit rebuilt over a newer base image is a different image id under the same tag, so a recovery that starts "the previous deployment" by name starts the wrong binary while every record tells the truth: compare the recorded **image id**; **and a migrator's own rule is not a safety property** — drizzle applies what is newer than the newest applied row, so a migration generated on a long-lived branch and merged after a newer one is reported applied and silently skipped, which is a healthy deployment with a missing table in it: validate that the journal increases and that the rows are an exact prefix of it, and refuse instead of reporting; `docker compose up <service>` **returns 0 even when the service failed**, and `--exit-code-from` implies `--abort-on-container-exit`, which would stop the live database — use `docker compose run --rm`; **HSTS `includeSubDomains` does not cover a sibling host**, so `loom.3dbox.dk` needs its own; **a compose project is named after its directory unless the file says otherwise** — two `deploy/` directories are two projects called `deploy`, so put `name:` in the file; **and `name:` is not enough** — `COMPOSE_PROJECT_NAME` outranks it, so pass `-p <project>` on every command and refuse to run with that variable set; **`git pull --ff-only` does not mean "the checkout equals origin"** — it succeeds over a local commit the remote has not passed and leaves a dirty tracked file alone, so assert `HEAD == refs/remotes/origin/main` on a clean tree instead; **a stopped Postgres container is not an empty database** — ask the volume, or a migration runs with no dump behind it; **a checkout whose `origin` is a local bundle cannot see a commit merged on GitHub** — a `pull` says "already up to date" and the prerequisite is silently not deployed, so re-bundle and `scp` it; **a backup is worth only the window between it and the change it insures against** — dump immediately before the migration, not before a two-minute build; **"wait until it is healthy" with no bound is a hang holding a lock** — poll with a timeout, fail fast on `unhealthy`, and print the logs; **`--env-file` hands a container every line of the file**, so build a two-variable temporary file instead of passing a neighbour's whole environment; **`-f` does not move compose's `.env` lookup** — it follows the caller's directory, so a `-f`-only command run from elsewhere silently takes every default in the file, and `--env-file` belongs beside every `-p`; **a guard placed after the mutation it guards is disarmed by a retry** — compare against the deployed state *before* fast-forwarding, and persist what is deployed; **a dump taken while the application still accepts writes is a snapshot with a live tail** — stop the application, or stop claiming the restore loses nothing; **a single mutable image tag means there is no previous image** — tag per commit if a failure has to be able to go back; **`grep | cut` under `set -euo pipefail` defeats the `${VAR:-default}` on the next line** — `grep` exits 1 on no match, `pipefail` propagates it and `set -e` kills the script before the default is read, so use `sed -n 's/^KEY=//p'`, which exits 0; **`git fetch origin` does not move the local `main`** — a bundle cut afterwards advertises the stale branch while containing the new commit, so `switch` and `pull --ff-only` before bundling; **an instance keeper is not a Lobby participant** — `loom lobby` needs a stored Lobby token or an agent key, so join before reading, and read as the keeper because only a keeper is told the Lobby's secret; **a non-zero exit from a database client does not prove the transaction rolled back** — PostgreSQL can commit and the connection can drop before the client hears it, so record the pending set before migrating and *ask* afterwards instead of asserting; **one record cannot hold two facts** — "which commit's image and schema are active" and "which commit was proved over the public hostname" have different lifetimes, and a single file holding both will aim a recovery at an image the schema has moved past; **an old image inside a new compose definition is not the old deployment** — `stop` keeps the container with its image id, command, environment and networks, so `docker start` it rather than re-`up`-ing a tag through a file that has changed; **a guarantee a future merge can void from inside a file is not a guarantee** — one `COMMIT` or `CREATE INDEX CONCURRENTLY` in a migration ends the transaction everything else relies on, so enforce it in code and test it over the real files; **an A record that resolves is not a complete DNS answer** — a stale or wildcard `AAAA` sends ACME's validator and every IPv6 client elsewhere while the A check passes, and a `CNAME` beside an `A` is invalid outright; **a runbook that reads files out of a local checkout has to say which commit that checkout is on**, or it fails three-quarters of the way through on a missing helper; **running a deployment's steps by hand is not running the deployment** — exercise the wrapper the merge will actually use, on the first day, or its first real use is the test; **`docker compose run <service> <args>` replaces the service's `command:`** rather than appending to it, so a status flag on its own becomes the program the container tries to execute — name the whole command; **a shell pipeline that ends in `grep` fails on the empty result** — `grep -v '^$'` exits 1 with nothing to filter, and under `pipefail` the most ordinary outcome there is kills the script, so delete blank lines with `sed` instead; **`cmd | grep -q` under `pipefail` can report 141** — `grep -q` exits on the first match, the producer dies of `SIGPIPE`, and a guard written as `producer | grep -q … && refuse` therefore waves the very case through that it was written to catch, **and collecting the output into a variable is not the fix** — `printf '%s\n' "$VAR" | grep -q …` has the same defect with `printf` as the victim, so the pipe itself has to go: `grep -q … <<<"$VAR"`, or a variable and a `case`, and then the *whole* file audited for the shape, because one instance is never the population; **`docker compose run` allocates a pseudo-TTY when its stdin is a terminal**, so output a script parses arrives CR-terminated from an interactive SSH shell and matches nothing — pass `-T` on anything whose output is read, and keep its stderr out of the file being parsed; **a record written before the thing it records is live is a record that lies** — with no migration to apply, the new commit is only deployed once its container is actually up, so write the record after the start, not at the quiesce; **a trap armed half-way down a script reads variables the script may not have assigned yet** — under `set -u` the handler dies instead of recovering, so initialise every input first and install one handler at the top, and clear `errexit` before classifying inside it; **`timeout` bounds the client, not the container** — a killed `docker compose run` leaves the one-off running with its transaction open, so name the container, kill it, wait for it under a bound and reap it before asking the database anything, and bound that question too — **and reap on every non-success, not only on the timeout's exit codes**, because a client that loses its connection to the daemon exits 1 while the container keeps running, and a reconciliation run alongside a live migrator can restart the old image just in time for the migrator to commit the new schema under it; **`ABORT` is PostgreSQL's alias for `ROLLBACK`** — a guard that lists the transaction-control statements by sample rather than taking the group whole will miss one, and one is enough; **`docker compose ps` omits stopped containers** — a completed one-shot is invisible without `--all`, so a correct startup can fail a done-check written against plain `ps`; **a line an application prints on purpose is still a credential when somebody else reads the log** — Loom's first boot prints the Lobby's secret link by design, so a session running `docker compose logs` over SSH puts it in the controller's transcript: redact at the **reader** as well as at the writer, and let a done-check match on the server and print only its verdict; **arm a recovery before the command it recovers from, never after it** — `docker compose stop` can stop the container and still exit non-zero, and a flag set only on success leaves the handler disarmed over a stopped application, so set it first and clear it again only on positive evidence that nothing was stopped; **a comment stripper that does not understand quoting deletes the statement the guard exists to find** — `VALUES ('--')` turns the rest of the line into a comment for any scanner that strips comments as a phase, so a SQL guard must be one stateful pass in which a comment is only a comment in the code state; **a printed recovery command is only a recovery if it works in the shell that reads it** — a `docker compose …` that relies on the script's own working directory fails in the `/root` shell the operator actually opens, so print `cd <absolute path> && …`, name the environment file, and name every record by its absolute path; **a failure to ask is not an answer** — `docker inspect … || return 0` reads a daemon that is not answering as "the container is not there", which is precisely the outage that left the container running, so classify the error text and treat anything but "No such object" as unknown — **and one classified call site does not classify the file**, because the same `|| true` was still deciding whether a backup got taken and whether a previous deployment existed: put the three-way classification in one helper and route every inspection through it, so the next call site cannot be written the old way; **a stop you did not verify is not a stop** — `docker stop`, `docker kill` and `docker wait` can all fail quietly, so re-inspect and require `exited` or `dead` before believing anything about the database, and make the unprovable case its own state rather than a warning; **`docker compose up -d <service>` REPLACES that service's container** — compose finds it by project and service *labels*, stops it, renames it aside and removes it, so the container a recovery meant to restart is gone the moment the new one is created, **and `docker rename` does not hide it**, because the labels are what the lookup uses: keep the *image id* and the *deployed commit's own compose file* instead, and reconstruct from those two; **"the container was created" is not "the application is serving"** — `up -d` returns 0 as soon as Docker has started the process, so a state variable set there disarms a recovery on the strength of nothing, and only a request the application answered may do that; and **a trap cannot recover an interruption that is not an exit** — a power loss or a `SIGKILL` runs no handler at all, so write an intent record before the first irreversible step, reconcile it at the top of every later invocation, and remove it only once the thing it intended is a durable fact |
 | [ARCHITECTURE.md](../../ARCHITECTURE.md) §10 | A third paragraph: the two root-level profiles are the **standalone** install, `deploy/` is the **beside another Caddy** install, and this is where the shared `web` network and the sites-folder hook are described. The sentence "Migrations run on every boot in `main.ts`" is corrected to name `LOOM_MIGRATE_ON_BOOT` |
 | [README.md](../../../README.md) "Running locally" | A short **Deploying beside another Caddy** paragraph pointing at `deploy/` and naming the one command; the existing production paragraph keeps describing the standalone `--profile prod` install |
 | [TESTING.md](../../TESTING.md) §1 | The generalised truncate guard (`_test` suffix), the testcontainer's database name, and the sentence about pointing `TEST_DATABASE_URL` somewhere safe (§6). One more sentence in the build-before-test paragraph: `src/server/test/migrate.test.ts` runs the built entry as a child process, so it is one of the suites that needs `pnpm -r build` first (§11.2). And one on the two **package-local** Testcontainers fixtures, `src/core/test/pg-container.ts` and `src/server/test/pg-container.ts`: the migration suites start a Postgres of their own rather than using the shared global-setup database, because they need one with no migrations applied (§11.1, §11.2) |
@@ -4404,7 +4530,7 @@ that ships the code without it leaves the repository describing a world that no 
 | [KNOWN-ISSUES.md](../../KNOWN-ISSUES.md) and [v2-notes.md](v2-notes.md) — **the first-boot Lobby link** | **One row and one note added, and this is review round 6's F1 follow-up.** `main.ts` prints the Lobby's `/w/<43-character secret>` link unredacted on the boot that creates it — by design, documented in the README, and the only way a first operator learns where the Lobby is. It is also the reason every log read in this slice goes through `redact_logs` (§8.1) and the reason §9 step 4's done-check asserts a shape on the server instead of reading the log. The note records the alternative for a later slice: **gate that one line behind an explicit flag** (`LOOM_PRINT_LOBBY_LINK=1`, say) so the secret is printed only when someone asked for it, and have the unflagged boot print the Lobby's id alone. **It is not this slice's change** — it alters an interface the README documents and a first-run path nothing else has exercised, and redacting at the reader already closes the transcript hole this slice is responsible for. The KNOWN-ISSUES row is the defect statement, the v2-notes entry is the idea with this decision attached |
 | [`.gitignore`](../../../.gitignore) | **Eight** lines, beside the existing `.env`: `deploy/.deployed-sha`, `deploy/.verified-sha`, `deploy/.deployed-image`, `deploy/.update-state`, `deploy/.dump-in-progress` (round 10's F2) and the three atomic-write temporaries `deploy/.deployed-sha.new`, `deploy/.verified-sha.new` and `deploy/.update-state.new`. All eight are server state written by `live-update.sh`, and an untracked file in the checkout would trip the script's own clean-tree check — including one a killed run left behind, which is why the temporaries are named too (§4, §4.1, §4.5 banners 1, 2, 3, 7 and 8). Eight explicit lines rather than a glob, so a reviewer can read what is ignored — and a `deploy/.deployed-*` glob would have covered neither `.update-state` nor `.dump-in-progress` |
 | [v2-notes.md](v2-notes.md) | The "A live Loom instance …" entry becomes **built**, dated, with the hostname, the `deploy/` path and a one-line pointer to this spec; the 2026-09-20 dogfood finding about the session-less `GET` gains its "fixed in PR #N" note |
-| [CONTRIBUTING.md](../../../CONTRIBUTING.md) | **A new short section, `## Migrations`, after `## Concurrency conventions`** — this is the one convention this slice does add, in answer to review round 4's F4. Four bullets now, the fourth being review round 8's F4 as review round 10's F3 corrects it: **the journal's `when` values must be strictly increasing in file order**, so a migration generated on a long-lived branch and merged **after** a newer one must be **regenerated** — and that is **three** deletions, not two: the unmerged migration's `.sql` file, its `_journal.json` entry **and its `meta/<NNNN>_snapshot.json`**, restoring `meta/` to the merged-`main` baseline (`git checkout origin/main -- src/core/drizzle/meta` when the only unmerged migration is yours; otherwise remove that one snapshot file by hand, because that command would discard a second unmerged migration too) — then re-run `drizzle-kit generate` and commit that. The reason the snapshot must go is that **`drizzle-kit generate` diffs against the newest snapshot file in `meta/`, chosen by name and independently of the journal** (`prepareOutFolder`'s `readdirSync` + `sort` and `preparePrevSnapshot`'s `snapshots[snapshots.length - 1]` in `drizzle-kit@0.31.10`, §5.1) — so a snapshot left behind already contains the change, the diff is empty, and `generate` prints `No schema changes, nothing to migrate` and emits **no replacement at all**, leaving the author with a deleted migration and nothing to merge. **Already-deployed migrations are never touched**: their file, journal entry and snapshot all stay, because the live database's rows are matched against them by `(created_at, hash)`. All of it is needed because the branch's original stamp is older than a migration the live database has already applied, and a database whose rows are not an exact prefix of the journal makes `migrationStatus` refuse and stops the deployment at §4.5 banner 6 with Loom still serving. Editing the `when` by hand is not the fix: the entry's hash is recorded with it, so a stamp edited after the file has been applied anywhere produces a hash mismatch instead (§5.1). And the other three: **a run is one transaction**, which is what makes a failed migration a no-op and the deployment's recovery possible (§4.5); **so a migration file may not contain a transaction-control statement or a statement PostgreSQL cannot run inside a transaction block** — the list of §5.1, enforced by `assertTransactionSafe`, which `runMigrations` and `migrate --check` both call, and which §11.1 runs over every real file; and **a migration that genuinely needs to be non-transactional is a guarded hand-run deployment**, never an input `live-update.sh` accepts (§13). It is in CONTRIBUTING and not only in the spec because it binds every future migration, and a rule that lives in one slice's design document is a rule the next author will not read |
+| [CONTRIBUTING.md](../../../CONTRIBUTING.md) | **A new short section, `## Migrations`, after `## Concurrency conventions`** — this is the one convention this slice does add, in answer to review round 4's F4. Four bullets now, the fourth being review round 8's F4 as review round 10's F3 corrects it: **the journal's `when` values must be strictly increasing in file order**, so a migration generated on a long-lived branch and merged **after** a newer one must be **regenerated** — and that is **three** deletions, not two: the unmerged migration's `.sql` file, its `_journal.json` entry **and its `meta/<NNNN>_snapshot.json`**, restoring `meta/` to the merged-`main` baseline (`git fetch origin` then `git restore --source=origin/main --staged --worktree -- src/core/drizzle/meta` when the only unmerged migration is yours; otherwise remove that one snapshot file by hand, because that command would discard a second unmerged migration too) — then re-run `drizzle-kit generate` and commit that. **It has to be `git restore` and not `git checkout`, which is round 11's F2**: `git checkout <ref> -- <path>` is *overlay* mode and leaves every branch-only file in place, so the obsolete `meta/<NNNN>_snapshot.json` survives the very command that was supposed to remove it and the regeneration still emits nothing; `git restore` is non-overlay by default and stages the deletion (verified in a throwaway repository, §5.1). On Git older than 2.23, `git rm -r --cached` + `rm -rf` + `git checkout origin/main -- src/core/drizzle/meta` is the equivalent. The reason the snapshot must go is that **`drizzle-kit generate` diffs against the newest snapshot file in `meta/`, chosen by name and independently of the journal** (`prepareOutFolder`'s `readdirSync` + `sort` and `preparePrevSnapshot`'s `snapshots[snapshots.length - 1]` in `drizzle-kit@0.31.10`, §5.1) — so a snapshot left behind already contains the change, the diff is empty, and `generate` prints `No schema changes, nothing to migrate` and emits **no replacement at all**, leaving the author with a deleted migration and nothing to merge. **Already-deployed migrations are never touched**: their file, journal entry and snapshot all stay, because the live database's rows are matched against them by `(created_at, hash)`. All of it is needed because the branch's original stamp is older than a migration the live database has already applied, and a database whose rows are not an exact prefix of the journal makes `migrationStatus` refuse and stops the deployment at §4.5 banner 6 with Loom still serving. Editing the `when` by hand is not the fix: the entry's hash is recorded with it, so a stamp edited after the file has been applied anywhere produces a hash mismatch instead (§5.1). And the other three: **a run is one transaction**, which is what makes a failed migration a no-op and the deployment's recovery possible (§4.5); **so a migration file may not contain a transaction-control statement or a statement PostgreSQL cannot run inside a transaction block** — the list of §5.1, enforced by `assertTransactionSafe`, which `runMigrations` and `migrate --check` both call, and which §11.1 runs over every real file; and **a migration that genuinely needs to be non-transactional is a guarded hand-run deployment**, never an input `live-update.sh` accepts (§13). It is in CONTRIBUTING and not only in the spec because it binds every future migration, and a rule that lives in one slice's design document is a rule the next author will not read |
 | `.claude/launch.json` | **Unchanged, deliberately.** It stays pinned to port 3000: it is the *development* preview harness on Paw's PC, and the live instance is not something the harness starts. DOGFOOD's gap list said it "cannot start the live instance without editing it" — that row is not a gap any more, it is the right behaviour, and §13 says so |
 
 ## 11. Tests
@@ -4850,12 +4976,13 @@ secret it handled. What stands in for automation on the rest:
   uninterruptible I/O survives `TERM` and `KILL`, and `sync -f` is under no `timeout` at all (round
   9's F2). No `pg_dump` can outlive its client **unnoticed** either, because a
   timed-out dump is followed by a bounded `pkill -TERM -f pg_dump` **inside** the Postgres container
-  and then by a bounded `pgrep -f pg_dump` that looks for what the signal was aimed at; anything but
-  `pgrep`'s own "nothing matched" writes `deploy/.dump-in-progress`, and the next
-  invocation refuses to fetch, dump, migrate **or reconcile** until a `pgrep` of its own answers
-  "nothing matched" — **and that marker cannot be taken away by the restore that follows it, because
-  it is its own file and not a key inside `.update-state`, which R6 removes** (F1, round 9's F2,
-  round 10's F2). **Nor can an interrupted update be reconciled beside a live migrator, because the
+  and then by a bounded in-container check that looks for what the signal was aimed at and prints
+  its own verdict; anything but a definite `DUMP_GONE` writes `deploy/.dump-in-progress`, and the
+  next invocation refuses to fetch, dump, migrate **or reconcile** until a check of its own is
+  answered `DUMP_GONE` — **and that marker cannot be taken away by the restore that follows it,
+  because it is its own file and not a key inside `.update-state`, which R6 removes** — **nor by a
+  Docker failure that merely looks like an empty answer, which is round 11's F1** (F1, round 9's
+  F2, round 10's F2, round 11's F1). **Nor can an interrupted update be reconciled beside a live migrator, because the
   reconciliation reaps `loom-migrate-run` through `reap_oneoff`'s verified semantics before it
   probes, reads a status or compares anything, and an unproven reap refuses, restores nothing and
   keeps the record** (round 10's F1). No `curl` can block on an accepted connection that never
@@ -5194,7 +5321,7 @@ round found that branch by reading rather than by running:
 | Leftover `.update-state`, case (b) | everything committed: `.deployed-sha` = the target, `start_target_and_prove`, `.update-state` gone, exit non-zero — **and the same case with the target never answering**, where the record **stays** and `LOOM IS DOWN` is printed, which is round 8's F2 |
 | Leftover `.update-state`, case (c) | a partial apply and an unreadable status: `manual_recovery` printed, the record **left in place**, nothing started |
 | Failed dump → R2's sibling R6 | the dump stub exits non-zero: `restore_prev` starts the container whose image id **is** `PREV_IMAGE`, the probe answers, the record is unchanged and `.update-state` is gone |
-| A dump that blocks on a lock → the handler restores Loom | round 8's F1 and round 9's F2: the `timeout` stub returns **124** for the dump, and the case asserts the deadline it was given was `--signal=TERM --kill-after=15 330` and that what it wrapped was the **whole pipeline** (the stub records the `bash -c` script, and the assertion is that it contains both `pg_dump` and `gzip`), that the **next** `docker` call is the bounded `exec … pkill -TERM -f pg_dump` and the one after it the bounded `exec … pgrep -f pg_dump`, that a `pgrep` answering with nothing leaves **no** `deploy/.dump-in-progress` file behind, and that the run then takes R6 and serves again |
+| A dump that blocks on a lock → the handler restores Loom | round 8's F1 and round 9's F2: the `timeout` stub returns **124** for the dump, and the case asserts the deadline it was given was `--signal=TERM --kill-after=15 330` and that what it wrapped was the **whole pipeline** (the stub records the `bash -c` script, and the assertion is that it contains both `pg_dump` and `gzip`), that the **next** `docker` call is the bounded `exec … pkill -TERM -f pg_dump` and the one after it the bounded `exec … sh -c` verdict check, that a check answering **exit 0 with `DUMP_GONE`** leaves **no** `deploy/.dump-in-progress` file behind, and that the run then takes R6 and serves again |
 | Migrator timeout → reap → classify | `timeout` returns 124 for the migrator, the reap's calls appear in order (inspect, stop, wait, logs, inspect, rm), and the status read that follows decides R10 or R11 according to the scenario's `--check` answer |
 | Unreapable → R13 | the post-stop `inspect` answers `running`: **no** status read and **no** `up` appear in `$CALLS` at all, and `manual_recovery` is printed — round 7's F1 as an assertion about calls that must be *absent* |
 | Failed start, no migration → restore by image id | the target never answers: the container's `{{.Image}}` differs from `PREV_IMAGE`, so the case asserts the removal, the `docker tag` of `PREV_IMAGE`, the `git show` of `PREV_SHA:deploy/docker-compose.yml`, the `up` through that file, and the probe **before** `.update-state` is removed |
@@ -5208,7 +5335,8 @@ round found that branch by reading rather than by running:
 | **Nothing outside the temporary root was read or written** | round 9's F1: the happy path with a migration, run whole, with `$TEST_ROOT/.mark` touched first. Afterwards the case asserts (a) no stub wrote a `VIOLATION` line — so every host path handed to `docker`, `git` or `curl` was under the root — and (b) `find "$TEST_ROOT" -newer "$TEST_ROOT/.mark"` lists exactly the files the case expects (the records, the dump, the site block, the lock, the temporaries) and nothing else. The `docker` stub also fails the case if any `-v`'s host side, `--env-file`, `--project-directory` or `-f` names a path outside the root |
 | Timed-out volume inspection → stop and restore | round 9's F3: the `docker` stub makes `volume inspect loom_pgdata` return **124** with empty stderr. The case asserts that `$CALLS` contains **no** `pg_dump`, **no** migrator run and **no** `up -d --no-build loom`, that `inspection unanswered` was printed, that the run took R6 and restored the previous deployment, and that the words `first deployment` appear **nowhere** in the output — the exact wrong turn the previous listing would have taken |
 | Unreadable previous image with `.deployed-sha` present | round 9's F3: `.deployed-sha` holds a SHA and the stub makes the `inspect --format '{{.Image}}'` of banner 3 fail with a daemon error. The case asserts the run stopped **before** `docker compose build` and before any `stop` — `$CALLS` has neither — that `.update-state` was never written, and that the exit code is non-zero. The sibling case, where that inspection answers `No such object` while `.deployed-sha` exists, asserts the same refusal with the other message |
-| A dump that is not proven gone → `.dump-in-progress`, and it survives the restore | round 9's F2 as round 10's F2 corrects it: the `timeout` stub returns 124 for the dump pipeline and the `docker` stub answers the following `pgrep -f pg_dump` with a pid. The case asserts the `pkill` and then the `pgrep` appear in `$CALLS` in that order, that **`deploy/.dump-in-progress` exists**, that the run took R6 and Loom is serving — **and that `deploy/.update-state` is gone while the marker is still there**, which is the invariant the seventh-key design could not hold. Then it **runs the script a second time**, with the stub still answering `pgrep` with a pid, and asserts that it printed `REFUSING TO RUN`, made **no** `git fetch`, ran no dump and no migrator, left the marker in place and exited non-zero — and a **third** time, with `pgrep` now answering exit 1 and nothing, asserting that the marker is removed and the run proceeds to a normal deployment |
+| A dump that is not proven gone → `.dump-in-progress`, and it survives the restore | round 9's F2 as round 10's F2 corrects it and round 11's F1 sharpens it: the `timeout` stub returns 124 for the dump pipeline and the `docker` stub answers the following verdict check with **exit 0 and `DUMP_RUNNING`**. The case asserts the `pkill` and then the `exec … sh -c` check appear in `$CALLS` in that order, that **`deploy/.dump-in-progress` exists**, that the run took R6 and Loom is serving — **and that `deploy/.update-state` is gone while the marker is still there**, which is the invariant the seventh-key design could not hold. Then it **runs the script a second time**, with the stub still answering `DUMP_RUNNING`, and asserts that it printed `REFUSING TO RUN`, made **no** `git fetch`, ran no dump and no migrator, left the marker in place and exited non-zero — and a **third** time, with the check now answering exit 0 and `DUMP_GONE`, asserting that the marker is removed and the run proceeds to a normal deployment |
+| A verdict check that is not answered → the marker is written, and kept | round 11's F1, the finding's own reproduction turned into two cases. **Writing:** the `timeout` stub returns 124 for the dump pipeline and the `docker` stub makes the verdict check **exit 1 with empty stdout and a line on stderr** — the shape a Compose or daemon failure has, and the shape the previous gate mistook for "nothing matched". The case asserts that `deploy/.dump-in-progress` **exists** anyway, that the words `NOT proven gone` and the stub's stderr text were printed, and that the run took R6. **Keeping:** the same stub answer on a run that starts with the marker already present, asserting `REFUSING TO RUN`, the marker **still there**, no `git fetch`, no dump, no migrator, and a non-zero exit. Two sibling answers assert the same two outcomes for **exit 0 with empty stdout** and for **exit 0 with unrecognised stdout**, because "it ran and said something else" is as much a non-answer as "it never ran" |
 | Leftover `.update-state` + a migrator that cannot be reaped | round 10's F1: `.update-state` is present and the `docker` stub answers the reconciliation's post-stop `inspect --format '{{.State.Status}}' loom-migrate-run` with `running`. The case asserts that `$CALLS` contains **no** `--check` status read, **no** `docker start`, **no** `up -d --no-build loom` and **no** `git fetch`; that `REFUSING TO RECONCILE` naming `loom-migrate-run` was printed; that `deploy/.update-state` is **still there** and `deploy/.deployed-sha` unchanged; and that the exit code is non-zero. The sibling case, where the same inspection answers `No such object`, asserts the ordinary case (a) reconciliation runs and restores — so the refusal is shown to be about the *unproven* answer and not about the reap existing |
 
 **Which paths the harness can prove untouched, and which it cannot — said plainly, because F1 asked
@@ -5257,7 +5385,12 @@ Short, and each one a property a reviewer can check.
   `.update-state` two short SHAs, an image id, an image tag, a list of drizzle journal tags and a
   UTC timestamp, and `.dump-in-progress` the single character `1`. None of those is a credential, so the reconciliation of §4.5 banner 2 may print what it
   read — and does, because the operator needs it — and none of the five needs a mode stricter than
-  the directory's. They are nevertheless all git-ignored (§10) for a different reason: they are
+  the directory's. **What banner 2 also prints, since round 11's F1, is not one of the five**: when
+  the in-container dump check is not answered, its **stderr** is printed so that the operator can
+  tell a stopped container from an unreachable daemon. Docker's diagnostics are not credentials
+  either, but they are text this script did not write, so they go through `redact_logs` like every
+  other line of foreign output (`docker compose logs`, the migrator's output) rather than being
+  trusted for being short. They are nevertheless all git-ignored (§10) for a different reason: they are
   server state, and an untracked file inside the checkout trips the script's own clean-tree check.
   The same holds of the harness of §11.7: its stubs' recorded call lists hold container names, image
   ids, short SHAs and journal tags, and it runs against no real credential at all — the `.env` it
@@ -5398,8 +5531,8 @@ Each with the reason it is out, so that a later slice can pick it up without re-
   and `git` reads are unbounded for the same reason and are short; the whole pre-quiesce phase is
   unbounded on purpose, because Loom is still serving through it.
   **And more bounded waits sit outside the quiesce, all of them on an invocation that finds work
-  left over.** A `deploy/.dump-in-progress` marker costs one bounded `pgrep` (60 s) before the run
-  either clears it or refuses; and an invocation that finds `deploy/.update-state` spends up to
+  left over.** A `deploy/.dump-in-progress` marker costs one bounded in-container verdict check
+  (60 s) before the run either clears it or refuses; and an invocation that finds `deploy/.update-state` spends up to
   **420 s** reaping `loom-migrate-run` and another **420 s** reaping `loom-migrate-check` (round
   10's F1: seven bounded `dk` calls each) before it probes anything, then up to 120 s on its
   reconciliation's status read, then up to 380 s restoring — during which Loom is already down,
@@ -5465,14 +5598,19 @@ Each with the reason it is out, so that a later slice can pick it up without re-
   above — round 10's F2.** It says a pre-update `pg_dump` could not be proven gone inside
   `loom-postgres-1` (§4.5 banner 8). While it exists every invocation refuses before the fetch — no
   dump, no migration, and **no reconciliation of an interrupted update either** — after asking once
-  more with a bounded in-container `pgrep`, which is also the only thing that removes it (§4.5
-  banner 2). **Why it is a file rather than a key in `.update-state`:** the run that writes it is
+  more with a bounded in-container check whose verdict the container prints itself, and a definite
+  `DUMP_GONE` from that check is the only thing that removes it (§4.5 banner 2, round 11's F1). **Why it is a file rather than a key in `.update-state`:** the run that writes it is
   on the R6 path, and a successful R6 removes `.update-state` — so a marker living inside that
   record died with the restore that was supposed to leave it standing, and the next update walked
   into the dump it existed to prevent. What it does **not** promise: the script cannot kill a
-  process the kernel will not kill, and it cannot tell a dump that is genuinely wedged from a
-  `pgrep` that was simply not answered — both are marked, both refuse, and the by-hand `rm -f` is
-  offered only for the case where the container itself is gone and cannot be asked.
+  process the kernel will not kill, and it cannot tell a dump that is genuinely wedged from a check
+  that was simply not answered — both are marked, both refuse, and the by-hand `rm -f` is
+  offered only for the case where the container itself is gone and cannot be asked. **What it now
+  does promise, which is round 11's F1, is that those two cases are told apart from a dump that is
+  genuinely gone:** the container prints `DUMP_GONE` or `DUMP_RUNNING` itself, and a transport
+  failure — exit 1, nothing on stdout, a line on stderr — can no longer impersonate the first of
+  those. The refusal is deliberately the *safe* side of the ambiguity, so the residual cost is an
+  operator running one command, and never a migration over a snapshot nobody knew was open.
 
 - **No scheduled backups, no retention and no rotation.** `live-update.sh` takes one dump
   immediately before it migrates, which is the moment a dump is actually wanted. Nothing takes a
@@ -5824,9 +5962,16 @@ better written down now than discovered then.
    is round 10's F3:** deleting the `.sql` file and the journal entry is not enough, because
    `drizzle-kit generate` takes its previous schema from the newest `meta/*_snapshot.json` and not
    from the journal — so the obvious two-file deletion produces `No schema changes, nothing to
-   migrate` and no replacement migration at all. The snapshot has to go with them. §5.1 and
-   CONTRIBUTING say what to do, with the drizzle-kit call sites the claim was checked against;
-   nobody has done it yet. **The check depends on computing the same hash drizzle inserts**, and it takes
+   migrate` and no replacement migration at all. The snapshot has to go with them. **And round
+   11's F2 is the trap inside that fix**: the command round 10 wrote down for it,
+   `git checkout origin/main -- src/core/drizzle/meta`, is Git's *overlay* mode and does not delete
+   the branch-only snapshot at all — it restores the baseline files around it and leaves it as the
+   newest input to the next `generate`, so the remedy looked done and was not. The written remedy
+   is now `git fetch origin` and
+   `git restore --source=origin/main --staged --worktree -- src/core/drizzle/meta`, non-overlay by
+   default, with the pre-2.23 equivalent beside it. §5.1 and CONTRIBUTING say what to do, with the
+   drizzle-kit call sites the claim was checked against and the throwaway-repository run that
+   showed both the defect and the fix; nobody has done it on a real branch yet. **The check depends on computing the same hash drizzle inserts**, and it takes
    it from drizzle's own `readMigrationFiles` for exactly that reason — but a drizzle upgrade that
    changes how the hash is derived would turn every clean database into "drift" and refuse every
    boot and every update. §11.1 case 4 is the alarm: it applies the real migrations and reads the
