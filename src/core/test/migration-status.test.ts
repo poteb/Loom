@@ -5,8 +5,8 @@ import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import {
-  assertTransactionSafe, closeDb, createDb, migrationStatus, migrationsFolder, runMigrations,
-  type Db,
+  assertPendingTransactionSafe, assertTransactionSafe, closeDb, createDb, migrationStatus,
+  migrationsFolder, runMigrations, type Db,
 } from "@loom/core";
 import { startPgContainer } from "./pg-container.js";
 
@@ -40,9 +40,14 @@ beforeAll(async () => {
 }, 180_000);
 
 afterAll(async () => {
-  for (const db of openDbs) await closeDb(db);
-  await container?.stop();
-  for (const dir of tempFolders) fs.rmSync(dir, { recursive: true, force: true });
+  // A rejecting closeDb must not strand the container or the temp folders: the cleanup that costs
+  // something outside this process runs whatever the handles do.
+  try {
+    for (const db of openDbs) await closeDb(db);
+  } finally {
+    await container?.stop();
+    for (const dir of tempFolders) fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 /** A database of this container's own with nothing applied to it. */
@@ -94,11 +99,34 @@ function writeFolderRaw(
   return dir;
 }
 
-/** The real journal's tags, in the journal's order. */
-const JOURNAL_TAGS: readonly string[] = (
+/** The real journal, as written on disk. */
+const JOURNAL_ENTRIES: ReadonlyArray<{ tag: string; when: number }> = (
   JSON.parse(fs.readFileSync(path.join(migrationsFolder(), "meta", "_journal.json"), "utf8")) as
-    { entries: ReadonlyArray<{ tag: string }> }
-).entries.map((e) => e.tag);
+    { entries: ReadonlyArray<{ tag: string; when: number }> }
+).entries;
+
+/** The real journal's tags, in the journal's order. */
+const JOURNAL_TAGS: readonly string[] = JOURNAL_ENTRIES.map((e) => e.tag);
+
+/**
+ * The real migrations folder with its last `drop` entries removed: the same `.sql` bytes and the
+ * same journal stamps, so the rows a full `runMigrations` inserted stay a valid prefix of it and
+ * the only difference is that the database holds MORE rows than the journal has entries.
+ */
+function writeTruncatedRealFolder(drop: number): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "loom-migrations-"));
+  tempFolders.push(dir);
+  fs.mkdirSync(path.join(dir, "meta"));
+  const kept = JOURNAL_ENTRIES.slice(0, JOURNAL_ENTRIES.length - drop);
+  fs.writeFileSync(path.join(dir, "meta", "_journal.json"), JSON.stringify({
+    version: "7", dialect: "postgresql",
+    entries: kept.map((e, idx) => ({ idx, version: "7", when: e.when, tag: e.tag, breakpoints: true })),
+  }));
+  for (const e of kept) {
+    fs.copyFileSync(path.join(migrationsFolder(), `${e.tag}.sql`), path.join(dir, `${e.tag}.sql`));
+  }
+  return dir;
+}
 
 async function regclass(db: Db, name: string): Promise<string | null> {
   const rows = await db.execute(sql`select to_regclass(${name}) as present`);
@@ -201,6 +229,19 @@ describe("migrationStatus against the real migrations", () => {
     expect(message).toContain(JOURNAL_TAGS[1]!);
     // What the row at that position actually held: entry 2's stamp, now sitting at position 1.
     expect(message).toContain(String(rows[2]!.created_at));
+  });
+
+  it("a database ahead of the journal is drift, and the message carries the remedy", async () => {
+    const db = await freshDatabase();
+    await runMigrations(db);
+    // The checkout an older branch would give: every applied row is still a valid prefix, there are
+    // simply more of them than the journal has entries.
+    const folder = writeTruncatedRealFolder(1);
+    const message = await rejectionMessage(migrationStatus(db, folder));
+    expect(message).toContain(`the database holds ${JOURNAL_TAGS.length} rows for ${JOURNAL_TAGS.length - 1} journal entries`);
+    expect(message).toContain("The database is ahead of this checkout");
+    expect(message).toContain("pull or merge the branch that added them");
+    expect(message).toContain(`fix the repository, not the database (CONTRIBUTING.md, "Migrations")`);
   });
 });
 
@@ -364,6 +405,8 @@ const REJECTED: ReadonlyArray<{ statement: string; keyword: string }> = [
   { statement: "CREATE INDEX CONCURRENTLY i ON t (c);", keyword: "CONCURRENTLY" },
   { statement: "DROP INDEX CONCURRENTLY i;", keyword: "CONCURRENTLY" },
   { statement: "REINDEX INDEX CONCURRENTLY i;", keyword: "CONCURRENTLY" },
+  { statement: "REFRESH MATERIALIZED VIEW CONCURRENTLY mv;", keyword: "CONCURRENTLY" },
+  { statement: "ALTER TABLE t DETACH PARTITION p CONCURRENTLY;", keyword: "CONCURRENTLY" },
   { statement: "VACUUM;", keyword: "VACUUM" },
   { statement: "CREATE DATABASE d;", keyword: "CREATE DATABASE" },
   { statement: "DROP DATABASE d;", keyword: "DROP DATABASE" },
@@ -403,6 +446,11 @@ describe("case 10: the look-alikes the guard must not refuse", () => {
     accepts("CREATE INDEX i ON t (c);");
     accepts(`ALTER TABLE t RENAME COLUMN "end" TO c;`);
     accepts(`CREATE TABLE "commit" (id int);`);
+  });
+
+  it("accepts the two CONCURRENTLY forms' look-alikes, which carry no CONCURRENTLY", () => {
+    accepts("REFRESH MATERIALIZED VIEW mv;");
+    accepts("ALTER TABLE t DETACH PARTITION p;");
   });
 
   it("accepts a quoted form holding a comment opener when nothing follows it", () => {
@@ -485,5 +533,44 @@ describe("case 11: a comment between two keywords does not join them", () => {
     accepts("ALTER TABLE t/* comment */RENAME COLUMN a TO b;");
     accepts("INSERT INTO t(c)/**/VALUES ('commit');");
     accepts("SELECT CASE WHEN x THEN 1 ELSE 2 END/**/FROM t;");
+  });
+});
+
+describe("the located first line is the offending statement's own", () => {
+  it("names the statement, not drizzle's breakpoint marker or a preceding comment", () => {
+    // Every drizzle-generated file separates statements with this marker, so a locator that started
+    // at the previous `;` would print the marker on almost every real refusal.
+    expect(refusal(`create table t (id int);
+--> statement-breakpoint
+COMMIT;`)).toContain("First line of the offending statement: COMMIT;");
+    expect(refusal(`  -- a preceding comment
+  COMMIT;`)).toContain("First line of the offending statement: COMMIT;");
+  });
+});
+
+describe("assertPendingTransactionSafe over a folder's pending files", () => {
+  it("refuses the pending set, naming the unsafe file", () => {
+    const folder = writeFolder([
+      { tag: "0000_safe", when: 100, sql: "create table t_safe (id int);" },
+      { tag: "0001_unsafe", when: 200, sql: "create table t_two (id int);\nCOMMIT;" },
+    ]);
+    let message: string | undefined;
+    try {
+      assertPendingTransactionSafe(["0000_safe", "0001_unsafe"], folder);
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message, "assertPendingTransactionSafe accepted an unsafe pending set").toBeDefined();
+    expect(message).toContain("0001_unsafe.sql");
+    expect(message).toContain("may not contain COMMIT");
+    expect(message).not.toContain("0000_safe.sql");
+  });
+
+  it("returns when every pending file is safe", () => {
+    const folder = writeFolder([
+      { tag: "0000_safe", when: 100, sql: "create table t_safe (id int);" },
+      { tag: "0001_also_safe", when: 200, sql: "create index i on t_safe (id);" },
+    ]);
+    expect(() => assertPendingTransactionSafe(["0000_safe", "0001_also_safe"], folder)).not.toThrow();
   });
 });

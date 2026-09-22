@@ -101,7 +101,9 @@ export async function migrationStatus(db: Db, folder: string = migrationsFolder(
   if (rows.length > expected.length) {
     throw new Error(
       `the applied migrations are not a prefix of the journal: the database holds ${rows.length} ` +
-      `rows for ${expected.length} journal entries in ${folder}`);
+      `rows for ${expected.length} journal entries in ${folder}. The database is ahead of this ` +
+      `checkout: pull or merge the branch that added them, or, if they were applied by hand, fix ` +
+      `the repository, not the database (CONTRIBUTING.md, "Migrations").`);
   }
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i]!, want = expected[i]!;
@@ -140,9 +142,16 @@ type Statement = { readonly words: readonly string[]; readonly firstLine: string
 
 function offendingKeyword(words: readonly string[]): string | undefined {
   for (const seq of LEADING) if (seq.every((w, k) => words[k] === w)) return seq.join(" ");
-  // Not a leading keyword: PostgreSQL refuses these three INSIDE a transaction block, and the word
-  // that makes them illegal is CONCURRENTLY rather than the verb.
-  if ((words[0] === "CREATE" || words[0] === "DROP" || words[0] === "REINDEX") && words.includes("CONCURRENTLY")) {
+  // Not a leading keyword: PostgreSQL refuses these INSIDE a transaction block, and the word that
+  // makes them illegal is CONCURRENTLY rather than the verb. REFRESH covers
+  // `REFRESH MATERIALIZED VIEW CONCURRENTLY`, ALTER covers `ALTER TABLE … DETACH PARTITION
+  // CONCURRENTLY`; no legitimate ALTER runs CONCURRENTLY inside a transaction either, and
+  // CONCURRENTLY is a reserved word, so an unquoted one can only be the keyword.
+  if (
+    (words[0] === "CREATE" || words[0] === "DROP" || words[0] === "REINDEX"
+      || words[0] === "REFRESH" || words[0] === "ALTER")
+    && words.includes("CONCURRENTLY")
+  ) {
     return "CONCURRENTLY";
   }
   // Legal since PG 12, and still refused: the new label cannot be USED in the same transaction, and
@@ -163,15 +172,21 @@ function offendingKeyword(words: readonly string[]): string | undefined {
 function statements(text: string): Statement[] {
   const out: Statement[] = [];
   let code = "";
-  let start = 0;
+  // The offset of the STATEMENT's own first code character, or -1 while nothing but whitespace and
+  // comments has been seen since the last flush. Advancing it only at a `;` would make the located
+  // "first line" whatever preceded the statement — in a drizzle-generated file, always the literal
+  // `--> statement-breakpoint`.
+  let start = -1;
   let i = 0;
   const flush = (end: number) => {
     const words = code.toUpperCase().match(/[A-Z_][A-Z0-9_$]*/g) ?? [];
     if (words.length > 0) {
-      const firstLine = text.slice(start, end).split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? "";
+      const from = start === -1 ? 0 : start;
+      const firstLine = text.slice(from, end).split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? "";
       out.push({ words, firstLine });
     }
     code = "";
+    start = -1;
   };
   while (i < text.length) {
     const c = text[i]!;
@@ -228,7 +243,9 @@ function statements(text: string): Statement[] {
         continue;
       }
     }
-    if (c === ";") { flush(i); i += 1; start = i; continue; }
+    // The `;` belongs to the statement it ends, so the located line reads as it does in the file.
+    if (c === ";") { flush(i + 1); i += 1; continue; }
+    if (start === -1 && !/\s/.test(c)) start = i;
     code += c;
     i += 1;
   }
