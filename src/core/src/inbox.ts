@@ -32,6 +32,7 @@ export async function inbox(db: Db, actor: Actor, weaveId: string, opts: { since
     ne(events.actor, me.id),
     or(
       and(eq(events.type, "thread.invited"), sql`${events.payload}->>'participantId' = ${me.id}`),
+      and(eq(events.type, "thread.removed"), sql`${events.payload}->>'participantId' = ${me.id}`),
       and(eq(events.type, "message"), sql`${events.payload}->'mentions' ? ${me.id}`),
       // The Lobby's addressed events. Each names its audience in its own payload key, and nothing
       // else in the Lobby reaches anyone: these events wake nobody through a Weave's all-events mode.

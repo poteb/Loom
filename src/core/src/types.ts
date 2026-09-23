@@ -2,7 +2,7 @@ import type { Profile } from "./lobby/matching.js";
 
 export type EventType =
   | "message" | "participant.joined" | "participant.role_changed"
-  | "thread.created" | "thread.closed" | "thread.invited" | "thread.url_changed"
+  | "thread.created" | "thread.closed" | "thread.invited" | "thread.removed" | "thread.url_changed"
   | "weave.archived" | "weave.guidelines_changed"
   // Lobby. All of these are addressed-only: they never wake anyone through a Weave's "all events" mode.
   | "participant.capabilities_changed"

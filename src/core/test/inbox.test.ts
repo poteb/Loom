@@ -9,6 +9,7 @@ import { setCapabilities } from "../src/lobby/profile.js";
 import { accept, complete, offer, openRequest, sweepOverdue, sweepRequests } from "../src/lobby/requests.js";
 import { inviteParticipant } from "../src/invites.js";
 import { postMessage } from "../src/messages.js";
+import { removeParticipant } from "../src/removals.js";
 import { inbox } from "../src/inbox.js";
 import { resolveCredential } from "../src/actors.js";
 import { seedKeepers } from "../src/keepers.js";
@@ -89,6 +90,21 @@ describe("inbox", () => {
     expect((await core.inbox(agent, r.weave.id, {})).map((e) => e.seq)).toEqual([m.seq]);
     const other = await core.createWeave({ title: "O", opener: "", creator: { name: "Q", kind: "human" } });
     await expect(core.inbox(agent, other.weave.id, {})).rejects.toMatchObject({ code: "forbidden" });
+  });
+
+  it("inbox returns thread.removed naming me and not others", async () => {
+    const r = await createWeave(db, bus, { title: "T", opener: "", creator: { name: "Paw", kind: "human" } });
+    const paw = await resolveCredential(db, r.token);
+    const b = await joinWeave(db, bus, r.secret, { name: "Bot", kind: "agent" });
+    const o = await joinWeave(db, bus, r.secret, { name: "Other", kind: "agent" });
+    const t = await createThread(db, bus, paw, r.weave.id, "PR 1", null);
+    await inviteParticipant(db, bus, paw, t.id, b.participant.id);
+    await inviteParticipant(db, bus, paw, t.id, o.participant.id);
+    const removed = await removeParticipant(db, bus, paw, t.id, b.participant.id);
+    const mine = await inbox(db, await resolveCredential(db, b.token), r.weave.id, {});
+    expect(mine.filter((e) => e.type === "thread.removed").map((e) => e.seq)).toEqual([removed.seq]);
+    const theirs = await inbox(db, await resolveCredential(db, o.token), r.weave.id, {});
+    expect(theirs.map((e) => e.type)).not.toContain("thread.removed");
   });
 });
 

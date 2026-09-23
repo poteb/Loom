@@ -79,7 +79,7 @@ export type AcceptOptions = {
 /** What `accept` is told besides who: the deadline, required, and judged here rather than by an adapter. */
 export type AcceptInput = { deadlineMs?: unknown };
 
-type RequestRow = typeof requests.$inferSelect;
+export type RequestRow = typeof requests.$inferSelect;
 type OfferRow = typeof requestOffers.$inferSelect;
 
 function toPublicOffer(o: OfferRow): PublicOffer {
@@ -133,14 +133,19 @@ export function computedStatus(row: { status: string; expiresAt: Date }, now: Da
 }
 
 /**
- * The seq `appendInTx` will give the last **request** event in `news`: it assigns
+ * The seq `appendInTx` will give the last **request mutation** in `news`: it assigns
  * `weave.lastSeq + 1 ..` in order, in the same transaction as the row write beside it. Reading it
- * ahead lets the request row carry its own version without a second write after the append.
+ * ahead lets the request row carry its own version without a second write after the append. A
+ * mutation is every `request.*` event, and a `thread.removed` that carries a `requestId`, because
+ * a removal changes the acceptances every reader of the request sees (spec §6.5 step 7, §6.10).
  */
-function versionOf(weave: { lastSeq: number }, news: NewEvent[]): number {
-  const idx = news.reduce((last, e, i) => (e.type.startsWith("request.") ? i : last), -1);
+export function versionOf(weave: { lastSeq: number }, news: NewEvent[]): number {
+  const idx = news.reduce((last, e, i) => (isRequestMutation(e) ? i : last), -1);
   return weave.lastSeq + idx + 1;
 }
+
+const isRequestMutation = (e: NewEvent): boolean =>
+  e.type.startsWith("request.") || (e.type === "thread.removed" && typeof e.payload.requestId === "string");
 
 async function requestRow(db: Queryable, requestId: string): Promise<RequestRow> {
   if (!isUuid(requestId)) throw errors.validation("No such request");
@@ -222,6 +227,29 @@ function assertRequesterOrLobbyKeeper(actor: Actor, lobbyId: string, requesterId
     && actor.participant.id === requesterId;
   if (!isRequester) assertIsKeeperOf(actor, lobbyId);
   return isRequester;
+}
+
+/**
+ * Whether the authority recorded when the request opened still holds: the recorded participant is
+ * still a keeper of the target, or the recorded instance keeper still exists. `accept` makes the
+ * same check and refuses with a message of its own; a removal's target half skips instead (§6.5).
+ */
+export async function recordedAuthorityHolds(tx: Tx, row: RequestRow): Promise<boolean> {
+  if (row.requesterTargetParticipantId) {
+    const [p] = await tx.select({ weaveId: participants.weaveId, role: participants.role })
+      .from(participants).where(eq(participants.id, row.requesterTargetParticipantId));
+    return !!p && p.weaveId === row.targetWeaveId && p.role === "keeper";
+  }
+  if (row.requesterTargetKeeperId) {
+    const [k] = await tx.select({ id: keepers.id }).from(keepers).where(eq(keepers.id, row.requesterTargetKeeperId));
+    return !!k;
+  }
+  return false;
+}
+
+/** The attribution the recorded target principal writes under: its participant id, or `keeper:<id>`. */
+export function recordedAttribution(row: RequestRow): string {
+  return row.requesterTargetParticipantId ?? `keeper:${row.requesterTargetKeeperId}`;
 }
 
 /**

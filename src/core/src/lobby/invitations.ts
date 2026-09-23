@@ -123,6 +123,7 @@ export async function redeemInvitation(
     return await withWeaveLock(db, bus, peek.targetWeaveId, async (tx, weave) => {
       const [inv] = await tx.select().from(weaveInvitations).where(eq(weaveInvitations.id, inviteId)).for("update");
       if (!inv || inv.redeemedAt) throw errors.forbidden("Invitation already redeemed");
+      if (inv.revokedAt) throw errors.forbidden("This invitation was withdrawn");
       const isInvitee = (actor.kind === "participant" && actor.participant.id === inv.inviteeParticipantId)
         || (actor.kind === "agent" && inv.inviteeAgentId !== null && actor.agent.id === inv.inviteeAgentId);
       if (!isInvitee) throw errors.forbidden("This invitation is addressed to someone else");

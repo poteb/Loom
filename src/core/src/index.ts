@@ -10,6 +10,7 @@ import * as weaves from "./weaves.js";
 import * as threads from "./threads.js";
 import { postMessage } from "./messages.js";
 import { inviteParticipant } from "./invites.js";
+import { removeParticipant, type RemovalResult } from "./removals.js";
 import { inbox } from "./inbox.js";
 import { setRole } from "./participants.js";
 import { exportWeave } from "./export.js";
@@ -66,6 +67,7 @@ export function createCore(db: Db) {
     getThreadWeaveId: async (threadId: string) => (await threads.getThread(db, threadId)).weaveId,
     postMessage: async (actor: Actor, threadId: string, text: string) => postMessage(db, bus, await forThread(actor, threadId), threadId, text),
     inviteParticipant: async (actor: Actor, threadId: string, participantId: string) => inviteParticipant(db, bus, await forThread(actor, threadId), threadId, participantId),
+    removeParticipant: async (actor: Actor, threadId: string, participantId: string) => removeParticipant(db, bus, await forThread(actor, threadId), threadId, participantId),
     setRole: async (actor: Actor, weaveId: string, participantId: string, role: Role) => setRole(db, bus, await resolveInWeave(db, actor, weaveId), weaveId, participantId, role),
     exportWeave: async (actor: Actor, weaveId: string, format: "md" | "json") => exportWeave(db, await resolveInWeave(db, actor, weaveId), weaveId, format),
     // No unauthenticated getSettings on the facade: adapters go through readSettings, which
@@ -143,5 +145,6 @@ export { validateRequirements, matches, admits, eligible, isLive, type Profile, 
 // The listeners query's types live beside its validation, so an adapter has one place to import from.
 export { type Listener, type ListenersFacets, type ListenersPage, type ListenersQuery, type ListenersSort, type ServesKind, type FacetValue, type ModelFacet } from "./lobby/listeners-input.js";
 export { type InvitationDraft } from "./lobby/invitations.js";
+export { type RemovalResult } from "./removals.js";
 export { computedStatus, type PublicRequest, type PublicOffer, type PublicAcceptance, type OpenRequestInput, type RequestStatus, type CloseReason, type AcceptOptions, type AcceptInput } from "./lobby/requests.js";
 export type * from "./types.js";
