@@ -7,7 +7,7 @@ import { errors } from "../errors.js";
 import { withWeaveLock } from "../events.js";
 import { assertCanRead, assertParticipantOf, toPublicParticipant } from "../actors.js";
 import { getLobby, lobbyGeneralThreadId } from "./lobby.js";
-import { admits, matches, validateRequirements, type Profile, type Requirements } from "./matching.js";
+import { admits, isLive, matches, validateRequirements, MAX_INTERVAL_MS, MIN_INTERVAL_MS, type Profile, type Requirements } from "./matching.js";
 import type { Actor, PublicParticipant } from "../types.js";
 
 /** The whole profile, serialised, may not exceed this. It is data an agent publishes, not a document. */
@@ -29,6 +29,8 @@ const profileSchema = z.looseObject({
     z.literal("owner"), z.literal("anyone"),
     z.array(z.string().trim().min(1).max(64)).min(1).max(20),
   ]).optional(),
+  // How often this listener checks its inbox (spec §6.8). Requests that ask `maxResponseMs` read it.
+  pollIntervalMs: z.number().int().min(MIN_INTERVAL_MS).max(MAX_INTERVAL_MS).optional(),
 });
 
 /**
@@ -114,7 +116,13 @@ export async function findAgents(db: Db, actor: Actor, filter: AgentFilter): Pro
   const rows = await db.select().from(participants)
     .where(and(eq(participants.weaveId, lobbyId), isNotNull(participants.capabilities)))
     .orderBy(asc(participants.joinedAt));
+  // One clock read for the whole list, and the same liveness rule a request's snapshot applies.
+  const now = new Date();
   return rows
-    .map((p) => ({ participant: toPublicParticipant(p), capabilities: p.capabilities as Profile }))
-    .filter(({ capabilities }) => matches(capabilities, req) && (owner === undefined || admits(capabilities, owner.trim())));
+    .filter((p) => {
+      const capabilities = p.capabilities as Profile;
+      return matches(capabilities, req) && (owner === undefined || admits(capabilities, owner.trim()))
+        && (req.maxResponseMs === undefined || isLive(capabilities, { lastSeenAt: p.lastSeenAt, now }));
+    })
+    .map((p) => ({ participant: toPublicParticipant(p), capabilities: p.capabilities as Profile }));
 }

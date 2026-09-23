@@ -12,6 +12,7 @@ export type Profile = {
   spawnsSubagents?: boolean;
   owner?: string;
   serves?: "owner" | "anyone" | string[];
+  pollIntervalMs?: number;
   [k: string]: unknown;
 };
 
@@ -21,7 +22,11 @@ export type Requirements = {
   tools?: string[];
   runtime?: string;
   spawnsSubagents?: boolean;
+  maxResponseMs?: number;
 };
+
+/** A cadence and a maximum response time are both a minute to a day, the range `timeoutMs` uses. */
+export const MIN_INTERVAL_MS = 60_000, MAX_INTERVAL_MS = 86_400_000;
 
 const reqSchema = z.object({
   models: z.array(z.object({
@@ -31,6 +36,7 @@ const reqSchema = z.object({
   tools: z.array(z.string().trim().min(1).max(64)).max(50).optional(),
   runtime: z.string().trim().min(1).max(64).optional(),
   spawnsSubagents: z.boolean().optional(),
+  maxResponseMs: z.number().int().min(MIN_INTERVAL_MS).max(MAX_INTERVAL_MS).optional(),
 }).strict();
 
 /** The one rule for a request's requirements: known keys only, within their bounds, trimmed. */
@@ -46,6 +52,8 @@ export function matches(profile: Profile, req: Requirements): boolean {
   if (req.tools && !req.tools.every((t) => (profile.tools ?? []).includes(t))) return false;
   if (req.runtime !== undefined && profile.runtime !== req.runtime) return false;
   if (req.spawnsSubagents !== undefined && profile.spawnsSubagents !== req.spawnsSubagents) return false;
+  // A requester asking for a maximum response time needs a declared cadence at most that long.
+  if (req.maxResponseMs !== undefined && (typeof profile.pollIntervalMs !== "number" || profile.pollIntervalMs > req.maxResponseMs)) return false;
   return true;
 }
 
@@ -57,7 +65,24 @@ export function admits(profile: Profile, owner: string): boolean {
   return owner !== "" && serves.includes(owner);
 }
 
-/** Matches ∧ admits. A participant with no profile is never eligible. */
-export function eligible(profile: Profile | null, req: Requirements, owner: string): boolean {
-  return profile !== null && matches(profile, req) && admits(profile, owner);
+/** When a listener was last seen, and the clock the caller reads "now" from. */
+export type Seen = { lastSeenAt: Date | null; now: Date };
+
+/**
+ * The liveness term (spec §6.8): seen within twice its own declared cadence, exactly twice still
+ * counting. The factor of two tolerates one missed beat of a scheduler whose interval is nominal.
+ */
+export function isLive(profile: Profile, seen: Seen | undefined): boolean {
+  if (!seen || seen.lastSeenAt === null || typeof profile.pollIntervalMs !== "number") return false;
+  return seen.now.getTime() - seen.lastSeenAt.getTime() <= 2 * profile.pollIntervalMs;
+}
+
+/**
+ * Matches and admits, and, only when the requirements ask `maxResponseMs`, is live. Without that
+ * key liveness is never read, so every request that exists today matches exactly as before. A
+ * participant with no profile is never eligible.
+ */
+export function eligible(profile: Profile | null, req: Requirements, owner: string, seen?: Seen): boolean {
+  if (profile === null || !matches(profile, req) || !admits(profile, owner)) return false;
+  return req.maxResponseMs === undefined || isLive(profile, seen);
 }

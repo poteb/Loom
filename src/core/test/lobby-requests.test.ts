@@ -232,6 +232,21 @@ describe("openRequest", () => {
     await expect(offer(db, bus, f.bobbot.actor, req.id, {})).rejects.toMatchObject({ code: "forbidden" });
     expect((await getRequest(db, f.claude.actor, req.id)).eligible).toEqual([f.pawbot.id, f.shared.id]);
   });
+
+  it("openRequest's eligibility snapshot applies the liveness term when maxResponseMs is asked", async () => {
+    const f = await setup();
+    const now = new Date();
+    await setCapabilities(db, bus, f.pawbot.actor, { models: [MODEL], owner: "paw", serves: "owner", pollIntervalMs: 300_000 });
+    await setCapabilities(db, bus, f.shared.actor, { models: [MODEL], owner: "shared", serves: "anyone", pollIntervalMs: 300_000 });
+    await db.update(participants).set({ lastSeenAt: new Date(now.getTime() - 60_000) }).where(eq(participants.id, f.pawbot.id));
+    await db.update(participants).set({ lastSeenAt: new Date(now.getTime() - 20 * 60_000) }).where(eq(participants.id, f.shared.id));
+    const live = await openRequest(db, bus, f.claude.actor, f.targetKeeper,
+      inputFor(f, { requirements: { models: [MODEL], maxResponseMs: 600_000 } }), now);
+    expect(live.eligible).toEqual([f.pawbot.id]);
+    // Without the key, liveness is not read: every request that exists today matches as before.
+    const plain = await openRequest(db, bus, f.claude.actor, f.targetKeeper, inputFor(f, { title: "Review PR 15" }), now);
+    expect(plain.eligible).toEqual([f.pawbot.id, f.shared.id]);
+  });
 });
 
 describe("offer", () => {

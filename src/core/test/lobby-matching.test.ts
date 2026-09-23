@@ -171,3 +171,42 @@ describe("eligible", () => {
     expect(eligible(listener, { tools: ["github", "web"] }, "paw")).toBe(false);
   });
 });
+
+describe("maxResponseMs and the liveness term", () => {
+  const polling: Profile = { ...listener, pollIntervalMs: 300_000 };
+  const NOW = new Date("2026-09-23T12:00:00.000Z");
+  const ago = (ms: number) => new Date(NOW.getTime() - ms);
+
+  it("maxResponseMs is a known requirement with bounds", () => {
+    expect(codeOf(() => validateRequirements({ maxResponseMs: 59_999 }))).toBe("validation");
+    expect(codeOf(() => validateRequirements({ maxResponseMs: 86_400_001 }))).toBe("validation");
+    expect(validateRequirements({ maxResponseMs: 60_000 })).toEqual({ maxResponseMs: 60_000 });
+  });
+
+  it("matches needs a declared pollIntervalMs when maxResponseMs is asked", () => {
+    expect(matches(listener, { maxResponseMs: 600_000 })).toBe(false);
+    expect(matches(polling, { maxResponseMs: 600_000 })).toBe(true);
+  });
+
+  it("matches rejects a pollIntervalMs above maxResponseMs and accepts one equal to it", () => {
+    expect(matches(polling, { maxResponseMs: 299_999 })).toBe(false);
+    expect(matches(polling, { maxResponseMs: 300_000 })).toBe(true);
+  });
+
+  it("eligible needs a lastSeenAt when maxResponseMs is asked", () => {
+    const req: Requirements = { maxResponseMs: 600_000 };
+    expect(eligible(polling, req, "paw", { lastSeenAt: null, now: NOW })).toBe(false);
+    expect(eligible(polling, req, "paw")).toBe(false);
+  });
+
+  it("eligible accepts lastSeenAt exactly 2 x pollIntervalMs ago and rejects 1 ms more", () => {
+    const req: Requirements = { maxResponseMs: 600_000 };
+    expect(eligible(polling, req, "paw", { lastSeenAt: ago(600_000), now: NOW })).toBe(true);
+    expect(eligible(polling, req, "paw", { lastSeenAt: ago(600_001), now: NOW })).toBe(false);
+  });
+
+  it("eligible ignores liveness when maxResponseMs is absent", () => {
+    expect(eligible(listener, { tools: ["github"] }, "paw")).toBe(true);
+    expect(eligible(listener, { tools: ["github"] }, "paw", { lastSeenAt: null, now: NOW })).toBe(true);
+  });
+});

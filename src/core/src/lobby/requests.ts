@@ -242,8 +242,9 @@ export async function openRequest(
     // ADR 0001: the owner is the requester's own declaration, read fresh from its profile. A
     // requester without a profile has owner "", whom only `serves: "anyone"` admits.
     const owner = (mine.capabilities as Profile | null)?.owner ?? "";
+    // Who was live at this moment is part of the snapshot: it is taken once and never recomputed.
     const eligible = ps
-      .filter((p) => p.id !== me.id && isEligible((p.capabilities as Profile | null) ?? null, requirements, owner))
+      .filter((p) => p.id !== me.id && isEligible((p.capabilities as Profile | null) ?? null, requirements, owner, { lastSeenAt: p.lastSeenAt, now }))
       .map((p) => p.id);
 
     await tx.insert(threads).values({ id: threadId, weaveId: lobbyId, name: title, createdBy: me.id, url, requestId });

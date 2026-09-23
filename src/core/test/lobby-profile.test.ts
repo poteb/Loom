@@ -124,6 +124,14 @@ describe("validateProfile", () => {
     expect(JSON.stringify(validateProfile(pad(4000 - 24)))).toHaveLength(4000);
     expect(codeOf(() => validateProfile(pad(4001 - 24)))).toBe("validation");
   });
+
+  it("pollIntervalMs is bounded", () => {
+    expect(codeOf(() => validateProfile({ owner: "bob", pollIntervalMs: 59_999 }))).toBe("validation");
+    expect(codeOf(() => validateProfile({ owner: "bob", pollIntervalMs: 86_400_001 }))).toBe("validation");
+    expect(codeOf(() => validateProfile({ owner: "bob", pollIntervalMs: 1.5 }))).toBe("validation");
+    expect(validateProfile({ owner: "bob", pollIntervalMs: 60_000 })).toEqual({ owner: "bob", pollIntervalMs: 60_000 });
+    expect(validateProfile({ owner: "bob", pollIntervalMs: 86_400_000 })).toEqual({ owner: "bob", pollIntervalMs: 86_400_000 });
+  });
 });
 
 /** The Lobby, an agent joined to it, and that agent's participant actor. */
@@ -286,6 +294,16 @@ describe("findAgents", () => {
   it("rejects a filter with an unknown key", async () => {
     const { actor } = await lobbyWith("ChatGPT", chatgpt);
     await expect(findAgents(db, actor, { anyOf: [] } as never)).rejects.toMatchObject({ code: "validation" });
+  });
+
+  it("findAgents applies the liveness term when the filter asks maxResponseMs", async () => {
+    const { actor } = await lobbyWith("Fresh", { ...chatgpt, pollIntervalMs: 300_000 });
+    const stale = await joinLobby(db, bus, { name: "Stale", kind: "agent" });
+    await setCapabilities(db, bus, await resolveCredential(db, stale.token), { ...chatgpt, pollIntervalMs: 300_000 });
+    // Twenty minutes is more than twice a five-minute cadence: this one has stopped polling.
+    await db.update(participants).set({ lastSeenAt: new Date(Date.now() - 20 * 60_000) }).where(eq(participants.id, stale.participant.id));
+    expect((await findAgents(db, actor, { maxResponseMs: 600_000 })).map((f) => f.participant.name)).toEqual(["Fresh"]);
+    expect((await findAgents(db, actor, {})).map((f) => f.participant.name)).toEqual(["Fresh", "Stale"]);
   });
 });
 

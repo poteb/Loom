@@ -136,7 +136,7 @@ export type { CreateWeaveInput, CreateWeaveResult, WeaveInfo, JoinResult } from 
 export type { PublicKeeper, SeedKeepersResult } from "./keepers.js";
 export type { Lobby } from "./lobby/lobby.js";
 export { validateProfile, validateOwner, MAX_PROFILE_LENGTH, type AgentFilter, type FoundAgent } from "./lobby/profile.js";
-export { validateRequirements, matches, admits, eligible, type Profile, type ModelSpec, type Requirements } from "./lobby/matching.js";
+export { validateRequirements, matches, admits, eligible, isLive, type Profile, type ModelSpec, type Requirements, type Seen } from "./lobby/matching.js";
 // The listeners query's types live beside its validation, so an adapter has one place to import from.
 export { type Listener, type ListenersFacets, type ListenersPage, type ListenersQuery, type ListenersSort, type ServesKind, type FacetValue, type ModelFacet } from "./lobby/listeners-input.js";
 export { type InvitationDraft } from "./lobby/invitations.js";
