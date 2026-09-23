@@ -207,6 +207,16 @@ instance's recovery design rests on all four.
   beside it, so a stamp edited after the file has been applied anywhere produces a hash mismatch
   instead.
 
+**Line endings, and a trap in an older Windows checkout.** [`.gitattributes`](.gitattributes) keeps
+every `*.sql`, everything under `src/core/drizzle/` and `deploy/*.sh` LF in the working tree on
+every platform, because the migrator hashes and runs the SQL byte for byte and Linux runs the shell.
+A Windows checkout made before PR #28 added those rules can still hold CRLF
+`src/core/drizzle/*.sql`, since git does not rewrite a file it sees as unchanged; the server then
+refuses to boot with the drift error (the applied migrations are not a prefix of the journal, on a
+`hash` mismatch). Renormalise once, from the repository root:
+
+    rm src/core/drizzle/*.sql deploy/*.sh && git checkout -- src/core/drizzle deploy
+
 ## Logging
 
 `redact()` in [`src/server/src/log.ts`](src/server/src/log.ts) and

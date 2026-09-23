@@ -320,7 +320,15 @@ which stays docketed for the owner's separate design session. How far past step 
 not recorded; the dated run paragraphs under smoke test 6 in [../../TESTING.md](../../TESTING.md)
 are the record.
 
-### A live Loom instance for the project's own use (Paw, 2026-09-20) — **built on `feat/live-instance`, 2026-09-22**
+### A live Loom instance for the project's own use (Paw, 2026-09-20): **shipped ([PR #28](https://github.com/poteb/Loom/pull/28), merged as `fa107f6`) and deployed 2026-09-22**
+
+**Status, 2026-09-23: deployed and in use.** `https://loom.3dbox.dk` answers; the first deployment
+(spec §9, steps 0 to 13) ran on 2026-09-22 from 21:00Z to 22:20Z, and the first real
+`deploy\live-update.cmd` deployed `74c2c10` (PR #29) with `health: ok`. PR #29 was also the first
+review on it: two rounds through the live Weave "Loom development"
+(`7718207a-1fbb-4369-bbfe-e773121d9aab`), closed with "no actionable findings remain". The protocol
+lesson, now in [../../DOGFOOD.md](../../DOGFOOD.md) §4: the reviewer's `inbox` returns only invites
+and @mentions, so every Thread line meant for it has to @mention it, *fixes pushed* included.
 
 An always-on Loom that holds the project's own review conversation, separate from development,
 updated only after a merge, so no feature branch's migration touches the room the reviews live in.
@@ -342,7 +350,19 @@ protects **every** database whose name does not end in `_test` rather than only 
 `docker-compose.yml`, the `run` scripts, `start_cloudflare_tunnel.cmd` and `.claude/launch.json` are
 deliberately **unchanged**: `deploy/` makes a second instance possible without parameterising the
 development stack, and the launch harness staying on port 3000 is the right behaviour rather than a
-gap. **The first deployment has not run yet** — it is the spec's section 9, step by step.
+gap. **The first deployment ran on 2026-09-22**, the spec's section 9 step by step, with three
+dated correction notes left in that section by the run.
+
+**A follow-up the deployment left: the live Weave still holds the pre-#29 guidelines.** "Loom
+development" was created by §9 step 11 from `deploy/weave-guidelines.md` as it stood before PR #29,
+so its Weave layer still carries the four em dashes that the committed file no longer has. Nothing
+carries a committed text into a running Weave: `live-update.sh` deploys code, not Weave content, and
+`create --guidelines -` read the file once. The CLI does have the command (`loom guidelines set -`
+reads stdin; a keeper of the Weave, here the Claude-Code agent that created it, may run it), so the
+fix is one hand-run step against the live instance, with `LOOM_CONFIG` on the live store and the
+file on stdin; it was run on 2026-09-23 (the live layer now equals the committed file, seq 13), so the two are in step until the next edit of the file. The candidate follow-up is making that sync a named step (a
+helper beside `prepare-chatgpt-paste.ps1`, or a line in the post-merge routine) so the committed
+text and the live Weave cannot drift apart unnoticed.
 
 **Follow-ups the whole-branch review left open** (none of them a defect this slice shipped):
 
