@@ -113,6 +113,7 @@ export function createCore(db: Db) {
     listRequests: async (actor: Actor, opts: { status?: requests.RequestStatus; limit?: number } = {}) =>
       requests.listRequests(db, await resolveInLobby(actor), opts),
     sweepRequests: (now?: Date) => requests.sweepRequests(db, bus, now),
+    sweepOverdue: (now?: Date) => requests.sweepOverdue(db, bus, now),
     seedKeepers: (tokens: string[]) => keepers.seedKeepers(db, tokens),
     listKeepers: (actor: Actor) => keepers.listKeepers(db, actor),
     addKeeper: (actor: Actor, name: string) => keepers.addKeeper(db, actor, name),

@@ -6,7 +6,7 @@ import { createThread } from "../src/threads.js";
 import { setRole } from "../src/participants.js";
 import { ensureLobby, joinLobby } from "../src/lobby/lobby.js";
 import { setCapabilities } from "../src/lobby/profile.js";
-import { accept, complete, offer, openRequest, sweepRequests } from "../src/lobby/requests.js";
+import { accept, complete, offer, openRequest, sweepOverdue, sweepRequests } from "../src/lobby/requests.js";
 import { inviteParticipant } from "../src/invites.js";
 import { postMessage } from "../src/messages.js";
 import { inbox } from "../src/inbox.js";
@@ -180,9 +180,15 @@ describe("inbox: addressed Lobby events", () => {
     const f = await lobbySetup();
     await offer(db, bus, f.pawbot.actor, f.request.id, {});
     await accept(db, bus, f.claude.actor, f.request.id, [f.pawbot.id], { deadlineMs: 3_600_000 });
+    // It goes overdue while it is working, then the agent completes it after all.
+    await sweepOverdue(db, bus, new Date(Date.now() + 2 * 3_600_000));
     await complete(db, bus, f.pawbot.actor, f.request.id);
-    expect((await types(f, f.claude)).filter((t) => t === "request.completed")).toEqual(["request.completed"]);
-    expect(await types(f, f.shared)).not.toContain("request.completed");
-    expect(await types(f, f.pawbot)).not.toContain("request.completed");
+    expect((await types(f, f.claude)).filter((t) => t === "request.overdue" || t === "request.completed"))
+      .toEqual(["request.overdue", "request.completed"]);
+    for (const other of [f.shared, f.pawbot]) {
+      const mine = await types(f, other);
+      expect(mine).not.toContain("request.overdue");
+      expect(mine).not.toContain("request.completed");
+    }
   });
 });

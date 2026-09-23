@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db, Queryable, Tx } from "../db/index.js";
 import { events, keepers, participants, requestOffers, requests, threads, weaves } from "../db/schema.js";
 import type { EventBus } from "../bus.js";
@@ -600,4 +600,42 @@ export async function sweepRequests(db: Db, bus: EventBus, now = new Date()): Pr
     if (didClose) closed++;
   }
   return closed;
+}
+
+/**
+ * Tells requesters about accepted work that missed its deadline (spec §6.4). One `request.overdue`
+ * per acceptance whose `due_at` is at or before `now`, not completed, not removed and not already
+ * reported, on a request still `working`: each in its own transaction, re-read inside the Lobby
+ * lock, so two sweeps racing emit once. The request stays `working`; the requester decides. The
+ * clock is the one expiry uses: the server sweeps both with one `now`. Returns how many it emitted.
+ */
+export async function sweepOverdue(db: Db, bus: EventBus, now = new Date()): Promise<number> {
+  const { weaveId: lobbyId } = await getLobby(db);
+  const due = await db.select({ requestId: requestOffers.requestId, participantId: requestOffers.participantId })
+    .from(requestOffers).innerJoin(requests, eq(requests.id, requestOffers.requestId))
+    .where(and(eq(requests.status, "working"), eq(requestOffers.accepted, true), lte(requestOffers.dueAt, now),
+      isNull(requestOffers.completedAt), isNull(requestOffers.removedAt), isNull(requestOffers.overdueAt)))
+    .orderBy(asc(requestOffers.dueAt));
+  let emitted = 0;
+  for (const d of due) {
+    const didEmit = await withWeaveLock(db, bus, lobbyId, async (tx, lobby) => {
+      const [fresh] = await tx.select().from(requests).where(eq(requests.id, d.requestId));
+      const [o] = await tx.select().from(requestOffers)
+        .where(and(eq(requestOffers.requestId, d.requestId), eq(requestOffers.participantId, d.participantId)));
+      if (!fresh || fresh.status !== "working" || !o || !isActive(o) || o.dueAt === null
+        || o.dueAt.getTime() > now.getTime() || o.completedAt !== null || o.overdueAt !== null) {
+        return { result: false, events: [] };
+      }
+      await tx.update(requestOffers).set({ overdueAt: now })
+        .where(and(eq(requestOffers.requestId, d.requestId), eq(requestOffers.participantId, d.participantId)));
+      const [p] = await tx.select({ lastSeenAt: participants.lastSeenAt }).from(participants).where(eq(participants.id, d.participantId));
+      const news: NewEvent[] = [{ threadId: fresh.threadId, type: "request.overdue", actor: "system",
+        payload: { requestId: fresh.id, participantId: d.participantId, dueAt: o.dueAt.toISOString(),
+          lastSeenAt: iso(p?.lastSeenAt ?? null), to: fresh.requesterId } }];
+      await tx.update(requests).set({ lastEventSeq: versionOf(lobby, news) }).where(eq(requests.id, fresh.id));
+      return { result: true, events: news };
+    });
+    if (didEmit) emitted++;
+  }
+  return emitted;
 }

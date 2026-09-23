@@ -6,7 +6,7 @@ export type EventType =
   | "weave.archived" | "weave.guidelines_changed"
   // Lobby. All of these are addressed-only: they never wake anyone through a Weave's "all events" mode.
   | "participant.capabilities_changed"
-  | "request.opened" | "request.offered" | "request.accepted" | "request.closed" | "request.completed"
+  | "request.opened" | "request.offered" | "request.accepted" | "request.closed" | "request.completed" | "request.overdue"
   | "weave.invited";
 
 export type LoomEvent = {
