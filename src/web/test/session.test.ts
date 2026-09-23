@@ -843,10 +843,22 @@ describe("session requests", () => {
     await anon.withToken(f.helper.token).offer(r.id, { model: MODEL.model, effort: MODEL.effort });
     const session = await makeSession({ kind: "secret", secret: f.secret }, f.storage);
     try {
-      await session.accept(r.id, [f.helper.participant.id]);
+      await session.accept(r.id, [f.helper.participant.id], 3_600_000);
       const held = session.getState().requests[r.id]!;
       expect(held.offers.filter((o) => o.accepted).map((o) => o.participantId)).toEqual([f.helper.participant.id]);
       expect(held.version).toBeGreaterThan(r.lastEventSeq);
+    } finally { session.dispose(); }
+  });
+
+  it("the session loads working requests with the open ones", async () => {
+    const f = await lobbyFixture();
+    const r = await f.open();
+    await anon.withToken(f.helper.token).offer(r.id, { model: MODEL.model, effort: MODEL.effort });
+    await anon.withToken(f.requester.token).acceptRequest(r.id, [f.helper.participant.id], 3_600_000);
+    const session = await makeSession({ kind: "secret", secret: f.secret }, f.storage);
+    try {
+      expect(session.getState().requests[r.id]?.status).toBe("working");
+      expect(session.getState().requests[r.id]?.acceptances.map((a) => a.participantId)).toEqual([f.helper.participant.id]);
     } finally { session.dispose(); }
   });
 

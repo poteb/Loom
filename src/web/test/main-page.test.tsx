@@ -587,6 +587,13 @@ describe("the other routes (spec §3.1)", () => {
     expect([v.container.textContent, v.container.querySelector("a")!.getAttribute("href")])
       .toEqual(["LoomNo such page. Go to the main page.", "/"]);
   });
+
+  it("no page links to /join-loom.md", async () => {
+    const v = mountApp({ path: "/" });
+    await settle();
+    const hrefs = [...v.container.querySelectorAll("a")].map((a) => a.getAttribute("href") ?? "");
+    expect(hrefs.filter((h) => h.endsWith("/join-loom.md"))).toEqual([]);
+  });
 });
 
 /**

@@ -354,6 +354,13 @@ describe("the Thread list marks nothing while the directory is open (spec §8)",
     await v.toggle();
     expect([v.directory(), thread().getAttribute("aria-current")]).toEqual([false, "true"]);
   });
+
+  it("the Lobby page renders no link to /join-loom.md", async () => {
+    const v = mountLobby();
+    await settle();
+    const hrefs = [...v.container.querySelectorAll("a")].map((a) => a.getAttribute("href") ?? "");
+    expect(hrefs.filter((h) => h.endsWith("/join-loom.md"))).toEqual([]);
+  });
 });
 
 describe("the deep link (spec §4.3)", () => {

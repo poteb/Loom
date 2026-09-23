@@ -10,7 +10,7 @@ import { ProfileCard } from "../src/components/ProfileCard.js";
 import { WeaveView } from "../src/components/WeaveView.js";
 import { App, routeOf } from "../src/app.js";
 import { MAX_GUIDELINES_LENGTH } from "@loom/core";
-import { LoomClient, type Offer } from "@loom/client";
+import { LoomClient, type Acceptance, type Offer } from "@loom/client";
 import { CLOSED_REQUESTS_PAGE, type Session, type SessionState } from "../src/session.js";
 import type { VersionedRequest } from "../src/requests-state.js";
 import { memoryStorage, type KeyValueStorage } from "../src/storage.js";
@@ -249,12 +249,62 @@ describe("RequestsPanel", () => {
     expect((screen.getByRole("button", { name: "accept Other" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("accepts an offer through the session", async () => {
+  it("Accept sends deadlineMs, 3600000 unless the requester changes it", async () => {
     const sn = session();
     render(<RequestsPanel state={lobbyState({ requests: { r1: request({ offers: [anOffer("p2")] }) } })} session={sn} onError={() => {}} now={NOW} />);
+    const deadline = screen.getByLabelText("Deadline (minutes)") as HTMLInputElement;
+    expect(deadline.value).toBe("60");
     fireEvent.click(screen.getByRole("button", { name: "accept Helper" }));
     await Promise.resolve();
-    expect(sn.accept).toHaveBeenCalledWith("r1", ["p2"]);
+    expect(sn.accept).toHaveBeenLastCalledWith("r1", ["p2"], 3_600_000);
+    fireEvent.input(deadline, { target: { value: "30" } });
+    fireEvent.click(screen.getByRole("button", { name: "accept Helper" }));
+    await Promise.resolve();
+    expect(sn.accept).toHaveBeenLastCalledWith("r1", ["p2"], 1_800_000);
+  });
+
+  it("the Offer form is offered before expiresAt, and not at or after it", () => {
+    // PR #32 round 3, F2. A working request with a standing offer from p3 and this browser (Helper, p2)
+    // eligible with a profile and no offer of its own; only the clock differs between the renders.
+    const expiresAt = "2026-09-16T14:00:00.000Z";
+    const at = Date.parse(expiresAt);
+    const working = request({ status: "working", wanted: 2, eligible: ["p2", "p3"], expiresAt, offers: [anOffer("p3")] });
+    const st = asHelper({ requests: { r1: working } });
+    const { rerender } = render(<RequestsPanel state={st} session={session()} onError={() => {}} now={at - 1} />);
+    expect(screen.getByLabelText("Model")).toBeTruthy();
+    rerender(<RequestsPanel state={st} session={session()} onError={() => {}} now={at} />);
+    expect(screen.queryByLabelText("Model")).toBeNull();
+    rerender(<RequestsPanel state={st} session={session()} onError={() => {}} now={at + 1} />);
+    expect(screen.queryByLabelText("Model")).toBeNull();
+    // The requester's Accept for the standing offer does not follow the window (spec 6.2).
+    const asRequester = lobbyState({ me: { participant: me, token: "t" }, participants: [me, helper, { ...helper, id: "p3", name: "Other" }], requests: { r1: working } });
+    rerender(<RequestsPanel state={asRequester} session={session()} onError={() => {}} now={at + 1} />);
+    expect(screen.getByRole("button", { name: "accept Other" })).toBeTruthy();
+  });
+
+  it("the panel shows a working request's acceptances with due, completed, removed and overdue", () => {
+    const acc = (participantId: string, over: Partial<Acceptance> = {}): Acceptance => ({
+      participantId, dueAt: "2026-09-16T14:30:00.000Z", completedAt: null, note: null, removed: false, removedAt: null,
+      overdue: false, overdueNotifiedAt: null, lastSeenAt: null, ...over,
+    });
+    const cast = [me, helper, { ...helper, id: "p3", name: "Other" }, { ...helper, id: "p4", name: "Fourth" }, { ...helper, id: "p5", name: "Fifth" }];
+    const working = request({
+      status: "working", wanted: 4, offers: ["p2", "p3", "p4", "p5"].map((p) => anOffer(p, { accepted: true })),
+      acceptances: [
+        acc("p2", { completedAt: "2026-09-16T13:20:00.000Z" }),
+        acc("p3", { removed: true, removedAt: "2026-09-16T13:25:00.000Z" }),
+        acc("p4", { dueAt: "2026-09-16T13:00:00.000Z" }),                // past NOW: overdue from the clock alone
+        acc("p5"),
+      ],
+    });
+    const { container } = render(<RequestsPanel state={lobbyState({ participants: cast, requests: { r1: working } })} session={session()} onError={() => {}} now={NOW} />);
+    expect([...container.querySelectorAll(".acceptance")].map((li) => li.textContent)).toEqual([
+      "Helper due 2026-09-16T14:30:00.000Z completed",
+      "Other due 2026-09-16T14:30:00.000Z removed",
+      "Fourth due 2026-09-16T13:00:00.000Z overdue",
+      "Fifth due 2026-09-16T14:30:00.000Z working",
+    ]);
+    expect(container.querySelectorAll(".request-list > li")).toHaveLength(1);    // working is live, not closed
   });
 
   it("shows Cancel to the requester and to nobody else", () => {
@@ -411,6 +461,14 @@ describe("ProfileCard", () => {
   it("renders nothing for a participant with no profile", () => {
     const { container } = render(<ProfileCard participant={bot} />);
     expect(container.innerHTML).toBe("");
+  });
+
+  it("ProfileCard shows 'seen N min ago' from lastSeenAt, and 'never seen' for null, under profile-seen", () => {
+    const now = Date.parse("2026-09-23T12:00:00.000Z");
+    const { container, rerender } = render(<ProfileCard participant={{ ...helper, lastSeenAt: "2026-09-23T11:55:00.000Z" }} now={now} />);
+    expect(container.querySelector(".profile-seen")!.textContent).toBe("seen 5 min ago");
+    rerender(<ProfileCard participant={{ ...helper, lastSeenAt: null }} now={now} />);
+    expect(container.querySelector(".profile-seen")!.textContent).toBe("never seen");
   });
 });
 

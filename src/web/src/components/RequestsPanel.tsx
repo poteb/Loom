@@ -1,10 +1,20 @@
 import { useEffect, useState } from "preact/hooks";
-import type { Offer, Participant, Requirements } from "@loom/client";
+import type { Acceptance, Offer, Participant, Requirements } from "@loom/client";
 import type { Session, SessionState, TargetWeave } from "../session.js";
-import { acceptedIds, displayStatus, type VersionedRequest } from "../requests-state.js";
+import { acceptedIds, activeAcceptedIds, displayStatus, type VersionedRequest } from "../requests-state.js";
 import { modelSpecs } from "./ProfileCard.js";
 
 const DEFAULT_TIMEOUT_MINUTES = 60;
+/** The deadline an Accept gives by default: one hour, 3 600 000 ms (spec §5.11). Core's bounds decide what is accepted. */
+const DEFAULT_DEADLINE_MINUTES = 60;
+
+/** An acceptance as the panel reports it: completed, removed, overdue (the clock is enough), or working. */
+export function acceptanceState(a: Acceptance, nowMs: number): "completed" | "removed" | "overdue" | "working" {
+  if (a.completedAt) return "completed";
+  if (a.removed) return "removed";
+  if (a.overdue || (a.dueAt !== null && nowMs >= Date.parse(a.dueAt))) return "overdue";
+  return "working";
+}
 
 /** How long an open request has left, from the clock alone — no version, no server round trip. */
 export function countdown(expiresAt: string, nowMs: number): string {
@@ -55,8 +65,10 @@ export function RequestsPanel({ state, session, onError, now }: {
   const rows = Object.values(state.requests)
     .map((r) => ({ r, status: displayStatus(r, nowMs) }))
     .sort((a, b) => a.r.createdAt.localeCompare(b.r.createdAt));
-  const open = rows.filter((x) => x.status === "open");
-  const closed = rows.filter((x) => x.status !== "open");
+  // Open and working requests are live; everything else has closed.
+  const live = (status: string) => status === "open" || status === "working";
+  const open = rows.filter((x) => live(x.status));
+  const closed = rows.filter((x) => !live(x.status));
   const title = (r: VersionedRequest) => state.threads.find((t) => t.id === r.threadId)?.name ?? "a request";
 
   return (
@@ -99,17 +111,22 @@ function RequestRow({ request, title, state, session, onError, nowMs }: {
   request: VersionedRequest; title: string; state: SessionState; session: Session; onError: (e: unknown) => void; nowMs: number;
 }) {
   const me: Participant | undefined = state.me?.participant;
-  const accepted = acceptedIds(request);
-  const full = accepted.length >= request.wanted;
+  const active = activeAcceptedIds(request);
+  const full = active.length >= request.wanted;
   const isRequester = !!me && me.id === request.requesterId;
   // Eligibility was decided when the request opened and is carried on the row; the profile is what
   // this browser's own participant declared, and without one there is nothing to offer with.
+  // The offer window is core's rule (spec 6.2): an offer at or after expiresAt is request_closed, and a
+  // working request stays in the live list after its window, so the form follows the clock too.
+  const windowOpen = nowMs < Date.parse(request.expiresAt);
   const canOffer = !!me && !isRequester && (request.eligible ?? []).includes(me.id) && !!me.capabilities
-    && !request.offers.some((o) => o.participantId === me.id);
+    && !request.offers.some((o) => o.participantId === me.id) && windowOpen;
   const name = (id: string) => state.participants.find((p) => p.id === id)?.name ?? "someone";
+  const standing = request.offers.filter((o) => !active.includes(o.participantId));
+  const [deadlineMinutes, setDeadlineMinutes] = useState(DEFAULT_DEADLINE_MINUTES);
 
   const accept = async (participantId: string) => {
-    try { await session.accept(request.id, [participantId]); } catch (e) { onError(e); }
+    try { await session.accept(request.id, [participantId], deadlineMinutes * 60_000); } catch (e) { onError(e); }
   };
   const cancel = async () => {
     try { await session.cancel(request.id); } catch (e) { onError(e); }
@@ -119,20 +136,36 @@ function RequestRow({ request, title, state, session, onError, nowMs }: {
     <li class="request">
       <div class="request-head">
         <strong>{title}</strong>
-        <span class="badge">{countdown(request.expiresAt, nowMs)}</span>
+        <span class="badge">{request.status === "working" ? "working" : countdown(request.expiresAt, nowMs)}</span>
       </div>
       <div class="req-needs">{needs(request.requirements)}</div>
-      <div class="req-count">{accepted.length} of {request.wanted} accepted</div>
+      <div class="req-count">{active.length} of {request.wanted} accepted</div>
       {request.offers.length > 0 && (
         <ul class="offers">
           {request.offers.map((o) => (
             <li key={o.participantId}>
               <span>{name(o.participantId)}{spec(o) ? ` (${spec(o)})` : ""}{o.note ? `: "${o.note}"` : ""}</span>
-              {o.accepted && <span class="badge">accepted</span>}
-              {isRequester && !o.accepted && (
+              {active.includes(o.participantId) && <span class="badge">accepted</span>}
+              {isRequester && !active.includes(o.participantId) && (
                 <button type="button" class="link" aria-label={`accept ${name(o.participantId)}`} disabled={full}
                   onClick={() => void accept(o.participantId)}>Accept</button>
               )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {isRequester && standing.length > 0 && (
+        <label class="req-deadline">deadline (minutes){" "}
+          <input type="number" min={1} aria-label="Deadline (minutes)" value={String(deadlineMinutes)}
+            onInput={(e) => setDeadlineMinutes(Number((e.target as HTMLInputElement).value))} />
+        </label>
+      )}
+      {request.acceptances.length > 0 && (
+        <ul class="acceptances">
+          {request.acceptances.map((a) => (
+            <li key={a.participantId} class="acceptance">
+              <span>{name(a.participantId)}</span> <span class="acceptance-due">due {a.dueAt ?? "-"}</span>{" "}
+              <span class="badge">{acceptanceState(a, nowMs)}</span>
             </li>
           ))}
         </ul>
