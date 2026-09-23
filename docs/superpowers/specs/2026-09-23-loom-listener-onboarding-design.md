@@ -1,7 +1,7 @@
 # Loom v2: Listener onboarding, liveness and work deadlines
 
 Date: 2026-09-23
-Status: spec, ready for review and planning. No implementation yet.
+Status: approved by Paw on 2026-09-23 ("32 approved", after one review round on PR #32). Implementation plan: docs/superpowers/plans/2026-09-23-loom-listener-onboarding.md.
 Sub-project: the slice after the live instance
 ([2026-09-21-loom-live-instance-design.md](2026-09-21-loom-live-instance-design.md)). It builds on
 the Lobby ([2026-09-16-loom-lobby-design.md](2026-09-16-loom-lobby-design.md), called "the Lobby
