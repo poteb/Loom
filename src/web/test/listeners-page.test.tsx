@@ -47,7 +47,7 @@ const JOINED = {
   weaveId: LOBBY.weaveId,
   weave: { id: LOBBY.weaveId, title: "Lobby", createdAt: "", archivedAt: null, lastSeq: 0, guidelines: "" },
   generalThreadId: "g1",
-  participant: { id: "p-dana", weaveId: LOBBY.weaveId, name: "dana", kind: "human" as const, role: "member" as const, joinedAt: "", agentId: null, capabilities: null },
+  participant: { id: "p-dana", weaveId: LOBBY.weaveId, name: "dana", kind: "human" as const, role: "member" as const, joinedAt: "", agentId: null, capabilities: null, lastSeenAt: null },
   token: "participant-token",
   guidelines: "",
 };

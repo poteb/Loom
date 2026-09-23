@@ -32,7 +32,7 @@ const JOINED = {
   weaveId: LOBBY.weaveId,
   weave: { id: LOBBY.weaveId, title: "Lobby", createdAt: "", archivedAt: null, lastSeq: 0, guidelines: "" },
   generalThreadId: "g1",
-  participant: { id: "p-dana", weaveId: LOBBY.weaveId, name: "dana", kind: "human", role: "member", joinedAt: "", agentId: null, capabilities: null },
+  participant: { id: "p-dana", weaveId: LOBBY.weaveId, name: "dana", kind: "human", role: "member", joinedAt: "", agentId: null, capabilities: null, lastSeenAt: null },
   token: "participant-token",
   guidelines: "",
 };
@@ -1940,7 +1940,7 @@ const ENTRY_LIMIT = 120;
 const CREATED_RESULT = {
   weave: { id: CREATED, title: "Test Weave", createdAt: "", archivedAt: null, lastSeq: 3, guidelines: "" },
   secret: NEW_SECRET,
-  participant: { id: "p-creator", weaveId: CREATED, name: "dana", kind: "human", role: "keeper", joinedAt: "", agentId: null, capabilities: null },
+  participant: { id: "p-creator", weaveId: CREATED, name: "dana", kind: "human", role: "keeper", joinedAt: "", agentId: null, capabilities: null, lastSeenAt: null },
   token: "keeper-token",
   generalThread: { id: "g-new", weaveId: CREATED, name: "General", isGeneral: true, createdBy: "p-creator", createdAt: "", closedAt: null, url: null },
   guidelines: "",

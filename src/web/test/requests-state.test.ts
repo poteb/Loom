@@ -12,7 +12,7 @@ function req(over: Partial<LoomRequest> = {}): LoomRequest {
     requirements: { models: [{ model: "gpt-5.6-sol", effort: "high" }] }, wanted: 2,
     targetWeaveId: "w2", targetWeaveTitle: "Loom session", targetThreadId: "t2", url: null,
     status: "open", expiresAt: EXPIRES, closedAt: null, lastEventSeq: 5,
-    createdAt: "2026-09-16T13:00:00.000Z", eligible: ["p2", "p3"], offers: [], ...over,
+    createdAt: "2026-09-16T13:00:00.000Z", eligible: ["p2", "p3"], offers: [], acceptances: [], ...over,
   };
 }
 function offer(participantId: string, over: Partial<Offer> = {}): Offer {

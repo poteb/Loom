@@ -4,7 +4,7 @@ import { openStream, type StreamHandle, type StreamOptions } from "./stream.js";
 import type {
   AcceptResult, Agent, AgentFilter, CreateWeaveInput, CreateWeaveResult, FoundAgent, InboxItem, InvitationResult, InviteResult,
   JoinResult, Keeper, Kind, ListenersPage, ListenersQuery, Lobby, LoomEvent, LoomRequest, Offer, OpenRequestInput,
-  Participant, Profile, RequestStatus, Role, Settings, Thread, Weave, WeaveInfo,
+  Participant, Profile, RemovalResult, RequestStatus, Role, Settings, Thread, Weave, WeaveInfo,
 } from "./types.js";
 
 export type LoomClientOptions = { baseUrl: string; token?: string; allowInsecure?: boolean; fetch?: typeof fetch };
@@ -167,10 +167,20 @@ export class LoomClient {
   offer(requestId: string, input: { model?: string; effort?: string; note?: string } = {}): Promise<Offer> {
     return this.call("POST", `/api/requests/${requestId}/offers`, input);
   }
-  /** The requester (or a Lobby keeper on its behalf) accepts offers; each accepted listener is
-   *  handed one invitation into the target Weave. */
-  acceptRequest(requestId: string, participantIds: string[]): Promise<AcceptResult> {
-    return this.call("POST", `/api/requests/${requestId}/accept`, { participantIds });
+  /** The requester (or a Lobby keeper on its behalf) accepts offers, giving each accepted listener
+   *  `deadlineMs` to call complete; each is handed one invitation into the target Weave. The server
+   *  requires the deadline: left out, it is answered `validation`. */
+  acceptRequest(requestId: string, participantIds: string[], deadlineMs?: number): Promise<AcceptResult> {
+    return this.call("POST", `/api/requests/${requestId}/accept`, { participantIds, deadlineMs });
+  }
+  /** An accepted listener says its work is done; the request closes once every accepted one has. */
+  completeRequest(requestId: string, note?: string): Promise<LoomRequest> {
+    return this.call("POST", `/api/requests/${requestId}/complete`, note === undefined ? {} : { note });
+  }
+  /** Takes a participant off a Thread (Thread creator or Weave keeper). On a request's Thread it also
+   *  removes that acceptance and, where the recorded authority allows, the agent's place in the work Thread. */
+  removeParticipant(threadId: string, participantId: string): Promise<RemovalResult> {
+    return this.call("POST", `/api/threads/${threadId}/removals`, { participantId });
   }
   cancelRequest(requestId: string): Promise<LoomRequest> {
     return this.call("POST", `/api/requests/${requestId}/cancel`);
@@ -201,7 +211,9 @@ export class LoomClient {
     addKeeper: (name: string): Promise<{ keeper: Keeper; token: string }> => this.call("POST", "/api/admin/keepers", { name }),
     removeKeeper: (id: string): Promise<void> => this.call("DELETE", `/api/admin/keepers/${id}`),
     listAgents: async (): Promise<Agent[]> => (await this.call<{ agents: Agent[] }>("GET", "/api/admin/agents")).agents,
-    addAgent: (name: string): Promise<{ agent: Agent; key: string }> => this.call("POST", "/api/admin/agents", { name }),
+    addAgent: (name: string, owner?: string): Promise<{ agent: Agent; key: string }> =>
+      this.call("POST", "/api/admin/agents", owner === undefined ? { name } : { name, owner }),
+    setAgentOwner: (id: string, owner: string): Promise<Agent> => this.call("PUT", `/api/admin/agents/${id}/owner`, { owner }),
     revokeAgent: (id: string): Promise<void> => this.call("DELETE", `/api/admin/agents/${id}`),
   };
 }
