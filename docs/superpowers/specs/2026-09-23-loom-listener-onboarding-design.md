@@ -474,6 +474,10 @@ channel passes nothing, so it always gets the generic wording.
 
 `isOpenAiClient(name)` is `true` exactly when `name`, lowercased, contains `chatgpt` or `openai`.
 
+*Correction, 2026-09-23 (smoke test 7, finding F1):* on the live instance ChatGPT's connector named
+itself `"codex-mcp-client" 0.155.0-alpha.16`, which contains neither word, so ChatGPT received the
+generic wording. `isOpenAiClient` now also matches `codex` (lowercased, contains).
+
 The server must log one line per MCP session at info level when the handshake completes (the SDK's
 `oninitialized` hook), through a new `logInfo(line)` in `src/server/src/log.ts` that writes
 `redact(line)` to stdout:
@@ -1638,6 +1642,15 @@ with Paw, each ending on a PASS or a recorded finding:
    ChatGPT had redeemed its invitation, otherwise `false` and the invitation revoked (`get_started`
    no longer lists it). The removal runs as `loom remove <requestThreadId> <participantId> --weave
    <lobbyId>`, or with `LOOM_AGENT_KEY` set; TESTING.md's smoke test 7 carries both.
+
+*First run, 2026-09-23, after the deploy of `5c5ebf3`: every step PASS, one finding.* Step 2:
+ChatGPT joined, registered and kept its existing 5-minute task rather than adding one. Step 3: the
+client name was `codex-mcp-client` (finding F1, fixed by matching `codex`, see §4.4). Step 5:
+opened 19:58:45Z. Step 6: offer 20:02:50Z, accept 20:03:26Z, `complete` 20:08:23Z. Step 7: opened
+20:08:59Z, offer 20:13:19Z, due 20:15:18Z, `request.overdue` 20:16:07Z (49 s late); the removal
+answered `acceptanceRemoved: true, targetRemoved: false` (not yet redeemed), and no pause was
+needed, the 2-minute deadline being shorter than the 5-minute poll. Cadence from `lastSeenAt` and
+the offers: about every five minutes. TESTING.md's smoke test 7 has the full record.
 
 The ledger (`.superpowers/sdd/<plan>/progress.md`) records: the merged commit and the lines
 `live-update` printed; the client name; the times of `request.opened`, the offer, the accept, the
