@@ -844,6 +844,18 @@ describe("complete", () => {
     await expect(complete(db, bus, f.pawbot.actor, req.id)).rejects.toMatchObject({ code: "forbidden", message: "Your acceptance was removed from this request" });
   });
 
+  it("complete by a Lobby keeper is forbidden: completion is the accepted agent's own statement", async () => {
+    const f = await setup();
+    const req = await twoOffers(f);
+    await accept(db, bus, f.claude.actor, req.id, [f.pawbot.id], DEADLINE);
+    // Both kinds of Lobby keeper: an instance keeper, and a Lobby participant with the keeper role.
+    await expect(complete(db, bus, f.instanceKeeper, req.id)).rejects.toMatchObject({ code: "forbidden" });
+    await setRole(db, bus, f.instanceKeeper, f.lobbyId, f.shared.id, "keeper");
+    const lobbyKeeper = await resolveCredential(db, f.shared.token);
+    await expect(complete(db, bus, lobbyKeeper, req.id)).rejects.toMatchObject({ code: "forbidden", message: "You have no accepted offer on this request" });
+    expect((await rowOf(req.id)).status).toBe("working");
+  });
+
   it("complete on a cancelled request is request_closed", async () => {
     const f = await setup();
     const req = await twoOffers(f);

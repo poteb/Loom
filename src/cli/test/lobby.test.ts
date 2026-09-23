@@ -447,7 +447,25 @@ describe("loom request", () => {
     const accepted = (await run(["request", "accept", r.id, sc.botId, "--deadline", "30m", "--json"], { cfg: sc.req })).json();
     const show = await run(["request", "show", r.id], { cfg: sc.req });
     expect(show.out).toContain("Acceptances:");
-    expect(show.out).toMatch(new RegExp(`  ${sc.botId}  due ${accepted.request.acceptances[0].dueAt}  working  seen \\S+`));
+    // The bot's own CLI calls stamped it, so "seen" is an instant, never the "never" of an unseen one.
+    expect(show.out).toMatch(new RegExp(`  ${sc.botId}  due ${accepted.request.acceptances[0].dueAt}  working  seen \\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z`));
+  });
+
+  it("request list and request show count only acceptances that are not removed, and call expiresAt the offer window", async () => {
+    const sc = await scenario();
+    const r = await open(sc);
+    await run(["request", "offer", r.id, "--json"], { cfg: sc.bot });
+    await run(["request", "accept", r.id, sc.botId, "--deadline", "30m", "--json"], { cfg: sc.req });
+    const lineOf = async () => (await run(["request", "list"], { cfg: sc.req })).out.split("\n").find((l) => l.startsWith(r.id))!;
+    expect(await lineOf()).toContain(`(1 offered, 1 accepted)  offers until ${hhmm(r.expiresAt)}`);
+    await run(["remove", r.threadId, sc.botId, "--weave", lobbyWeaveId, "--json"], { cfg: sc.req });
+    const line = await lineOf();
+    expect(line).toContain(`(1 offered, 0 accepted)  offers until ${hhmm(r.expiresAt)}`);
+    expect(line).not.toContain("expires");
+    const show = (await run(["request", "show", r.id], { cfg: sc.req })).out;
+    expect(show).toContain("  wants:    1 (0 accepted)\n");
+    expect(show).toContain(`  offers until: ${hhmm(r.expiresAt)}\n`);
+    expect(show).not.toContain("expires");
   });
 });
 

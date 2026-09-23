@@ -46,19 +46,23 @@ function acceptanceState(a: Acceptance): string {
 const acceptanceLine = (a: Acceptance): string =>
   `  ${a.participantId}  due ${a.dueAt ?? "-"}  ${acceptanceState(a)}  seen ${a.lastSeenAt ?? "never"}`;
 
-/** The one-line form `request list` prints, and the head of `request show`. */
+/** The acceptances that still count toward `wanted`: a removed one no longer does. */
+const activeAccepted = (r: LoomRequest): number => r.acceptances.filter((a) => !a.removed).length;
+
+/**
+ * The one-line form `request list` prints, and the head of `request show`. `expiresAt` is the
+ * offer window, not the request's end: a working request outlives it.
+ */
 function requestLine(r: LoomRequest): string {
-  const accepted = r.offers.filter((o) => o.accepted).length;
-  return `${r.id}  ${r.status}  wants ${r.wanted} (${r.offers.length} offered, ${accepted} accepted)  expires ${hhmm(r.expiresAt)}  → "${r.targetWeaveTitle}"`;
+  return `${r.id}  ${r.status}  wants ${r.wanted} (${r.offers.length} offered, ${activeAccepted(r)} accepted)  offers until ${hhmm(r.expiresAt)}  → "${r.targetWeaveTitle}"`;
 }
 
 function requestBlock(r: LoomRequest): string {
-  const accepted = r.offers.filter((o) => o.accepted).length;
   const lines = [
     `Request ${r.id} [${r.status}]`,
     `  owner:    ${r.owner || "(none)"}`,
-    `  wants:    ${r.wanted} (${accepted} accepted)`,
-    `  expires:  ${hhmm(r.expiresAt)}`,
+    `  wants:    ${r.wanted} (${activeAccepted(r)} accepted)`,
+    `  offers until: ${hhmm(r.expiresAt)}`,
     `  target:   "${r.targetWeaveTitle}" (${r.targetWeaveId}) thread ${r.targetThreadId}`,
     ...(r.url ? [`  url:      ${r.url}`] : []),
     `  requires: ${JSON.stringify(r.requirements)}`,
@@ -125,7 +129,7 @@ export function registerRequestCommands(program: Command, ctx: () => CliContext,
     });
 
   request.command("show <requestId>")
-    .description("One request, its computed status and its offers")
+    .description("One request, its computed status, its offers and its acceptances")
     .action(async (requestId: string) => {
       const c = ctx();
       const { client } = await lobbyContext(c);

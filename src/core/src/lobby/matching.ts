@@ -46,7 +46,11 @@ export function validateRequirements(r: unknown): Requirements {
   return p.data;
 }
 
-/** True when every requirement present is satisfied: any one model alternative, every tool, equal runtime and spawnsSubagents. */
+/**
+ * True when every requirement present is satisfied: any one model alternative, every tool, equal
+ * runtime and spawnsSubagents, and, when `maxResponseMs` is asked, a declared `pollIntervalMs` at
+ * most that (the cadence rule). Liveness is not read here: `eligible` and `findAgents` add `isLive`.
+ */
 export function matches(profile: Profile, req: Requirements): boolean {
   if (req.models && !req.models.some((want) => (profile.models ?? []).some((have) => have.model === want.model && (want.effort === undefined || have.effort === want.effort)))) return false;
   if (req.tools && !req.tools.every((t) => (profile.tools ?? []).includes(t))) return false;

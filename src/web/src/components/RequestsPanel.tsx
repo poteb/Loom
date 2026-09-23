@@ -126,7 +126,9 @@ function RequestRow({ request, title, state, session, onError, nowMs }: {
   const [deadlineMinutes, setDeadlineMinutes] = useState(DEFAULT_DEADLINE_MINUTES);
 
   const accept = async (participantId: string) => {
-    try { await session.accept(request.id, [participantId], deadlineMinutes * 60_000); } catch (e) { onError(e); }
+    // Rounded: fractional minutes still send whole milliseconds. An empty input sends 0, which
+    // core refuses with the one bounds message every surface shows.
+    try { await session.accept(request.id, [participantId], Math.round(deadlineMinutes * 60_000)); } catch (e) { onError(e); }
   };
   const cancel = async () => {
     try { await session.cancel(request.id); } catch (e) { onError(e); }

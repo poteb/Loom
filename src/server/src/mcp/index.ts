@@ -7,7 +7,7 @@ import { registerLoomTools, LOBBY_MECHANICS, agentInstructions } from "@loom/mcp
 // arrives here at initialize or inside a join_weave/get_weave result, and only core spells it.
 import { INSTANCE_HEADING, type Core } from "@loom/core";
 import type { Env } from "../auth.js";
-import { logInfo } from "../log.js";
+import { logInfo, redact } from "../log.js";
 import { publicOrigin } from "../origin.js";
 import { CoreToolBackend } from "./backend.js";
 
@@ -20,10 +20,15 @@ export const MCP_INSTRUCTIONS = [
   LOBBY_MECHANICS,
 ].join("\n");
 
-/** Client-supplied text for the log line: control characters become spaces, at most 100 characters. */
-function clientText(v: unknown): string {
+/**
+ * Client-supplied text for the log line: control and format characters (C0, C1, bidi and other
+ * invisible marks) become spaces, the field is redacted, and then it is cut to 100 code points. The
+ * redaction comes before the cut so a token straddling the cut is still one 43-character run when
+ * `redact` sees it; the whole line is redacted again by `logInfo`.
+ */
+export function clientText(v: unknown): string {
   const s = typeof v === "string" ? v : "";
-  return [...s].map((ch) => { const code = ch.charCodeAt(0); return code < 32 || code === 127 ? " " : ch; }).join("").slice(0, 100);
+  return Array.from(redact(s.replace(/[\p{Cc}\p{Cf}]/gu, " "))).slice(0, 100).join("");
 }
 
 /** `agent` is the connection's own agent key (from `Authorization: Bearer` or `?agent=`): it becomes

@@ -20,7 +20,7 @@ export const SEEN_THROTTLE_MS = 10_000;
 
 /**
  * Liveness (spec §6.6): sets `last_seen_at = now` on the participants `which` selects, unless one
- * was written less than ten seconds before `now`. It is not an event and takes no Weave lock, so a
+ * was written ten seconds or less before `now` (exactly ten seconds still skips). It is not an event and takes no Weave lock, so a
  * poll neither grows the log nor wakes anyone. A stamp that fails fails the call, which was about
  * to use the same database anyway.
  */
@@ -41,6 +41,8 @@ export async function resolveCredential(db: Db, credential: string, now: Date = 
   const [p] = await db.select().from(participants).where(eq(participants.token, credential)).limit(1);
   if (p) {
     await stampSeen(db, eq(participants.id, p.id), now);
+    // `p` was read before the stamp, so the actor's copy of lastSeenAt is one stamp stale. No rule
+    // reads it from the actor; the reads that report lastSeenAt load the row again.
     return { kind: "participant", participant: toPublicParticipant(p) };
   }
   const [k] = await db.select().from(keepers).where(eq(keepers.token, credential)).limit(1);

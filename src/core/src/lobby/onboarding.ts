@@ -62,7 +62,7 @@ async function eligibleRequests(db: Db, lobbyId: string, meId: string, now: Date
   const windowOpen = await db.select({ requestId: requests.id, threadId: requests.threadId, title: threads.name, expiresAt: requests.expiresAt })
     .from(requests).innerJoin(threads, eq(threads.id, requests.threadId))
     .where(and(inArray(requests.status, ["open", "working"]), gt(requests.expiresAt, now), ne(requests.requesterId, meId)))
-    .orderBy(asc(requests.createdAt));
+    .orderBy(asc(requests.createdAt), asc(requests.id));
   if (windowOpen.length === 0) return [];
   // The eligibility snapshot lives in the request.opened payload, decided once at open time.
   const addressed = new Set((await db.select({ threadId: events.threadId }).from(events)

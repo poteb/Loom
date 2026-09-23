@@ -83,6 +83,13 @@ describe("liveness", () => {
     expect(await seenOf(r.participant.id)).toEqual(at(10_001));
   });
 
+  it("a resolve exactly 10 000 ms after the last stamp does not write", async () => {
+    const r = await newWeave();
+    await resolveCredential(db, r.token, T0);
+    await resolveCredential(db, r.token, at(10_000));
+    expect(await seenOf(r.participant.id)).toEqual(T0);
+  });
+
   it("lastSeenAt is on PublicParticipant: getWeave and findAgents return it", async () => {
     const { weaveId: lobbyId } = await ensureLobby(db);
     const j = await joinLobby(db, bus, { name: "Listener", kind: "agent" });

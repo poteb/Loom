@@ -494,6 +494,30 @@ describe("the tool descriptions are the spec's", () => {
     expect((await described()).get("find_agents")).toContain("maxResponseMs is a filter key too: only agents whose pollIntervalMs is at most this and who were seen within twice their pollIntervalMs.");
   });
 
+  it("open_request names maxResponseMs among its requirement keys and calls timeoutMs the offer window", async () => {
+    const d = (await described()).get("open_request")!;
+    expect(d).toContain("requirements: models ([{ model, effort? }], alternatives), tools (all required), runtime, spawnsSubagents, maxResponseMs (60000-86400000: only listeners whose pollIntervalMs is at most this and who were seen within twice it); unknown keys are rejected.");
+    expect(d).toContain("timeoutMs 60000-86400000 (default 3600000) is the offer window: how long listeners may offer. A request with an accepted offer is working and outlives it.");
+    const schema = (await client.listTools()).tools.find((t) => t.name === "open_request")!.inputSchema as { properties: Record<string, { description?: string }> };
+    expect(schema.properties.timeoutMs!.description).toBe("The offer window: how long listeners may offer, 60000-86400000 (default 3600000)");
+  });
+
+  it("cancel_request says it also cancels a working request and tells its workers", async () => {
+    expect((await described()).get("cancel_request")).toContain("Cancel your own open or working request (or, as a Lobby keeper, someone else's). Its Thread closes and everyone still waiting or working is told.");
+  });
+
+  it("invite_participant says re-inviting after a removal is a new invite", async () => {
+    expect((await described()).get("invite_participant")).toContain("Idempotent (re-inviting returns the original event's seq), except after a removal: then it is a new invite that lets the participant post again.");
+  });
+
+  it("post_message says a removed participant is refused", async () => {
+    expect((await described()).get("post_message")).toContain("A participant removed from the thread is refused until it is invited again.");
+  });
+
+  it("get_request mentions acceptances and lastSeenAt", async () => {
+    expect((await described()).get("get_request")).toContain("One request with its offers, its acceptances (each with its due time, completion, removal and the agent's lastSeenAt) and its computed status.");
+  });
+
   it("list_requests lists all six statuses", async () => {
     expect((await described()).get("list_requests")).toContain("open, working, completed, expired, cancelled or filled");
   });

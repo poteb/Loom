@@ -10,7 +10,7 @@ import * as weaves from "./weaves.js";
 import * as threads from "./threads.js";
 import { postMessage } from "./messages.js";
 import { inviteParticipant } from "./invites.js";
-import { removeParticipant, type RemovalResult } from "./removals.js";
+import { removeParticipant } from "./removals.js";
 import { inbox } from "./inbox.js";
 import { setRole } from "./participants.js";
 import { exportWeave } from "./export.js";

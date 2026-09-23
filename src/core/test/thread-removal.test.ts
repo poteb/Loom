@@ -245,6 +245,20 @@ describe("remove_participant on a request Thread", () => {
     expect(await removing).toBe("done");
   });
 
+  it("a removal after a re-accept removes the revived acceptance, although the Thread's latest marker is already a removal", async () => {
+    const f = await requested();
+    await removeFromRequest(f, f.pawbot.id);
+    const { invitationIds } = await accept(db, bus, f.claude.actor, f.request.id, [f.pawbot.id], { deadlineMs: 3_600_000 });
+    expect((await offerOf(f, f.pawbot.id)).removedAt).toBeNull();
+    const again = await removeFromRequest(f, f.pawbot.id);
+    expect(again).toMatchObject({ created: true, acceptanceRemoved: true, targetRemoved: false });
+    expect((await offerOf(f, f.pawbot.id)).removedAt).not.toBeNull();
+    const [revived] = await db.select().from(weaveInvitations).where(eq(weaveInvitations.id, invitationIds[0]!));
+    expect(revived!.revokedAt).not.toBeNull();
+    // With the acceptance removed again, a third removal is the idempotent answer.
+    expect(await removeFromRequest(f, f.pawbot.id)).toEqual({ seq: again.seq, created: false, acceptanceRemoved: false, targetRemoved: false });
+  });
+
   it("a participant with no acceptance on a request Thread gets only the marker", async () => {
     const f = await requested();
     const targetBefore = (await readEvents(db, f.target.weave.id, {})).length;

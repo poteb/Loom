@@ -111,7 +111,9 @@ describe("onboardingFacts", () => {
     await core.cancelRequest(r.agent, cancelled.id);
     const lapsed = await r.open("Ask 4");
     await db.update(requestsTable).set({ expiresAt: new Date(Date.now() - 1_000) }).where(eq(requestsTable.id, lapsed.id));
-    // The listener's own request: it keeps a Weave of its own to ask for help in.
+    // The listener's own request: it keeps a Weave of its own to ask for help in. This case alone
+    // does not prove the `ne(requesterId)` term: the eligibility snapshot already leaves the
+    // requester out, so the request is excluded either way (KNOWN-ISSUES, this file's row).
     const mine = await core.createWeave({ title: "Mine", opener: "", creator: { name: "ChatGPT", kind: "agent" } }, l.agent);
     const mineThread = await core.createThread(l.agent, mine.weave.id, "Own work");
     await core.openRequest(l.agent, undefined, { title: "My own", requirements: {}, wanted: 1, targetWeaveId: mine.weave.id, targetThreadId: mineThread.id, url: null });

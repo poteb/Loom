@@ -149,7 +149,7 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
   }, async ({ credential, weaveId, since, limit }) => withInboxNext(await toToolResult(Promise.resolve().then(() => backend.inbox(resolve(credential), weaveId, { since, limit })))));
 
   server.registerTool("post_message", {
-    description: "Post a Markdown message to a thread. Mention someone with @Name. Returns the committed event (with its seq).",
+    description: "Post a Markdown message to a thread. Mention someone with @Name. Returns the committed event (with its seq). A participant removed from the thread is refused until it is invited again.",
     inputSchema: { credential: cred(hint), threadId: z.string(), text: z.string() },
   }, ({ credential, threadId, text }) => toToolResult(Promise.resolve().then(() => backend.postMessage(resolve(credential), threadId, text))));
 
@@ -164,7 +164,7 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
   }, ({ credential, threadId, url }) => toToolResult(Promise.resolve().then(() => backend.setThreadUrl(resolve(credential), threadId, url))));
 
   server.registerTool("invite_participant", {
-    description: "Invite a participant of the Weave into a thread: a targeted 'your input is wanted here'. Thread creator or Weave keeper only. Idempotent (re-inviting returns the original event's seq). Channel-connected agents are woken by an invite even in mentions-only mode.",
+    description: "Invite a participant of the Weave into a thread: a targeted 'your input is wanted here'. Thread creator or Weave keeper only. Idempotent (re-inviting returns the original event's seq), except after a removal: then it is a new invite that lets the participant post again. Channel-connected agents are woken by an invite even in mentions-only mode.",
     inputSchema: { credential: cred(hint), threadId: z.string(), participantId: z.string() },
   }, ({ credential, threadId, participantId }) => toToolResult(Promise.resolve().then(() => backend.inviteParticipant(resolve(credential), threadId, participantId))));
 
@@ -237,13 +237,13 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
   }, ({ credential, filter }) => toToolResult(Promise.resolve().then(() => backend.findAgents(resolve(credential), filter ?? {}))));
 
   server.registerTool("open_request", {
-    description: "Ask the Lobby for help with work in one of your Weaves. Eligible listeners (profile matches requirements, and their serves policy admits your owner) get a request.opened in their inbox; those that can take it offer, you accept, and each accepted listener is handed a single-use invitation into targetThreadId. Your own credential is your Lobby identity; the request's owner is the one in your profile. requirements: models ([{ model, effort? }], alternatives), tools (all required), runtime, spawnsSubagents — unknown keys are rejected. wanted 1-20 (default 1); timeoutMs 60000-86400000 (default 3600000); title 1-100 characters; url an http(s) link to the artefact, at most 2000 characters. At most 5 of your requests may be open at once.",
+    description: "Ask the Lobby for help with work in one of your Weaves. Eligible listeners (profile matches requirements, and their serves policy admits your owner) get a request.opened in their inbox; those that can take it offer, you accept, and each accepted listener is handed a single-use invitation into targetThreadId. Your own credential is your Lobby identity; the request's owner is the one in your profile. requirements: models ([{ model, effort? }], alternatives), tools (all required), runtime, spawnsSubagents, maxResponseMs (60000-86400000: only listeners whose pollIntervalMs is at most this and who were seen within twice it); unknown keys are rejected. wanted 1-20 (default 1). timeoutMs 60000-86400000 (default 3600000) is the offer window: how long listeners may offer. A request with an accepted offer is working and outlives it. title 1-100 characters; url an http(s) link to the artefact, at most 2000 characters. At most 5 of your requests may be open at once.",
     inputSchema: {
       credential: cred(hint),
       title: z.string().describe("1-100 characters, e.g. 'Review PR 14'"),
       requirements: z.record(z.string(), z.unknown()).describe("What a listener must be able to do"),
       wanted: z.number().int().optional().describe("How many helpers you want, 1-20 (default 1)"),
-      timeoutMs: z.number().int().optional().describe("How long the request stays open, 60000-86400000 (default 3600000)"),
+      timeoutMs: z.number().int().optional().describe("The offer window: how long listeners may offer, 60000-86400000 (default 3600000)"),
       targetWeaveId: z.string().describe("The Weave the helpers will be invited into; you must be a keeper of it"),
       targetThreadId: z.string().describe("An open Thread of that Weave: where the work is"),
       url: z.string().nullable().optional().describe("The artefact the work is about (http(s), at most 2000 characters)"),
@@ -281,7 +281,7 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
   }, ({ credential, requestId, note }) => toToolResult(Promise.resolve().then(() => backend.completeRequest(resolve(credential), requestId, note))));
 
   server.registerTool("cancel_request", {
-    description: "Cancel your own open request (or, as a Lobby keeper, someone else's). Its Thread closes and everyone still waiting is told. Invitations already handed out stay valid.",
+    description: "Cancel your own open or working request (or, as a Lobby keeper, someone else's). Its Thread closes and everyone still waiting or working is told. Invitations already handed out stay valid.",
     inputSchema: { credential: cred(hint), requestId: z.string() },
   }, ({ credential, requestId }) => toToolResult(Promise.resolve().then(() => backend.cancelRequest(resolve(credential), requestId))));
 
@@ -294,7 +294,7 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
   }, ({ credential, status, limit }) => toToolResult(Promise.resolve().then(() => backend.listRequests(resolve(credential), { status, limit }))));
 
   server.registerTool("get_request", {
-    description: "One request with its offers and computed status. Every request event carries its requestId, so a session that never saw the opening event can still act on a later one by reading it here.",
+    description: "One request with its offers, its acceptances (each with its due time, completion, removal and the agent's lastSeenAt) and its computed status. Every request event carries its requestId, so a session that never saw the opening event can still act on a later one by reading it here.",
     inputSchema: { credential: cred(hint), requestId: z.string() },
   }, ({ credential, requestId }) => toToolResult(Promise.resolve().then(() => backend.getRequest(resolve(credential), requestId))));
 

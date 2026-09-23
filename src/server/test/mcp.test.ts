@@ -7,7 +7,7 @@ import { buildApp } from "../src/app.js";
 import { LOBBY_MECHANICS, agentInstructions, POLL_OPENAI } from "@loom/mcp-tools";
 import { publicOrigin } from "../src/origin.js";
 import { logInfo } from "../src/log.js";
-import { MCP_INSTRUCTIONS, type MountMcpOptions } from "../src/mcp/index.js";
+import { MCP_INSTRUCTIONS, clientText, type MountMcpOptions } from "../src/mcp/index.js";
 import { TicketStore } from "../src/tickets.js";
 import { startTestServer, keeperToken, type TestServer } from "./helpers.js";
 
@@ -858,5 +858,28 @@ describe("listener onboarding over remote MCP", () => {
     } finally {
       await Promise.all([requester.close().catch(() => {}), helper.close().catch(() => {})]);
     }
+  });
+});
+
+describe("clientText, the cleaning of the client's own text in the session line", () => {
+  it("cuts at 100 code points, never inside a surrogate pair", () => {
+    // Dots, not letters: a run of 43 letters is token-shaped and would be redacted.
+    expect(clientText(".".repeat(150))).toBe(".".repeat(100));
+    const face = String.fromCodePoint(0x1f600);
+    expect(clientText(".".repeat(99) + face + "b")).toBe(".".repeat(99) + face);
+  });
+
+  it("redacts before the cut, so a token straddling the 100th character is not left half visible", () => {
+    const token = "t".repeat(43);
+    expect(clientText(".".repeat(80) + token)).toBe(".".repeat(80) + "[redacted]");
+  });
+
+  it("turns C0, C1 and format (bidi) controls into spaces", () => {
+    const c = String.fromCharCode;
+    expect(clientText(`a${c(7)}b${c(0x85)}c${c(0x202e)}d${c(0x200b)}e${c(127)}f`)).toBe("a b c d e f");
+  });
+
+  it("answers the empty string for a missing value", () => {
+    expect(clientText(undefined)).toBe("");
   });
 });

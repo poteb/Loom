@@ -166,6 +166,29 @@ describe("MessageList", () => {
     expect(screen.getByText(/Helper invited to "Loom session"/)).toBeTruthy();
     expect(screen.getByText(/request filled: accepted Helper/)).toBeTruthy();
   });
+
+  it("renders request.completed, request.overdue and thread.removed as system lines in the CLI's words", () => {
+    const base = { weaveId: "w1", threadId: "th1", actor: "p2", at: new Date().toISOString() };
+    const due = "2026-09-16T14:00:00.000Z";
+    const seen = "2026-09-16T13:40:00.000Z";
+    const events = [
+      { ...base, seq: 1, type: "request.completed" as const, payload: { requestId: "r1", participantId: "p2", note: "done", to: "p1" } },
+      { ...base, seq: 2, type: "request.overdue" as const, actor: "system", payload: { requestId: "r1", participantId: "p2", dueAt: due, lastSeenAt: seen, to: "p1" } },
+      { ...base, seq: 3, type: "request.overdue" as const, actor: "system", payload: { requestId: "r1", participantId: "p2", dueAt: due, lastSeenAt: null, to: "p1" } },
+      { ...base, seq: 4, type: "thread.removed" as const, actor: "p1", payload: { threadId: "th1", participantId: "p2", removedBy: "p1", requestId: "r1" } },
+      { ...base, seq: 5, type: "thread.removed" as const, actor: "keeper:k1", payload: { threadId: "th1", participantId: "p2", removedBy: "keeper:k1" } },
+    ];
+    const { container } = render(<MessageList state={lobbyState({ currentThreadId: "th1", events })} />);
+    const lines = [...container.querySelectorAll(".system > div")].map((d) => d.textContent!.split(" · ")[0]);
+    const clock = (iso: string) => new Date(iso).toLocaleTimeString();
+    expect(lines).toEqual([
+      `Helper finished "Review PR 14"`,
+      `Helper missed the deadline of "Review PR 14" (due ${clock(due)}, last seen ${clock(seen)})`,
+      `Helper missed the deadline of "Review PR 14" (due ${clock(due)}, last seen never)`,
+      "Helper was removed from this Thread by Paw",
+      "Helper was removed from this Thread by Keeper",
+    ]);
+  });
 });
 
 describe("RequestsPanel", () => {
@@ -261,6 +284,11 @@ describe("RequestsPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "accept Helper" }));
     await Promise.resolve();
     expect(sn.accept).toHaveBeenLastCalledWith("r1", ["p2"], 1_800_000);
+    // Fractional minutes send whole milliseconds: core takes an integer deadlineMs only.
+    fireEvent.input(deadline, { target: { value: "1.00001" } });
+    fireEvent.click(screen.getByRole("button", { name: "accept Helper" }));
+    await Promise.resolve();
+    expect(sn.accept).toHaveBeenLastCalledWith("r1", ["p2"], 60_001);
   });
 
   it("the Offer form is offered before expiresAt, and not at or after it", () => {
