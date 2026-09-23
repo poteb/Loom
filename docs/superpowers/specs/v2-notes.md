@@ -498,6 +498,10 @@ neither was changed on the branch; each is also a row in [../../KNOWN-ISSUES.md]
 - **Split `src/core/src/lobby/requests.ts`.** It is 669 lines now: open, offer, accept, complete,
   cancel, both sweeps, the computed status and the public read shape. Moving the read shape
   (`onePublic`, `toAcceptance`, the `Public*` types) into a module of its own is the first cut.
+- **Idea (2026-09-23): remember "state 3 shown" per agent, stored, not per MCP session.** Today the
+  flag lives in the session, so a polling client that still calls `get_started` on every run (as
+  ChatGPT's own task prompt did on the first live run) gets the whole setup text each time. Stored
+  on the agent, a later `get_started` in state 3 could answer in one line.
 
 ## Deferred from v1
 
