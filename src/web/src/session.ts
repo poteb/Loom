@@ -73,7 +73,7 @@ export type Session = {
   // --- Lobby requests. Thin wrappers: each applies the snapshot it gets back through the watermark.
   openRequest(input: OpenRequestInput): Promise<LoomRequest>;
   offer(requestId: string, input: { model?: string; effort?: string; note?: string }): Promise<void>;
-  accept(requestId: string, participantIds: string[]): Promise<void>;
+  accept(requestId: string, participantIds: string[], deadlineMs: number): Promise<void>;
   cancel(requestId: string): Promise<void>;
   targets(): Promise<TargetWeave[]>;
   // --- The listeners directory (spec §6.1). Two entry points, because reading the directory is not
@@ -93,7 +93,7 @@ const PAGE = 1000;
  * wants the recent end of it, not all of it.
  */
 export const CLOSED_REQUESTS_PAGE = 25;
-const CLOSED_STATUSES = ["filled", "expired", "cancelled"] as const;
+const CLOSED_STATUSES = ["completed", "filled", "expired", "cancelled"] as const;
 
 /** setTimeout that settles early — and clears its timer — when `signal` aborts, so no timer outlives a session. */
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -258,7 +258,7 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
   /** True on the Lobby's own page: requests are read with this browser's Lobby credential. */
   const onLobby = () => !!weaveId && state.lobby?.weaveId === weaveId;
   /**
-   * Every open request, plus the newest `closedPage` of each terminal status.
+   * Every open and working request, plus the newest `closedPage` of each terminal status.
    *
    * Not one `listRequests()`: that is a page of the whole board, newest first, and an open request
    * older than the newest hundred rows would simply be missing from the panel's live section. Open
@@ -269,6 +269,8 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
   const readRequests = async (): Promise<LoomRequest[]> => {
     const pages = await Promise.all([
       reader.listRequests("open", { limit: PAGE }),
+      // Work in progress is live too: a working request belongs with the open ones, uncapped in intent.
+      reader.listRequests("working", { limit: PAGE }),
       ...CLOSED_STATUSES.map((s) => reader.listRequests(s, { limit: closedPage })),
     ]);
     return pages.flat();
@@ -896,8 +898,8 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       // the same watermark as everything else rather than on a hand-built row.
       applyRequests([await w.getRequest(requestId)]);
     },
-    async accept(requestId, participantIds) {
-      applyRequests([(await writer().acceptRequest(requestId, participantIds)).request]);
+    async accept(requestId, participantIds, deadlineMs) {
+      applyRequests([(await writer().acceptRequest(requestId, participantIds, deadlineMs)).request]);
     },
     async cancel(requestId) {
       applyRequests([await writer().cancelRequest(requestId)]);

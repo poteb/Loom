@@ -2,7 +2,7 @@ import { describe, it, expect, afterAll, beforeEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { freshDb, closeTestDb, keeperToken } from "./helpers.js";
 import { EventBus } from "../src/bus.js";
-import { participants, weaveInvitations } from "../src/db/schema.js";
+import { participants, weaveInvitations, weaves } from "../src/db/schema.js";
 import { readEvents } from "../src/events.js";
 import { resolveCredential } from "../src/actors.js";
 import { seedKeepers } from "../src/keepers.js";
@@ -11,7 +11,9 @@ import { archiveWeave, createWeave, joinWeave } from "../src/weaves.js";
 import { closeThread, createThread } from "../src/threads.js";
 import { ensureLobby, joinLobby, lobbyGeneralThreadId } from "../src/lobby/lobby.js";
 import { inviteToWeave, redeemInvitation } from "../src/lobby/invitations.js";
-import { openRequest } from "../src/lobby/requests.js";
+import { setCapabilities } from "../src/lobby/profile.js";
+import { accept, complete, offer, openRequest, sweepOverdue } from "../src/lobby/requests.js";
+import { removeParticipant } from "../src/removals.js";
 import { createCore } from "../src/index.js";
 import type { Db } from "../src/db/index.js";
 import type { Actor, LoomEvent } from "../src/types.js";
@@ -72,7 +74,7 @@ describe("inviteToWeave", () => {
     expect(invited).toHaveLength(1);
     expect(invited[0]!.seq).toBe(seq);
     expect(invited[0]!.threadId).toBe(general);
-    expect(invited[0]!.payload).toEqual({ invitationId, participantId: f.helper.id, targetWeaveTitle: TARGET_TITLE });
+    expect(invited[0]!.payload).toEqual({ invitationId, participantId: f.helper.id, targetWeaveTitle: TARGET_TITLE, requestId: null });
   });
 
   it("copies the invitee's agent id, so the key that owns it can redeem", async () => {
@@ -126,6 +128,49 @@ describe("inviteToWeave", () => {
     const f = await setup();
     await expect(inviteToWeave(db, bus, f.paw, f.target.participant.id, f.target.weave.id, f.prThread.id))
       .rejects.toMatchObject({ code: "validation" });
+  });
+
+  it("weave.invited carries requestId for an acceptance and null for a direct invitation", async () => {
+    const f = await setup();
+    const direct = await inviteToWeave(db, bus, f.paw, f.other.id, f.target.weave.id, f.prThread.id);
+    await setCapabilities(db, bus, f.other.actor, { owner: "paw", serves: "anyone" });
+    const request = await openRequest(db, bus, f.helper.actor, f.paw, {
+      title: "Review PR 14", requirements: {}, wanted: 1,
+      targetWeaveId: f.target.weave.id, targetThreadId: f.prThread.id, url: null,
+    });
+    await offer(db, bus, f.other.actor, request.id, {});
+    const { invitationIds } = await accept(db, bus, f.helper.actor, request.id, [f.other.id], { deadlineMs: 3_600_000 });
+    const invited = (await lobbyEvents(f)).filter((e) => e.type === "weave.invited");
+    expect(invited.find((e) => e.payload.invitationId === direct.invitationId)!.payload.requestId).toBeNull();
+    expect(invited.find((e) => e.payload.invitationId === invitationIds[0])!.payload.requestId).toBe(request.id);
+  });
+
+  it("no new event payload carries a Weave secret or a token", async () => {
+    const f = await setup();
+    await setCapabilities(db, bus, f.other.actor, { owner: "paw", serves: "anyone" });
+    const ask = (title: string) => openRequest(db, bus, f.helper.actor, f.paw, {
+      title, requirements: {}, wanted: 1, targetWeaveId: f.target.weave.id, targetThreadId: f.prThread.id, url: null,
+    });
+    const first = await ask("Review PR 14");
+    await offer(db, bus, f.other.actor, first.id, {});
+    const { invitationIds } = await accept(db, bus, f.helper.actor, first.id, [f.other.id], { deadlineMs: 3_600_000 });
+    const landed = await redeemInvitation(db, bus, f.other.actor, invitationIds[0]!, { kind: "agent" });
+    await sweepOverdue(db, bus, new Date(Date.now() + 2 * 3_600_000));
+    await removeParticipant(db, bus, f.helper.actor, first.threadId, f.other.id);
+    const second = await ask("Review PR 15");
+    await offer(db, bus, f.other.actor, second.id, {});
+    await accept(db, bus, f.helper.actor, second.id, [f.other.id], { deadlineMs: 3_600_000 });
+    await complete(db, bus, f.other.actor, second.id, { note: "done" });
+    const secrets = [
+      f.helper.key, landed.token,
+      ...(await db.select({ s: weaves.secret }).from(weaves)).map((w) => w.s),
+      ...(await db.select({ t: participants.token }).from(participants)).map((p) => p.t),
+    ];
+    const log = [...await lobbyEvents(f), ...await targetEvents(f)];
+    for (const type of ["request.accepted", "weave.invited", "request.overdue", "thread.removed", "request.completed", "request.closed"]) {
+      expect(log.map((e) => e.type)).toContain(type);
+    }
+    for (const e of log) for (const s of secrets) expect(JSON.stringify(e.payload)).not.toContain(s);
   });
 });
 

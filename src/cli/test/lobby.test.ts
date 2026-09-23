@@ -5,6 +5,7 @@ import path from "node:path";
 import { startTestServer, keeperToken, type TestServer } from "../../server/test/helpers.js";
 import { runCli, type CliIo } from "../src/cli.js";
 import { ConfigStore } from "../src/config.js";
+import { durationMs } from "../src/commands/request.js";
 
 let s: TestServer;
 let lobbyWeaveId: string;
@@ -333,11 +334,11 @@ describe("loom request", () => {
     expect(show.out).toContain("on it");
     expect(show.out).not.toContain("[accepted]");
 
-    const accepted = await run(["request", "accept", r.id, sc.botId, "--json"], { cfg: sc.req });
+    const accepted = await run(["request", "accept", r.id, sc.botId, "--deadline", "30m", "--json"], { cfg: sc.req });
     expect(accepted.code).toBe(0);
     expect(accepted.json().invitationIds).toHaveLength(1);
     const after = await run(["request", "show", r.id], { cfg: sc.req });
-    expect(after.out).toContain("filled");
+    expect(after.out).toContain("working");
     expect(after.out).toContain("[accepted]");
   });
 
@@ -356,7 +357,7 @@ describe("loom request", () => {
     const sc = await scenario();
     const r = await open(sc);
     await run(["request", "offer", r.id, "--json"], { cfg: sc.bot });
-    const accepted = (await run(["request", "accept", r.id, sc.botId, "--json"], { cfg: sc.req })).json();
+    const accepted = (await run(["request", "accept", r.id, sc.botId, "--deadline", "30m", "--json"], { cfg: sc.req })).json();
     const joined = await run(["join", "--invite", accepted.invitationIds[0], "--json"], { cfg: sc.bot });
     expect(joined.code).toBe(0);
     expect(joined.json().weaveId).toBe(sc.weaveId);
@@ -384,10 +385,92 @@ describe("loom request", () => {
     const j = await run(["invite-weave", sc.botId, "--weave", sc.weaveId, "--thread", sc.threadId, "--json"], { cfg: sc.req });
     expect(typeof j.json().invitationId).toBe("string");
   });
+
+  it("request accept without --deadline is a usage error with exit 2, and --deadline 30m accepts", async () => {
+    const sc = await scenario();
+    const r = await open(sc);
+    await run(["request", "offer", r.id, "--json"], { cfg: sc.bot });
+    expect((await run(["request", "accept", r.id, sc.botId], { cfg: sc.req })).code).toBe(2);
+    const before = Date.now() - 2_000;
+    const ok = await run(["request", "accept", r.id, sc.botId, "--deadline", "30m", "--json"], { cfg: sc.req });
+    expect(ok.code).toBe(0);
+    expect(ok.json().request.status).toBe("working");
+    const due = Date.parse(ok.json().request.acceptances[0].dueAt);
+    expect(due).toBeGreaterThanOrEqual(before + 30 * 60_000);
+    expect(due).toBeLessThanOrEqual(Date.now() + 2_000 + 30 * 60_000);
+  });
+
+  it("durationMs accepts 7d", () => {
+    expect(durationMs("7d")).toBe(604_800_000);
+    expect(durationMs("30m")).toBe(1_800_000);
+  });
+
+  it("request complete <id> --note completes", async () => {
+    const sc = await scenario();
+    const r = await open(sc);
+    await run(["request", "offer", r.id, "--json"], { cfg: sc.bot });
+    await run(["request", "accept", r.id, sc.botId, "--deadline", "30m", "--json"], { cfg: sc.req });
+    const done = await run(["request", "complete", r.id, "--note", "reviewed", "--json"], { cfg: sc.bot });
+    expect(done.code).toBe(0);
+    expect(done.json().status).toBe("completed");
+    expect(done.json().acceptances[0].note).toBe("reviewed");
+    expect((await run(["request", "complete", r.id], { cfg: sc.bot })).out).toBe(`Completed your part of ${r.id} [completed]\n`);
+  });
+
+  it("remove <threadId> <participantId> removes", async () => {
+    const sc = await scenario();
+    const r = await open(sc);
+    await run(["request", "offer", r.id, "--json"], { cfg: sc.bot });
+    await run(["request", "accept", r.id, sc.botId, "--deadline", "30m", "--json"], { cfg: sc.req });
+    // A request's Thread is the Lobby's, so the credential is the requester's stored Lobby token.
+    const removed = await run(["remove", r.threadId, sc.botId, "--weave", lobbyWeaveId, "--json"], { cfg: sc.req });
+    expect(removed.code).toBe(0);
+    expect(removed.json()).toMatchObject({ created: true, acceptanceRemoved: true });
+    expect((await run(["remove", r.threadId, sc.botId, "--weave", lobbyWeaveId], { cfg: sc.req })).out).toContain("Already removed");
+  });
+
+  it("request list --status working filters", async () => {
+    const sc = await scenario();
+    const working = await open(sc);
+    const idle = await open(sc);
+    await run(["request", "offer", working.id, "--json"], { cfg: sc.bot });
+    await run(["request", "accept", working.id, sc.botId, "--deadline", "30m", "--json"], { cfg: sc.req });
+    const ids = (await run(["request", "list", "--status", "working", "--json"], { cfg: sc.req })).json().map((x: { id: string }) => x.id);
+    expect(ids).toContain(working.id);
+    expect(ids).not.toContain(idle.id);
+  });
+
+  it("request show prints each acceptance's due time, state and last seen", async () => {
+    const sc = await scenario();
+    const r = await open(sc);
+    await run(["request", "offer", r.id, "--json"], { cfg: sc.bot });
+    const accepted = (await run(["request", "accept", r.id, sc.botId, "--deadline", "30m", "--json"], { cfg: sc.req })).json();
+    const show = await run(["request", "show", r.id], { cfg: sc.req });
+    expect(show.out).toContain("Acceptances:");
+    // The bot's own CLI calls stamped it, so "seen" is an instant, never the "never" of an unseen one.
+    expect(show.out).toMatch(new RegExp(`  ${sc.botId}  due ${accepted.request.acceptances[0].dueAt}  working  seen \\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z`));
+  });
+
+  it("request list and request show count only acceptances that are not removed, and call expiresAt the offer window", async () => {
+    const sc = await scenario();
+    const r = await open(sc);
+    await run(["request", "offer", r.id, "--json"], { cfg: sc.bot });
+    await run(["request", "accept", r.id, sc.botId, "--deadline", "30m", "--json"], { cfg: sc.req });
+    const lineOf = async () => (await run(["request", "list"], { cfg: sc.req })).out.split("\n").find((l) => l.startsWith(r.id))!;
+    expect(await lineOf()).toContain(`(1 offered, 1 accepted)  offers until ${hhmm(r.expiresAt)}`);
+    await run(["remove", r.threadId, sc.botId, "--weave", lobbyWeaveId, "--json"], { cfg: sc.req });
+    const line = await lineOf();
+    expect(line).toContain(`(1 offered, 0 accepted)  offers until ${hhmm(r.expiresAt)}`);
+    expect(line).not.toContain("expires");
+    const show = (await run(["request", "show", r.id], { cfg: sc.req })).out;
+    expect(show).toContain("  wants:    1 (0 accepted)\n");
+    expect(show).toContain(`  offers until: ${hhmm(r.expiresAt)}\n`);
+    expect(show).not.toContain("expires");
+  });
 });
 
 describe("loom read renders the Lobby events", () => {
-  it("renders request opened, offered, accepted, closed and the invitation as system lines", async () => {
+  it("renders request opened, offered, accepted and the invitation as system lines", async () => {
     const sc = await scenario();
     // Opened by hand rather than through `open()`: the title is what the opened line must name, and
     // a request carries it only as the name of its own Thread.
@@ -395,7 +478,7 @@ describe("loom read renders the Lobby events", () => {
     const r = (await run(["request", "open", "--title", title, "--require", JSON.stringify(REQUIRE),
       "--wanted", "1", "--weave", sc.weaveId, "--thread", sc.threadId, "--json"], { cfg: sc.req })).json();
     await run(["request", "offer", r.id, "--model", MODEL.model, "--effort", MODEL.effort, "--note", "on it", "--json"], { cfg: sc.bot });
-    await run(["request", "accept", r.id, sc.botId, "--json"], { cfg: sc.req });
+    await run(["request", "accept", r.id, sc.botId, "--deadline", "30m", "--json"], { cfg: sc.req });
 
     const read = await run(["read", "--weave", lobbyWeaveId, "--thread", r.threadId], { cfg: sc.req });
     expect(read.code).toBe(0);
@@ -403,7 +486,24 @@ describe("loom read renders the Lobby events", () => {
     expect(read.out).toContain(`* request offered by ${sc.botName} (gpt-5.6-sol/high): "on it"`);
     expect(read.out).toContain(`* request accepted: ${sc.botName} → "Loom session"`);
     expect(read.out).toContain(`* invited ${sc.botName} to "Loom session"`);
-    expect(read.out).toContain(`* request closed (filled): accepted ${sc.botName}`);
+  });
+
+  it("read renders request.completed, request.overdue and thread.removed as system lines", async () => {
+    const sc = await scenario();
+    const title = uniq("Review PR 14");
+    const r = (await run(["request", "open", "--title", title, "--require", JSON.stringify(REQUIRE),
+      "--wanted", "1", "--weave", sc.weaveId, "--thread", sc.threadId, "--json"], { cfg: sc.req })).json();
+    await run(["request", "offer", r.id, "--json"], { cfg: sc.bot });
+    await run(["request", "accept", r.id, sc.botId, "--deadline", "30m", "--json"], { cfg: sc.req });
+    await s.sweepNow(new Date(Date.now() + 2 * 3_600_000));                      // the deadline passes
+    await run(["remove", r.threadId, sc.botId, "--weave", lobbyWeaveId, "--json"], { cfg: sc.req });
+    await run(["request", "accept", r.id, sc.botId, "--deadline", "30m", "--json"], { cfg: sc.req });   // revived
+    await run(["request", "complete", r.id, "--json"], { cfg: sc.bot });
+    const read = await run(["read", "--weave", lobbyWeaveId, "--thread", r.threadId], { cfg: sc.req });
+    expect(read.code).toBe(0);
+    expect(read.out).toMatch(new RegExp(`\\* ${sc.botName} missed the deadline of "${title}" \\(due \\d\\d:\\d\\d, last seen \\d\\d:\\d\\d\\)`));
+    expect(read.out).toContain(`* ${sc.botName} was removed from this Thread by `);
+    expect(read.out).toContain(`* ${sc.botName} finished "${title}"`);
   });
 
   // The Lobby's General thread is shared by every test in this file, so the read is anchored with

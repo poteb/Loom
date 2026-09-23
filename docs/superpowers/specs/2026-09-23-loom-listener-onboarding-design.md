@@ -1631,6 +1631,14 @@ with Paw, each ending on a PASS or a recorded finding:
    `acceptanceRemoved: true` and `targetRemoved: true`, and the session then cancels the request.
    Paw resumes the task.
 
+   *Correction, 2026-09-23 (whole-branch review, M7):* the PASS condition above can fail when the
+   code is correct. If Paw pauses ChatGPT's task before its next poll redeems the invitation,
+   nothing was redeemed, and the correct answer is `targetRemoved: false` with the invitation
+   revoked. The PASS condition reads: `acceptanceRemoved: true`, and `targetRemoved: true` if
+   ChatGPT had redeemed its invitation, otherwise `false` and the invitation revoked (`get_started`
+   no longer lists it). The removal runs as `loom remove <requestThreadId> <participantId> --weave
+   <lobbyId>`, or with `LOOM_AGENT_KEY` set; TESTING.md's smoke test 7 carries both.
+
 The ledger (`.superpowers/sdd/<plan>/progress.md`) records: the merged commit and the lines
 `live-update` printed; the client name; the times of `request.opened`, the offer, the accept, the
 `complete`, and the overdue with its lag behind the due time; the scheduled task's real cadence as

@@ -316,3 +316,42 @@ describe("v2: guidelines", () => {
     expect(j.json.guidelines).toContain("## Guidelines for this Weave");
   });
 });
+
+describe("listener onboarding over REST", () => {
+  const weave = async () => (await api(s.baseUrl, "POST", "/api/weaves", { title: "T", opener: "o", creator: { name: "Paw", kind: "human" } })).json;
+
+  it("POST /api/threads/:id/removals answers 201 then 200, and 403 for a member", async () => {
+    const r = await weave();
+    const bob = (await api(s.baseUrl, "POST", `/api/weaves/${r.secret}/join`, { name: "Bob", kind: "human" })).json;
+    const carl = (await api(s.baseUrl, "POST", `/api/weaves/${r.secret}/join`, { name: "Carl", kind: "agent" })).json;
+    const t = (await api(s.baseUrl, "POST", `/api/weaves/${r.weave.id}/threads`, { name: "PR 9" }, r.token)).json;
+    expect((await api(s.baseUrl, "POST", `/api/threads/${t.id}/removals`, { participantId: carl.participant.id }, bob.token)).status).toBe(403);
+    const first = await api(s.baseUrl, "POST", `/api/threads/${t.id}/removals`, { participantId: carl.participant.id }, r.token);
+    expect(first.status).toBe(201);
+    expect(first.json).toMatchObject({ created: true, acceptanceRemoved: false, targetRemoved: false });
+    const again = await api(s.baseUrl, "POST", `/api/threads/${t.id}/removals`, { participantId: carl.participant.id }, r.token);
+    expect(again.status).toBe(200);
+    expect(again.json).toEqual({ seq: first.json.seq, created: false, acceptanceRemoved: false, targetRemoved: false });
+  });
+
+  it("POST /api/admin/agents with owner returns it; PUT /api/admin/agents/:id/owner answers the agent, 403 without a keeper, 404 for an unknown id", async () => {
+    const add = await api(s.baseUrl, "POST", "/api/admin/agents", { name: "Owned", owner: "paw" }, KEEPER);
+    expect(add.status).toBe(201);
+    expect(add.json.agent.owner).toBe("paw");
+    const set = await api(s.baseUrl, "PUT", `/api/admin/agents/${add.json.agent.id}/owner`, { owner: "bob" }, KEEPER);
+    expect(set.status).toBe(200);
+    expect(set.json).toEqual({ ...add.json.agent, owner: "bob" });
+    const r = await weave();
+    expect((await api(s.baseUrl, "PUT", `/api/admin/agents/${add.json.agent.id}/owner`, { owner: "eve" }, r.token)).status).toBe(403);
+    const unknown = await api(s.baseUrl, "PUT", "/api/admin/agents/00000000-0000-4000-8000-000000000000/owner", { owner: "paw" }, KEEPER);
+    expect(unknown.status).toBe(404);
+    expect(unknown.json).toEqual({ code: "not_found", message: "No such agent" });
+  });
+
+  it("an authenticated REST call stamps lastSeenAt", async () => {
+    const r = await weave();
+    // The call's own credential resolution is what stamps; the read inside the same call sees it.
+    const info = await api(s.baseUrl, "GET", `/api/weaves/${r.weave.id}`, undefined, r.token);
+    expect(info.json.participants.find((p: { id: string }) => p.id === r.participant.id).lastSeenAt).toEqual(expect.any(String));
+  });
+});

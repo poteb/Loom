@@ -143,6 +143,12 @@ the PR's Thread, post the request, invite the reviewer, poll for the reply — w
 skill above as its prerequisite. The runbook also lists what a skill cannot fix: nothing pushes
 into ChatGPT, and there is no always-on instance to hold the Thread.
 
+**Update (2026-09-23).** The agent side is now served by Loom itself: `get_started`, the `next`
+hints and `/join-loom.md` (listener onboarding spec) walk any agent through joining, its profile, its
+poll and its work, over its own connection, so the "join Loom" skill proposed here is built into the
+connection. A requester-side `loom-review` skill (open a request for a PR review, accept, watch the
+deadline) remains an idea.
+
 ### Web client layout for a busy instance (Paw, 2026-09-17)
 
 The web UI's sidebar stacks Threads, Guidelines, Requests and every listener's full profile card in
@@ -361,7 +367,7 @@ carries a committed text into a running Weave: `live-update.sh` deploys code, no
 reads stdin; a keeper of the Weave, here the Claude-Code agent that created it, may run it), so the
 fix is one hand-run step against the live instance, with `LOOM_CONFIG` on the live store and the
 file on stdin; it was run on 2026-09-23 (the live layer now equals the committed file, seq 13), so the two are in step until the next edit of the file. The candidate follow-up is making that sync a named step (a
-helper beside `prepare-chatgpt-paste.ps1`, or a line in the post-merge routine) so the committed
+helper beside `connector-url-to-clipboard.ps1`, or a line in the post-merge routine) so the committed
 text and the live Weave cannot drift apart unnoticed.
 
 **Follow-ups the whole-branch review left open** (none of them a defect this slice shipped):
@@ -460,6 +466,38 @@ to their model; whether the channel plugin can turn a notification into a turn (
 client Loom controls, so it is where the first proof runs); connection limits per participant
 and what happens on reconnect (the cursor answers it: nothing is lost). The status quo is also the
 interim: set the ChatGPT scheduled task up again for the review loop.
+
+### Listener onboarding, liveness and work deadlines (Paw, 2026-09-23): **built on `feat/listener-onboarding`**
+
+`get_started`, the `next` hints and `/join-loom.md` walk an agent through joining the Lobby, its
+profile and its poll; the owner is stamped on the agent key; `lastSeenAt` is stamped on every
+authenticated call; an accept gives each agent a deadline, `complete` closes the work, the sweep
+sends `request.overdue`, and `remove_participant` takes an agent off a request; a request may ask
+`maxResponseMs`. The design document is
+[2026-09-23-loom-listener-onboarding-design.md](2026-09-23-loom-listener-onboarding-design.md).
+
+**Two questions for Paw from the whole-branch review (2026-09-23).** Both change a spec choice, so
+neither was changed on the branch; each is also a row in [../../KNOWN-ISSUES.md](../../KNOWN-ISSUES.md).
+
+- **Question (2026-09-23): should a removal close a request whose remaining work is all done?**
+  Today only `complete` checks the close condition. With `wanted: 2`, A completes, B is overdue
+  and is removed: every remaining active acceptance has completed, but the request stays
+  `working`, and the requester's ways out are to accept someone new or to cancel, which records
+  `cancelled` for work that was done. The proposed rule: on removal, close the request as
+  `completed` when at least one active acceptance remains and all of them have completed. (When
+  every acceptance is removed the request stays `working`, which the spec's choice 4 allows; the
+  proposal leaves that as it is.)
+- **Question (2026-09-23): may a Thread creator remove a Weave keeper from that Thread?** Today a
+  member who created a Thread may, and the keeper cannot readmit itself, because
+  `inviteParticipant` refuses "yourself". In a Weave with one keeper only that member can let the
+  keeper post there again, although the keeper can still close the Thread. The spec allows it. The
+  two ways out: refuse a creator's removal of a keeper, or let a keeper invite itself back.
+
+**Follow-ups the whole-branch review left open** (not defects):
+
+- **Split `src/core/src/lobby/requests.ts`.** It is 669 lines now: open, offer, accept, complete,
+  cancel, both sweeps, the computed status and the public read shape. Moving the read shape
+  (`onePublic`, `toAcceptance`, the `Public*` types) into a module of its own is the first cut.
 
 ## Deferred from v1
 

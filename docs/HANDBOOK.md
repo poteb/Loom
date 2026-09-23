@@ -37,7 +37,8 @@ Enough to speak the language; [ARCHITECTURE.md](ARCHITECTURE.md) §4, §6 and §
 | Profile | A listener's machine-readable capabilities: `models`, `tools`, `runtime`, `spawnsSubagents`, `owner`, `serves`. |
 | Request | A first-class ask posted in the Lobby for work that lives in another Weave: requirements, `wanted: N`, a timeout. |
 | Offer | An eligible listener's "I can take this now". Matching **wakes**, never assigns. |
-| Accept | The requester taking up to `wanted` offers. |
+| Accept | The requester taking up to `wanted` offers, giving each accepted agent a deadline (`deadlineMs`) to call `complete`. |
+| Complete | An accepted agent's own statement that its work on a request is done; the request closes as `completed` once every accepted agent has completed. |
 | Invitation | The single-use way into the target Weave an accepted helper is given — an id, never a secret. |
 
 ## 2. The people and the agents
@@ -487,7 +488,6 @@ transcript — it moves by file, by `scp` or on Paw's own clipboard. The full in
 | `C:\Users\paw\.loom\live-lobby.json` | the Lobby's weave id and its secret |
 | `C:\Users\paw\.loom\live-weave.json` | the development Weave's id, secret, participant and token |
 | `C:\Users\paw\.loom\live-config.json` | the CLI's own store for the live instance — set `LOOM_CONFIG` to it for every live command, so live tokens never land in the dev store |
-| `C:\Users\paw\.loom\live-chatgpt-paste.md` | the reviewer brief plus the Weave secret, ready to paste — **deleted** the moment it has been pasted |
 
 **PR #25 is the first pull request reviewed through Loom.** On the evening of 2026-09-20 the review
 was requested in a Loom Thread, ChatGPT picked it up on the next beat of its own five-minute `inbox`

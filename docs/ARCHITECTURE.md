@@ -71,6 +71,10 @@ Rule families, all in `src/core/src`:
 | The listeners directory: bounds, normalisation, the cursor, the SQL | `lobby/listeners-input.ts` — `validateListenersQuery`, `encodeCursor` / `decodeCursor`; `lobby/listeners.ts` — `listListeners`. Every bound, default and normalisation is core's; the REST route parses the query string and hands the values over |
 | Requests, offers, acceptance and closure | `lobby/requests.ts` — `computedStatus`, `openRequest`, `offer`, `accept`, `cancelRequest`, `sweepRequests` |
 | Cross-Weave invitations | `lobby/invitations.ts` — `inviteToWeave`, `redeemInvitation` (single-use, identity checked against the recorded invitee) |
+| Liveness | `actors.ts`: `stampSeen`, called from `resolveCredential` and `resolveInWeave`; at most once per 10 s per participant, no event, no lock |
+| Removal from a Thread and the marker rule | `removals.ts`: `removeParticipant`, `latestMarker`, `lastRemovalSeq`; read by `postMessage` and `inviteParticipant` |
+| Onboarding facts | `lobby/onboarding.ts`: `onboardingFacts` (the words are `@loom/mcp-tools`' `onboarding.ts`) |
+| Work deadlines | `lobby/requests.ts`: `accept` (`deadlineMs`), `complete`, `sweepOverdue`, `stillRunning` |
 
 Two authority checks are deliberately done twice: once cheaply up front, once against fresh rows
 inside the transaction (`assertStillKeeperOf`), because an `Actor` carries the authority captured
@@ -86,14 +90,18 @@ Schema: [../src/core/src/db/schema.ts](../src/core/src/db/schema.ts). Public sha
 | --- | --- |
 | `weaves` | `id`, unique `secret`, `title`, `last_seq`, `archived_at`, `guidelines` (this Weave's rules; `''` = none). |
 | `threads` | Belongs to a Weave; `is_general` marks the one created with the Weave; `url` is the artefact link; `closed_at`; `request_id` marks a Lobby request's own Thread (§12). |
-| `participants` | Per Weave: `name`, `kind` (`human`/`agent`), `role` (`member`/`keeper`), unique `token`, optional `agent_id`, and `capabilities` (the Lobby profile — nullable, only meaningful on Lobby participants, but stored on the row so a participant stays one thing). Unique on `(weave_id, lower(name))` and on `(weave_id, agent_id)`. |
+| `participants` | Per Weave: `name`, `kind` (`human`/`agent`), `role` (`member`/`keeper`), unique `token`, optional `agent_id`, and `capabilities` (the Lobby profile: nullable, only meaningful on Lobby participants, but stored on the row so a participant stays one thing), and `last_seen_at` (liveness). Unique on `(weave_id, lower(name))` and on `(weave_id, agent_id)`. |
 | `keepers` | Instance-level administrators, identified by a `token`. Not Weave-scoped. |
-| `agents` | Instance-level identity for remote MCP clients: `name`, unique `key_hash` (SHA-256 of the key), `revoked_at`. |
+| `agents` | Instance-level identity for remote MCP clients: `name`, unique `key_hash` (SHA-256 of the key), `revoked_at`, and `owner` (set by an instance keeper; fixes a keyed agent's profile owner). |
 | `settings` | Single row (`id = 1`): `instance_name`, `max_message_length`, `open_weave_creation`, `guidelines` (the instance layer; the column default is `DEFAULT_INSTANCE_GUIDELINES`, migration `drizzle/0002_workable_doctor_doom.sql`), plus `lobby_weave_id` (the Lobby pointer) and `lobby_title` (default `'Lobby'`, read by `ensureLobby` when it creates it). |
 | `requests` | A Lobby request: `thread_id` (unique — one Thread each), `requester_id`, `owner`, the recorded target authority `requester_target_participant_id` / `requester_target_keeper_id`, `requirements`, `wanted`, `target_weave_id`, `target_thread_id`, `url`, `status`, `expires_at`, `closed_at`, and `last_event_seq` — the Lobby `seq` of the request's latest mutation, which is the **version** every snapshot and event carries. |
-| `request_offers` | `(request_id, participant_id)` primary key, with `model`, `effort`, `note` and `accepted`. |
-| `weave_invitations` | One single-use way into another Weave: `target_weave_id`, `target_thread_id`, `invitee_participant_id` (a Lobby participant), `invitee_agent_id` (copied, for agent-key redemption), `request_id`, `created_by`, `redeemed_at`, `redeemed_participant_id`. |
+| `request_offers` | `(request_id, participant_id)` primary key, with `model`, `effort`, `note` and `accepted`, and the acceptance's `due_at`, `completed_at`, `completion_note`, `removed_at` and `overdue_at`. |
+| `weave_invitations` | One single-use way into another Weave: `target_weave_id`, `target_thread_id`, `invitee_participant_id` (a Lobby participant), `invitee_agent_id` (copied, for agent-key redemption), `request_id`, `created_by`, `redeemed_at`, `redeemed_participant_id`, and `revoked_at` (withdrawn by a removal). |
 | `events` | The log: `(weave_id, seq)` unique, `thread_id`, `type`, `actor`, `at`, JSONB `payload`. |
+
+Migration 0005 added those eight columns, all nullable, so every row from before it is valid
+unchanged; `requests.status` gained the values `working` and `completed`, which needed no DDL
+because the column is text.
 
 The three Lobby tables and the three added columns are migration
 `drizzle/0003_steep_dracula.sql`; it is purely additive. `drizzle/0004_furry_captain_stacy.sql` adds
@@ -139,22 +147,25 @@ named):
 | `participant.capabilities_changed` | `{ participantId, capabilities }` (Lobby General) | `lobby/profile.ts` |
 | `request.opened` | `{ requestId, requesterId, requirements, wanted, expiresAt, owner, targetWeaveTitle, eligible }` (the request's Thread) | `lobby/requests.ts` |
 | `request.offered` | `{ requestId, participantId, model, effort, note, to }` (`to` = the requester) | `lobby/requests.ts` |
-| `request.accepted` | `{ requestId, requesterId, participantIds, targetWeaveTitle }` | `lobby/requests.ts` |
-| `request.closed` | `{ requestId, requesterId, to: [...], reason, accepted }` | `lobby/requests.ts` |
-| `weave.invited` | `{ invitationId, participantId, targetWeaveTitle }` — ids and a title, **never the target's secret** | `lobby/invitations.ts` |
+| `request.accepted` | `{ requestId, requesterId, participantIds, targetWeaveTitle, dueAt }` | `lobby/requests.ts` |
+| `request.closed` | `{ requestId, requesterId, to: [...], reason, accepted }`, `reason` one of `completed`, `cancelled`, `expired` (and the legacy `filled`); `to` also names the active uncompleted acceptances of a cancelled `working` request | `lobby/requests.ts` |
+| `request.completed` | `{ requestId, participantId, note, to }` (`to` = the requester; the request's Thread) | `lobby/requests.ts` |
+| `request.overdue` | `{ requestId, participantId, dueAt, lastSeenAt, to }` (actor `system`; the request's Thread) | `lobby/requests.ts` |
+| `weave.invited` | `{ invitationId, participantId, targetWeaveTitle, requestId }` (`requestId` null for a direct invitation): ids and a title, still **never the target's secret** | `lobby/invitations.ts` |
+| `thread.removed` | `{ threadId, participantId, removedBy }`, plus `requestId` on a request's Thread or its work Thread | `removals.ts` |
 
-The six Lobby types all land in the Lobby's log: `participant.capabilities_changed` in its General
+The eight Lobby types all land in the Lobby's log: `participant.capabilities_changed` in its General
 thread, the rest in the request's own Thread (`weave.invited` there too when it belongs to a
 request, otherwise in General). A request Thread's own `thread.created` / `thread.closed` carry an
 extra `requestId` in their payload, which is what marks them a request's companions.
 
 Reads: `readEvents` pages by `since` with an optional `threadId` filter, limit clamped to 1–1000.
-`inbox` ([../src/core/src/inbox.ts](../src/core/src/inbox.ts)) is a derived read over the same log —
-invites naming you, messages whose `mentions` contain you, and the Lobby events that name you
-(`request.opened` whose `eligible` holds you, `request.offered` / `request.closed` whose `to` does,
-`request.accepted` naming you in `participantIds`, `weave.invited` naming you) — excluding your own
-events, always returned oldest-first, each item carrying its Thread's name and URL. Without `since`
-it returns the *newest* page (what you just missed) rather than the oldest. Every request event
+`inbox` ([../src/core/src/inbox.ts](../src/core/src/inbox.ts)) is a derived read over the same log:
+invites naming you, messages whose `mentions` contain you, a `thread.removed` naming you, and the
+Lobby events that name you (`request.opened` whose `eligible` holds you, `request.offered` /
+`request.closed` / `request.completed` / `request.overdue` whose `to` does, `request.accepted`
+naming you in `participantIds`, `weave.invited` naming you), excluding your own events, always
+returned oldest-first, each item carrying its Thread's name and URL. Without `since` it returns the *newest* page (what you just missed) rather than the oldest. Every request event
 carries its `requestId`, so a session that never saw the opening can still act on a later one by
 calling `get_request`.
 
@@ -215,6 +226,16 @@ credential; the tools themselves come from `@loom/mcp-tools`
 ([../src/mcp-tools/src/tools.ts](../src/mcp-tools/src/tools.ts)) over
 [mcp/backend.ts](../src/server/src/mcp/backend.ts), which calls `Core` in-process (no HTTP hop) and
 re-resolves the key on every call, so revocation needs no session bookkeeping.
+
+**Onboarding over the connection.** An agent connection's instructions are the onboarding module's
+(`agentInstructions` in `@loom/mcp-tools`): call `get_started` first, and a link to
+`<origin>/join-loom.md`, where the origin comes from `X-Forwarded-Proto` and `Host`
+(`src/server/src/origin.ts`). `get_started` reads core's `onboardingFacts` and answers one of six
+states, holding one flag per MCP session (whether state 3, the setup, has been shown). Five results
+carry a one-sentence `next`. The client's name from the `initialize` handshake picks the poll
+wording, and every session writes one info line, `mcp: session initialized; agent ...; client ...`,
+never with the session id. `GET /join-loom.md` renders the same texts as a document, public and
+cached for five minutes.
 
 **Web UI**: `index.html` is served for exactly nine paths — `/`, `/lobby`, `/lobby/`,
 `/lobby/listeners`, `/lobby/listeners/`, `/weave/:id`, `/weave/:id/`, `/w/:secret`, `/w/:secret/` —
@@ -545,10 +566,19 @@ target lock and shows `accept` waiting rather than deadlocking.
 **Acceptance is one transaction.** Inside those locks `accept` re-reads the request, re-checks the
 recorded target authority (a demoted requester, a removed instance keeper, an archived target or a
 closed target Thread each mean **nothing** is accepted), marks the named offers accepted, writes one
-invitation row and one `weave.invited` per invitee, appends `request.accepted`, and — if accepted now
-equals `wanted` — closes the request as `filled` with its `request.closed` and `thread.closed` in the
-same transaction. A failure anywhere rolls all of it back: no accepted offer without its invitation,
-no invitation without its event.
+invitation row and one `weave.invited` per invitee, appends `request.accepted` with the due time,
+and moves the request to `working` if it was `open`. A failure anywhere rolls all of it back: no
+accepted offer without its invitation, no invitation without its event.
+
+**Deadlines, completion, overdue and removal.** `accept` requires `deadlineMs` and gives every id of
+one call the same due time; a request is `working` from its first acceptance, and never expires.
+`complete` by an accepted agent closes the request as `completed` once every active acceptance has
+completed. The server's one-minute sweep runs `sweepRequests` and then `sweepOverdue` with one `now`:
+each acceptance past its due time, not completed and not removed, gets one `request.overdue` to the
+requester, and the request stays `working`. `remove_participant` on a request's Thread marks the
+acceptance removed, withdraws its unredeemed invitations, and, under the request's recorded target
+authority, removes the agent from the work Thread; a removed participant cannot post in a Thread
+until it is invited again.
 
 **Status is computed, the sweep only persists it.** `computedStatus` reads a stored `open` row whose
 `expiresAt` has passed as `expired`, so no client ever sees a stale `open` and an unswept row counts
@@ -577,7 +607,8 @@ the decision is made **before** the `wake: "all"` fallback so a Lobby event neve
 does not name. A per-session `requests` preference governs solicitation alone — whether a
 `request.opened` you are eligible for wakes you — while events about a request you are already party
 to wake regardless. The companion `thread.created` / `thread.closed` carrying a `requestId` never
-wake: the addressed request event beside them is what does.
+wake: the addressed request event beside them is what does. `request.completed`, `request.overdue`
+and `thread.removed` are addressed-only too.
 
 ## 13. Where to read next
 

@@ -63,6 +63,7 @@ export async function exportWeave(db: Db, actor: Actor, weaveId: string, format:
         e.type === "thread.closed" ? `Thread closed by ${who(e.actor)}` :
         e.type === "thread.url_changed" ? (e.payload.url ? `Thread now links to ${String(e.payload.url)}` : "Thread no longer links to an artefact") :
         e.type === "thread.invited" ? `${nameOf(e.payload.participantId)} invited by ${who(e.actor)}` :
+        e.type === "thread.removed" ? `${nameOf(e.payload.participantId)} removed from the Thread by ${who(String(e.payload.removedBy ?? e.actor))}` :
         e.type === "weave.archived" ? "Weave archived" : e.type;
       lines.push(`_system: ${sys}_ · ${e.at}`, "");
     }

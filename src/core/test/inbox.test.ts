@@ -6,9 +6,10 @@ import { createThread } from "../src/threads.js";
 import { setRole } from "../src/participants.js";
 import { ensureLobby, joinLobby } from "../src/lobby/lobby.js";
 import { setCapabilities } from "../src/lobby/profile.js";
-import { accept, offer, openRequest, sweepRequests } from "../src/lobby/requests.js";
+import { accept, complete, offer, openRequest, sweepOverdue, sweepRequests } from "../src/lobby/requests.js";
 import { inviteParticipant } from "../src/invites.js";
 import { postMessage } from "../src/messages.js";
+import { removeParticipant } from "../src/removals.js";
 import { inbox } from "../src/inbox.js";
 import { resolveCredential } from "../src/actors.js";
 import { seedKeepers } from "../src/keepers.js";
@@ -90,6 +91,21 @@ describe("inbox", () => {
     const other = await core.createWeave({ title: "O", opener: "", creator: { name: "Q", kind: "human" } });
     await expect(core.inbox(agent, other.weave.id, {})).rejects.toMatchObject({ code: "forbidden" });
   });
+
+  it("inbox returns thread.removed naming me and not others", async () => {
+    const r = await createWeave(db, bus, { title: "T", opener: "", creator: { name: "Paw", kind: "human" } });
+    const paw = await resolveCredential(db, r.token);
+    const b = await joinWeave(db, bus, r.secret, { name: "Bot", kind: "agent" });
+    const o = await joinWeave(db, bus, r.secret, { name: "Other", kind: "agent" });
+    const t = await createThread(db, bus, paw, r.weave.id, "PR 1", null);
+    await inviteParticipant(db, bus, paw, t.id, b.participant.id);
+    await inviteParticipant(db, bus, paw, t.id, o.participant.id);
+    const removed = await removeParticipant(db, bus, paw, t.id, b.participant.id);
+    const mine = await inbox(db, await resolveCredential(db, b.token), r.weave.id, {});
+    expect(mine.filter((e) => e.type === "thread.removed").map((e) => e.seq)).toEqual([removed.seq]);
+    const theirs = await inbox(db, await resolveCredential(db, o.token), r.weave.id, {});
+    expect(theirs.map((e) => e.type)).not.toContain("thread.removed");
+  });
 });
 
 const MODEL = { model: "gpt-5.6-sol", effort: "high" };
@@ -132,11 +148,12 @@ type Lobby = Awaited<ReturnType<typeof lobbySetup>>;
 const types = async (f: Lobby, who: { actor: Actor }) =>
   (await inbox(db, who.actor, f.lobbyId, {})).map((e) => e.type);
 
-/** Both listeners offer; the requester accepts one, which fills the request and closes it. */
+/** Both listeners offer; the requester accepts one, who completes, which closes the request. */
 async function fillIt(f: Lobby) {
   await offer(db, bus, f.pawbot.actor, f.request.id, {});
   await offer(db, bus, f.shared.actor, f.request.id, {});
-  await accept(db, bus, f.claude.actor, f.request.id, [f.pawbot.id]);
+  await accept(db, bus, f.claude.actor, f.request.id, [f.pawbot.id], { deadlineMs: 3_600_000 });
+  await complete(db, bus, f.pawbot.actor, f.request.id);
 }
 
 describe("inbox: addressed Lobby events", () => {
@@ -173,5 +190,21 @@ describe("inbox: addressed Lobby events", () => {
     const f = await lobbySetup();
     await fillIt(f);
     expect(await types(f, f.quiet)).toEqual(["request.opened"]);
+  });
+
+  it("inbox returns request.completed and request.overdue addressed to me and not to others", async () => {
+    const f = await lobbySetup();
+    await offer(db, bus, f.pawbot.actor, f.request.id, {});
+    await accept(db, bus, f.claude.actor, f.request.id, [f.pawbot.id], { deadlineMs: 3_600_000 });
+    // It goes overdue while it is working, then the agent completes it after all.
+    await sweepOverdue(db, bus, new Date(Date.now() + 2 * 3_600_000));
+    await complete(db, bus, f.pawbot.actor, f.request.id);
+    expect((await types(f, f.claude)).filter((t) => t === "request.overdue" || t === "request.completed"))
+      .toEqual(["request.overdue", "request.completed"]);
+    for (const other of [f.shared, f.pawbot]) {
+      const mine = await types(f, other);
+      expect(mine).not.toContain("request.overdue");
+      expect(mine).not.toContain("request.completed");
+    }
   });
 });

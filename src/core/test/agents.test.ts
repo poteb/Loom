@@ -1,6 +1,6 @@
 import { describe, it, expect, afterAll, beforeEach } from "vitest";
 import { freshDb, closeTestDb, keeperToken } from "./helpers.js";
-import { addAgent, listAgents, revokeAgent, hashKey } from "../src/agents.js";
+import { addAgent, listAgents, revokeAgent, setAgentOwner, hashKey } from "../src/agents.js";
 import {
   resolveCredential, resolveInWeave, participantForAgent,
   actorId, assertCanRead, assertParticipantOf, assertIsKeeperOf, assertStillKeeperOf,
@@ -230,5 +230,49 @@ describe("agents inside Weaves: malformed ids and concurrent joins", () => {
     await joinWeave(db, bus, r.secret, { name: "Shared", kind: "agent" }, await resolveCredential(db, first.key));
     await expect(joinWeave(db, bus, r.secret, { name: "Shared", kind: "agent" }, await resolveCredential(db, second.key)))
       .rejects.toMatchObject({ code: "name_taken" });
+  });
+});
+
+describe("the owner on an agent key", () => {
+  it("addAgent stores a trimmed owner and lists it", async () => {
+    const { agent } = await addAgent(db, await keeper(), "ChatGPT", " paw ");
+    expect(agent.owner).toBe("paw");
+    expect((await listAgents(db, await keeper())).find((a) => a.id === agent.id)!.owner).toBe("paw");
+  });
+
+  it("addAgent without an owner stores null", async () => {
+    const { agent } = await addAgent(db, await keeper(), "Bot");
+    expect(agent.owner).toBeNull();
+    expect((await listAgents(db, await keeper())).find((a) => a.id === agent.id)!.owner).toBeNull();
+  });
+
+  it("addAgent rejects an empty or 65-character owner", async () => {
+    await expect(addAgent(db, await keeper(), "Blank", "   ")).rejects.toMatchObject({ code: "validation" });
+    await expect(addAgent(db, await keeper(), "Long", "o".repeat(65))).rejects.toMatchObject({ code: "validation" });
+    expect(await listAgents(db, await keeper())).toEqual([]);
+  });
+
+  it("setAgentOwner sets and replaces an owner", async () => {
+    const { agent } = await addAgent(db, await keeper(), "ChatGPT");
+    expect((await setAgentOwner(db, await keeper(), agent.id, "paw")).owner).toBe("paw");
+    const replaced = await setAgentOwner(db, await keeper(), agent.id, " bob ");
+    expect(replaced).toEqual({ ...agent, owner: "bob" });
+    expect((await listAgents(db, await keeper()))[0]!.owner).toBe("bob");
+  });
+
+  it("setAgentOwner is instance-keeper only", async () => {
+    const { agent } = await addAgent(db, await keeper(), "ChatGPT");
+    const r = await createWeave(db, new EventBus(), { title: "T", opener: "", creator: { name: "P", kind: "human" } });
+    const participant = await resolveCredential(db, r.token);
+    await expect(setAgentOwner(db, participant, agent.id, "paw")).rejects.toMatchObject({ code: "forbidden" });
+    expect((await listAgents(db, await keeper()))[0]!.owner).toBeNull();
+  });
+
+  it("setAgentOwner answers not_found for a malformed, an unknown and a revoked id", async () => {
+    const { agent } = await addAgent(db, await keeper(), "Gone");
+    await revokeAgent(db, await keeper(), agent.id);
+    await expect(setAgentOwner(db, await keeper(), "not-a-uuid", "paw")).rejects.toMatchObject({ code: "not_found", message: "No such agent" });
+    await expect(setAgentOwner(db, await keeper(), "00000000-0000-4000-8000-000000000000", "paw")).rejects.toMatchObject({ code: "not_found", message: "No such agent" });
+    await expect(setAgentOwner(db, await keeper(), agent.id, "paw")).rejects.toMatchObject({ code: "not_found", message: "No such agent" });
   });
 });

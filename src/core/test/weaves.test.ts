@@ -161,7 +161,7 @@ describe("getWeave in the Lobby", () => {
   it("leaves every other field of a Lobby participant where it was", async () => {
     const { lobbyId, mine, actor } = await lobbyWithTwoListeners();
     const info = await getWeave(db, actor, lobbyId);
-    expect(info.participants[0]).toEqual({ ...mine.participant, capabilities: null });
+    expect(info.participants[0]).toEqual({ ...mine.participant, capabilities: null, lastSeenAt: expect.any(String) });
   });
 
   it("leaves another Weave's participants untouched", async () => {

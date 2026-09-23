@@ -2,11 +2,11 @@ import type { Profile } from "./lobby/matching.js";
 
 export type EventType =
   | "message" | "participant.joined" | "participant.role_changed"
-  | "thread.created" | "thread.closed" | "thread.invited" | "thread.url_changed"
+  | "thread.created" | "thread.closed" | "thread.invited" | "thread.removed" | "thread.url_changed"
   | "weave.archived" | "weave.guidelines_changed"
   // Lobby. All of these are addressed-only: they never wake anyone through a Weave's "all events" mode.
   | "participant.capabilities_changed"
-  | "request.opened" | "request.offered" | "request.accepted" | "request.closed"
+  | "request.opened" | "request.offered" | "request.accepted" | "request.closed" | "request.completed" | "request.overdue"
   | "weave.invited";
 
 export type LoomEvent = {
@@ -28,6 +28,12 @@ export type PublicParticipant = {
    * with `getMyLobbyParticipant`.
    */
   capabilities: Profile | null;
+  /**
+   * When a credential standing for this participant last made a call, stamped by core and throttled
+   * to once per ten seconds (spec §6.6). Null until the first stamp. Loom stores no threshold: each
+   * reader decides what "alive" means, and a request's `maxResponseMs` is the one rule that reads it.
+   */
+  lastSeenAt: string | null;
 };
 export type PublicThread = {
   id: string; weaveId: string; name: string; isGeneral: boolean;
@@ -37,7 +43,7 @@ export type PublicWeave = {
   id: string; title: string; createdAt: string; archivedAt: string | null; lastSeq: number;
   guidelines: string;
 };
-export type PublicAgent = { id: string; name: string; createdAt: string; revokedAt: string | null };
+export type PublicAgent = { id: string; name: string; createdAt: string; revokedAt: string | null; owner: string | null };
 
 export type Actor =
   | { kind: "participant"; participant: PublicParticipant }

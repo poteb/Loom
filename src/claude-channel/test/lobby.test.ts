@@ -141,7 +141,7 @@ describe("the Lobby over the channel", () => {
         await waitFor(() => gotA.some((g) => g.meta.type === "request.offered"), "request.offered on the requester");
         expect(body(typed(gotA, "request.offered")!)).toBe(`Offer from ${helper.participant.name} (gpt-5.6-sol/high): "can start now"`);
 
-        expect((await a.callTool({ name: "accept", arguments: { credential: "stored", requestId: req.id, participantIds: [helper.participant.id] } })).isError).toBeFalsy();
+        expect((await a.callTool({ name: "accept", arguments: { credential: "stored", requestId: req.id, participantIds: [helper.participant.id], deadlineMs: 3_600_000 } })).isError).toBeFalsy();
         await waitFor(() => gotB.some((g) => g.meta.type === "weave.invited"), "weave.invited on the helper");
         expect(body(typed(gotB, "request.accepted")!)).toBe('Accepted: you were invited to "Loom session" — the invitation id arrives on the weave.invited event beside this (or from inbox); redeem with join_weave({ inviteId })');
         const invited = typed(gotB, "weave.invited")!;
@@ -208,7 +208,7 @@ describe("the Lobby over the channel", () => {
 
     // The deadline passes while the session is away, and the sweeper closes it.
     await s!.core.db.$client.unsafe("update requests set expires_at = now() - interval '1 minute' where id = $1", [requestId] as never);
-    expect(await s!.sweepNow()).toBeGreaterThanOrEqual(1);
+    expect((await s!.sweepNow()).closed).toBeGreaterThanOrEqual(1);
 
     await withChannel(stateDir, async (a2) => {
       const got = collectNotifications(a2);
@@ -252,6 +252,43 @@ describe("the Lobby over the channel", () => {
       expect(left).toEqual({ weaveId: L, left: true });
       expect(readState(stateDir).weaves[L]).toBeUndefined();
       expect(await profileOf(lob.token, lob.participant.id)).toBeNull();
+    });
+  });
+
+  it("complete and remove_participant work with credential stored", async () => {
+    const dirB = mkdtempSync(path.join(tmpdir(), "loom-lb-"));
+    await withChannel(stateDir, async (a) => {
+      const target = json(await a.callTool({ name: "create_weave", arguments: { title: "Stored work", opener: "start", name: uniq("Claude") } }));
+      await a.callTool({ name: "join_lobby", arguments: { name: uniq("Asker") } });
+      await a.callTool({ name: "set_capabilities", arguments: { credential: "stored", profile: { owner: "paw", serves: "anyone" } } });
+      await withChannel(dirB, async (b) => {
+        const helper = json(await b.callTool({ name: "join_lobby", arguments: { name: uniq("Helper") } }));
+        await b.callTool({ name: "set_capabilities", arguments: { credential: "stored", profile: HELPER_PROFILE } });
+        const ask = async (title: string) => json(await a.callTool({ name: "open_request", arguments: {
+          credential: "stored", title, requirements: REQUIREMENTS, wanted: 1,
+          targetWeaveId: target.weave.id, targetThreadId: target.generalThread.id, targetCredential: "stored",
+        } }));
+        const acceptIt = async (id: string) => {
+          expect((await b.callTool({ name: "offer", arguments: { credential: "stored", requestId: id } })).isError).toBeFalsy();
+          expect((await a.callTool({ name: "accept", arguments: { credential: "stored", requestId: id, participantIds: [helper.participant.id], deadlineMs: 3_600_000 } })).isError).toBeFalsy();
+        };
+        const done = await ask("Stored complete");
+        await acceptIt(done.id);
+        expect(json(await b.callTool({ name: "complete", arguments: { credential: "stored", requestId: done.id } })).status).toBe("completed");
+
+        const dropped = await ask("Stored removal");
+        await acceptIt(dropped.id);
+        // "stored" finds a Thread's Weave through the streams, which learn the request Thread when its
+        // thread.created arrives on the Lobby stream; until then the wrapper answers no_weave.
+        const remove = () => a.callTool({ name: "remove_participant", arguments: { credential: "stored", threadId: dropped.threadId, participantId: helper.participant.id } });
+        let removed = await remove();
+        for (let i = 0; i < 100 && removed.isError && json(removed).code === "no_weave"; i++) {
+          await new Promise((r) => setTimeout(r, 50));
+          removed = await remove();
+        }
+        expect(removed.isError).toBeFalsy();
+        expect(json(removed)).toMatchObject({ created: true, acceptanceRemoved: true });
+      });
     });
   });
 });

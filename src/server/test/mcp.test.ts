@@ -4,8 +4,10 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { serve, type ServerType } from "@hono/node-server";
 import { DEFAULT_INSTANCE_GUIDELINES, INSTANCE_HEADING } from "@loom/core";
 import { buildApp } from "../src/app.js";
-import { LOBBY_MECHANICS } from "@loom/mcp-tools";
-import { MCP_INSTRUCTIONS, type MountMcpOptions } from "../src/mcp/index.js";
+import { LOBBY_MECHANICS, agentInstructions, POLL_OPENAI } from "@loom/mcp-tools";
+import { publicOrigin } from "../src/origin.js";
+import { logInfo } from "../src/log.js";
+import { MCP_INSTRUCTIONS, clientText, type MountMcpOptions } from "../src/mcp/index.js";
 import { TicketStore } from "../src/tickets.js";
 import { startTestServer, keeperToken, type TestServer } from "./helpers.js";
 
@@ -17,9 +19,9 @@ function withTimeout<T>(p: Promise<T>, label: string, ms = 5000): Promise<T> {
   ]);
 }
 
-async function startFreshApp(core: TestServer["core"], opts?: { mcpConnect?: MountMcpOptions["connect"]; mcpSessionTtlMs?: number }) {
+async function startFreshApp(core: TestServer["core"], opts?: { mcpConnect?: MountMcpOptions["connect"]; mcpSessionTtlMs?: number; mcpLog?: (line: string) => void }) {
   const tickets = new TicketStore();
-  const { app, stop: stopSweep } = buildApp({ core, tickets, mcpConnect: opts?.mcpConnect, mcpSessionTtlMs: opts?.mcpSessionTtlMs });
+  const { app, stop: stopSweep } = buildApp({ core, tickets, mcpConnect: opts?.mcpConnect, mcpSessionTtlMs: opts?.mcpSessionTtlMs, mcpLog: opts?.mcpLog ?? (() => {}) });
   const server: ServerType = await new Promise((resolve) => {
     const h = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolve(h));
   });
@@ -106,7 +108,7 @@ describe("remote MCP at /mcp", () => {
       await mcpServer.connect(transport);
     };
     const tickets = new TicketStore();
-    const { app, stop: stopSweep } = buildApp({ core: s!.core, tickets, mcpConnect });
+    const { app, stop: stopSweep } = buildApp({ core: s!.core, tickets, mcpConnect, mcpLog: () => {} });
     try {
       let aDone = false;
       let bDone = false;
@@ -158,7 +160,7 @@ describe("remote MCP at /mcp", () => {
     // things — which is what actually forces both id-0 requests to race for real. Guard each step
     // with a per-client timeout so a regression fails fast instead of hanging the whole run.
     const tickets = new TicketStore();
-    const { app, stop: stopSweep } = buildApp({ core: s!.core, tickets });
+    const { app, stop: stopSweep } = buildApp({ core: s!.core, tickets, mcpLog: () => {} });
     const mcpUrl = new URL("http://mcp.test/mcp");
     const transportFor = () => new StreamableHTTPClientTransport(mcpUrl, { fetch: (url, init) => Promise.resolve(app.request(url, init)) });
     const a = new Client({ name: "racer-a", version: "1.0" });
@@ -267,7 +269,7 @@ describe("remote MCP at /mcp", () => {
     await withClient(async (c) => {
         const { tools } = await c.listTools();
         expect(tools.map((t) => t.name)).toContain("join_weave");
-        expect(tools).toHaveLength(34);
+        expect(tools).toHaveLength(38);
     });
   });
 
@@ -277,7 +279,7 @@ describe("remote MCP at /mcp", () => {
     // for that same attempt, instead of checking isConnected() and handling a request on a
     // transport whose start() is still in flight.
     const tickets = new TicketStore();
-    const { app, stop: stopSweep } = buildApp({ core: s!.core, tickets });
+    const { app, stop: stopSweep } = buildApp({ core: s!.core, tickets, mcpLog: () => {} });
     const server: ServerType = await new Promise((resolve) => {
       const h = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolve(h));
     });
@@ -655,9 +657,9 @@ describe("the Lobby over remote MCP", () => {
       const toRequester = addressed(json(await requester.callTool({ name: "inbox", arguments: { weaveId: me.lobbyId } })), "request.offered");
       expect(toRequester.participantId).toBe(them.participantId);
 
-      const accepted = json(await requester.callTool({ name: "accept", arguments: { requestId: request.id, participantIds: [them.participantId] } }));
+      const accepted = json(await requester.callTool({ name: "accept", arguments: { requestId: request.id, participantIds: [them.participantId], deadlineMs: 3_600_000 } }));
       expect(accepted.invitationIds).toHaveLength(1);
-      expect(accepted.request.status).toBe("filled");
+      expect(accepted.request.status).toBe("working");
 
       const invited = addressed(json(await helper.callTool({ name: "inbox", arguments: { weaveId: them.lobbyId } })), "weave.invited");
       expect(invited.invitationId).toBe(accepted.invitationIds[0]);
@@ -715,5 +717,169 @@ describe("the Lobby over remote MCP", () => {
   it("a session's instructions carry the Lobby mechanics paragraph", async () => {
     expect(MCP_INSTRUCTIONS).toContain(LOBBY_MECHANICS);
     await withClient(async (c) => expect(c.getInstructions() ?? "").toContain(LOBBY_MECHANICS));
+  });
+});
+
+describe("listener onboarding over remote MCP", () => {
+  let k = 0;
+  const fresh = (prefix: string) => `${prefix}${++k}on`;
+  const MODEL = { model: "gpt-5.6-sol", effort: "high" };
+  const mint = async (name: string, owner?: string) =>
+    (await s!.core.addAgent(await s!.core.resolveCredential(keeperToken("k1")), name, owner)).key;
+  /** An MCP client on an agent key, naming itself `clientName` in its initialize handshake. */
+  async function agentClient(key: string, clientName = "listener", headers: Record<string, string> = {}): Promise<Client> {
+    const url = new URL(`${s!.baseUrl}/mcp`);
+    url.searchParams.set("agent", key);
+    const c = new Client({ name: clientName, version: "1.0" });
+    await c.connect(new StreamableHTTPClientTransport(url, { requestInit: { headers } }));
+    return c;
+  }
+
+  it("an agent connection's instructions are the §5.3 text with the origin from Host, then the instance guidelines", async () => {
+    const name = fresh("Instr");
+    const c = await agentClient(await mint(name));
+    try {
+      // The client sends Host 127.0.0.1:<port>, so the origin is the test server's own base URL.
+      expect(c.getInstructions()).toBe(`${agentInstructions(name, s!.baseUrl)}\n\n${INSTANCE_HEADING}\n${DEFAULT_INSTANCE_GUIDELINES}`);
+    } finally { await c.close(); }
+  });
+
+  it("X-Forwarded-Proto https makes the origin https, and a malformed Host falls back to the request URL", async () => {
+    const c = await agentClient(await mint(fresh("Proxy")), "listener", { "x-forwarded-proto": "https" });
+    try {
+      expect(c.getInstructions()).toContain(`The same walkthrough as a document: https://${new URL(s!.baseUrl).host}/join-loom.md`);
+    } finally { await c.close(); }
+    // Node's fetch will not send an arbitrary Host header, so the fallback is proved on the helper itself.
+    const source = (url: string, headers: Record<string, string>) => ({ req: { url, header: (n: string) => headers[n.toLowerCase()] } });
+    expect(publicOrigin(source("http://127.0.0.1:3000/mcp", { host: "bad host/../x" }))).toBe("http://127.0.0.1:3000");
+    expect(publicOrigin(source("http://127.0.0.1:3000/mcp", { host: "loom.3dbox.dk", "x-forwarded-proto": "https, http" }))).toBe("https://loom.3dbox.dk");
+    expect(publicOrigin(source("http://127.0.0.1:3000/mcp", { host: "loom.3dbox.dk", "x-forwarded-proto": "gopher" }))).toBe("http://loom.3dbox.dk");
+  });
+
+  it("a non-agent connection's instructions are unchanged apart from the LOBBY_MECHANICS sentence", async () => {
+    expect(MCP_INSTRUCTIONS).toContain("then call complete(requestId); a requester who sees request.overdue decides whether to remove you and accept someone else.");
+    expect(MCP_INSTRUCTIONS).not.toContain("get_started");
+    await withClient(async (c) => {
+      expect(c.getInstructions()).toBe(`${MCP_INSTRUCTIONS}\n\n${INSTANCE_HEADING}\n${DEFAULT_INSTANCE_GUIDELINES}`);
+    });
+  });
+
+  it("get_started round trip", async () => {
+    const name = fresh("Walker");
+    const c = await agentClient(await mint(name, "paw"));
+    const step = async () => json(await c.callTool({ name: "get_started", arguments: {} })).state;
+    try {
+      expect(await step()).toBe(1);
+      await c.callTool({ name: "join_lobby", arguments: {} });
+      expect(await step()).toBe(2);
+      // A model nobody else asks for, so no open request in this shared Lobby can make it state 5.
+      const set = json(await c.callTool({ name: "set_capabilities", arguments: { profile: { models: [{ model: `m-${name}`, effort: "high" }], serves: "owner", pollIntervalMs: 300_000 } } }));
+      expect(set.capabilities.owner).toBe("paw");
+      expect(await step()).toBe(3);
+      expect(await step()).toBe(6);
+    } finally { await c.close(); }
+  });
+
+  it("a client that names itself ChatGPT in initialize gets the scheduled-task wording", async () => {
+    const name = fresh("Gpt");
+    const c = await agentClient(await mint(name, "paw"), "ChatGPT");
+    try {
+      await c.callTool({ name: "join_lobby", arguments: {} });
+      await c.callTool({ name: "set_capabilities", arguments: { profile: { models: [{ model: `m-${name}`, effort: "high" }] } } });
+      const started = json(await c.callTool({ name: "get_started", arguments: {} }));
+      expect(started.state).toBe(3);
+      expect(started.text).toContain(POLL_OPENAI);
+    } finally { await c.close(); }
+  });
+
+  it("each session logs one redacted info line naming the agent and the client, and never the session id", async () => {
+    const name = fresh("Logger");
+    const key = await mint(name);
+    const lines: string[] = [];
+    const sessionIds: string[] = [];
+    const logged = (needle: string) => lines.some((l) => l.includes(needle));
+    const app = await startFreshApp(s!.core, { mcpLog: (line) => lines.push(line) });
+    try {
+      const agentUrl = new URL(app.mcpUrl);
+      agentUrl.searchParams.set("agent", key);
+      const agentTransport = new StreamableHTTPClientTransport(agentUrl);
+      const agent = new Client({ name: `Chat${String.fromCharCode(7)}GPT`, version: "2.0" });
+      await agent.connect(agentTransport);
+      sessionIds.push(agentTransport.sessionId!);
+      const anonTransport = new StreamableHTTPClientTransport(new URL(app.mcpUrl));
+      const anon = new Client({ name: `anon-${name}`, version: "1.0" });
+      await anon.connect(anonTransport);
+      sessionIds.push(anonTransport.sessionId!);
+      // The line is written when the initialized notification lands, which may trail connect().
+      for (let i = 0; i < 50 && !(logged(`agent ${name};`) && logged(`anon-${name}`)); i++) await new Promise((r) => setTimeout(r, 20));
+      await agent.close();
+      await anon.close();
+    } finally { await app.close(); }
+    expect(lines).toEqual([
+      `mcp: session initialized; agent ${name}; client "Chat GPT" 2.0`,
+      `mcp: session initialized; agent none; client "anon-${name}" 1.0`,
+    ]);
+    for (const line of lines) {
+      for (const id of sessionIds) expect(line).not.toContain(id);
+      expect(line).not.toContain(key);
+    }
+    // The production sink redacts what it writes: a token-shaped client name never reaches stdout.
+    const out: string[] = [];
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => { out.push(String(chunk)); return true; }) as typeof process.stdout.write);
+    try { logInfo(`mcp: session initialized; agent none; client "${"t".repeat(43)}" 1.0`); } finally { spy.mockRestore(); }
+    expect(out).toEqual(['mcp: session initialized; agent none; client "[redacted]" 1.0\n']);
+  });
+
+  it("complete and remove_participant round trip with an agent key", async () => {
+    const owner = fresh("own");
+    const requester = await agentClient(await mint(fresh("Req")));
+    const helper = await agentClient(await mint(fresh("Help")));
+    try {
+      const target = json(await requester.callTool({ name: "create_weave", arguments: { title: "Work", opener: "o", name: fresh("Host") } }));
+      const thread = json(await requester.callTool({ name: "create_thread", arguments: { weaveId: target.weave.id, name: "PR 40" } }));
+      await requester.callTool({ name: "join_lobby", arguments: {} });
+      await requester.callTool({ name: "set_capabilities", arguments: { profile: { owner } } });
+      const joined = json(await helper.callTool({ name: "join_lobby", arguments: {} }));
+      await helper.callTool({ name: "set_capabilities", arguments: { profile: { models: [MODEL], owner, serves: "owner" } } });
+      const ask = async (title: string) => json(await requester.callTool({ name: "open_request", arguments: {
+        title, requirements: { models: [MODEL] }, wanted: 1, targetWeaveId: target.weave.id, targetThreadId: thread.id,
+      } }));
+      const acceptIt = async (id: string) => {
+        await helper.callTool({ name: "offer", arguments: { requestId: id } });
+        return json(await requester.callTool({ name: "accept", arguments: { requestId: id, participantIds: [joined.participant.id], deadlineMs: 3_600_000 } }));
+      };
+      const first = await ask("Review PR 40");
+      expect((await acceptIt(first.id)).request.status).toBe("working");
+      expect(json(await helper.callTool({ name: "complete", arguments: { requestId: first.id, note: "done" } })).status).toBe("completed");
+      const second = await ask("Review PR 41");
+      await acceptIt(second.id);
+      expect(json(await requester.callTool({ name: "remove_participant", arguments: { threadId: second.threadId, participantId: joined.participant.id } })))
+        .toMatchObject({ created: true, acceptanceRemoved: true, targetRemoved: false });
+    } finally {
+      await Promise.all([requester.close().catch(() => {}), helper.close().catch(() => {})]);
+    }
+  });
+});
+
+describe("clientText, the cleaning of the client's own text in the session line", () => {
+  it("cuts at 100 code points, never inside a surrogate pair", () => {
+    // Dots, not letters: a run of 43 letters is token-shaped and would be redacted.
+    expect(clientText(".".repeat(150))).toBe(".".repeat(100));
+    const face = String.fromCodePoint(0x1f600);
+    expect(clientText(".".repeat(99) + face + "b")).toBe(".".repeat(99) + face);
+  });
+
+  it("redacts before the cut, so a token straddling the 100th character is not left half visible", () => {
+    const token = "t".repeat(43);
+    expect(clientText(".".repeat(80) + token)).toBe(".".repeat(80) + "[redacted]");
+  });
+
+  it("turns C0, C1 and format (bidi) controls into spaces", () => {
+    const c = String.fromCharCode;
+    expect(clientText(`a${c(7)}b${c(0x85)}c${c(0x202e)}d${c(0x200b)}e${c(127)}f`)).toBe("a b c d e f");
+  });
+
+  it("answers the empty string for a missing value", () => {
+    expect(clientText(undefined)).toBe("");
   });
 });

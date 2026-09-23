@@ -55,8 +55,9 @@ export function withStoredCredential(inner: LoomToolBackend, state: ChannelState
     keeperAdd: async (c, n) => inner.keeperAdd(keeperOnly(c), n),
     keeperRemove: async (c, id) => inner.keeperRemove(keeperOnly(c), id),
     keeperAgentsList: async (c) => inner.keeperAgentsList(keeperOnly(c)),
-    keeperAgentsAdd: async (c, n) => inner.keeperAgentsAdd(keeperOnly(c), n),
+    keeperAgentsAdd: async (c, n, o) => inner.keeperAgentsAdd(keeperOnly(c), n, o),
     keeperAgentsRevoke: async (c, id) => inner.keeperAgentsRevoke(keeperOnly(c), id),
+    keeperAgentsSetOwner: async (c, id, o) => inner.keeperAgentsSetOwner(keeperOnly(c), id, o),
     setWeaveGuidelines: async (c, w, g) => inner.setWeaveGuidelines(byWeave(c, w), w, g),
     getInstanceGuidelines: () => inner.getInstanceGuidelines(),
     getGuidelines: async (c, w) => inner.getGuidelines(byWeave(c, w), w),
@@ -77,8 +78,12 @@ export function withStoredCredential(inner: LoomToolBackend, state: ChannelState
     listRequests: async (c, o) => inner.listRequests(byLobby(c), o),
     getRequest: async (c, id) => inner.getRequest(byLobby(c), id),
     offer: async (c, id, input) => inner.offer(byLobby(c), id, input),
-    acceptRequest: async (c, id, ids) => inner.acceptRequest(byLobby(c), id, ids),
+    acceptRequest: async (c, id, ids, d) => inner.acceptRequest(byLobby(c), id, ids, d),
     cancelRequest: async (c, id) => inner.cancelRequest(byLobby(c), id),
+    // The accepted agent's own Lobby identity is what completes.
+    completeRequest: async (c, id, note) => inner.completeRequest(byLobby(c), id, note),
+    // Authority in the Thread's own Weave: the Lobby's token for a request Thread, the Weave's otherwise.
+    removeParticipant: async (c, t, p) => inner.removeParticipant(byThread(c, t), t, p),
     // Keeper authority in the *target* Weave, which this one does name.
     inviteToWeave: async (c, p, w, t) => inner.inviteToWeave(byWeave(c, w), p, w, t),
   };

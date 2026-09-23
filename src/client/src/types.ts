@@ -14,15 +14,17 @@ export type Participant = {
    * with `getMyLobbyParticipant`.
    */
   capabilities: Profile | null;
+  /** When this participant last made a call, stamped by the server; null until the first. */
+  lastSeenAt: string | null;
 };
 
 export type EventType =
   | "message" | "participant.joined" | "participant.role_changed"
-  | "thread.created" | "thread.closed" | "thread.invited" | "thread.url_changed"
+  | "thread.created" | "thread.closed" | "thread.invited" | "thread.removed" | "thread.url_changed"
   | "weave.archived" | "weave.guidelines_changed"
   // Lobby. All of these are addressed-only: they never wake anyone through a Weave's "all events" mode.
   | "participant.capabilities_changed"
-  | "request.opened" | "request.offered" | "request.accepted" | "request.closed"
+  | "request.opened" | "request.offered" | "request.accepted" | "request.closed" | "request.completed" | "request.overdue"
   | "weave.invited";
 export type LoomEvent = {
   weaveId: string; seq: number; threadId: string; type: EventType;
@@ -40,7 +42,7 @@ export type CreateWeaveResult = { weave: Weave; secret: string; participant: Par
 export type JoinResult = { weaveId: string; weave: Weave; generalThreadId: string; participant: Participant; token: string; alreadyJoined?: boolean; guidelines: string };
 export type Settings = { instanceName: string; maxMessageLength: number; openWeaveCreation: boolean; guidelines: string };
 export type Keeper = { id: string; name: string; createdAt: string };
-export type Agent = { id: string; name: string; createdAt: string; revokedAt: string | null };
+export type Agent = { id: string; name: string; createdAt: string; revokedAt: string | null; owner: string | null };
 export type InviteResult = { seq: number; created: boolean };
 
 // ---------------------------------------------------------------------------
@@ -59,6 +61,7 @@ export type Profile = {
   spawnsSubagents?: boolean;
   owner?: string;
   serves?: "owner" | "anyone" | string[];
+  pollIntervalMs?: number;
   [k: string]: unknown;
 };
 
@@ -68,6 +71,7 @@ export type Requirements = {
   tools?: string[];
   runtime?: string;
   spawnsSubagents?: boolean;
+  maxResponseMs?: number;
 };
 
 /** A `requirements` filter, plus the owner whose requests the agent would have to serve. */
@@ -130,11 +134,19 @@ export type Lobby = {
   secret?: string;
 };
 
-export type RequestStatus = "open" | "filled" | "expired" | "cancelled";
+/** `filled` is legacy: rows closed that way before deadlines existed still read, and nothing writes it. */
+export type RequestStatus = "open" | "working" | "completed" | "expired" | "cancelled" | "filled";
 
 export type Offer = {
   requestId: string; participantId: string; model: string | null; effort: string | null;
   note: string | null; accepted: boolean; createdAt: string;
+};
+
+/** One accepted offer: its deadline, its completion or removal, whether it is overdue now, and liveness. */
+export type Acceptance = {
+  participantId: string; dueAt: string | null; completedAt: string | null; note: string | null;
+  removed: boolean; removedAt: string | null; overdue: boolean; overdueNotifiedAt: string | null;
+  lastSeenAt: string | null;
 };
 
 /** Named `LoomRequest` rather than `Request`, which is the DOM's. */
@@ -146,6 +158,7 @@ export type LoomRequest = {
   /** The listeners the request was addressed to, snapshotted when it opened. */
   eligible?: string[];
   offers: Offer[];
+  acceptances: Acceptance[];
 };
 
 export type OpenRequestInput = {
@@ -161,3 +174,4 @@ export type OpenRequestInput = {
 
 export type AcceptResult = { request: LoomRequest; invitationIds: string[] };
 export type InvitationResult = { invitationId: string; seq: number };
+export type RemovalResult = { seq: number; created: boolean; acceptanceRemoved: boolean; targetRemoved: boolean };

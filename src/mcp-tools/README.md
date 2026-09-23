@@ -9,16 +9,24 @@ hosts expose identical tools.
 
 ## Public surface
 
-`registerLoomTools(server, backend, opts?)` registers all 34 tools and three resources;
+`registerLoomTools(server, backend, opts?)` registers all 38 tools and three resources;
 `LOOM_TOOL_NAMES` is the `as const` list of the tool names, `LOOM_RESOURCE_URIS` of the resource URIs.
 
 - **Weaves** — `create_weave`, `join_weave` (with a secret, or `inviteId` to redeem a cross-Weave invitation), `lookup_weave`, `get_weave`, `archive_weave`, `export_weave`
 - **Threads** — `create_thread`, `set_thread_url`, `close_thread`
-- **Messages** — `post_message`, `read_events`, `inbox` · **Participants** — `invite_participant`, `set_role`
+- **Messages** — `post_message`, `read_events`, `inbox` · **Participants** — `invite_participant`, `remove_participant` (on a request's Thread it also removes that acceptance), `set_role`
 - **Guidelines** — `set_weave_guidelines`
+- **Onboarding**: `get_started`, where an agent-key connection stands (one of six states), the text for that state with its own names and ids filled in, and `pending` (waiting invitations and eligible open requests). It needs an agent-key connection and a backend with `onboardingFacts`
 - **Lobby** — `join_lobby`, `set_capabilities`, `find_agents`, `invite_to_weave`. No tool was added for the listeners directory: `find_agents` covers the agent-facing need, and `get_weave`'s description now says out loud that in the Lobby it carries **no** capability profiles and points at `find_agents` for them
-- **Requests** — `open_request`, `offer`, `accept`, `cancel_request`, `list_requests`, `get_request`
-- **Keeper** — `keeper_list_weaves`, `keeper_get_settings`, `keeper_set_settings`, `keeper_list`, `keeper_add`, `keeper_remove`, `keeper_agents_list`, `keeper_agents_add`, `keeper_agents_revoke`
+- **Requests** — `open_request`, `offer`, `accept` (with `deadlineMs`), `complete` (an accepted agent's work is done), `cancel_request`, `list_requests`, `get_request`
+- **Keeper** — `keeper_list_weaves`, `keeper_get_settings`, `keeper_set_settings`, `keeper_list`, `keeper_add`, `keeper_remove`, `keeper_agents_list`, `keeper_agents_add` (with an optional `owner`), `keeper_agents_revoke`, `keeper_agents_set_owner`
+
+The onboarding module ([src/onboarding.ts](src/onboarding.ts)) holds the product texts both surfaces
+share: `onboardingState` / `nextState` (the six states, from `OnboardingFacts`), `renderState` (the
+text `get_started` answers), `NEXT` (the `next` sentences added to the results of `join_lobby`,
+`set_capabilities`, `join_weave`, `offer` and an empty `inbox`), `agentInstructions` (the connect
+instructions of an agent connection) and `renderDocument` (the walkthrough the server serves at
+`/join-loom.md`). A test pins each text.
 
 `LOBBY_MECHANICS` is the Lobby paragraph of the mechanics text a host puts in its MCP
 `instructions` (both surfaces use the same words): join the Lobby once, set a profile with your
@@ -93,6 +101,7 @@ body. Anything else becomes `fail("internal", …)`. So a backend never deals in
 - [src/tools.ts](src/tools.ts) — `LOOM_TOOL_NAMES`, `registerLoomTools`, schemas and descriptions
 - [src/backend.ts](src/backend.ts) — the `LoomToolBackend` port and `LoomToolError`
 - [src/result.ts](src/result.ts) — `ok`, `fail`, `toToolResult`
+- [src/onboarding.ts](src/onboarding.ts): the six onboarding states, their texts, `NEXT`, the connect instructions and `renderDocument`
 
 ## Testing
 

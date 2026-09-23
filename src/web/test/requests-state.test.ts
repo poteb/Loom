@@ -12,7 +12,7 @@ function req(over: Partial<LoomRequest> = {}): LoomRequest {
     requirements: { models: [{ model: "gpt-5.6-sol", effort: "high" }] }, wanted: 2,
     targetWeaveId: "w2", targetWeaveTitle: "Loom session", targetThreadId: "t2", url: null,
     status: "open", expiresAt: EXPIRES, closedAt: null, lastEventSeq: 5,
-    createdAt: "2026-09-16T13:00:00.000Z", eligible: ["p2", "p3"], offers: [], ...over,
+    createdAt: "2026-09-16T13:00:00.000Z", eligible: ["p2", "p3"], offers: [], acceptances: [], ...over,
   };
 }
 function offer(participantId: string, over: Partial<Offer> = {}): Offer {
@@ -105,5 +105,52 @@ describe("requests-state", () => {
     expect(r.r1!.version).toBe(20);
     expect(r.r1!.closedAt).toBe("2026-09-16T13:20:00.000Z");
     expect(displayStatus(r.r1!, BEFORE)).toBe("expired");
+  });
+});
+
+describe("deadlines, completion and removal", () => {
+  it("working is not closed and completed is terminal", () => {
+    const working = applySnapshot({}, req({ status: "working", lastEventSeq: 5 }));
+    expect(displayStatus(working.r1!, AFTER)).toBe("working");       // past expiresAt, and still not expired
+    const offered = applyEvent(working, ev(6, "request.offered", { requestId: "r1", participantId: "p2" }));
+    expect(offered.r1!.offers.map((o) => o.participantId)).toEqual(["p2"]);
+    const completed = applySnapshot(offered, req({ status: "completed", lastEventSeq: 9, closedAt: EXPIRES }));
+    expect(displayStatus(completed.r1!, BEFORE)).toBe("completed");
+  });
+
+  it("a completed snapshot cannot be reopened by an older working one", () => {
+    const completed = applySnapshot({}, req({ status: "completed", lastEventSeq: 9, closedAt: EXPIRES }));
+    expect(applySnapshot(completed, req({ status: "working", lastEventSeq: 7 })).r1!.status).toBe("completed");
+    expect(applySnapshot(completed, req({ status: "working", lastEventSeq: 9 })).r1!.status).toBe("completed");
+  });
+
+  it("applyEvent handles request.completed and request.overdue and advances the version", () => {
+    let r = accept(two(), 6, ["p2"]);
+    expect(r.r1!.status).toBe("working");
+    r = applyEvent(r, ev(7, "request.overdue", { requestId: "r1", participantId: "p2", dueAt: EXPIRES, lastSeenAt: null, to: "p1" }));
+    expect(r.r1!.version).toBe(7);
+    expect(r.r1!.acceptances.find((a) => a.participantId === "p2")).toMatchObject({ overdue: true, overdueNotifiedAt: expect.any(String) });
+    r = applyEvent(r, ev(8, "request.completed", { requestId: "r1", participantId: "p2", note: "done", to: "p1" }));
+    expect(r.r1!.version).toBe(8);
+    expect(r.r1!.acceptances.find((a) => a.participantId === "p2")).toMatchObject({ completedAt: expect.any(String), note: "done", overdue: false });
+  });
+
+  it("applyEvent marks the acceptance removed on a thread.removed that carries a requestId, and advances the version", () => {
+    let r = accept(two(), 6, ["p2"]);
+    r = applyEvent(r, ev(9, "thread.removed", { threadId: "th1", participantId: "p2", removedBy: "p1", requestId: "r1" }));
+    expect(r.r1!.version).toBe(9);
+    expect(r.r1!.acceptances.find((a) => a.participantId === "p2")).toMatchObject({ removed: true, removedAt: expect.any(String) });
+    // Without a requestId it is a Thread's own event and no request's business.
+    expect(applyEvent(r, ev(10, "thread.removed", { threadId: "t9", participantId: "p3", removedBy: "p1" }))).toBe(r);
+  });
+
+  it("a request snapshot fetched before a removal cannot overwrite the applied removal", () => {
+    let r = accept(two(), 6, ["p2"]);
+    r = applyEvent(r, ev(9, "thread.removed", { threadId: "th1", participantId: "p2", removedBy: "p1", requestId: "r1" }));
+    const stale = req({
+      status: "working", lastEventSeq: 6, offers: [offer("p2", { accepted: true }), offer("p3")],
+      acceptances: [{ participantId: "p2", dueAt: EXPIRES, completedAt: null, note: null, removed: false, removedAt: null, overdue: false, overdueNotifiedAt: null, lastSeenAt: null }],
+    });
+    expect(applySnapshot(r, stale).r1!.acceptances.find((a) => a.participantId === "p2")!.removed).toBe(true);
   });
 });

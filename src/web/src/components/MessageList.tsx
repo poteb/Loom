@@ -10,6 +10,11 @@ function who(actor: string, state: SessionState): string {
 
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 const list = (v: unknown): string[] => (Array.isArray(v) ? v.map((x) => String(x)) : []);
+/** An instant as the browser's clock shows it, or "?" when it is not one. */
+function clock(v: unknown): string {
+  const d = new Date(str(v));
+  return Number.isNaN(d.getTime()) ? "?" : d.toLocaleTimeString();
+}
 
 function systemLine(e: LoomEvent, state: SessionState): string {
   const name = (id: unknown) => state.participants.find((p) => p.id === id)?.name ?? "someone";
@@ -39,6 +44,16 @@ function systemLine(e: LoomEvent, state: SessionState): string {
     case "request.closed": {
       const accepted = list(e.payload.accepted).map(name).join(", ");
       return `request ${str(e.payload.reason) || "closed"}: ${accepted ? `accepted ${accepted}` : "nobody accepted"}`;
+    }
+    // The next three in the CLI's words (`loom read`), with times in the browser's own clock.
+    case "request.completed": return `${name(e.payload.participantId)} finished "${threadName()}"`;
+    case "request.overdue": {
+      const seen = typeof e.payload.lastSeenAt === "string" ? clock(e.payload.lastSeenAt) : "never";
+      return `${name(e.payload.participantId)} missed the deadline of "${threadName()}" (due ${clock(e.payload.dueAt)}, last seen ${seen})`;
+    }
+    case "thread.removed": {
+      const by = str(e.payload.removedBy).startsWith("keeper:") ? "Keeper" : name(e.payload.removedBy);
+      return `${name(e.payload.participantId)} was removed from this Thread by ${by}`;
     }
     case "weave.invited": return `${name(e.payload.participantId)} invited to "${str(e.payload.targetWeaveTitle)}"`;
     case "participant.capabilities_changed":

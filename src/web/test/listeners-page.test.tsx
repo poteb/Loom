@@ -47,7 +47,7 @@ const JOINED = {
   weaveId: LOBBY.weaveId,
   weave: { id: LOBBY.weaveId, title: "Lobby", createdAt: "", archivedAt: null, lastSeq: 0, guidelines: "" },
   generalThreadId: "g1",
-  participant: { id: "p-dana", weaveId: LOBBY.weaveId, name: "dana", kind: "human" as const, role: "member" as const, joinedAt: "", agentId: null, capabilities: null },
+  participant: { id: "p-dana", weaveId: LOBBY.weaveId, name: "dana", kind: "human" as const, role: "member" as const, joinedAt: "", agentId: null, capabilities: null, lastSeenAt: null },
   token: "participant-token",
   guidelines: "",
 };
@@ -353,6 +353,13 @@ describe("the Thread list marks nothing while the directory is open (spec §8)",
     await settle();
     await v.toggle();
     expect([v.directory(), thread().getAttribute("aria-current")]).toEqual([false, "true"]);
+  });
+
+  it("the Lobby page renders no link to /join-loom.md", async () => {
+    const v = mountLobby();
+    await settle();
+    const hrefs = [...v.container.querySelectorAll("a")].map((a) => a.getAttribute("href") ?? "");
+    expect(hrefs.filter((h) => h.endsWith("/join-loom.md"))).toEqual([]);
   });
 });
 

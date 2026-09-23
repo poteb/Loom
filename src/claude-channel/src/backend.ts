@@ -130,8 +130,9 @@ export class ClientToolBackend implements LoomToolBackend {
   keeperAdd(c: string, name: string) { return this.as(c).admin.addKeeper(name); }
   keeperRemove(c: string, id: string) { return this.as(c).admin.removeKeeper(id); }
   keeperAgentsList(c: string) { return this.as(c).admin.listAgents(); }
-  keeperAgentsAdd(c: string, name: string) { return this.as(c).admin.addAgent(name); }
+  keeperAgentsAdd(c: string, name: string, owner?: string) { return this.as(c).admin.addAgent(name, owner); }
   keeperAgentsRevoke(c: string, id: string) { return this.as(c).admin.revokeAgent(id); }
+  keeperAgentsSetOwner(c: string, id: string, owner: string) { return this.as(c).admin.setAgentOwner(id, owner); }
   setWeaveGuidelines(c: string, w: string, g: string) { return this.as(c).setWeaveGuidelines(w, g); }
   getInstanceGuidelines() { return this.client.getInstanceGuidelines(); }
   async getGuidelines(c: string, w: string) { return (await this.as(c).getWeave(w)).guidelines; }
@@ -196,8 +197,10 @@ export class ClientToolBackend implements LoomToolBackend {
   listRequests(c: string, opts: { status?: string; limit?: number }) { return this.as(c).listRequests(opts.status as RequestStatus | undefined, { limit: opts.limit }); }
   getRequest(c: string, requestId: string) { return this.as(c).getRequest(requestId); }
   offer(c: string, requestId: string, input: OfferInput) { return this.as(c).offer(requestId, input); }
-  acceptRequest(c: string, requestId: string, participantIds: string[]) { return this.as(c).acceptRequest(requestId, participantIds); }
+  acceptRequest(c: string, requestId: string, participantIds: string[], deadlineMs?: number) { return this.as(c).acceptRequest(requestId, participantIds, deadlineMs); }
   cancelRequest(c: string, requestId: string) { return this.as(c).cancelRequest(requestId); }
+  completeRequest(c: string, requestId: string, note?: string) { return this.as(c).completeRequest(requestId, note); }
+  removeParticipant(c: string, threadId: string, participantId: string) { return this.as(c).removeParticipant(threadId, participantId); }
   inviteToWeave(c: string, participantId: string, targetWeaveId: string, targetThreadId: string) {
     return this.as(c).inviteToWeave(targetWeaveId, participantId, targetThreadId);
   }

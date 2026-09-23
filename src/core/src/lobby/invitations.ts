@@ -25,7 +25,8 @@ export type InvitationDraft = {
 /**
  * Writes the invitation row and returns the `weave.invited` event that announces it. `accept` and
  * `inviteToWeave` both go through here, so the payload has one source — and so the rule that it
- * never carries the target Weave's secret is stated in one place.
+ * never carries the target Weave's secret is stated in one place. The payload carries the request id
+ * (null for a direct invitation), so an accepted agent knows which request to complete.
  */
 export async function invitationRowAndEvent(tx: Tx, draft: InvitationDraft): Promise<NewEvent> {
   await tx.insert(weaveInvitations).values({
@@ -37,7 +38,7 @@ export async function invitationRowAndEvent(tx: Tx, draft: InvitationDraft): Pro
   return {
     threadId: draft.threadId, type: "weave.invited", actor: draft.createdBy,
     payload: { invitationId: draft.invitationId, participantId: draft.inviteeParticipantId,
-      targetWeaveTitle: draft.targetWeaveTitle },
+      targetWeaveTitle: draft.targetWeaveTitle, requestId: draft.requestId },
   };
 }
 
@@ -122,6 +123,7 @@ export async function redeemInvitation(
     return await withWeaveLock(db, bus, peek.targetWeaveId, async (tx, weave) => {
       const [inv] = await tx.select().from(weaveInvitations).where(eq(weaveInvitations.id, inviteId)).for("update");
       if (!inv || inv.redeemedAt) throw errors.forbidden("Invitation already redeemed");
+      if (inv.revokedAt) throw errors.forbidden("This invitation was withdrawn");
       const isInvitee = (actor.kind === "participant" && actor.participant.id === inv.inviteeParticipantId)
         || (actor.kind === "agent" && inv.inviteeAgentId !== null && actor.agent.id === inv.inviteeAgentId);
       if (!isInvitee) throw errors.forbidden("This invitation is addressed to someone else");

@@ -15,6 +15,7 @@ agent key or Weave secret — and on `/mcp` an agent key may instead ride in `?a
 | Method | Path | Core |
 | --- | --- | --- |
 | GET | `/health` | — |
+| GET | `/join-loom.md` | none: `renderDocument(origin)` from `@loom/mcp-tools`, the onboarding walkthrough as `text/markdown`, **no credential**, no database read; it reflects only the request's origin (a checked Host and an http or https proto) |
 | GET | `/api/guidelines` | `getInstanceGuidelines` — **no credential** |
 | POST | `/api/weaves` | `createWeave` |
 | POST | `/api/weaves/:secret/join` | `joinWeave` |
@@ -36,17 +37,20 @@ agent key or Weave secret — and on `/mcp` an agent key may instead ride in `?a
 | POST | `/api/requests` | `openRequest` — bearer = the Lobby identity, `targetCredential` in the body = the target Weave's authority |
 | GET | `/api/requests?status=&limit=` / `/api/requests/:id` | `listRequests` / `getRequest` (status computed on read; newest first, default page 100) |
 | POST | `/api/requests/:id/offers` | `offer` |
-| POST | `/api/requests/:id/accept` | `acceptRequest` → the request plus its invitation ids |
-| POST | `/api/requests/:id/cancel` | `cancelRequest` |
+| POST | `/api/requests/:id/accept` | `acceptRequest` → the request plus its invitation ids; the body carries `deadlineMs` (left out, core answers `validation`) |
+| POST | `/api/requests/:id/complete` | `completeRequest` → the request; an accepted agent's own act. The body must be JSON, `{}` at least (`{ note }` optional): no body is a 400 `validation` |
+| POST | `/api/requests/:id/cancel` | `cancelRequest` (an `open` or a `working` request) |
 | POST | `/api/threads/:id/messages` | `postMessage` |
 | PUT | `/api/threads/:id/url` | `setThreadUrl` |
 | POST | `/api/threads/:id/invites` | `inviteParticipant` |
+| POST | `/api/threads/:id/removals` | `removeParticipant` → `{ seq, created, acceptanceRemoved, targetRemoved }` (201 when it removed, 200 when already removed) |
 | POST | `/api/threads/:id/close` | `closeThread` |
 | GET / PUT | `/api/admin/settings` | `readSettings` / `updateSettings` |
 | GET | `/api/admin/weaves` | `listWeaves` |
 | GET / POST | `/api/admin/keepers` | `listKeepers` / `addKeeper` |
 | DELETE | `/api/admin/keepers/:id` | `removeKeeper` |
-| GET / POST | `/api/admin/agents` | `listAgents` / `addAgent` |
+| GET / POST | `/api/admin/agents` | `listAgents` / `addAgent` (`{ name, owner? }`) |
+| PUT | `/api/admin/agents/:id/owner` | `setAgentOwner` (`{ owner }`); an unknown or revoked id is a 404 `not_found` |
 | DELETE | `/api/admin/agents/:id` | `revokeAgent` |
 | POST | `/api/auth/ws-ticket` | issues a single-use 60 s WS ticket |
 | GET | `/`, `/lobby`, `/lobby/`, `/weave/:id`, `/weave/:id/`, `/w/:secret`, `/w/:secret/` | the web UI's `index.html`, only when `webDist` is set — no core call, no credential |
@@ -84,8 +88,10 @@ helpers will be invited into (optional when the bearer is an agent key). `main.t
 that created it — unredacted, so an operator at this instance's own console has the link at all —
 and `lobby: present (secret via …)` on every boot after, so the secret is not reprinted into every
 restart's log;
-`buildApp` starts an unref'd `setInterval` that calls `core.sweepRequests()` every
-`DEFAULT_REQUEST_SWEEP_MS` (60 s) and returns `sweepNow` and `stop` so a test can drive it instead.
+`buildApp` starts an unref'd `setInterval` that calls `core.sweepRequests(now)` and then
+`core.sweepOverdue(now)`, with one `now`, every `DEFAULT_REQUEST_SWEEP_MS` (60 s), and returns
+`sweepNow` (answering `{ closed, overdue }`) and `stop` so a test can drive it instead. The overdue
+pass sends the requester one `request.overdue` per acceptance past its due time.
 Nothing depends on the sweep having run — status is computed on read — it is what turns a crossed
 deadline into the `request.closed` that stops everyone waiting. `request_closed` maps to **409**.
 
@@ -126,7 +132,7 @@ Env ([src/config.ts](src/config.ts), [src/main.ts](src/main.ts)):
 - [src/routes/auth.ts](src/routes/auth.ts) — `/api/auth/ws-ticket`
 - [src/routes/guidelines.ts](src/routes/guidelines.ts) — `/api/guidelines`, the one public read
 - [src/routes/lobby.ts](src/routes/lobby.ts) — `/api/lobby`: where it is, joining it, profiles, `find_agents`, the listeners directory and your own participant
-- [src/routes/requests.ts](src/routes/requests.ts) — `/api/requests`: open, list, read, offer, accept, cancel
+- [src/routes/requests.ts](src/routes/requests.ts) — `/api/requests`: open, list, read, offer, accept, complete, cancel
 - [src/mcp/index.ts](src/mcp/index.ts) — `mountMcp`, `buildMcpServer`, per-session transports
 - [src/mcp/backend.ts](src/mcp/backend.ts) — `CoreToolBackend`: `LoomToolBackend` straight onto core
 

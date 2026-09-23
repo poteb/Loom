@@ -124,6 +124,14 @@ describe("validateProfile", () => {
     expect(JSON.stringify(validateProfile(pad(4000 - 24)))).toHaveLength(4000);
     expect(codeOf(() => validateProfile(pad(4001 - 24)))).toBe("validation");
   });
+
+  it("pollIntervalMs is bounded", () => {
+    expect(codeOf(() => validateProfile({ owner: "bob", pollIntervalMs: 59_999 }))).toBe("validation");
+    expect(codeOf(() => validateProfile({ owner: "bob", pollIntervalMs: 86_400_001 }))).toBe("validation");
+    expect(codeOf(() => validateProfile({ owner: "bob", pollIntervalMs: 1.5 }))).toBe("validation");
+    expect(validateProfile({ owner: "bob", pollIntervalMs: 60_000 })).toEqual({ owner: "bob", pollIntervalMs: 60_000 });
+    expect(validateProfile({ owner: "bob", pollIntervalMs: 86_400_000 })).toEqual({ owner: "bob", pollIntervalMs: 86_400_000 });
+  });
 });
 
 /** The Lobby, an agent joined to it, and that agent's participant actor. */
@@ -178,7 +186,7 @@ describe("getMyLobbyParticipant", () => {
   it("returns the caller's own participant with its profile", async () => {
     const { join, actor } = await lobbyWith("ChatGPT", chatgpt);
     const me = await getMyLobbyParticipant(db, actor);
-    expect(me).toEqual({ ...join.participant, capabilities: chatgpt });
+    expect(me).toEqual({ ...join.participant, capabilities: chatgpt, lastSeenAt: expect.any(String) });
   });
 
   // The Actor carries the participant as it was when the credential resolved; a profile another
@@ -232,7 +240,7 @@ describe("getMyLobbyParticipant", () => {
     const joined = await core.joinLobby({ kind: "agent" }, agent);
     await core.setCapabilities(agent, chatgpt);
     const me = await core.getMyLobbyParticipant(agent);
-    expect(me).toEqual({ ...joined.participant, capabilities: chatgpt });
+    expect(me).toEqual({ ...joined.participant, capabilities: chatgpt, lastSeenAt: expect.any(String) });
   });
 
   it("refuses an agent key that has not joined the Lobby", async () => {
@@ -287,6 +295,16 @@ describe("findAgents", () => {
     const { actor } = await lobbyWith("ChatGPT", chatgpt);
     await expect(findAgents(db, actor, { anyOf: [] } as never)).rejects.toMatchObject({ code: "validation" });
   });
+
+  it("findAgents applies the liveness term when the filter asks maxResponseMs", async () => {
+    const { actor } = await lobbyWith("Fresh", { ...chatgpt, pollIntervalMs: 300_000 });
+    const stale = await joinLobby(db, bus, { name: "Stale", kind: "agent" });
+    await setCapabilities(db, bus, await resolveCredential(db, stale.token), { ...chatgpt, pollIntervalMs: 300_000 });
+    // Twenty minutes is more than twice a five-minute cadence: this one has stopped polling.
+    await db.update(participants).set({ lastSeenAt: new Date(Date.now() - 20 * 60_000) }).where(eq(participants.id, stale.participant.id));
+    expect((await findAgents(db, actor, { maxResponseMs: 600_000 })).map((f) => f.participant.name)).toEqual(["Fresh"]);
+    expect((await findAgents(db, actor, {})).map((f) => f.participant.name)).toEqual(["Fresh", "Stale"]);
+  });
 });
 
 describe("the registration flow on one agent key", () => {
@@ -306,5 +324,55 @@ describe("the registration flow on one agent key", () => {
     expect(found).toHaveLength(1);
     expect(found[0]!.participant.id).toBe(joined.participant.id);
     expect(found[0]!.capabilities).toEqual(chatgpt);
+  });
+});
+
+describe("a keyed agent's owner comes from its key", () => {
+  /** An agent key minted with `owner`, joined to the Lobby, and the two actors it can act through. */
+  async function keyed(owner: string | undefined) {
+    const core: Core = createCore(db);
+    await core.seedKeepers([keeperToken("k")]);
+    const { key } = await core.addAgent(await core.resolveCredential(keeperToken("k")), "ChatGPT", owner);
+    const agent = await core.resolveCredential(key);
+    await core.ensureLobby();
+    const joined = await core.joinLobby({ kind: "agent" }, agent);
+    return { core, agent, lobbyToken: await core.resolveCredential(joined.token) };
+  }
+  const work = { models: [{ model: "gpt-5.6-sol", effort: "high" }], serves: "owner" as const };
+
+  it("a keyed agent's omitted owner is filled from the key", async () => {
+    const { core, agent } = await keyed("paw");
+    expect((await core.setCapabilities(agent, work)).capabilities).toEqual({ ...work, owner: "paw" });
+  });
+
+  it("a keyed agent may repeat its key's owner", async () => {
+    const { core, agent } = await keyed("paw");
+    expect((await core.setCapabilities(agent, { ...work, owner: " paw " })).capabilities).toEqual({ ...work, owner: "paw" });
+  });
+
+  it("a keyed agent's different owner is refused with the key's owner in the message", async () => {
+    const { core, agent } = await keyed("paw");
+    await expect(core.setCapabilities(agent, { ...work, owner: "bob" }))
+      .rejects.toMatchObject({ code: "validation", message: "owner is fixed by your agent key: paw" });
+  });
+
+  it("the owner rule follows the participant's agent, not the credential", async () => {
+    const { core, lobbyToken } = await keyed("paw");
+    await expect(core.setCapabilities(lobbyToken, { ...work, owner: "bob" }))
+      .rejects.toMatchObject({ code: "validation", message: "owner is fixed by your agent key: paw" });
+    expect((await core.setCapabilities(lobbyToken, work)).capabilities).toEqual({ ...work, owner: "paw" });
+  });
+
+  it("clearing a keyed agent's profile needs no owner", async () => {
+    const { core, agent } = await keyed("paw");
+    await core.setCapabilities(agent, work);
+    expect((await core.setCapabilities(agent, null)).capabilities).toBeNull();
+    expect((await core.setCapabilities(agent, {})).capabilities).toBeNull();
+  });
+
+  it("a key without an owner keeps the self-declared rule", async () => {
+    const { core, agent } = await keyed(undefined);
+    await expect(core.setCapabilities(agent, work)).rejects.toMatchObject({ code: "validation", message: "capabilities.owner is required when any other key is present" });
+    expect((await core.setCapabilities(agent, { ...work, owner: "bob" })).capabilities).toEqual({ ...work, owner: "bob" });
   });
 });

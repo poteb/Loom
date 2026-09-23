@@ -7,6 +7,8 @@ import { postMessage } from "../src/messages.js";
 import { exportWeave } from "../src/export.js";
 import { resolveCredential } from "../src/actors.js";
 import { setWeaveGuidelines } from "../src/guidelines.js";
+import { inviteParticipant } from "../src/invites.js";
+import { removeParticipant } from "../src/removals.js";
 import type { Db } from "../src/db/index.js";
 
 afterAll(closeTestDb);
@@ -86,6 +88,18 @@ describe("exportWeave", () => {
       at = next;
     }
     expect(JSON.parse(await exportWeave(db, me, r.weave.id, "json")).weave.guidelines).toBe("");
+  });
+
+  it("renders a thread.removed as a system line naming who was removed and by whom", async () => {
+    const r = await createWeave(db, bus, { ...input, creator: { name: "Paw", kind: "human" as const } });
+    const me = await resolveCredential(db, r.token);
+    const j = await joinWeave(db, bus, r.secret, { name: "ChatGPT", kind: "agent" });
+    const t = await createThread(db, bus, me, r.weave.id, "Design");
+    await inviteParticipant(db, bus, me, t.id, j.participant.id);
+    await removeParticipant(db, bus, me, t.id, j.participant.id);
+    const md = await exportWeave(db, me, r.weave.id, "md");
+    expect(md).toContain("_system: ChatGPT removed from the Thread by Paw_");
+    expect(md).not.toContain("_system: thread.removed_");
   });
 
   it("rejects bad format and foreign credential", async () => {

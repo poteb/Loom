@@ -10,7 +10,7 @@ import { ProfileCard } from "../src/components/ProfileCard.js";
 import { WeaveView } from "../src/components/WeaveView.js";
 import { App, routeOf } from "../src/app.js";
 import { MAX_GUIDELINES_LENGTH } from "@loom/core";
-import { LoomClient, type Offer } from "@loom/client";
+import { LoomClient, type Acceptance, type Offer } from "@loom/client";
 import { CLOSED_REQUESTS_PAGE, type Session, type SessionState } from "../src/session.js";
 import type { VersionedRequest } from "../src/requests-state.js";
 import { memoryStorage, type KeyValueStorage } from "../src/storage.js";
@@ -18,8 +18,8 @@ import { createPersistenceNotice } from "../src/persistence.js";
 import { createWeavesSignal } from "../src/weaves-signal.js";
 import { setIdentity } from "../src/weaves-store.js";
 
-const me = { id: "p1", weaveId: "w1", name: "Paw", kind: "human" as const, role: "member" as const, joinedAt: "", agentId: null, capabilities: null };
-const bot = { id: "p2", weaveId: "w1", name: "Bot", kind: "agent" as const, role: "member" as const, joinedAt: "", agentId: "a1", capabilities: null };
+const me = { id: "p1", weaveId: "w1", name: "Paw", kind: "human" as const, role: "member" as const, joinedAt: "", agentId: null, capabilities: null, lastSeenAt: null };
+const bot = { id: "p2", weaveId: "w1", name: "Bot", kind: "agent" as const, role: "member" as const, joinedAt: "", agentId: "a1", capabilities: null, lastSeenAt: null };
 const general = { id: "g1", weaveId: "w1", name: "General", isGeneral: true, createdBy: "p1", createdAt: "", closedAt: null, url: null };
 const pr = { id: "t1", weaveId: "w1", name: "PR 12", isGeneral: false, createdBy: "p1", createdAt: "", closedAt: null, url: "https://github.com/poteb/Loom/pull/12" };
 
@@ -50,7 +50,7 @@ function request(over: Partial<VersionedRequest> = {}): VersionedRequest {
     requirements: { models: [{ model: "gpt-5.6-sol", effort: "high" }], tools: ["github"] }, wanted: 2,
     targetWeaveId: "w2", targetWeaveTitle: "Loom session", targetThreadId: "t2", url: null,
     status: "open", expiresAt: "2026-09-16T14:00:00.000Z", closedAt: null, lastEventSeq: 5, createdAt: "",
-    eligible: ["p2"], offers: [], version: 5, ...over };
+    eligible: ["p2"], offers: [], acceptances: [], version: 5, ...over };
 }
 const anOffer = (participantId: string, over: Partial<Offer> = {}): Offer =>
   ({ requestId: "r1", participantId, model: "gpt-5.6-sol", effort: "high", note: "ready", accepted: false, createdAt: "", ...over });
@@ -166,6 +166,29 @@ describe("MessageList", () => {
     expect(screen.getByText(/Helper invited to "Loom session"/)).toBeTruthy();
     expect(screen.getByText(/request filled: accepted Helper/)).toBeTruthy();
   });
+
+  it("renders request.completed, request.overdue and thread.removed as system lines in the CLI's words", () => {
+    const base = { weaveId: "w1", threadId: "th1", actor: "p2", at: new Date().toISOString() };
+    const due = "2026-09-16T14:00:00.000Z";
+    const seen = "2026-09-16T13:40:00.000Z";
+    const events = [
+      { ...base, seq: 1, type: "request.completed" as const, payload: { requestId: "r1", participantId: "p2", note: "done", to: "p1" } },
+      { ...base, seq: 2, type: "request.overdue" as const, actor: "system", payload: { requestId: "r1", participantId: "p2", dueAt: due, lastSeenAt: seen, to: "p1" } },
+      { ...base, seq: 3, type: "request.overdue" as const, actor: "system", payload: { requestId: "r1", participantId: "p2", dueAt: due, lastSeenAt: null, to: "p1" } },
+      { ...base, seq: 4, type: "thread.removed" as const, actor: "p1", payload: { threadId: "th1", participantId: "p2", removedBy: "p1", requestId: "r1" } },
+      { ...base, seq: 5, type: "thread.removed" as const, actor: "keeper:k1", payload: { threadId: "th1", participantId: "p2", removedBy: "keeper:k1" } },
+    ];
+    const { container } = render(<MessageList state={lobbyState({ currentThreadId: "th1", events })} />);
+    const lines = [...container.querySelectorAll(".system > div")].map((d) => d.textContent!.split(" · ")[0]);
+    const clock = (iso: string) => new Date(iso).toLocaleTimeString();
+    expect(lines).toEqual([
+      `Helper finished "Review PR 14"`,
+      `Helper missed the deadline of "Review PR 14" (due ${clock(due)}, last seen ${clock(seen)})`,
+      `Helper missed the deadline of "Review PR 14" (due ${clock(due)}, last seen never)`,
+      "Helper was removed from this Thread by Paw",
+      "Helper was removed from this Thread by Keeper",
+    ]);
+  });
 });
 
 describe("RequestsPanel", () => {
@@ -249,12 +272,67 @@ describe("RequestsPanel", () => {
     expect((screen.getByRole("button", { name: "accept Other" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("accepts an offer through the session", async () => {
+  it("Accept sends deadlineMs, 3600000 unless the requester changes it", async () => {
     const sn = session();
     render(<RequestsPanel state={lobbyState({ requests: { r1: request({ offers: [anOffer("p2")] }) } })} session={sn} onError={() => {}} now={NOW} />);
+    const deadline = screen.getByLabelText("Deadline (minutes)") as HTMLInputElement;
+    expect(deadline.value).toBe("60");
     fireEvent.click(screen.getByRole("button", { name: "accept Helper" }));
     await Promise.resolve();
-    expect(sn.accept).toHaveBeenCalledWith("r1", ["p2"]);
+    expect(sn.accept).toHaveBeenLastCalledWith("r1", ["p2"], 3_600_000);
+    fireEvent.input(deadline, { target: { value: "30" } });
+    fireEvent.click(screen.getByRole("button", { name: "accept Helper" }));
+    await Promise.resolve();
+    expect(sn.accept).toHaveBeenLastCalledWith("r1", ["p2"], 1_800_000);
+    // Fractional minutes send whole milliseconds: core takes an integer deadlineMs only.
+    fireEvent.input(deadline, { target: { value: "1.00001" } });
+    fireEvent.click(screen.getByRole("button", { name: "accept Helper" }));
+    await Promise.resolve();
+    expect(sn.accept).toHaveBeenLastCalledWith("r1", ["p2"], 60_001);
+  });
+
+  it("the Offer form is offered before expiresAt, and not at or after it", () => {
+    // PR #32 round 3, F2. A working request with a standing offer from p3 and this browser (Helper, p2)
+    // eligible with a profile and no offer of its own; only the clock differs between the renders.
+    const expiresAt = "2026-09-16T14:00:00.000Z";
+    const at = Date.parse(expiresAt);
+    const working = request({ status: "working", wanted: 2, eligible: ["p2", "p3"], expiresAt, offers: [anOffer("p3")] });
+    const st = asHelper({ requests: { r1: working } });
+    const { rerender } = render(<RequestsPanel state={st} session={session()} onError={() => {}} now={at - 1} />);
+    expect(screen.getByLabelText("Model")).toBeTruthy();
+    rerender(<RequestsPanel state={st} session={session()} onError={() => {}} now={at} />);
+    expect(screen.queryByLabelText("Model")).toBeNull();
+    rerender(<RequestsPanel state={st} session={session()} onError={() => {}} now={at + 1} />);
+    expect(screen.queryByLabelText("Model")).toBeNull();
+    // The requester's Accept for the standing offer does not follow the window (spec 6.2).
+    const asRequester = lobbyState({ me: { participant: me, token: "t" }, participants: [me, helper, { ...helper, id: "p3", name: "Other" }], requests: { r1: working } });
+    rerender(<RequestsPanel state={asRequester} session={session()} onError={() => {}} now={at + 1} />);
+    expect(screen.getByRole("button", { name: "accept Other" })).toBeTruthy();
+  });
+
+  it("the panel shows a working request's acceptances with due, completed, removed and overdue", () => {
+    const acc = (participantId: string, over: Partial<Acceptance> = {}): Acceptance => ({
+      participantId, dueAt: "2026-09-16T14:30:00.000Z", completedAt: null, note: null, removed: false, removedAt: null,
+      overdue: false, overdueNotifiedAt: null, lastSeenAt: null, ...over,
+    });
+    const cast = [me, helper, { ...helper, id: "p3", name: "Other" }, { ...helper, id: "p4", name: "Fourth" }, { ...helper, id: "p5", name: "Fifth" }];
+    const working = request({
+      status: "working", wanted: 4, offers: ["p2", "p3", "p4", "p5"].map((p) => anOffer(p, { accepted: true })),
+      acceptances: [
+        acc("p2", { completedAt: "2026-09-16T13:20:00.000Z" }),
+        acc("p3", { removed: true, removedAt: "2026-09-16T13:25:00.000Z" }),
+        acc("p4", { dueAt: "2026-09-16T13:00:00.000Z" }),                // past NOW: overdue from the clock alone
+        acc("p5"),
+      ],
+    });
+    const { container } = render(<RequestsPanel state={lobbyState({ participants: cast, requests: { r1: working } })} session={session()} onError={() => {}} now={NOW} />);
+    expect([...container.querySelectorAll(".acceptance")].map((li) => li.textContent)).toEqual([
+      "Helper due 2026-09-16T14:30:00.000Z completed",
+      "Other due 2026-09-16T14:30:00.000Z removed",
+      "Fourth due 2026-09-16T13:00:00.000Z overdue",
+      "Fifth due 2026-09-16T14:30:00.000Z working",
+    ]);
+    expect(container.querySelectorAll(".request-list > li")).toHaveLength(1);    // working is live, not closed
   });
 
   it("shows Cancel to the requester and to nobody else", () => {
@@ -319,7 +397,7 @@ describe("the Offer form on the Lobby's routes (spec §3.3)", () => {
   const LOBBY_ID = "11111111-1111-4111-8111-111111111111";
   const SECRET = "s".repeat(43);
   const ME = { id: "p-me", weaveId: LOBBY_ID, name: "dana", kind: "agent" as const, role: "member" as const,
-    joinedAt: "", agentId: null, capabilities: null };
+    joinedAt: "", agentId: null, capabilities: null, lastSeenAt: null };
   const REQUESTER = { ...ME, id: "p-other", name: "Paw", kind: "human" as const };
   const MY_PROFILE = `${BASE}/api/lobby/participants/me`;
 
@@ -411,6 +489,14 @@ describe("ProfileCard", () => {
   it("renders nothing for a participant with no profile", () => {
     const { container } = render(<ProfileCard participant={bot} />);
     expect(container.innerHTML).toBe("");
+  });
+
+  it("ProfileCard shows 'seen N min ago' from lastSeenAt, and 'never seen' for null, under profile-seen", () => {
+    const now = Date.parse("2026-09-23T12:00:00.000Z");
+    const { container, rerender } = render(<ProfileCard participant={{ ...helper, lastSeenAt: "2026-09-23T11:55:00.000Z" }} now={now} />);
+    expect(container.querySelector(".profile-seen")!.textContent).toBe("seen 5 min ago");
+    rerender(<ProfileCard participant={{ ...helper, lastSeenAt: null }} now={now} />);
+    expect(container.querySelector(".profile-seen")!.textContent).toBe("never seen");
   });
 });
 

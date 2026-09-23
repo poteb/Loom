@@ -1,5 +1,5 @@
 import { InvalidArgumentError, type Command } from "commander";
-import type { LoomRequest, Offer, Requirements, RequestStatus } from "@loom/client";
+import type { Acceptance, LoomRequest, Offer, Requirements, RequestStatus } from "@loom/client";
 import { CliError, textArg, type CliContext, type CliIo } from "../context.js";
 import { emit } from "../output.js";
 import { jsonArg, lobbyContext } from "./lobby.js";
@@ -19,13 +19,13 @@ function positiveInt(v: string): number {
 }
 
 /**
- * `90m`, `2h`, `45s` or plain milliseconds, as milliseconds. Only the shape is read here: what
- * range a timeout may fall in is core's rule, and its refusal is the one the user sees.
+ * `90m`, `2h`, `7d`, `45s` or plain milliseconds, as milliseconds. Only the shape is read here: what
+ * range a timeout or a deadline may fall in is core's rule, and its refusal is the one the user sees.
  */
 export function durationMs(v: string): number {
-  const m = /^(\d+)(ms|s|m|h)?$/.exec(v.trim());
-  if (!m) throw new InvalidArgumentError("must be a duration like 90m, 2h, 45s or a number of milliseconds");
-  const unit = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000 }[m[2] ?? "ms"] ?? 1;
+  const m = /^(\d+)(ms|s|m|h|d)?$/.exec(v.trim());
+  if (!m) throw new InvalidArgumentError("must be a duration like 90m, 2h, 7d, 45s or a number of milliseconds");
+  const unit = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 }[m[2] ?? "ms"] ?? 1;
   return Number(m[1]) * unit;
 }
 
@@ -36,25 +36,40 @@ function offerLine(o: Offer): string {
   return `  ${o.participantId}${s ? `  ${s}` : ""}${o.accepted ? "  [accepted]" : ""}${o.note ? `  "${o.note}"` : ""}`;
 }
 
-/** The one-line form `request list` prints, and the head of `request show`. */
+function acceptanceState(a: Acceptance): string {
+  if (a.completedAt) return "completed";
+  if (a.removed) return "removed";
+  if (a.overdue) return "overdue";
+  return "working";
+}
+
+const acceptanceLine = (a: Acceptance): string =>
+  `  ${a.participantId}  due ${a.dueAt ?? "-"}  ${acceptanceState(a)}  seen ${a.lastSeenAt ?? "never"}`;
+
+/** The acceptances that still count toward `wanted`: a removed one no longer does. */
+const activeAccepted = (r: LoomRequest): number => r.acceptances.filter((a) => !a.removed).length;
+
+/**
+ * The one-line form `request list` prints, and the head of `request show`. `expiresAt` is the
+ * offer window, not the request's end: a working request outlives it.
+ */
 function requestLine(r: LoomRequest): string {
-  const accepted = r.offers.filter((o) => o.accepted).length;
-  return `${r.id}  ${r.status}  wants ${r.wanted} (${r.offers.length} offered, ${accepted} accepted)  expires ${hhmm(r.expiresAt)}  → "${r.targetWeaveTitle}"`;
+  return `${r.id}  ${r.status}  wants ${r.wanted} (${r.offers.length} offered, ${activeAccepted(r)} accepted)  offers until ${hhmm(r.expiresAt)}  → "${r.targetWeaveTitle}"`;
 }
 
 function requestBlock(r: LoomRequest): string {
-  const accepted = r.offers.filter((o) => o.accepted).length;
   const lines = [
     `Request ${r.id} [${r.status}]`,
     `  owner:    ${r.owner || "(none)"}`,
-    `  wants:    ${r.wanted} (${accepted} accepted)`,
-    `  expires:  ${hhmm(r.expiresAt)}`,
+    `  wants:    ${r.wanted} (${activeAccepted(r)} accepted)`,
+    `  offers until: ${hhmm(r.expiresAt)}`,
     `  target:   "${r.targetWeaveTitle}" (${r.targetWeaveId}) thread ${r.targetThreadId}`,
     ...(r.url ? [`  url:      ${r.url}`] : []),
     `  requires: ${JSON.stringify(r.requirements)}`,
     ...(r.eligible ? [`  eligible: ${r.eligible.length}`] : []),
     "Offers:",
     ...(r.offers.length > 0 ? r.offers.map(offerLine) : ["  (none)"]),
+    ...(r.acceptances.length > 0 ? ["Acceptances:", ...r.acceptances.map(acceptanceLine)] : []),
   ];
   return lines.join("\n");
 }
@@ -104,7 +119,7 @@ export function registerRequestCommands(program: Command, ctx: () => CliContext,
     .description("Requests in the Lobby, newest first")
     // Passed through as typed: which words name a status, and which numbers make a page, are core's
     // rules. Only the shape is read here, so a typo is a usage error rather than a round trip.
-    .option("--status <status>", "open | filled | expired | cancelled")
+    .option("--status <status>", "open | working | completed | expired | cancelled | filled")
     .option("--limit <n>", "Max requests to return (default 100)", positiveInt)
     .action(async (o: { status?: string; limit?: number }) => {
       const c = ctx();
@@ -114,7 +129,7 @@ export function registerRequestCommands(program: Command, ctx: () => CliContext,
     });
 
   request.command("show <requestId>")
-    .description("One request, its computed status and its offers")
+    .description("One request, its computed status, its offers and its acceptances")
     .action(async (requestId: string) => {
       const c = ctx();
       const { client } = await lobbyContext(c);
@@ -136,12 +151,23 @@ export function registerRequestCommands(program: Command, ctx: () => CliContext,
     });
 
   request.command("accept <requestId> <participantIds...>")
-    .description("Accept offers; each accepted listener gets one invitation into the target Weave")
-    .action(async (requestId: string, participantIds: string[]) => {
+    .description("Accept offers; each accepted listener gets one invitation into the target Weave and --deadline to call complete")
+    .requiredOption("--deadline <dur>", "How long each accepted listener has to complete (30m, 2h, 7d; a minute to seven days)", durationMs)
+    .action(async (requestId: string, participantIds: string[], o: { deadline: number }) => {
       const c = ctx();
       const { client } = await lobbyContext(c);
-      const r = await client.acceptRequest(requestId, participantIds);
+      const r = await client.acceptRequest(requestId, participantIds, o.deadline);
       emit(c, r, `Accepted ${participantIds.length} on ${requestId} [${r.request.status}]\n  invitations: ${r.invitationIds.join(", ")}`);
+    });
+
+  request.command("complete <requestId>")
+    .description("Say your accepted work on a request is done (post your closing message in the work Thread first)")
+    .option("--note <text>", "A line for the requester, at most 1000 characters")
+    .action(async (requestId: string, o: { note?: string }) => {
+      const c = ctx();
+      const { client } = await lobbyContext(c);
+      const r = await client.completeRequest(requestId, o.note);
+      emit(c, r, `Completed your part of ${r.id} [${r.status}]`);
     });
 
   request.command("cancel <requestId>")

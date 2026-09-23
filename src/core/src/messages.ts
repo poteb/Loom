@@ -8,6 +8,7 @@ import { parseMentions } from "./mentions.js";
 import { withWeaveLock, readEvents } from "./events.js";
 import { assertParticipantOf } from "./actors.js";
 import { getThread } from "./threads.js";
+import { latestMarker } from "./removals.js";
 import type { Actor, LoomEvent } from "./types.js";
 
 export async function postMessage(db: Db, bus: EventBus, actor: Actor, threadId: string, text: string): Promise<LoomEvent> {
@@ -22,6 +23,11 @@ export async function postMessage(db: Db, bus: EventBus, actor: Actor, threadId:
     if (weave.archivedAt) throw errors.weaveArchived();
     const [fresh] = await tx.select({ closedAt: threads.closedAt }).from(threads).where(eq(threads.id, threadId));
     if (fresh!.closedAt) throw errors.threadClosed();
+    // The marker rule (spec §6.5): a participant removed from this Thread speaks here again only
+    // after it is invited back. Read inside the lock, so a removal and a post cannot pass each other.
+    if ((await latestMarker(tx, threadId, me.id))?.type === "thread.removed") {
+      throw errors.forbidden("You were removed from this Thread; you can post here again once you are invited back");
+    }
     const ps = await tx.select({ id: participants.id, name: participants.name })
       .from(participants).where(eq(participants.weaveId, t.weaveId));
     const mentions = parseMentions(text, ps);

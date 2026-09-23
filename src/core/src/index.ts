@@ -10,6 +10,7 @@ import * as weaves from "./weaves.js";
 import * as threads from "./threads.js";
 import { postMessage } from "./messages.js";
 import { inviteParticipant } from "./invites.js";
+import { removeParticipant } from "./removals.js";
 import { inbox } from "./inbox.js";
 import { setRole } from "./participants.js";
 import { exportWeave } from "./export.js";
@@ -21,6 +22,7 @@ import * as listeners from "./lobby/listeners.js";
 import type { ListenersQuery } from "./lobby/listeners-input.js";
 import * as requests from "./lobby/requests.js";
 import * as invitations from "./lobby/invitations.js";
+import { onboardingFacts } from "./lobby/onboarding.js";
 import * as keepers from "./keepers.js";
 import * as agentsMod from "./agents.js";
 import type { Actor, Kind, Role, Settings } from "./types.js";
@@ -66,6 +68,7 @@ export function createCore(db: Db) {
     getThreadWeaveId: async (threadId: string) => (await threads.getThread(db, threadId)).weaveId,
     postMessage: async (actor: Actor, threadId: string, text: string) => postMessage(db, bus, await forThread(actor, threadId), threadId, text),
     inviteParticipant: async (actor: Actor, threadId: string, participantId: string) => inviteParticipant(db, bus, await forThread(actor, threadId), threadId, participantId),
+    removeParticipant: async (actor: Actor, threadId: string, participantId: string) => removeParticipant(db, bus, await forThread(actor, threadId), threadId, participantId),
     setRole: async (actor: Actor, weaveId: string, participantId: string, role: Role) => setRole(db, bus, await resolveInWeave(db, actor, weaveId), weaveId, participantId, role),
     exportWeave: async (actor: Actor, weaveId: string, format: "md" | "json") => exportWeave(db, await resolveInWeave(db, actor, weaveId), weaveId, format),
     // No unauthenticated getSettings on the facade: adapters go through readSettings, which
@@ -89,6 +92,9 @@ export function createCore(db: Db) {
     // The read half of `setCapabilities`, and the only way to read your own profile: `getWeave`
     // carries none in the Lobby, for the caller as for everyone else.
     getMyLobbyParticipant: async (actor: Actor) => getMyLobbyParticipant(db, await resolveInLobby(actor)),
+    // The raw actor on purpose: the facts say whether the key has a Lobby participant at all, so it
+    // must not be mapped into the Lobby first (that would refuse an agent that has not joined).
+    onboardingFacts: (actor: Actor) => onboardingFacts(db, actor),
     listListeners: async (actor: Actor, query: ListenersQuery = {}) =>
       listeners.listListeners(db, await resolveInLobby(actor), query),
     // Two credentials, resolved before anything is authorized: the Lobby identity in the Lobby, the
@@ -99,8 +105,10 @@ export function createCore(db: Db) {
         await resolveInWeave(db, targetActor ?? actor, input.targetWeaveId), input),
     offer: async (actor: Actor, requestId: string, input: { model?: string; effort?: string; note?: string }) =>
       requests.offer(db, bus, await resolveInLobby(actor), requestId, input),
-    acceptRequest: async (actor: Actor, requestId: string, participantIds: string[]) =>
-      requests.accept(db, bus, await resolveInLobby(actor), requestId, participantIds),
+    acceptRequest: async (actor: Actor, requestId: string, participantIds: string[], deadlineMs?: unknown) =>
+      requests.accept(db, bus, await resolveInLobby(actor), requestId, participantIds, { deadlineMs }),
+    completeRequest: async (actor: Actor, requestId: string, note?: string) =>
+      requests.complete(db, bus, await resolveInLobby(actor), requestId, { note }),
     cancelRequest: async (actor: Actor, requestId: string) =>
       requests.cancelRequest(db, bus, await resolveInLobby(actor), requestId),
     // Resolved against the **target** Weave, not the Lobby: the authority an invitation needs is
@@ -111,11 +119,13 @@ export function createCore(db: Db) {
     listRequests: async (actor: Actor, opts: { status?: requests.RequestStatus; limit?: number } = {}) =>
       requests.listRequests(db, await resolveInLobby(actor), opts),
     sweepRequests: (now?: Date) => requests.sweepRequests(db, bus, now),
+    sweepOverdue: (now?: Date) => requests.sweepOverdue(db, bus, now),
     seedKeepers: (tokens: string[]) => keepers.seedKeepers(db, tokens),
     listKeepers: (actor: Actor) => keepers.listKeepers(db, actor),
     addKeeper: (actor: Actor, name: string) => keepers.addKeeper(db, actor, name),
     removeKeeper: (actor: Actor, id: string) => keepers.removeKeeper(db, actor, id),
-    addAgent: (actor: Actor, name: string) => agentsMod.addAgent(db, actor, name),
+    addAgent: (actor: Actor, name: string, owner?: string) => agentsMod.addAgent(db, actor, name, owner),
+    setAgentOwner: (actor: Actor, id: string, owner: string) => agentsMod.setAgentOwner(db, actor, id, owner),
     listAgents: (actor: Actor) => agentsMod.listAgents(db, actor),
     revokeAgent: (actor: Actor, id: string) => agentsMod.revokeAgent(db, actor, id),
     resolveInWeave: (actor: Actor, weaveId: string) => resolveInWeave(db, actor, weaveId),
@@ -134,10 +144,12 @@ export { EventBus } from "./bus.js";
 export type { CreateWeaveInput, CreateWeaveResult, WeaveInfo, JoinResult } from "./weaves.js";
 export type { PublicKeeper, SeedKeepersResult } from "./keepers.js";
 export type { Lobby } from "./lobby/lobby.js";
-export { validateProfile, MAX_PROFILE_LENGTH, type AgentFilter, type FoundAgent } from "./lobby/profile.js";
-export { validateRequirements, matches, admits, eligible, type Profile, type ModelSpec, type Requirements } from "./lobby/matching.js";
+export { validateProfile, validateOwner, MAX_PROFILE_LENGTH, type AgentFilter, type FoundAgent } from "./lobby/profile.js";
+export { validateRequirements, matches, admits, eligible, isLive, type Profile, type ModelSpec, type Requirements, type Seen } from "./lobby/matching.js";
 // The listeners query's types live beside its validation, so an adapter has one place to import from.
 export { type Listener, type ListenersFacets, type ListenersPage, type ListenersQuery, type ListenersSort, type ServesKind, type FacetValue, type ModelFacet } from "./lobby/listeners-input.js";
 export { type InvitationDraft } from "./lobby/invitations.js";
-export { computedStatus, type PublicRequest, type PublicOffer, type OpenRequestInput, type RequestStatus, type CloseReason, type AcceptOptions } from "./lobby/requests.js";
+export { GET_STARTED_NEEDS_AGENT, type OnboardingFacts } from "./lobby/onboarding.js";
+export { type RemovalResult } from "./removals.js";
+export { computedStatus, type PublicRequest, type PublicOffer, type PublicAcceptance, type OpenRequestInput, type RequestStatus, type CloseReason, type AcceptOptions, type AcceptInput } from "./lobby/requests.js";
 export type * from "./types.js";

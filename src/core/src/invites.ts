@@ -1,4 +1,4 @@
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, gt, sql } from "drizzle-orm";
 import type { Db } from "./db/index.js";
 import { events, participants, threads } from "./db/schema.js";
 import type { EventBus } from "./bus.js";
@@ -7,13 +7,15 @@ import { isUuid } from "./ids.js";
 import { withWeaveLock } from "./events.js";
 import { actorId, assertIsKeeperOf, assertStillKeeperOf } from "./actors.js";
 import { getThread } from "./threads.js";
+import { lastRemovalSeq } from "./removals.js";
 import type { Actor } from "./types.js";
 
 /**
- * Invites a participant of the Weave into a Thread: a targeted "your input is wanted here", never an
- * access change (every participant can already read every Thread). Allowed for the Thread's creator
- * or a keeper of the Weave. Idempotent: a participant already invited to the Thread gets the original
- * event's seq back and no new event.
+ * Invites a participant of the Weave into a Thread: a targeted "your input is wanted here". It is
+ * not an access change, except that it readmits a participant removed from the Thread
+ * (removals.ts); every participant can already read every Thread. Allowed for the Thread's creator
+ * or a keeper of the Weave. Idempotent while the latest marker is an invite: a participant already
+ * invited gets the first invite since its last removal back, with no new event.
  */
 export async function inviteParticipant(db: Db, bus: EventBus, actor: Actor, threadId: string, participantId: string): Promise<{ seq: number; created: boolean }> {
   const t = await getThread(db, threadId);
@@ -31,8 +33,10 @@ export async function inviteParticipant(db: Db, bus: EventBus, actor: Actor, thr
     const [invitee] = await tx.select({ id: participants.id }).from(participants)
       .where(and(eq(participants.id, participantId), eq(participants.weaveId, t.weaveId))).limit(1);
     if (!invitee) throw errors.validation("No such participant in this Weave");
+    const since = await lastRemovalSeq(tx, threadId, participantId);
     const [existing] = await tx.select({ seq: events.seq }).from(events)
-      .where(and(eq(events.threadId, threadId), eq(events.type, "thread.invited"), sql`${events.payload}->>'participantId' = ${participantId}`))
+      .where(and(eq(events.threadId, threadId), eq(events.type, "thread.invited"),
+        sql`${events.payload}->>'participantId' = ${participantId}`, gt(events.seq, since)))
       .orderBy(asc(events.seq)).limit(1);
     if (existing) return { result: { seq: existing.seq, created: false }, events: [] };
     return {

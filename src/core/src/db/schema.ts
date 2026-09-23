@@ -34,6 +34,9 @@ export const agents = pgTable("agents", {
   keyHash: text("key_hash").notNull().unique(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  // The person whose tokens this agent spends, set by an instance keeper (ADR 0001 addendum). Null
+  // for a key minted without one. A keyed agent's Lobby profile `owner` is fixed to it.
+  owner: text("owner"),
 });
 
 export const participants = pgTable("participants", {
@@ -48,6 +51,9 @@ export const participants = pgTable("participants", {
   // on the row so a participant stays one thing.
   capabilities: jsonb("capabilities"),
   joinedAt: timestamp("joined_at", { withTimezone: true }).notNull().defaultNow(),
+  // Liveness: when a credential standing for this participant last made a call. Written by
+  // `stampSeen`, throttled to once per ten seconds, and never an event.
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
 }, (t) => [
   uniqueIndex("participants_weave_name_idx").on(t.weaveId, sql`lower(${t.name})`),
   uniqueIndex("participants_weave_agent_idx").on(t.weaveId, t.agentId),
@@ -104,7 +110,7 @@ export const requests = pgTable("requests", {
   targetWeaveId: uuid("target_weave_id").notNull().references(() => weaves.id),
   targetThreadId: uuid("target_thread_id").notNull().references(() => threads.id),
   url: text("url"),
-  status: text("status", { enum: ["open", "filled", "expired", "cancelled"] }).notNull().default("open"),
+  status: text("status", { enum: ["open", "working", "completed", "filled", "expired", "cancelled"] }).notNull().default("open"),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   closedAt: timestamp("closed_at", { withTimezone: true }),
   // The Lobby event seq of this request's most recent mutation: the version every snapshot carries.
@@ -123,6 +129,14 @@ export const requestOffers = pgTable("request_offers", {
   note: text("note"),
   accepted: boolean("accepted").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  // The acceptance, when `accepted`: its deadline, its completion, its removal from the request
+  // Thread, and the once-only overdue marker. All null on an unaccepted offer, and on an
+  // acceptance made before migration 0005 (which is therefore never overdue).
+  dueAt: timestamp("due_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  completionNote: text("completion_note"),
+  removedAt: timestamp("removed_at", { withTimezone: true }),
+  overdueAt: timestamp("overdue_at", { withTimezone: true }),
 }, (t) => [primaryKey({ columns: [t.requestId, t.participantId] })]);
 
 /** A single-use way into another Weave, handed to a Lobby participant. Never carries a secret. */
@@ -137,4 +151,7 @@ export const weaveInvitations = pgTable("weave_invitations", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   redeemedAt: timestamp("redeemed_at", { withTimezone: true }),
   redeemedParticipantId: uuid("redeemed_participant_id"),
+  // Withdrawn by a removal from the request Thread (removals.ts). A revoked invitation cannot be
+  // redeemed.
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
 });

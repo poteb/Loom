@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db, Queryable, Tx } from "../db/index.js";
 import { events, keepers, participants, requestOffers, requests, threads, weaves } from "../db/schema.js";
 import type { EventBus } from "../bus.js";
@@ -23,13 +23,28 @@ const MAX_NOTE = 1000;
 /** Page size when the caller names none. The maximum it may name is core's MAX_PAGE_LIMIT. */
 const DEFAULT_REQUESTS_PAGE = 100;
 
-export type RequestStatus = "open" | "filled" | "expired" | "cancelled";
-/** Why a request closed. The reason and the stored status are the same word. */
-export type CloseReason = Exclude<RequestStatus, "open">;
+export type RequestStatus = "open" | "working" | "completed" | "cancelled" | "expired" | "filled";
+/** Why a request closed. The reason and the stored status are the same word. `filled` is legacy:
+ *  nothing writes it any more, and rows closed that way before migration 0005 still read (spec §6.2). */
+export type CloseReason = Exclude<RequestStatus, "open" | "working">;
+/** Every status a reader may filter on, in the order the refusal names them. */
+const STATUSES: readonly RequestStatus[] = ["open", "working", "completed", "expired", "cancelled", "filled"];
+/** How long an accepted agent has to call `complete`: a minute to seven days (spec §6.3, D8). */
+const MIN_DEADLINE_MS = 60_000, MAX_DEADLINE_MS = 604_800_000;
 
 export type PublicOffer = {
   requestId: string; participantId: string; model: string | null; effort: string | null;
   note: string | null; accepted: boolean; createdAt: string;
+};
+
+/**
+ * One accepted offer, as a requester reads it (spec §5.9). `overdue` is computed on read, so a
+ * reader never waits for the sweep to learn it; `lastSeenAt` is that Lobby participant's.
+ */
+export type PublicAcceptance = {
+  participantId: string; dueAt: string | null; completedAt: string | null; note: string | null;
+  removed: boolean; removedAt: string | null; overdue: boolean; overdueNotifiedAt: string | null;
+  lastSeenAt: string | null;
 };
 
 export type PublicRequest = {
@@ -40,6 +55,8 @@ export type PublicRequest = {
   /** The listeners the request was addressed to, snapshotted when it opened. */
   eligible?: string[];
   offers: PublicOffer[];
+  /** One entry per accepted offer, in offer order; removed ones included and marked. */
+  acceptances: PublicAcceptance[];
 };
 
 export type OpenRequestInput = {
@@ -59,12 +76,51 @@ export type AcceptOptions = {
   afterMutation?: () => Promise<void>;
 };
 
-type RequestRow = typeof requests.$inferSelect;
+/** What `accept` is told besides who: the deadline, required, and judged here rather than by an adapter. */
+export type AcceptInput = { deadlineMs?: unknown };
+
+export type RequestRow = typeof requests.$inferSelect;
 type OfferRow = typeof requestOffers.$inferSelect;
 
 function toPublicOffer(o: OfferRow): PublicOffer {
   return { requestId: o.requestId, participantId: o.participantId, model: o.model ?? null,
     effort: o.effort ?? null, note: o.note ?? null, accepted: o.accepted, createdAt: o.createdAt.toISOString() };
+}
+
+const iso = (d: Date | null): string | null => (d ? d.toISOString() : null);
+
+function toAcceptance(o: OfferRow, lastSeenAt: Date | null, now: Date): PublicAcceptance {
+  const removed = o.removedAt !== null;
+  return {
+    participantId: o.participantId, dueAt: iso(o.dueAt), completedAt: iso(o.completedAt),
+    note: o.completionNote ?? null, removed, removedAt: iso(o.removedAt),
+    overdue: o.dueAt !== null && o.completedAt === null && !removed && now.getTime() >= o.dueAt.getTime(),
+    overdueNotifiedAt: iso(o.overdueAt), lastSeenAt: iso(lastSeenAt),
+  };
+}
+
+/** An accepted offer that has not been removed: the only kind that counts (spec §6.2). */
+const isActive = (o: OfferRow): boolean => o.accepted && o.removedAt === null;
+
+/**
+ * Still running, in the sense `accept` and `cancel_request` need: computed `open`, or stored
+ * `working` at any time, so a requester may take a standing offer after the offer window closed.
+ */
+export function stillRunning(row: { status: string; expiresAt: Date }, now: Date): boolean {
+  return row.status === "working" || computedStatus(row, now) === "open";
+}
+
+/** The offer window: stored `open` or `working`, and before `expiresAt` (spec §6.2, D8's `timeoutMs`). */
+function offerWindowOpen(row: { status: string; expiresAt: Date }, now: Date): boolean {
+  return (row.status === "open" || row.status === "working") && now.getTime() < row.expiresAt.getTime();
+}
+
+function validateDeadline(v: unknown): number {
+  if (v === undefined || v === null) throw errors.validation("deadlineMs is required");
+  if (typeof v !== "number" || !Number.isInteger(v) || v < MIN_DEADLINE_MS || v > MAX_DEADLINE_MS) {
+    throw errors.validation(`deadlineMs must be ${MIN_DEADLINE_MS}-${MAX_DEADLINE_MS}`);
+  }
+  return v;
 }
 
 /**
@@ -77,14 +133,19 @@ export function computedStatus(row: { status: string; expiresAt: Date }, now: Da
 }
 
 /**
- * The seq `appendInTx` will give the last **request** event in `news`: it assigns
+ * The seq `appendInTx` will give the last **request mutation** in `news`: it assigns
  * `weave.lastSeq + 1 ..` in order, in the same transaction as the row write beside it. Reading it
- * ahead lets the request row carry its own version without a second write after the append.
+ * ahead lets the request row carry its own version without a second write after the append. A
+ * mutation is every `request.*` event, and a `thread.removed` that carries a `requestId`, because
+ * a removal changes the acceptances every reader of the request sees (spec §6.5 step 7, §6.10).
  */
-function versionOf(weave: { lastSeq: number }, news: NewEvent[]): number {
-  const idx = news.reduce((last, e, i) => (e.type.startsWith("request.") ? i : last), -1);
+export function versionOf(weave: { lastSeq: number }, news: NewEvent[]): number {
+  const idx = news.reduce((last, e, i) => (isRequestMutation(e) ? i : last), -1);
   return weave.lastSeq + idx + 1;
 }
+
+const isRequestMutation = (e: NewEvent): boolean =>
+  e.type.startsWith("request.") || (e.type === "thread.removed" && typeof e.payload.requestId === "string");
 
 async function requestRow(db: Queryable, requestId: string): Promise<RequestRow> {
   if (!isUuid(requestId)) throw errors.validation("No such request");
@@ -110,13 +171,19 @@ async function hydrate(db: Queryable, lobbyId: string, rows: RequestRow[], now: 
   if (rows.length === 0) return [];
   const titles = new Map((await db.select({ id: weaves.id, title: weaves.title }).from(weaves)
     .where(inArray(weaves.id, rows.map((r) => r.targetWeaveId)))).map((w) => [w.id, w.title]));
+  const offerRows = await db.select().from(requestOffers)
+    .where(inArray(requestOffers.requestId, rows.map((r) => r.id))).orderBy(asc(requestOffers.createdAt));
+  // An acceptance carries its agent's liveness, so a requester reading an overdue sees how stale it is.
+  const acceptedIds = [...new Set(offerRows.filter((o) => o.accepted).map((o) => o.participantId))];
+  const seen = new Map(acceptedIds.length === 0 ? [] : (await db.select({ id: participants.id, lastSeenAt: participants.lastSeenAt })
+    .from(participants).where(inArray(participants.id, acceptedIds))).map((p) => [p.id, p.lastSeenAt]));
   // Indexed by request once rather than re-scanned per row: a page of requests each carrying a
-  // handful of offers turned the join into rows × offers comparisons.
+  // handful of offers turned the join into rows x offers comparisons.
   const offersByRequest = new Map<string, PublicOffer[]>();
-  for (const o of await db.select().from(requestOffers)
-    .where(inArray(requestOffers.requestId, rows.map((r) => r.id))).orderBy(asc(requestOffers.createdAt))) {
-    const list = offersByRequest.get(o.requestId);
-    if (list) list.push(toPublicOffer(o)); else offersByRequest.set(o.requestId, [toPublicOffer(o)]);
+  const acceptancesByRequest = new Map<string, PublicAcceptance[]>();
+  for (const o of offerRows) {
+    pushTo(offersByRequest, o.requestId, toPublicOffer(o));
+    if (o.accepted) pushTo(acceptancesByRequest, o.requestId, toAcceptance(o, seen.get(o.participantId) ?? null, now));
   }
   const eligible = await eligibleByThread(db, lobbyId, rows.map((r) => r.threadId));
   return rows.map((r) => ({
@@ -128,7 +195,13 @@ async function hydrate(db: Queryable, lobbyId: string, rows: RequestRow[], now: 
     lastEventSeq: r.lastEventSeq, createdAt: r.createdAt.toISOString(),
     eligible: eligible.get(r.threadId) ?? [],
     offers: offersByRequest.get(r.id) ?? [],
+    acceptances: acceptancesByRequest.get(r.id) ?? [],
   }));
+}
+
+function pushTo<T>(m: Map<string, T[]>, key: string, v: T): void {
+  const list = m.get(key);
+  if (list) list.push(v); else m.set(key, [v]);
 }
 
 const onePublic = async (db: Queryable, lobbyId: string, row: RequestRow, now: Date): Promise<PublicRequest> =>
@@ -157,16 +230,42 @@ function assertRequesterOrLobbyKeeper(actor: Actor, lobbyId: string, requesterId
 }
 
 /**
+ * Whether the authority recorded when the request opened still holds: the recorded participant is
+ * still a keeper of the target, or the recorded instance keeper still exists. `accept` makes the
+ * same check and refuses with a message of its own; a removal's target half skips instead (§6.5).
+ */
+export async function recordedAuthorityHolds(tx: Tx, row: RequestRow): Promise<boolean> {
+  if (row.requesterTargetParticipantId) {
+    const [p] = await tx.select({ weaveId: participants.weaveId, role: participants.role })
+      .from(participants).where(eq(participants.id, row.requesterTargetParticipantId));
+    return !!p && p.weaveId === row.targetWeaveId && p.role === "keeper";
+  }
+  if (row.requesterTargetKeeperId) {
+    const [k] = await tx.select({ id: keepers.id }).from(keepers).where(eq(keepers.id, row.requesterTargetKeeperId));
+    return !!k;
+  }
+  return false;
+}
+
+/** The attribution the recorded target principal writes under: its participant id, or `keeper:<id>`. */
+export function recordedAttribution(row: RequestRow): string {
+  return row.requesterTargetParticipantId ?? `keeper:${row.requesterTargetKeeperId}`;
+}
+
+/**
  * Closes a request and its Thread inside an open transaction, and returns the two events that say
- * so. `to` addresses the requester — the sweeper or a cancelling keeper may have caused this — and
- * every offerer whose offer was not accepted, so it stops waiting; accepted ones already have their
- * `request.accepted` and `weave.invited`, and eligible listeners who never offered are not told.
+ * so. `to` addresses the requester (the sweeper or a cancelling keeper may have caused this), every
+ * offerer whose offer was not accepted, so it stops waiting, and, when a `working` request closes,
+ * every active acceptance that has not completed, so it stops working (spec §6.3). An acceptance
+ * that completed already knows; eligible listeners who never offered are not told.
  */
 async function closeInTx(tx: Tx, row: RequestRow, reason: CloseReason, actor: string, now: Date): Promise<NewEvent[]> {
   const offers = await tx.select().from(requestOffers)
     .where(eq(requestOffers.requestId, row.id)).orderBy(asc(requestOffers.createdAt));
   const accepted = offers.filter((o) => o.accepted).map((o) => o.participantId);
-  const to = [row.requesterId, ...offers.filter((o) => !o.accepted).map((o) => o.participantId)];
+  const stillWorking = row.status === "working"
+    ? offers.filter((o) => isActive(o) && o.completedAt === null).map((o) => o.participantId) : [];
+  const to = [row.requesterId, ...offers.filter((o) => !o.accepted).map((o) => o.participantId), ...stillWorking];
   await tx.update(requests).set({ status: reason, closedAt: now }).where(eq(requests.id, row.id));
   await tx.update(threads).set({ closedAt: now }).where(eq(threads.id, row.threadId));
   return [
@@ -242,8 +341,9 @@ export async function openRequest(
     // ADR 0001: the owner is the requester's own declaration, read fresh from its profile. A
     // requester without a profile has owner "", whom only `serves: "anyone"` admits.
     const owner = (mine.capabilities as Profile | null)?.owner ?? "";
+    // Who was live at this moment is part of the snapshot: it is taken once and never recomputed.
     const eligible = ps
-      .filter((p) => p.id !== me.id && isEligible((p.capabilities as Profile | null) ?? null, requirements, owner))
+      .filter((p) => p.id !== me.id && isEligible((p.capabilities as Profile | null) ?? null, requirements, owner, { lastSeenAt: p.lastSeenAt, now }))
       .map((p) => p.id);
 
     await tx.insert(threads).values({ id: threadId, weaveId: lobbyId, name: title, createdBy: me.id, url, requestId });
@@ -278,7 +378,7 @@ export async function offer(
   const me = assertParticipantOf(actor, lobbyId);
   const row = await requestRow(db, requestId);
   // A cheap first answer, taken before the work below; the binding one is taken inside the lock.
-  if (computedStatus(row, new Date()) !== "open") throw errors.requestClosed();
+  if (!offerWindowOpen(row, new Date())) throw errors.requestClosed();
 
   const eligible = (await eligibleByThread(db, lobbyId, [row.threadId])).get(row.threadId) ?? [];
   if (!eligible.includes(me.id)) throw errors.forbidden("This request is not addressed to you");
@@ -299,7 +399,7 @@ export async function offer(
     // waiting has already made every reader of this request call it `expired`.
     const now = new Date();
     const [fresh] = await tx.select().from(requests).where(eq(requests.id, requestId));
-    if (computedStatus(fresh!, now) !== "open") throw errors.requestClosed();
+    if (!offerWindowOpen(fresh!, now)) throw errors.requestClosed();
     const [existing] = await tx.select().from(requestOffers)
       .where(and(eq(requestOffers.requestId, requestId), eq(requestOffers.participantId, me.id)));
     if (existing) return { result: toPublicOffer(existing), events: [] };
@@ -313,16 +413,18 @@ export async function offer(
 }
 
 /**
- * Accepts offers and hands each accepted listener a way into the target Weave.
+ * Accepts offers, gives each accepted listener a deadline to call `complete`, and hands it a way
+ * into the target Weave.
  *
  * One transaction under the Lobby row and then the target row, in that order. The authority used is
  * always the **requester's recorded** one, never the accepting actor's: a Lobby keeper acting on the
  * requester's behalf is not thereby a keeper of the target. It is re-checked here from the database,
  * because the requester may have been demoted, or the target archived or its Thread closed, since
- * the request opened — and then nothing at all is accepted.
+ * the request opened, and then nothing at all is accepted. The first acceptance moves the request to
+ * `working`; nothing closes here (spec §6.3): the request closes when its work completes.
  */
 export async function accept(
-  db: Db, bus: EventBus, actor: Actor, requestId: string, participantIds: string[], opts: AcceptOptions = {},
+  db: Db, bus: EventBus, actor: Actor, requestId: string, participantIds: string[], input: AcceptInput, opts: AcceptOptions = {},
 ): Promise<{ request: PublicRequest; invitationIds: string[] }> {
   const { weaveId: lobbyId } = await getLobby(db);
   const row = await requestRow(db, requestId);
@@ -330,8 +432,9 @@ export async function accept(
   if (!Array.isArray(participantIds) || participantIds.length === 0) throw errors.validation("participantIds must name at least one participant");
   if (new Set(participantIds).size !== participantIds.length) throw errors.validation("participantIds must be distinct");
   for (const id of participantIds) if (!isUuid(id)) throw errors.validation("No such participant in this Lobby");
+  const deadlineMs = validateDeadline(input.deadlineMs);
   // A cheap first answer; the binding one is taken from a fresh clock read inside the locks below.
-  if (computedStatus(row, new Date()) !== "open") throw errors.requestClosed();
+  if (!stillRunning(row, new Date())) throw errors.requestClosed();
 
   if (opts.beforeLock) await opts.beforeLock();
 
@@ -340,11 +443,11 @@ export async function accept(
     const lobby = byId[lobbyId]!;
     const targetWeave = byId[row.targetWeaveId]!;
     // Read here, not before the locks: both waits are unbounded, and a request whose deadline passed
-    // while this transaction queued reads `expired` to everyone else — it must not still be filled.
+    // while this transaction queued reads `expired` to everyone else.
     const now = new Date();
     if (!isRequester) await assertStillKeeperOf(tx, actor, lobbyId);
     const [fresh] = await tx.select().from(requests).where(eq(requests.id, requestId));
-    if (computedStatus(fresh!, now) !== "open") throw errors.requestClosed();
+    if (!stillRunning(fresh!, now)) throw errors.requestClosed();
 
     // The requester's recorded target authority, re-read: a demotion, a removed instance keeper, an
     // archived Weave or a closed Thread each mean nothing is accepted and the requester must ask again.
@@ -368,19 +471,24 @@ export async function accept(
     for (const id of participantIds) {
       const o = offers.find((x) => x.participantId === id);
       if (!o) throw errors.validation("That participant has not offered on this request");
-      if (o.accepted) throw errors.validation("That offer has already been accepted");
+      // An offer accepted and then removed is a standing offer again, and accepting it revives it.
+      if (isActive(o)) throw errors.validation("That offer has already been accepted");
     }
-    const already = offers.filter((o) => o.accepted).length;
-    if (already + participantIds.length > fresh!.wanted) throw errors.validation(`This request wants at most ${fresh!.wanted}`);
+    const active = offers.filter(isActive).length;
+    if (active + participantIds.length > fresh!.wanted) throw errors.validation(`This request wants at most ${fresh!.wanted}`);
 
-    await tx.update(requestOffers).set({ accepted: true })
+    // One clock read for every id of this call, so they share one due time; a revived acceptance's
+    // completion, removal and overdue marks are cleared with it.
+    const dueAt = new Date(now.getTime() + deadlineMs);
+    await tx.update(requestOffers)
+      .set({ accepted: true, dueAt, completedAt: null, completionNote: null, removedAt: null, overdueAt: null })
       .where(and(eq(requestOffers.requestId, requestId), inArray(requestOffers.participantId, participantIds)));
 
     const invitees = await tx.select({ id: participants.id, agentId: participants.agentId })
       .from(participants).where(inArray(participants.id, participantIds));
     const by = actorId(actor);
     const news: NewEvent[] = [{ threadId: fresh!.threadId, type: "request.accepted", actor: by,
-      payload: { requestId, requesterId: fresh!.requesterId, participantIds, targetWeaveTitle: targetWeave.title } }];
+      payload: { requestId, requesterId: fresh!.requesterId, participantIds, targetWeaveTitle: targetWeave.title, dueAt: dueAt.toISOString() } }];
     for (const [i, id] of participantIds.entries()) {
       const invitee = invitees.find((p) => p.id === id);
       if (!invitee) throw errors.validation("No such participant in this Lobby");
@@ -395,8 +503,8 @@ export async function accept(
 
     if (opts.afterMutation) await opts.afterMutation();
 
-    if (already + participantIds.length === fresh!.wanted) news.push(...await closeInTx(tx, fresh!, "filled", by, now));
-    await tx.update(requests).set({ lastEventSeq: versionOf(lobby, news) }).where(eq(requests.id, requestId));
+    const status = fresh!.status === "open" ? "working" : fresh!.status;
+    await tx.update(requests).set({ status, lastEventSeq: versionOf(lobby, news) }).where(eq(requests.id, requestId));
     const [updated] = await tx.select().from(requests).where(eq(requests.id, requestId));
     return {
       result: { request: await onePublic(tx, lobbyId, updated!, now), invitationIds },
@@ -405,20 +513,59 @@ export async function accept(
   });
 }
 
+/**
+ * An accepted agent says its work on the request is done (spec §6.3). Only the accepted agent
+ * itself, through its Lobby identity: completion is the worker's statement, not the requester's.
+ * Idempotent once completed, even after the request has closed. The last active acceptance to
+ * complete closes the request as `completed` in the same transaction.
+ */
+export async function complete(
+  db: Db, bus: EventBus, actor: Actor, requestId: string, input: { note?: string } = {},
+): Promise<PublicRequest> {
+  const { weaveId: lobbyId } = await getLobby(db);
+  const me = assertParticipantOf(actor, lobbyId);
+  const note = input.note?.trim() ? input.note.trim() : null;
+  if (note !== null && note.length > MAX_NOTE) throw errors.validation(`note must be at most ${MAX_NOTE} characters`);
+  await requestRow(db, requestId);
+  return withWeaveLock(db, bus, lobbyId, async (tx, lobby) => {
+    const now = new Date();
+    const [fresh] = await tx.select().from(requests).where(eq(requests.id, requestId));
+    const [mine] = await tx.select().from(requestOffers)
+      .where(and(eq(requestOffers.requestId, requestId), eq(requestOffers.participantId, me.id)));
+    if (!mine || !mine.accepted) throw errors.forbidden("You have no accepted offer on this request");
+    if (mine.completedAt) return { result: await onePublic(tx, lobbyId, fresh!, now), events: [] };
+    if (mine.removedAt) throw errors.forbidden("Your acceptance was removed from this request");
+    // A legacy acceptance on a request still `open` from before migration 0005 lands here too.
+    if (fresh!.status !== "working") throw errors.requestClosed();
+    await tx.update(requestOffers).set({ completedAt: now, completionNote: note })
+      .where(and(eq(requestOffers.requestId, requestId), eq(requestOffers.participantId, me.id)));
+    const news: NewEvent[] = [{ threadId: fresh!.threadId, type: "request.completed", actor: me.id,
+      payload: { requestId, participantId: me.id, note, to: fresh!.requesterId } }];
+    const offers = await tx.select().from(requestOffers).where(eq(requestOffers.requestId, requestId));
+    if (offers.filter(isActive).every((o) => o.completedAt !== null)) {
+      news.push(...await closeInTx(tx, fresh!, "completed", me.id, now));
+    }
+    await tx.update(requests).set({ lastEventSeq: versionOf(lobby, news) }).where(eq(requests.id, requestId));
+    const [updated] = await tx.select().from(requests).where(eq(requests.id, requestId));
+    return { result: await onePublic(tx, lobbyId, updated!, now), events: news };
+  });
+}
+
 /** The requester gives up, or a Lobby keeper does it for them. The Lobby row is the only lock needed. */
 export async function cancelRequest(db: Db, bus: EventBus, actor: Actor, requestId: string): Promise<PublicRequest> {
   const { weaveId: lobbyId } = await getLobby(db);
   const row = await requestRow(db, requestId);
   const isRequester = assertRequesterOrLobbyKeeper(actor, lobbyId, row.requesterId);
-  // A cheap first answer; the binding one is taken from a fresh clock read inside the lock.
-  if (computedStatus(row, new Date()) !== "open") throw errors.requestClosed();
+  // A cheap first answer; the binding one is taken from a fresh clock read inside the lock. A
+  // `working` request may be cancelled too (spec §6.3), and closeInTx then tells its workers.
+  if (!stillRunning(row, new Date())) throw errors.requestClosed();
   return withWeaveLock(db, bus, lobbyId, async (tx, lobby) => {
     // Read here, not before the lock: a deadline crossed while waiting for the row means this
     // request is already `expired` to every reader, and the sweeper's reason is the true one.
     const now = new Date();
     if (!isRequester) await assertStillKeeperOf(tx, actor, lobbyId);
     const [fresh] = await tx.select().from(requests).where(eq(requests.id, requestId));
-    if (computedStatus(fresh!, now) !== "open") throw errors.requestClosed();
+    if (!stillRunning(fresh!, now)) throw errors.requestClosed();
     const news = await closeInTx(tx, fresh!, "cancelled", actorId(actor), now);
     await tx.update(requests).set({ lastEventSeq: versionOf(lobby, news) }).where(eq(requests.id, requestId));
     const [updated] = await tx.select().from(requests).where(eq(requests.id, requestId));
@@ -442,7 +589,7 @@ function statusCondition(status: RequestStatus, now: Date) {
   if (status === "expired") {
     return or(eq(requests.status, "expired"), and(eq(requests.status, "open"), lte(requests.expiresAt, now)));
   }
-  return eq(requests.status, status);          // filled and cancelled are stored exactly as read
+  return eq(requests.status, status);          // working, completed, filled and cancelled are stored exactly as read
 }
 
 export async function listRequests(
@@ -450,8 +597,8 @@ export async function listRequests(
 ): Promise<PublicRequest[]> {
   const { weaveId: lobbyId } = await getLobby(db);
   assertCanRead(actor, lobbyId);
-  if (opts.status !== undefined && !["open", "filled", "expired", "cancelled"].includes(opts.status)) {
-    throw errors.validation("status must be open, filled, expired or cancelled");
+  if (opts.status !== undefined && !STATUSES.includes(opts.status)) {
+    throw errors.validation("status must be open, working, completed, expired, cancelled or filled");
   }
   validatePage({ limit: opts.limit });
   const rows = await db.select().from(requests)
@@ -481,4 +628,42 @@ export async function sweepRequests(db: Db, bus: EventBus, now = new Date()): Pr
     if (didClose) closed++;
   }
   return closed;
+}
+
+/**
+ * Tells requesters about accepted work that missed its deadline (spec §6.4). One `request.overdue`
+ * per acceptance whose `due_at` is at or before `now`, not completed, not removed and not already
+ * reported, on a request still `working`: each in its own transaction, re-read inside the Lobby
+ * lock, so two sweeps racing emit once. The request stays `working`; the requester decides. The
+ * clock is the one expiry uses: the server sweeps both with one `now`. Returns how many it emitted.
+ */
+export async function sweepOverdue(db: Db, bus: EventBus, now = new Date()): Promise<number> {
+  const { weaveId: lobbyId } = await getLobby(db);
+  const due = await db.select({ requestId: requestOffers.requestId, participantId: requestOffers.participantId })
+    .from(requestOffers).innerJoin(requests, eq(requests.id, requestOffers.requestId))
+    .where(and(eq(requests.status, "working"), eq(requestOffers.accepted, true), lte(requestOffers.dueAt, now),
+      isNull(requestOffers.completedAt), isNull(requestOffers.removedAt), isNull(requestOffers.overdueAt)))
+    .orderBy(asc(requestOffers.dueAt));
+  let emitted = 0;
+  for (const d of due) {
+    const didEmit = await withWeaveLock(db, bus, lobbyId, async (tx, lobby) => {
+      const [fresh] = await tx.select().from(requests).where(eq(requests.id, d.requestId));
+      const [o] = await tx.select().from(requestOffers)
+        .where(and(eq(requestOffers.requestId, d.requestId), eq(requestOffers.participantId, d.participantId)));
+      if (!fresh || fresh.status !== "working" || !o || !isActive(o) || o.dueAt === null
+        || o.dueAt.getTime() > now.getTime() || o.completedAt !== null || o.overdueAt !== null) {
+        return { result: false, events: [] };
+      }
+      await tx.update(requestOffers).set({ overdueAt: now })
+        .where(and(eq(requestOffers.requestId, d.requestId), eq(requestOffers.participantId, d.participantId)));
+      const [p] = await tx.select({ lastSeenAt: participants.lastSeenAt }).from(participants).where(eq(participants.id, d.participantId));
+      const news: NewEvent[] = [{ threadId: fresh.threadId, type: "request.overdue", actor: "system",
+        payload: { requestId: fresh.id, participantId: d.participantId, dueAt: o.dueAt.toISOString(),
+          lastSeenAt: iso(p?.lastSeenAt ?? null), to: fresh.requesterId } }];
+      await tx.update(requests).set({ lastEventSeq: versionOf(lobby, news) }).where(eq(requests.id, fresh.id));
+      return { result: true, events: news };
+    });
+    if (didEmit) emitted++;
+  }
+  return emitted;
 }

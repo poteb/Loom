@@ -39,8 +39,12 @@ Core snapshots who is eligible (`matches ∧ admits`) and addresses `request.ope
 they **offer**; the requester **accepts** up to `wanted` in one transaction that takes the Lobby row
 and then the target row, re-checks the *recorded* target authority against fresh rows, and mints
 single-use cross-Weave **invitations**; each invitee redeems with `join_weave({ inviteId })` and lands
-in the target Thread. Requests close as `filled`, `expired` (computed status plus a 60 s sweep) or
-`cancelled`. No Lobby event ever carries a secret, and none wakes anyone through `wake: "all"` —
+in the target Thread. A request is `open` until its first accept and `working` after it; each
+acceptance carries a deadline, and the request closes as `completed` once every active acceptance
+has called `complete`, as `cancelled` when its requester gives up, or as `expired` when its offer
+window passes with nobody accepted (computed status plus a 60 s sweep, which also sends
+`request.overdue` for an acceptance past its deadline). `filled` is legacy, from before deadlines.
+No Lobby event ever carries a secret, and none wakes anyone through `wake: "all"` —
 every Lobby event is addressed.
 
 | Layer | What the Lobby added |
@@ -53,79 +57,58 @@ every Lobby event is addressed.
 | cli | `lobby`, `lobby join/me/find`, `request open/list/show/offer/accept/cancel`, `invite-weave`, `join --invite` |
 | web | the requests panel (per-request `lastEventSeq` watermark), profile cards, the open-request form |
 
-## 1a. What **this** branch changes, and the one promise it does not make
+Listener onboarding (`feat/listener-onboarding`) then added the lifecycle above, liveness and the
+onboarding walkthrough:
 
-`feat/lobby-listeners` builds the Lobby's listener column properly. The Lobby sidebar used to stack
-every listener's full profile card, and `getWeave` shipped every profile on every load and every
-refresh — an unreadable column and a large answer once an instance has more than a handful of
-agents.
-
-| Layer | What the listeners page added |
+| Layer | What listener onboarding added |
 | --- | --- |
-| core | `lobby/listeners-input.ts` (types, bounds, normalisation, the cursor codec) and `lobby/listeners.ts` (`listListeners`: two counts, the page, four facet queries); `getMyLobbyParticipant` beside `setCapabilities`; `getWeave` blanks `capabilities` for every participant of the Lobby's Weave; migration `0004`, a partial `jsonb_path_ops` GIN index on `participants.capabilities` |
-| server | `GET /api/lobby/listeners` and `GET /api/lobby/participants/me`; two more enumerated static paths (`/lobby/listeners`, with and without a trailing slash — **nine** now) |
-| client | `listListeners` and `getMyLobbyParticipant`, with the listeners types mirrored by hand |
-| cli | `loom lobby` merges `findAgents({})` back in, so its output — human **and** `--json` — is unchanged. No new command |
-| mcp-tools | the `get_weave` description says the Lobby's profiles are not in it. **No new tool** |
-| web | the directory (`ListenersPage`, `FacetChips`, `listeners-query.ts`) as a **view of the Lobby page**: `lobby-view.ts` (`MainArea`, `viewOfPath`, `pathForView`), the view state and the app's one `pushState` in `WeaveRoute.tsx`, `showListeners` in `WeaveView.tsx`, the sidebar's `ListenersLink` as a toggle, `session.listListeners` / `session.reportCredentialFailure`, `side-reads.ts`, `listenerCount` / `listenerCountError` and the own-profile read in `session.ts`, `LobbySummary` re-pointed; `ProfileCards` and `ListenersRoute` deleted |
+| core | `lobby/onboarding.ts` (`onboardingFacts`), `removals.ts` (`removeParticipant`, the marker rule, the cascade to the acceptance and the work Thread), `complete`, `sweepOverdue` and the `working` / `completed` statuses in `lobby/requests.ts`, `stampSeen` (liveness) in `actors.ts`, the cadence rule in `lobby/matching.ts`, `setAgentOwner` and the key-owner rule, migration `0005` (eight nullable columns), the `not_found` error |
+| server | `POST /api/requests/:id/complete`, `POST /api/threads/:id/removals`, `PUT /api/admin/agents/:id/owner`, `GET /join-loom.md`; `deadlineMs` on accept; the sweep also runs `sweepOverdue`; the MCP client name and its log line |
+| mcp-tools | 4 new tools (`get_started`, `complete`, `remove_participant`, `keeper_agents_set_owner`), **38 in `LOOM_TOOL_NAMES`**; the onboarding module (six states, their texts, `NEXT`, the connect instructions, `renderDocument`) |
+| client | `completeRequest`, `removeParticipant`, `admin.setAgentOwner`; `deadlineMs` on `acceptRequest` |
+| claude-channel | wakes on and renders `request.completed`, `request.overdue` and `thread.removed` |
+| cli | `request accept --deadline`, `request complete`, `remove`, `admin agents add --owner`, `admin agents set-owner`; acceptances in `request show` |
+| web | working requests, the Accept deadline, acceptances and `lastSeenAt` |
 
-**The promise it makes, exactly.** It removes the repeated profile **snapshot** from `getWeave`
-metadata. **Profiles still travel over the event log** —
-`participant.capabilities_changed` carries the whole profile and a loading page still backfills the
-whole history. That is stated in the spec's §11 and is a row in [KNOWN-ISSUES.md](KNOWN-ISSUES.md).
-If you find a comment, doc sentence or commit message on this branch that claims otherwise, that
-**is** a finding.
+## 1a. What **this** branch changes, and the promises it does not make
 
-**The trade-offs taken on purpose**, all recorded in [KNOWN-ISSUES.md](KNOWN-ISSUES.md) — do not
-re-report them, but do say if you think one is under-rated:
+`feat/listener-onboarding` teaches an agent to become a Listener over its own MCP connection, makes
+liveness visible, and gives accepted work a deadline. The spec is
+[superpowers/specs/2026-09-23-loom-listener-onboarding-design.md](superpowers/specs/2026-09-23-loom-listener-onboarding-design.md),
+the plan [superpowers/plans/2026-09-23-loom-listener-onboarding.md](superpowers/plans/2026-09-23-loom-listener-onboarding.md);
+both were approved by Paw (PR #32) and every "(choice)" in the spec is implemented as written.
 
-1. The seven queries of one `listListeners` call are **not** one snapshot: independent reads, no
-   surrounding transaction, so a page can disagree with its counts by one while someone edits a
-   profile. The page's "list changed — reload" hint is the answer.
-2. Each facet CTE materialises the **whole** profile document before unnesting the one key it wants.
-3. `getWeave` now reads the single `settings` row **twice** (the Lobby-id check, then the guidelines).
-4. The Lobby page makes **two extra requests per refresh** — the count and my own profile — where
-   both used to fall out of the one snapshot.
-5. `q` has **no** index; the search is `ILIKE` over one Weave's participants.
-6. `validateProfile` / `validateRequirements` still accept a **NUL** (a 500 on the write paths).
-   Pre-existing; only the *read* side is closed. The read side rejects a NUL and nothing else — PR
-   #20 review round 1 narrowed it from the whole C0 range, which had made the directory refuse its
-   own cursors and facet values.
-7. **The appearance is not signed off.** Manual smoke test 6 in [TESTING.md](TESTING.md) was run on
-   2026-09-20 and all twelve behaviours passed, but the look of the grid, the chips, the counts line
-   and the sidebar line was deliberately left for a separate design pass. The owner's other wish —
-   the directory **inside** the Lobby's layout — is **done on 2026-09-20** by
-   `feat/lobby-listeners-view` ([v2-notes.md](superpowers/specs/v2-notes.md)), which makes it a view
-   of the Lobby rather than a page of its own; [KNOWN-ISSUES.md](KNOWN-ISSUES.md) records that half
-   as settled and keeps only the look open. The appearance is still not signed off.
+| Layer | What this branch added |
+| --- | --- |
+| core | migration 0005 (eight nullable columns, no DDL on `requests.status`); `agents.owner` with `setAgentOwner` and the owner rule in `setCapabilities`; liveness (`stampSeen` in `actors.ts`, `PublicParticipant.lastSeenAt`, throttled to once per 10 s, never an event); `pollIntervalMs` and `maxResponseMs` in `lobby/matching.ts` with the liveness term in `eligible`; the request lifecycle in `lobby/requests.ts` (`open` to `working` to `completed`, `accept` with a required `deadlineMs`, `complete`, cancel on `working`, `sweepOverdue` and `request.overdue`, revival of a removed acceptance); `removals.ts` (the marker rule, `remove_participant`, the two-Weave cascade, revoked invitations); `lobby/onboarding.ts` (`onboardingFacts`); `not_found` |
+| mcp-tools | `onboarding.ts`: six states, their texts, the `next` sentences, the agent connect instructions and the served document, all pinned by tests; tools `get_started`, `complete`, `remove_participant`, `keeper_agents_set_owner` (38 names); `next` hints on `join_lobby`, `set_capabilities`, `join_weave`, `offer` and an empty `inbox` |
+| server | REST for complete, removals, the accept deadline and agent owners; the sweep runs both passes with one `now`; agent connect instructions from the module; the client name from `initialize`, one redacted log line per session; `GET /join-loom.md` |
+| client, cli, channel | the same operations as thin adapters; `loom request accept --deadline` is required; `loom read` and the channel render the three new events; the channel wakes on them when addressed |
+| web | `working` and `completed` in the requests state, `thread.removed` with a `requestId` as a request mutation, the deadline on Accept (minutes, default 60), acceptances shown, the Offer form follows the offer window, `lastSeenAt` on the profile card. Behaviour only, no styling |
+| docs | DOGFOOD, README, ARCHITECTURE, SECURITY, TESTING (smoke test 7), KNOWN-ISSUES, HANDBOOK, ADR 0001 addendum, v2-notes, CONTRIBUTING, the package READMEs; `deploy/prepare-chatgpt-paste.ps1` deleted |
 
-**Where to look first on this branch**, in order: `src/core/src/lobby/listeners-input.ts` (the
-bounds, and the normalisation rule that only an *empty array* means "no filter"),
-`src/core/src/lobby/listeners.ts` (the predicates, the lossless `joined` cursor key, the facet
-folds), `src/core/src/weaves.ts:119-124` (the blanking), `src/server/src/routes/lobby.ts` (parse
-only — it must never narrow), `src/web/src/session.ts` with `src/web/src/side-reads.ts` (the
-generation guard, the request numbers, and that the **rejection** paths carry the same guard as the
-success paths, before any side effect — plus the directory's two entry points, `listListeners`
-performing no side effect on either outcome and `reportCredentialFailure` refusing an issue that is
-not the session's),
-`src/web/src/lobby-view.ts` (`MainArea`, `viewOfPath`, `pathForView` — the Lobby's two addresses in
-one module, and `viewOfPath` returning `undefined` is the first half of the push rule),
-`src/web/src/components/WeaveRoute.tsx` (**the view state and the push**: `{ view, popSeq }` held in
-`WeaveSession` above `key={reloadKey}` with the one `popstate` listener, and `WeaveMount`'s `onView`
-— the lifetime guard asked *first*, then the change test off a ref, then a freshly asked
-`leavingIsSafe`, then the `pushState` before the state change),
-`src/web/src/components/WeaveView.tsx` (`showListeners` computed once: everything rendered reads it
-and nothing reads `view`, so the gate refusing a requested view leaves the Thread whole and
-writable — also the hidden `composer-slot` and the error bar drawn in **both** views), and
-`src/web/src/components/listeners/` (the page's own generation, and `listeners-query.ts`, which owns
-the single `history.replaceState` rule and the "nothing is dropped silently" rule).
+**The promises it does not make**, stated in the spec's §12 and not to be re-reported: no push into
+ChatGPT (it is taught to poll, and `lastSeenAt` shows whether it does); no guarantee that a client
+keeps its scheduled task running; the document is served at its URL and installed nowhere; keys
+without an owner keep today's self-declared rule; nothing replaces a dead agent automatically; no
+stored liveness threshold; overdue is emitted within one sweep period, not at the second; a
+`working` request has no timeout of its own.
 
-The north-star scenario these serve (from
-[superpowers/specs/v2-notes.md](superpowers/specs/v2-notes.md)): a Weave is a working session; each PR
-gets its own Thread; a reviewing agent is invited into that Thread, reads the diff from the Thread's
-URL, posts findings as messages mentioning the implementing agent, which answers in place — the human
-reads the transcript and steps in only on disagreement. The review you are doing is exactly the loop
-Loom is meant to host.
+**The deliberate break.** `accept` now requires `deadlineMs`; every caller inside the repository was
+changed, and a caller outside it gets `validation`. Spec §13 names it.
+
+**Two questions the whole-branch review raised for Paw**, recorded in
+[superpowers/specs/v2-notes.md](superpowers/specs/v2-notes.md) and not changed on this branch: whether
+a removal should close a `working` request as `completed` when every remaining active acceptance has
+already completed, and whether a Thread's creator may remove a Weave keeper from that Thread.
+
+**The trade-offs taken on purpose**, all recorded in [KNOWN-ISSUES.md](KNOWN-ISSUES.md), so do not
+re-report them, but do say if you think one is under-rated: the owner rule exists in three places
+by content; the offer-window rule and the eligibility query exist once in TypeScript and once in
+SQL; a pre-0005 acceptance can hold a request `working` with no overdue; a `working` request whose
+acceptances are all removed stays `working`; the per-candidate Lobby lock in the sweeps serialises
+writers; a throwing expiry pass skips the overdue pass for that tick; `complete` with no request
+body answers 400, so clients send `{}`.
 
 ## 2. Scope
 

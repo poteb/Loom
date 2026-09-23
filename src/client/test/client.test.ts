@@ -197,9 +197,9 @@ describe("Lobby wrappers", () => {
     const off = await f.bot.offer(req.id, { ...MODEL, note: "can start now" });
     expect(off).toMatchObject({ requestId: req.id, participantId: f.botId, note: "can start now", accepted: false });
 
-    const accepted = await f.claude.acceptRequest(req.id, [f.botId]);
+    const accepted = await f.claude.acceptRequest(req.id, [f.botId], 3_600_000);
     expect(accepted.invitationIds).toHaveLength(1);
-    expect(accepted.request.status).toBe("filled");
+    expect(accepted.request.status).toBe("working");
     expect(accepted.request.offers[0]!.accepted).toBe(true);
   });
 
@@ -221,6 +221,32 @@ describe("Lobby wrappers", () => {
 
     const other = await f.keeper.inviteToWeave(f.target.weave.id, f.claudeId, f.thread.id);
     expect((await f.claude.joinByInvite(other.invitationId, `Helper-${f.t}`)).participant.name).toBe(`Helper-${f.t}`);
+  });
+
+  it("completeRequest, removeParticipant, acceptRequest with deadlineMs, admin.addAgent with owner and admin.setAgentOwner round trip", async () => {
+    const f = await lobby();
+    const done = await f.claude.openRequest(f.input);
+    await f.bot.offer(done.id, {});
+    const accepted = await f.claude.acceptRequest(done.id, [f.botId], 1_800_000);
+    expect(accepted.request.acceptances).toEqual([expect.objectContaining({ participantId: f.botId, dueAt: expect.any(String), removed: false })]);
+    expect((await f.bot.completeRequest(done.id, "reviewed")).status).toBe("completed");
+
+    const dropped = await f.claude.openRequest({ ...f.input, title: "Review PR 15" });
+    await f.bot.offer(dropped.id, {});
+    await f.claude.acceptRequest(dropped.id, [f.botId], 1_800_000);
+    expect(await f.claude.removeParticipant(dropped.threadId, f.botId)).toMatchObject({ created: true, acceptanceRemoved: true });
+
+    const k = anon.withToken(keeperToken("k1"));
+    const owned = await k.admin.addAgent(`Owned-${f.t}`, "paw");
+    expect(owned.agent.owner).toBe("paw");
+    expect((await k.admin.setAgentOwner(owned.agent.id, "bob")).owner).toBe("bob");
+    expect((await k.admin.listAgents()).find((a) => a.id === owned.agent.id)!.owner).toBe("bob");
+  });
+
+  it("a not_found answer surfaces as code not_found", async () => {
+    const k = anon.withToken(keeperToken("k1"));
+    await expect(k.admin.setAgentOwner("00000000-0000-4000-8000-000000000000", "paw"))
+      .rejects.toMatchObject({ code: "not_found", status: 404 });
   });
 
   /**

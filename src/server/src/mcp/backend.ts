@@ -34,8 +34,9 @@ export class CoreToolBackend implements LoomToolBackend {
   async keeperAdd(c: string, name: string) { return this.core.addKeeper(await this.actor(c), name); }
   async keeperRemove(c: string, id: string) { await this.core.removeKeeper(await this.actor(c), id); }
   async keeperAgentsList(c: string) { return this.core.listAgents(await this.actor(c)); }
-  async keeperAgentsAdd(c: string, name: string) { return this.core.addAgent(await this.actor(c), name); }
+  async keeperAgentsAdd(c: string, name: string, owner?: string) { return this.core.addAgent(await this.actor(c), name, owner); }
   async keeperAgentsRevoke(c: string, id: string) { await this.core.revokeAgent(await this.actor(c), id); }
+  async keeperAgentsSetOwner(c: string, id: string, owner: string) { return this.core.setAgentOwner(await this.actor(c), id, owner); }
   async setWeaveGuidelines(c: string, w: string, g: string) { return this.core.setWeaveGuidelines(await this.actor(c), w, g); }
   async getInstanceGuidelines() { return this.core.getInstanceGuidelines(); }
   async getGuidelines(c: string, w: string) { return (await this.core.getWeave(await this.actor(c), w)).guidelines; }
@@ -63,8 +64,12 @@ export class CoreToolBackend implements LoomToolBackend {
   }
   async getRequest(c: string, requestId: string) { return this.core.getRequest(await this.actor(c), requestId); }
   async offer(c: string, requestId: string, input: OfferInput) { return this.core.offer(await this.actor(c), requestId, input); }
-  async acceptRequest(c: string, requestId: string, participantIds: string[]) { return this.core.acceptRequest(await this.actor(c), requestId, participantIds); }
+  async acceptRequest(c: string, requestId: string, participantIds: string[], deadlineMs?: number) { return this.core.acceptRequest(await this.actor(c), requestId, participantIds, deadlineMs); }
   async cancelRequest(c: string, requestId: string) { return this.core.cancelRequest(await this.actor(c), requestId); }
+  async completeRequest(c: string, requestId: string, note?: string) { return this.core.completeRequest(await this.actor(c), requestId, note); }
+  async removeParticipant(c: string, threadId: string, participantId: string) { return this.core.removeParticipant(await this.actor(c), threadId, participantId); }
+  /** get_started's facts. The key is re-resolved, so one revoked since initialize answers invalid_token. */
+  async onboardingFacts(c: string) { return this.core.onboardingFacts(await this.actor(c)); }
   async inviteToWeave(c: string, participantId: string, targetWeaveId: string, targetThreadId: string) {
     return this.core.inviteToWeave(await this.actor(c), participantId, targetWeaveId, targetThreadId);
   }

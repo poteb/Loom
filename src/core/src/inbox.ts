@@ -32,6 +32,7 @@ export async function inbox(db: Db, actor: Actor, weaveId: string, opts: { since
     ne(events.actor, me.id),
     or(
       and(eq(events.type, "thread.invited"), sql`${events.payload}->>'participantId' = ${me.id}`),
+      and(eq(events.type, "thread.removed"), sql`${events.payload}->>'participantId' = ${me.id}`),
       and(eq(events.type, "message"), sql`${events.payload}->'mentions' ? ${me.id}`),
       // The Lobby's addressed events. Each names its audience in its own payload key, and nothing
       // else in the Lobby reaches anyone: these events wake nobody through a Weave's all-events mode.
@@ -42,6 +43,9 @@ export async function inbox(db: Db, actor: Actor, weaveId: string, opts: { since
         sql`(${events.payload}->>'to' = ${me.id} OR ${events.payload}->'to' ? ${me.id})`),
       and(eq(events.type, "request.accepted"), sql`${events.payload}->'participantIds' ? ${me.id}`),
       and(eq(events.type, "weave.invited"), sql`${events.payload}->>'participantId' = ${me.id}`),
+      // Work an accepted agent finished, or a deadline it missed: both addressed to the requester,
+      // the way request.offered is.
+      and(inArray(events.type, ["request.completed", "request.overdue"]), sql`${events.payload}->>'to' = ${me.id}`),
     ),
   ];
   if (opts.since !== undefined) conds.push(gt(events.seq, opts.since));

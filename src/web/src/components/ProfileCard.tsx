@@ -10,12 +10,18 @@ function serves(profile: Profile): string {
 export const modelSpecs = (profile: Profile): string[] =>
   (profile.models ?? []).map((m) => [m.model, m.effort].filter(Boolean).join("/"));
 
+/** When the listener was last seen, in whole minutes (under one is 0), or that it never was (spec §5.11). */
+export function seenText(lastSeenAt: string | null, nowMs: number): string {
+  if (lastSeenAt === null) return "never seen";
+  return `seen ${Math.max(0, Math.floor((nowMs - Date.parse(lastSeenAt)) / 60_000))} min ago`;
+}
+
 /**
  * What a Lobby participant says it can do. Rendered only where there is a profile, and there is
  * exactly one place that has them to render: the listeners directory, whose rows carry the profile
  * beside the participant (spec §2.1). `getWeave` carries none at all, in the Lobby or out of it.
  */
-export function ProfileCard({ participant }: { participant: Participant }) {
+export function ProfileCard({ participant, now }: { participant: Participant; now?: number }) {
   const profile = participant.capabilities;
   if (!profile) return null;
   const tools = profile.tools ?? [];
@@ -29,6 +35,7 @@ export function ProfileCard({ participant }: { participant: Participant }) {
         {profile.owner && <><dt>owner</dt><dd class="profile-owner">{String(profile.owner)}</dd></>}
         <dt>serves</dt><dd class="profile-serves">{serves(profile)}</dd>
       </dl>
+      <div class="profile-seen">{seenText(participant.lastSeenAt, now ?? Date.now())}</div>
     </div>
   );
 }

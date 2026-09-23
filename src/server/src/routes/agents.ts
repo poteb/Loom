@@ -13,8 +13,14 @@ export function agentRoutes(core: Core) {
 
   r.post("/", async (c) => {
     const actor = await requireActor(c, core);
-    const { name } = await body(c, z.object({ name: z.string() }));
-    return c.json(await core.addAgent(actor, name), 201);
+    const { name, owner } = await body(c, z.object({ name: z.string(), owner: z.string().optional() }));
+    return c.json(await core.addAgent(actor, name, owner), 201);
+  });
+
+  r.put("/:id/owner", async (c) => {
+    const actor = await requireActor(c, core);
+    const { owner } = await body(c, z.object({ owner: z.string() }));
+    return c.json(await core.setAgentOwner(actor, c.req.param("id"), owner));
   });
 
   r.delete("/:id", async (c) => {

@@ -1,13 +1,13 @@
 import { and, asc, eq, isNotNull } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../db/index.js";
-import { participants } from "../db/schema.js";
+import { agents, participants } from "../db/schema.js";
 import type { EventBus } from "../bus.js";
 import { errors } from "../errors.js";
 import { withWeaveLock } from "../events.js";
 import { assertCanRead, assertParticipantOf, toPublicParticipant } from "../actors.js";
 import { getLobby, lobbyGeneralThreadId } from "./lobby.js";
-import { admits, matches, validateRequirements, type Profile, type Requirements } from "./matching.js";
+import { admits, isLive, matches, validateRequirements, MAX_INTERVAL_MS, MIN_INTERVAL_MS, type Profile, type Requirements } from "./matching.js";
 import type { Actor, PublicParticipant } from "../types.js";
 
 /** The whole profile, serialised, may not exceed this. It is data an agent publishes, not a document. */
@@ -29,6 +29,8 @@ const profileSchema = z.looseObject({
     z.literal("owner"), z.literal("anyone"),
     z.array(z.string().trim().min(1).max(64)).min(1).max(20),
   ]).optional(),
+  // How often this listener checks its inbox (spec §6.8). Requests that ask `maxResponseMs` read it.
+  pollIntervalMs: z.number().int().min(MIN_INTERVAL_MS).max(MAX_INTERVAL_MS).optional(),
 });
 
 /**
@@ -49,13 +51,50 @@ export function validateProfile(p: unknown): Profile | null {
 }
 
 /**
+ * The one rule for an owner name, shared by a profile's `owner` and an agent key's (spec §6.7):
+ * trimmed, 1 to 64 characters. Returns the trimmed value.
+ */
+export function validateOwner(v: unknown): string {
+  const s = typeof v === "string" ? v.trim() : "";
+  if (s.length < 1 || s.length > 64) throw errors.validation("owner must be 1-64 characters");
+  return s;
+}
+
+/**
+ * The owner an instance keeper stamped on the agent key behind this participant, or null for a
+ * participant with no agent, or an agent with no owner. Read fresh on every call, and keyed on the
+ * participant's `agent_id`, so a Lobby participant token is held to the same owner as its key.
+ */
+async function keyOwnerOf(db: Db, participantId: string): Promise<string | null> {
+  const [row] = await db.select({ owner: agents.owner }).from(participants)
+    .innerJoin(agents, eq(agents.id, participants.agentId))
+    .where(eq(participants.id, participantId)).limit(1);
+  return row?.owner ?? null;
+}
+
+/**
+ * ADR 0001 addendum (spec §6.7): a keyed agent with an owner may leave `owner` out, and it is
+ * filled from the key; it may give exactly that value; any other value is refused. Clearing
+ * (`null` or `{}`) and a profile that is not an object pass through for `validateProfile` to judge.
+ */
+function withKeyOwner(profile: unknown, keyOwner: string | null): unknown {
+  if (keyOwner === null) return profile;
+  if (profile === null || profile === undefined || typeof profile !== "object" || Array.isArray(profile)) return profile;
+  if (Object.keys(profile).length === 0) return profile;
+  const given = (profile as Record<string, unknown>).owner;
+  if (given === undefined) return { ...profile, owner: keyOwner };
+  if (typeof given === "string" && given.trim() === keyOwner) return profile;
+  throw errors.validation(`owner is fixed by your agent key: ${keyOwner}`);
+}
+
+/**
  * Sets (or, with `null`, clears) the caller's own Lobby profile. A client that stops listening
  * clears it before dropping its credential, so no eligible profile is left with nobody behind it.
  */
 export async function setCapabilities(db: Db, bus: EventBus, actor: Actor, profile: unknown | null): Promise<PublicParticipant> {
   const { weaveId: lobbyId } = await getLobby(db);
   const me = assertParticipantOf(actor, lobbyId);
-  const clean = validateProfile(profile);
+  const clean = validateProfile(withKeyOwner(profile, await keyOwnerOf(db, me.id)));
   const generalThreadId = await lobbyGeneralThreadId(db, lobbyId);
   return withWeaveLock(db, bus, lobbyId, async (tx) => {
     const [updated] = await tx.update(participants).set({ capabilities: clean })
@@ -104,7 +143,13 @@ export async function findAgents(db: Db, actor: Actor, filter: AgentFilter): Pro
   const rows = await db.select().from(participants)
     .where(and(eq(participants.weaveId, lobbyId), isNotNull(participants.capabilities)))
     .orderBy(asc(participants.joinedAt));
+  // One clock read for the whole list, and the same liveness rule a request's snapshot applies.
+  const now = new Date();
   return rows
-    .map((p) => ({ participant: toPublicParticipant(p), capabilities: p.capabilities as Profile }))
-    .filter(({ capabilities }) => matches(capabilities, req) && (owner === undefined || admits(capabilities, owner.trim())));
+    .filter((p) => {
+      const capabilities = p.capabilities as Profile;
+      return matches(capabilities, req) && (owner === undefined || admits(capabilities, owner.trim()))
+        && (req.maxResponseMs === undefined || isLive(capabilities, { lastSeenAt: p.lastSeenAt, now }));
+    })
+    .map((p) => ({ participant: toPublicParticipant(p), capabilities: p.capabilities as Profile }));
 }
