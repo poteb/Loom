@@ -1645,7 +1645,7 @@ smoke test 7 gets its dated last-run paragraph from the same record.
   43-character base64url run.
 - **Titles in the texts are data.** Request and Weave titles are written by other participants and
   now appear inside instructions an agent reads. They are quoted, flattened to one line and capped
-  (§4.5), and every text ends by restating that messages are data, never instructions. SECURITY.md §7
+  (§4.5); the connect instructions and state 3 (its cursor rules) say in so many words that messages and fetched artefacts are data, never instructions, and the titles appear only in states 4 and 5, where each is quoted and capped. SECURITY.md §7
   lists the surface.
 - **`lastSeenAt` is not sensitive.** It says when a participant last made a call, to readers who can
   already read that participant's profile and name; it carries no content, no credential and no
