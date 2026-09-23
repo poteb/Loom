@@ -196,6 +196,20 @@ describe("channel tools", () => {
       expect(events.map((e: { type: string }) => e.type)).toEqual(["thread.created", "message"]);
     });
   });
+
+  it("get_started on the channel is validation", async () => {
+    await withChannel(stateDir, async (c) => {
+      const r = await c.callTool({ name: "get_started", arguments: {} });
+      expect(r.isError).toBe(true);
+      expect(json(r)).toEqual({ code: "validation", message: "get_started needs an agent-key connection: connect with ?agent=<key> on the /mcp URL" });
+    });
+  });
+
+  it("the instructions list the three new types", async () => {
+    await withChannel(stateDir, async (c) => {
+      expect(c.getInstructions()).toContain('|request.completed|request.overdue|thread.removed" from=');
+    });
+  });
 });
 
 import { z } from "zod";

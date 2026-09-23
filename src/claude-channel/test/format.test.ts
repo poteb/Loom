@@ -217,3 +217,34 @@ describe("withPreamble", () => {
     expect(withPreamble(n, "")).toBe(n);
   });
 });
+
+describe("deadlines and removals", () => {
+  it("shouldWake: request.completed and request.overdue wake exactly the participant in to, in both wake modes", () => {
+    for (const wake of ["all", "mentions"] as const) {
+      const w = { participantId: "p1", wake, invites: true, requests: true };
+      for (const type of ["request.completed", "request.overdue"] as const) {
+        expect(shouldWake(ev({ type, actor: "system", payload: { requestId: "r1", participantId: "p2", to: "p1" } }), w)).toBe(true);
+        expect(shouldWake(ev({ type, actor: "system", payload: { requestId: "r1", participantId: "p2", to: "p3" } }), w)).toBe(false);
+      }
+    }
+  });
+
+  it("shouldWake: thread.removed wakes exactly the participant it names, in both wake modes, with invites off too", () => {
+    for (const wake of ["all", "mentions"] as const) {
+      for (const invites of [true, false]) {
+        const w = { participantId: "p1", wake, invites, requests: true };
+        expect(shouldWake(ev({ type: "thread.removed", payload: { threadId: "t1", participantId: "p1", removedBy: "p2" } }), w)).toBe(true);
+        expect(shouldWake(ev({ type: "thread.removed", payload: { threadId: "t1", participantId: "p3", removedBy: "p2" } }), w)).toBe(false);
+      }
+    }
+  });
+
+  it("formatEvent renders the three new events in one line each", () => {
+    expect(formatEvent(ev({ type: "request.completed", threadId: "d", payload: { requestId: "r1", participantId: "p1", note: null, to: "p2" } }), weave, names, "p2").content)
+      .toBe('Claude finished "Design"');
+    expect(formatEvent(ev({ type: "request.overdue", actor: "system", threadId: "d", payload: { requestId: "r1", participantId: "p1", dueAt: "2026-09-23T10:00:00.000Z", lastSeenAt: null, to: "p2" } }), weave, names, "p2").content)
+      .toMatch(/^Claude missed the deadline of "Design" \(due \d\d:\d\d, last seen never\)$/);
+    expect(formatEvent(ev({ type: "thread.removed", payload: { threadId: "t1", participantId: "p1", removedBy: "p2" } }), weave, names, "p1").content)
+      .toBe("Claude was removed from this Thread by Paw");
+  });
+});
