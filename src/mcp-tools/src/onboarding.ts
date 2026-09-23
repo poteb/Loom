@@ -54,11 +54,12 @@ export function isOpenAiClient(clientName: string | undefined): boolean {
 
 /**
  * A title another participant wrote, made safe to quote inside an instruction (spec §4.5): one
- * line, no double quote, at most 100 characters with `...` appended when cut.
+ * line, no double quote, at most 100 characters with `...` appended when cut. Characters are code
+ * points, so an emoji at the cut is kept whole or dropped whole, never split into a lone surrogate.
  */
 export function quoteTitle(title: string): string {
-  const flat = title.replace(/[\r\n\t]/g, " ").replace(/"/g, "'");
-  return flat.length > 100 ? `${flat.slice(0, 100)}...` : flat;
+  const chars = Array.from(title.replace(/[\r\n\t]/g, " ").replace(/"/g, "'"));
+  return chars.length > 100 ? `${chars.slice(0, 100).join("")}...` : chars.join("");
 }
 
 /** The `pending` field of `get_started`: the facts' two lists, as they are, in every state. */
