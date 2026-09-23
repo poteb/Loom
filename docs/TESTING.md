@@ -149,7 +149,7 @@ the totals below.
 way this spec *believes* Docker, Compose, Caddy and Postgres answer — and where that belief has been
 wrong before (`up -d` replacing a container, `run` replacing a `command:`, `grep -q` killing its
 producer) it was wrong in the spec and in the stub together. Nothing else in `deploy/` is covered at
-all: the compose file, the site block, the two wrappers, the two texts and the two PowerShell helpers
+all: the compose file, the site block, the two wrappers, the two texts and the PowerShell helper
 are read, and then exercised by the first deployment. §11.6 of
 [the live-instance spec](superpowers/specs/2026-09-21-loom-live-instance-design.md) says which
 mechanisms are structural rather than tested, and names the one — the reload-failure restore against
@@ -159,9 +159,9 @@ a **real** Caddy — that nothing exercises before the day it is needed.
 
 | Package | Test files | Coverage |
 | --- | --- | --- |
-| `core` | 25 | Every domain rule, against a real database: weaves, threads (creation, close, URL), messages and mentions, participants and roles, invites, inbox, agents and agent keys, export, settings and keepers, event seq under the weave lock, the uuid/authority guards, guidelines (validation, both layers, composition, the idempotent `seq: null`, in-lock authority, archived/member/unknown-Weave refusals, the migration default and the export rendering), the Lobby (seven files: `lobby` bootstrap and secret-less join, `lobby-matching` as pure units, `lobby-profile` validation, `find_agents` and `getMyLobbyParticipant` with its auth matrix, `lobby-requests` open/offer/accept/cancel/sweep with the two-credential contract, the recorded target authority re-checked in-lock, the rollback and the Lobby→target lock order, `lobby-invitations` issue/redeem plus the scan proving no secret reaches the Lobby log, and the **listeners directory** in two files: `lobby-listeners-input.ts` for the bounds, the normalisation rules and the cursor codec as pure units, and `lobby-listeners.ts` for every `listListeners` rule against real Postgres — each filter and the `serves` default, AND, the literal-wildcard search, six sorts, paging and cursor stability, the stale/malformed/mismatched cursor and the unparseable `joined` key that must be `validation` rather than a 500, the microsecond cursor key, `total`/`matched`, facets minus their own filter, selection-inclusive at zero, the staged model ranking, the auth matrix, the property test that the SQL agrees with `matches`/`admits`, and an `EXPLAIN` plan test over 3,000 seeded profiles), and the pure units (ids, names, errors). `db.test.ts` also asserts that `participants_capabilities_idx` exists, is partial and is `jsonb_path_ops`. `migration-status.test.ts` is the one file with a **dedicated** Postgres of its own: the journal read, the drifted-journal refusals, the transaction-safety guard over hand-written SQL and over every real migration file, and a failed migration proved to be a no-op |
+| `core` | 29 | Every domain rule, against a real database: weaves, threads (creation, close, URL), messages and mentions, participants and roles, invites, inbox, agents and agent keys, export, settings and keepers, event seq under the weave lock, the uuid/authority guards, guidelines (validation, both layers, composition, the idempotent `seq: null`, in-lock authority, archived/member/unknown-Weave refusals, the migration default and the export rendering), the Lobby (seven files: `lobby` bootstrap and secret-less join, `lobby-matching` as pure units, `lobby-profile` validation, `find_agents` and `getMyLobbyParticipant` with its auth matrix, `lobby-requests` open/offer/accept/cancel/sweep with the two-credential contract, the recorded target authority re-checked in-lock, the rollback and the Lobby→target lock order, `lobby-invitations` issue/redeem plus the scan proving no secret reaches the Lobby log, and the **listeners directory** in two files: `lobby-listeners-input.ts` for the bounds, the normalisation rules and the cursor codec as pure units, and `lobby-listeners.ts` for every `listListeners` rule against real Postgres: each filter and the `serves` default, AND, the literal-wildcard search, six sorts, paging and cursor stability, the stale/malformed/mismatched cursor and the unparseable `joined` key that must be `validation` rather than a 500, the microsecond cursor key, `total`/`matched`, facets minus their own filter, selection-inclusive at zero, the staged model ranking, the auth matrix, the property test that the SQL agrees with `matches`/`admits`, and an `EXPLAIN` plan test over 3,000 seeded profiles), and the pure units (ids, names, errors). The listener-onboarding slice adds four files: `liveness.test.ts` (which credentials stamp `lastSeenAt`, no event, at most one write per 10 s, and `lastSeenAt` on `PublicParticipant`), `lobby-overdue.test.ts` (`sweepOverdue`: one `request.overdue` per overdue active acceptance to the requester, once even under concurrent sweeps, never for a completed, removed or pre-0005 acceptance, the request staying `working`, and the exact due-time boundary), `thread-removal.test.ts` (`remove_participant` on any Thread, its authority and refusals and the marker rule that stops a removed participant posting until it is invited again, then on a request's Thread: the acceptance marked removed, its unredeemed invitations withdrawn, the work-Thread half under the recorded target authority and skipped when that authority is gone, and the Lobby-to-target lock order) and `lobby-onboarding.test.ts` (`onboardingFacts`: agent keys only, each state's facts, the invitations and requests it lists and leaves out, no event). `db.test.ts` also asserts that `participants_capabilities_idx` exists, is partial and is `jsonb_path_ops`. `migration-status.test.ts` is the one file with a **dedicated** Postgres of its own: the journal read, the drifted-journal refusals, the transaction-safety guard over hand-written SQL and over every real migration file, and a failed migration proved to be a no-op |
 | `client` | 4 | The typed HTTP wrappers (including the public `getInstanceGuidelines`, `setWeaveGuidelines`, every Lobby and request wrapper and the two new ones — `listListeners` round-tripped against a real Lobby and asserted at the URL level through a capturing `fetch`, and `getMyLobbyParticipant`), base-URL/WS-URL resolution, the `signal` an aborted request honours, and the reconnecting event stream — against a real server started by the server test helpers |
-| `mcp-tools` | 1 | Tool registration and wiring over an in-memory MCP transport against a fake `LoomToolBackend`, asserted against `LOOM_TOOL_NAMES` (34 tools), plus the three resources (`loom://guidelines`, the per-Weave guidelines template and `loom://lobby/requests`) and each `resourceCredential` outcome; the only suite with no database |
+| `mcp-tools` | 2 | Tool registration and wiring over an in-memory MCP transport against a fake `LoomToolBackend`, asserted against `LOOM_TOOL_NAMES` (38 tools), plus the three resources (`loom://guidelines`, the per-Weave guidelines template and `loom://lobby/requests`) and each `resourceCredential` outcome; `onboarding.test.ts` is the listener-onboarding slice's one new file: the order of `onboardingState` and its per-session flag, the client-name test, the exact texts of `renderState`, `agentInstructions`, `NEXT` and `renderDocument` (with the Agent Skills frontmatter), titles quoted and sanitised, and that no text carries an em dash or a 43-character token; the only suite with no database |
 | `server` | 10 | REST routes (including the public `GET /api/guidelines` and `PUT /api/weaves/:id/guidelines`), auth and admin, the Lobby and request routes with their full auth matrix (`lobby-routes.test.ts`: secret-less join, capabilities, `find_agents`, the two-credential open, offers, accept, cancel, `POST /api/weaves/:id/invitations`, the secret-less `POST /api/weaves/join`, `request_closed` → 409, computed status, the injected 60 s sweep, and the two new routes — `GET /listeners` with its parse-only rules, a blank `?limit=` read as absent and a smuggled non-object `filter` refused, and `GET /participants/me` with its eight-row auth matrix), remote MCP at `/mcp` (including agent keys, `join_weave({ inviteId })`, the `loom://lobby/requests` resource and the instructions carrying the instance guidelines), the WebSocket stream (tickets, replay, mid-stream auth re-check), static hosting (`static.test.ts`: `index.html` for all nine web paths — `/`, `/lobby`, `/lobby/listeners`, `/weave/<id>` and `/w/<secret>` with and without a trailing slash — immutable `/assets/*`, the JSON 404 kept for everything else, and every one of the nine answering that 404 in an app built without `webDist`), config loading (including `LOOM_MIGRATE_ON_BOOT`), log redaction, and one end-to-end scenario. `migrate.test.ts` is the migrate entry **as a process** — the built `dist/migrate.js` and `dist/main.js` spawned against a dedicated Postgres: the exit codes, what each prints, `--check`, the drift refusal, and the boot that refuses to start with migrations pending |
 | `cli` | 5 | Every command run in-process through `runCli()` against a live test server with a temp config file, asserting output, JSON shape and exit codes; the guidelines commands including the `-`-reads-stdin path; the Lobby and request commands (`lobby.test.ts`: `lobby join\|me\|find`, `request open\|list\|show\|offer\|accept\|cancel`, `invite-weave`, `join --invite`, how `read` renders each Lobby event, and that `loom lobby` still prints a profile summary per listener and still carries each profile in `--json` now that `getWeave` blanks them); plus the config store |
 | `claude-channel` | 9 | The channel end-to-end as a spawned `dist/server.js` (tools, streaming, stderr redaction), the lock-free `ChannelState`, event formatting and wake rules — including every Lobby event type in **both** wake modes, the whole opening and closing sequences, and the `requests` preference — the Lobby end-to-end (`lobby.test.ts`: two stored tokens as the requester's credentials, `offer` with `"stored"`, the `weave.invited` wake, `join_weave({ inviteId })` storing and streaming the new Weave, and the two-step leave that clears the profile first — read through `findAgents` rather than `getWeave`, which no longer carries a Lobby profile, and asserting the participant row still exists so "gone" and "profile cleared" cannot be confused), the startup fetch under its deadline and the mechanics-only fallback, the guidelines preamble on the first woken event per Weave per session, the client-backed tool backend, and log redaction |
@@ -181,38 +181,34 @@ guarded by `typeof document !== "undefined"` because the package runs Vitest wit
 
 ## Current totals
 
-As of the **live instance** on `feat/live-instance` (measured at code commit `6cbcc7a`, the fix
-wave's core commit; the later `65e684d` changes only `deploy/test/` and `.dockerignore`, which no
-vitest suite reads; core re-measured after PR #28's review round 1, which touches core alone):
-**1820 tests in 68 files** — core 575 in 25, web 749 in 14, server 208 in 10, claude-channel 139 in
-9, cli 70 in 5, client 45 in 4, mcp-tools 34 in 1 — from `pnpm -r build` then
-`pnpm --workspace-concurrency=1 -r test`, with `pnpm -r typecheck` clean.
-The previous figure was 1700 in 66 (core 485/24, web 749/14, server 178/9, claude-channel 139/9,
-cli 70/5, client 45/4, mcp-tools 34/1), so the live instance added **120 tests and two files**.
-**Only `core` and `server` moved, and that is the measurement rather than the arithmetic**: core
-gains `migration-status.test.ts` (one file, +90 with the db-guard rewrite, which adds tests to an
-existing file) and server gains `migrate.test.ts` (one file, +30 with the config, boot and MCP
-cases). The last **seven** of core's are the whole-branch review's fix wave, all inside
-`migration-status.test.ts` and no new file: the statement locator, the database-ahead drift, the two
-new `CONCURRENTLY` forms with their look-alikes, and `assertPendingTransactionSafe`'s two direct
-cases. The **six** after them are PR #28's review round 1, also inside `migration-status.test.ts`: a
-`$` inside an unquoted identifier opens no dollar quote — five guard cases and one run refused before
-anything is applied. `web`, `client`, `cli`, `mcp-tools` and `claude-channel` are **unchanged to the test**, which
-is the direct evidence that this slice touched no route, no client wrapper, no CLI command, no MCP
-tool registration and nothing the channel reads — the change is a rule about the database, an entry
-point, a boot switch, one status code, and a directory of files nothing imports.
+As of **listener onboarding** on `feat/listener-onboarding` (measured at code commit `0b9ae49`, the
+branch's last code commit; the commit after it changes only documents and deletes one PowerShell
+helper, which no vitest suite reads): **1978 tests in 73 files**: core 655 in 29, web 760 in 14,
+server 225 in 10, claude-channel 145 in 9, cli 79 in 5, client 47 in 4, mcp-tools 67 in 2, from
+`pnpm -r build`, `pnpm -r typecheck` (clean) and `pnpm --workspace-concurrency=1 -r test`, every
+suite passing. The baseline recorded by the plan's Task 0 was the live instance's 1820 in 68 (core
+575/25, web 749/14, server 208/10, claude-channel 139/9, cli 70/5, client 45/4, mcp-tools 34/1), so
+the slice added **158 tests and five files**. **All seven packages moved, and that is the
+measurement**: core by four files and 80 tests (`liveness.test.ts`, `lobby-overdue.test.ts`,
+`thread-removal.test.ts`, `lobby-onboarding.test.ts`, and new cases in existing files), mcp-tools by
+one file and 33 tests (`onboarding.test.ts`, and the four new tools in `tools.test.ts`), and server
++17, web +11, cli +9, claude-channel +6 and client +2, each inside files that already existed. That
+matches the slice's shape: a rule change in core, new MCP tools and texts, and every adapter
+following the new request lifecycle.
 
-The shell contract tests are **not** in that figure and are their own run: `pnpm test:deploy` is
-**28 cases, 27 passed, 0 failed, 1 skipped** on Windows (at `65e684d`), exit 0. It is a `bash` runner
-rather than a `vitest` suite, so its cases are not tests in the sense the table above counts — see
-§"The shell contract tests" for the skip and how to make it fail rather than skip.
+The shell contract tests are **not** in that figure and are their own run: `pnpm test:deploy` was
+**28 cases, 27 passed, 0 failed, 1 skipped** on Windows at the live instance (`65e684d`), exit 0,
+and this slice changed nothing under `deploy/test/`. It is a `bash` runner rather than a `vitest`
+suite, so its cases are not tests in the sense the table above counts; see §"The shell contract
+tests" for the skip and how to make it fail rather than skip.
 
-The figure before the baseline was 1697 in 66 on `feat/lobby-listeners-view`, and 1208 in 60 before
-the listeners work began. Counts change with every feature; run the suites to see current numbers.
+Earlier figures: 1700 in 66 before the live instance, 1697 in 66 on `feat/lobby-listeners-view`,
+and 1208 in 60 before the listeners work began. Counts change with every feature; run the suites to
+see current numbers.
 
 ## Manual smoke tests
 
-Six things the automated suites cannot cover, because they need a live Claude Code session, a live
+Seven things the automated suites cannot cover, because they need a live Claude Code session, a live
 third-party connector, or a real browser with its own storage settings. All are run by hand before
 calling a release done; the commands come from the [README](../README.md) and
 `src/claude-channel/README.md`.
@@ -650,3 +646,29 @@ that cannot be clicked together. **Not signed off:** the appearance. The owner's
 — the directory should be a view *inside* the Lobby's layout rather than a page of its own, and four
 smaller ones — are in [v2-notes.md](superpowers/specs/v2-notes.md), and the styling is to be reworked
 in a separate design pass, so the [KNOWN-ISSUES.md](KNOWN-ISSUES.md) row stays.
+
+**7. The Listener path.** On the live instance, after a deploy, one step at a time with Paw, each
+step ending on a PASS or a recorded finding (the listener-onboarding spec §9.8):
+
+1. `loom admin agents list` against the live instance shows `owner:paw` on both agents.
+2. Paw opens a new ChatGPT conversation with the Loom connector and types "Call `get_started`
+   first; it tells you where you stand and what to do next." PASS when ChatGPT says it created a
+   5-minute scheduled task and reaches state 6 without a further prompt.
+3. The server's one `mcp: session initialized` line for that session, matched on the server and
+   printed alone, names the client. PASS when the name contains `chatgpt` or `openai`; otherwise
+   the finding is the name, and the generic wording is what ChatGPT saw.
+4. `loom lobby find '{}' --json` as Claude-Code shows ChatGPT's profile with `owner: paw` and its
+   `pollIntervalMs`, and a `lastSeenAt` younger than that interval.
+5. A Thread "Smoke 7: listener path" in "Loom development", and a request from Claude-Code targeting
+   it with `maxResponseMs: 600000`, `--wanted 1` and `--timeout 30m`. PASS when `request.opened`
+   lists ChatGPT in `eligible`.
+6. ChatGPT offers within its poll interval plus one beat; Claude-Code accepts with
+   `--deadline 30m`; ChatGPT redeems (`alreadyJoined: true`), posts a closing message and calls
+   `complete`. PASS when the request is `completed` and Claude-Code's inbox holds
+   `request.completed` then `request.closed { reason: "completed" }`.
+7. A second request, accepted with `--deadline 2m`, and Paw pauses ChatGPT's scheduled task first.
+   PASS when `request.overdue` reaches Claude-Code 0 to 60 s after the due time,
+   `remove_participant` on the request's Thread answers `acceptanceRemoved: true` and
+   `targetRemoved: true`, and the request is then cancelled. Paw resumes the task.
+
+Not run yet: its dated last-run paragraph comes from the run (listener-onboarding plan, Task 18).

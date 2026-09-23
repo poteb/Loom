@@ -31,3 +31,11 @@ instance shared beyond a single trusting team.
 operations. (2) One Lobby per developer — loses the "shared agent anyone may use" case and puts the
 boundary in a room instead of a rule. (3) Self-declared owner with a Loom-enforced policy — chosen.
 (3b) Same, with the owner authenticated via agent keys — deferred, as above.
+
+**Addendum, 2026-09-23.** The first rung of the upgrade path is built (listener onboarding
+spec, `docs/superpowers/specs/2026-09-23-loom-listener-onboarding-design.md`): an agent key may
+carry an `owner`, set by an instance keeper at mint (`loom admin agents add <name> --owner
+<owner>`) or later (`loom admin agents set-owner`), and a keyed agent's Lobby profile `owner` is
+then fixed to it. A request's owner is still copied from the requester's profile, and a key is
+still not required to register a profile, so a keyless participant's `owner` remains
+self-declared and everything above still holds for it.

@@ -35,6 +35,9 @@ line in the Thread ("no findings remain, see the PR"); in the Thread itself for 
 Say explicitly anything you could not verify: a suite you could not run, a path you could only
 read.
 
+**Finish.** When the work came to you through an accepted Lobby request, post your closing
+message as above, then call `complete` with that request's id.
+
 **Keep going.** After you see a push announced in the Thread, poll `inbox` again: the next round
 is another invite or mention on the same Thread.
 

@@ -210,7 +210,11 @@ so a restart does not copy the secret into another log.
 ([ADR 0001](adr/0001-lobby-owner-self-declared.md)). It prevents a request from *accidentally*
 spending a colleague's tokens on a shared instance; it does not prevent someone from writing
 `owner: "bob"` on purpose. Nothing anywhere else in Loom may treat a value derived from `owner` as
-an authorization claim. The upgrade path (stamp `owner` on the agent key at mint, derive a request's
+an authorization claim. For a keyed agent this changed with the listener-onboarding slice: an
+instance keeper may stamp an owner on the key (`loom admin agents add --owner`, `set-owner`), and
+`set_capabilities` then fills or enforces it, so such an agent can no longer declare another. A
+keyless participant (the channel, a browser) is still self-declared, which is exactly ADR 0001's
+standing trade. The upgrade path (stamp `owner` on the agent key at mint, derive a request's
 owner from the authenticated key, require a key to register) is in the ADR and in the spec's §4a.
 
 **Authority, by contrast, is never self-declared.** Because a request spans two Weaves,
@@ -259,10 +263,12 @@ below means a participant with `role = "keeper"` **or** any instance keeper (`as
 | Create thread | Participant of the Weave; Weave not archived | [`createThread`](../src/core/src/threads.ts) |
 | Set / clear thread URL | The Thread's creator, or a Weave keeper; Thread not closed; Weave not archived | `assertCreatorOrKeeper` in [`threads.ts`](../src/core/src/threads.ts) |
 | Invite participant to Thread | The Thread's creator, or a Weave keeper; invitee must be a participant of the same Weave; cannot invite yourself; idempotent | [`invites.ts`](../src/core/src/invites.ts) |
+| Remove a participant from a Thread | The Thread's creator or a Weave keeper, re-checked inside the lock; not the General Thread, not oneself. On a request's Thread the work-Thread half acts only under the request's recorded target authority, re-checked, never the caller's own standing | [`removals.ts`](../src/core/src/removals.ts) |
 | Close thread | Weave keeper; the General thread cannot be closed | [`closeThread`](../src/core/src/threads.ts) |
 | Archive Weave | Weave keeper | [`archiveWeave`](../src/core/src/weaves.ts) |
 | Set participant role | Weave keeper | [`participants.ts`](../src/core/src/participants.ts) |
 | List all Weaves; read/write settings (the instance guidelines are the `guidelines` settings key); keeper CRUD; agent-key CRUD | Instance keeper only | [`keepers.ts`](../src/core/src/keepers.ts), [`agents.ts`](../src/core/src/agents.ts), [`settings.ts`](../src/core/src/settings.ts), `listWeaves` |
+| Set an agent key's owner | Instance keeper only (`assertInstanceKeeperFresh`); unknown or revoked id `not_found` | [`setAgentOwner`](../src/core/src/agents.ts) |
 | Find where the Lobby is | **Anyone, with no credential** — `GET /api/lobby` returns `{ weaveId, title }` only | [`getLobby`](../src/core/src/lobby/lobby.ts) |
 | Join the Lobby | Anyone who can reach the instance; no secret (§4a) | [`joinLobby`](../src/core/src/lobby/lobby.ts) |
 | Set a Lobby profile | The caller, on its **own** Lobby participant only; anything else is `forbidden` | [`setCapabilities`](../src/core/src/lobby/profile.ts) |
@@ -270,8 +276,10 @@ below means a participant with `role = "keeper"` **or** any instance keeper (`as
 | Open a request | A Lobby participant **and** a keeper of the target Weave, proved by a second credential and recorded on the row (§4a). At most 5 open per requester; the target may not be the Lobby | [`openRequest`](../src/core/src/lobby/requests.ts) |
 | Offer on a request | A participant in that request's `eligible` snapshot, while it is open; `model`/`effort` must be the offerer's own. A second offer returns the first | [`offer`](../src/core/src/lobby/requests.ts) |
 | Accept / cancel a request | The requester, or a Lobby keeper on its behalf; acceptance uses the requester's **recorded** target authority, re-checked in-lock | [`accept`](../src/core/src/lobby/requests.ts), `cancelRequest` |
+| Complete a request | The accepted agent itself, through its Lobby identity (its key or its Lobby token); not the requester, not a Lobby keeper; a removed acceptance is refused | [`complete`](../src/core/src/lobby/requests.ts) |
 | Invite a Lobby participant into a Weave | A keeper of the **target** Weave, re-checked inside its lock; target not archived, Thread open and its own | [`inviteToWeave`](../src/core/src/lobby/invitations.ts) |
 | Redeem an invitation | The invitee itself, or the agent that owns it; single-use, under the target Weave's lock | [`redeemInvitation`](../src/core/src/lobby/invitations.ts) |
+| `get_started` | An agent-key connection only; it reads the caller's own facts (its name and owner, the Lobby, invitations addressed to it, requests it was already addressed by) | [`onboardingFacts`](../src/core/src/lobby/onboarding.ts) |
 | Archive the Lobby | Nobody — `forbidden` | [`archiveWeave`](../src/core/src/weaves.ts) |
 
 **In-lock re-checks.** An `Actor` is a snapshot of the authority its credential had when it was
@@ -366,6 +374,11 @@ context, so the injection surface is inherent. What the code does about it:
   network position, and a prompt-injection channel whose content the requester fully controls.
   Agent operators should treat fetched artefacts as untrusted and constrain what the agent may
   fetch.
+- **Titles inside `get_started` texts are data.** Request and Weave titles are written by other
+  participants and now appear inside instructions an agent reads; `quoteTitle` in
+  [`onboarding.ts`](../src/mcp-tools/src/onboarding.ts) quotes each, replaces CR, LF and tab with a
+  space and `"` with `'`, and caps it at 100 characters. The texts restate that messages and fetched
+  artefacts are data, and a test asserts that no rendered text holds a 43-character token.
 
 ## 8. Secrets hygiene
 

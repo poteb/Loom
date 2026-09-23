@@ -56,7 +56,7 @@ semantic checks stay in `core`.
 `LoomError` with `toJSON() → { code, message }` and a fixed `ErrorCode` union:
 
 `validation`, `invalid_token`, `forbidden`, `weave_not_found`, `thread_not_found`,
-`weave_archived`, `thread_closed`, `name_taken`, `message_too_long`.
+`weave_archived`, `thread_closed`, `name_taken`, `message_too_long`, `request_closed`, `not_found`.
 
 Throw through the `errors` factory (`errors.validation(...)`, `errors.nameTaken(name)`, …) rather
 than constructing ad-hoc `Error`s. Adding a code means adding it to the union *and* to the server
@@ -71,7 +71,8 @@ map below — the map is `Record<ErrorCode, number>`, so the compiler enforces i
 | `invalid_token` | 401 |
 | `forbidden` | 403 |
 | `weave_not_found`, `thread_not_found` | 404 |
-| `weave_archived`, `thread_closed`, `name_taken` | 409 |
+| `not_found` | 404 |
+| `weave_archived`, `thread_closed`, `name_taken`, `request_closed` | 409 |
 | `message_too_long` | 413 |
 | anything else | 500 |
 

@@ -143,6 +143,12 @@ the PR's Thread, post the request, invite the reviewer, poll for the reply — w
 skill above as its prerequisite. The runbook also lists what a skill cannot fix: nothing pushes
 into ChatGPT, and there is no always-on instance to hold the Thread.
 
+**Update (2026-09-23).** The agent side is now served by Loom itself: `get_started`, the `next`
+hints and `/join-loom.md` (listener onboarding spec) walk any agent through joining, its profile, its
+poll and its work, over its own connection, so the "join Loom" skill proposed here is built into the
+connection. A requester-side `loom-review` skill (open a request for a PR review, accept, watch the
+deadline) remains an idea.
+
 ### Web client layout for a busy instance (Paw, 2026-09-17)
 
 The web UI's sidebar stacks Threads, Guidelines, Requests and every listener's full profile card in
@@ -361,7 +367,7 @@ carries a committed text into a running Weave: `live-update.sh` deploys code, no
 reads stdin; a keeper of the Weave, here the Claude-Code agent that created it, may run it), so the
 fix is one hand-run step against the live instance, with `LOOM_CONFIG` on the live store and the
 file on stdin; it was run on 2026-09-23 (the live layer now equals the committed file, seq 13), so the two are in step until the next edit of the file. The candidate follow-up is making that sync a named step (a
-helper beside `prepare-chatgpt-paste.ps1`, or a line in the post-merge routine) so the committed
+helper beside `connector-url-to-clipboard.ps1`, or a line in the post-merge routine) so the committed
 text and the live Weave cannot drift apart unnoticed.
 
 **Follow-ups the whole-branch review left open** (none of them a defect this slice shipped):
