@@ -26,6 +26,13 @@ export function threadRoutes(core: Core) {
     return c.json(result, result.created ? 201 : 200);
   });
 
+  r.post("/:id/removals", async (c) => {
+    const actor = await requireActor(c, core);
+    const { participantId } = await body(c, z.object({ participantId: z.string() }));
+    const result = await core.removeParticipant(actor, c.req.param("id"), participantId);
+    return c.json(result, result.created ? 201 : 200);
+  });
+
   r.post("/:id/close", async (c) => {
     const actor = await requireActor(c, core);
     await core.closeThread(actor, c.req.param("id"));

@@ -52,8 +52,15 @@ export function requestRoutes(core: Core) {
 
   r.post("/:id/accept", async (c) => {
     const actor = await requireActor(c, core);
-    const { participantIds } = await body(c, z.object({ participantIds: z.array(z.string()) }));
-    return c.json(await core.acceptRequest(actor, c.req.param("id"), participantIds));
+    // Types only: a missing deadlineMs is passed through, so core answers "deadlineMs is required".
+    const { participantIds, deadlineMs } = await body(c, z.object({ participantIds: z.array(z.string()), deadlineMs: z.number().optional() }));
+    return c.json(await core.acceptRequest(actor, c.req.param("id"), participantIds, deadlineMs));
+  });
+
+  r.post("/:id/complete", async (c) => {
+    const actor = await requireActor(c, core);
+    const { note } = await body(c, z.object({ note: z.string().optional() }));
+    return c.json(await core.completeRequest(actor, c.req.param("id"), note));
   });
 
   r.post("/:id/cancel", async (c) => {

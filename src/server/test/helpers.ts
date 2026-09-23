@@ -3,7 +3,7 @@ import { createCore, type Core } from "@loom/core";
 import { freshDb, closeTestDb } from "../../core/test/helpers.js";
 
 export { keeperToken } from "../../core/test/helpers.js";
-import { buildApp } from "../src/app.js";
+import { buildApp, type SweepResult } from "../src/app.js";
 import { TicketStore } from "../src/tickets.js";
 import { attachWebSocket } from "../src/ws.js";
 
@@ -23,8 +23,8 @@ export type TestServer = {
   wsUrl: string;
   core: Core;
   tickets: TicketStore;
-  /** Sweeps crossed requests now, rather than waiting for the interval. */
-  sweepNow: (now?: Date) => Promise<number>;
+  /** Sweeps crossed requests and missed deadlines now, rather than waiting for the interval. */
+  sweepNow: (now?: Date) => Promise<SweepResult>;
   close: () => Promise<void>;
   dropSockets: () => void;
 };

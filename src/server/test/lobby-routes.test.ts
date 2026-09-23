@@ -113,6 +113,15 @@ async function openRequest(f: Scenario, over: Record<string, unknown> = {}) {
   return r.json;
 }
 
+/** The scenario's request with Pawbot's offer accepted and an hour to complete it. */
+async function acceptedRequest(f: Scenario, over: Record<string, unknown> = {}) {
+  const req = await openRequest(f, over);
+  await api(s.baseUrl, "POST", `/api/requests/${req.id}/offers`, { note: "ready" }, f.pawbot.token);
+  const a = await api(s.baseUrl, "POST", `/api/requests/${req.id}/accept`, { participantIds: [f.pawbot.id], deadlineMs: 3_600_000 }, f.claude.token);
+  expect(a.status).toBe(200);
+  return req;
+}
+
 const idsOf = (rows: { id: string }[]) => rows.map((r) => r.id);
 const listenerIds = (rows: { participant: { id: string } }[]) => rows.map((l) => l.participant.id);
 
@@ -677,15 +686,25 @@ describe("POST /api/requests/:id/offers", () => {
 });
 
 describe("POST /api/requests/:id/accept", () => {
-  it("accepts an offer, issues the invitation, and fills the request", async () => {
+  it("accepts an offer with a deadline, issues the invitation, and moves the request to working", async () => {
+    const f = await scenario();
+    const req = await openRequest(f);
+    await api(s.baseUrl, "POST", `/api/requests/${req.id}/offers`, { note: "ready" }, f.pawbot.token);
+    const r = await api(s.baseUrl, "POST", `/api/requests/${req.id}/accept`, { participantIds: [f.pawbot.id], deadlineMs: 3_600_000 }, f.claude.token);
+    expect(r.status).toBe(200);
+    expect(r.json.invitationIds).toHaveLength(1);
+    expect(r.json.request.status).toBe("working");
+    expect(r.json.request.offers[0].accepted).toBe(true);
+    expect(r.json.request.acceptances[0]).toMatchObject({ participantId: f.pawbot.id, dueAt: expect.any(String), removed: false });
+  });
+
+  it("POST /api/requests/:id/accept without deadlineMs is 400", async () => {
     const f = await scenario();
     const req = await openRequest(f);
     await api(s.baseUrl, "POST", `/api/requests/${req.id}/offers`, { note: "ready" }, f.pawbot.token);
     const r = await api(s.baseUrl, "POST", `/api/requests/${req.id}/accept`, { participantIds: [f.pawbot.id] }, f.claude.token);
-    expect(r.status).toBe(200);
-    expect(r.json.invitationIds).toHaveLength(1);
-    expect(r.json.request.status).toBe("filled");
-    expect(r.json.request.offers[0].accepted).toBe(true);
+    expect(r.status).toBe(400);
+    expect(r.json).toEqual({ code: "validation", message: "deadlineMs is required" });
   });
 
   it("refuses an accept from someone who is neither the requester nor a Lobby keeper", async () => {
@@ -694,6 +713,34 @@ describe("POST /api/requests/:id/accept", () => {
     await api(s.baseUrl, "POST", `/api/requests/${req.id}/offers`, { note: "ready" }, f.pawbot.token);
     const r = await api(s.baseUrl, "POST", `/api/requests/${req.id}/accept`, { participantIds: [f.pawbot.id] }, f.pawbot.token);
     expect(r.status).toBe(403);
+  });
+});
+
+describe("POST /api/requests/:id/complete", () => {
+  it("answers the accepted agent 200, another participant 403, and an unknown request 400", async () => {
+    const f = await scenario();
+    const req = await acceptedRequest(f);
+    expect((await api(s.baseUrl, "POST", `/api/requests/${req.id}/complete`, {}, f.bobbot.token)).status).toBe(403);
+    expect((await api(s.baseUrl, "POST", "/api/requests/00000000-0000-4000-8000-000000000000/complete", {}, f.pawbot.token)).status).toBe(400);
+    const done = await api(s.baseUrl, "POST", `/api/requests/${req.id}/complete`, { note: "done" }, f.pawbot.token);
+    expect(done.status).toBe(200);
+    expect(done.json.status).toBe("completed");
+    expect(done.json.acceptances[0]).toMatchObject({ participantId: f.pawbot.id, note: "done", completedAt: expect.any(String) });
+  });
+});
+
+describe("GET /api/lobby/agents with maxResponseMs", () => {
+  it("filters on maxResponseMs and returns lastSeenAt", async () => {
+    const tag = uniq("poll");
+    const live = await joinLobby(uniq("Live"), { owner: tag, pollIntervalMs: 300_000, tools: [`tool-${tag}`] });
+    const stale = await joinLobby(uniq("Stale"), { owner: tag, pollIntervalMs: 300_000, tools: [`tool-${tag}`] });
+    await sqlUnsafe("update participants set last_seen_at = now() - interval '20 minutes' where id = $1", [stale.id]);
+    const filter = encodeURIComponent(JSON.stringify({ tools: [`tool-${tag}`], maxResponseMs: 600_000 }));
+    const r = await api(s.baseUrl, "GET", `/api/lobby/agents?filter=${filter}`, undefined, live.token);
+    expect(r.status).toBe(200);
+    expect(r.json.agents.map((a: { participant: { id: string } }) => a.participant.id)).toEqual([live.id]);
+    expect(r.json.agents[0].participant.lastSeenAt).toEqual(expect.any(String));
+    expect(r.json.agents[0].capabilities.pollIntervalMs).toBe(300_000);
   });
 });
 
@@ -766,37 +813,54 @@ describe("POST /api/weaves/join", () => {
 });
 
 describe("the request sweep", () => {
-  it("closes a crossed request on the interval, and stops when the app is torn down", async () => {
+  it("the interval wires both passes, and stops when the app is torn down", async () => {
     const f = await scenario();
     const req = await openRequest(f, { timeoutMs: 60_000 });
-    let sweeps = 0;
+    const closedNows: number[] = [];
+    const overdueNows: number[] = [];
     // The clock the sweeper reads is the test's, exactly as core's own sweep test drives it; the
     // interval, the wiring and the closure it writes are the real ones.
     const core = {
       ...s.core,
-      sweepRequests: (now?: Date) => { sweeps++; return s.core.sweepRequests(now ?? new Date(Date.now() + 120_000)); },
+      sweepRequests: (now?: Date) => { closedNows.push(now!.getTime()); return s.core.sweepRequests(new Date(now!.getTime() + 120_000)); },
+      sweepOverdue: (now?: Date) => { overdueNows.push(now!.getTime()); return s.core.sweepOverdue(now); },
     } as Core;
     const tickets = new TicketStore();
     const { stop } = buildApp({ core, tickets, requestSweepMs: 25 });
     try {
       await until(async () =>
         (await api(s.baseUrl, "GET", `/api/requests/${req.id}`, undefined, f.claude.token)).json.closedAt !== null);
+      await until(async () => overdueNows.length > 0);
     } finally { stop(); tickets.stop(); }
-    const after = sweeps;
+    // Every overdue pass was handed the same now as an expiry pass of the same tick.
+    for (const t of overdueNows) expect(closedNows).toContain(t);
+    const after = closedNows.length;
     await new Promise((r) => setTimeout(r, 120));
-    expect(sweeps).toBe(after);
+    expect(closedNows.length).toBe(after);
   });
 
-  it("exposes sweepNow so a caller can sweep without waiting for the interval", async () => {
+  it("sweepNow runs the expiry pass and the overdue pass with one now and resolves to { closed, overdue }", async () => {
     const f = await scenario();
-    const req = await openRequest(f, { timeoutMs: 60_000 });
+    const expiring = await openRequest(f, { timeoutMs: 60_000 });
+    const working = await acceptedRequest(f, { title: "Review PR 15" });
+    const seen: Date[] = [];
+    const core = {
+      ...s.core,
+      sweepRequests: (now?: Date) => { seen.push(now!); return s.core.sweepRequests(now); },
+      sweepOverdue: (now?: Date) => { seen.push(now!); return s.core.sweepOverdue(now); },
+    } as Core;
     const tickets = new TicketStore();
-    const { sweepNow, stop } = buildApp({ core: s.core, tickets });
+    const { sweepNow, stop } = buildApp({ core, tickets });
+    const at = new Date(Date.now() + 2 * 3_600_000);
     try {
-      expect(await sweepNow(new Date(Date.now() + 120_000))).toBeGreaterThanOrEqual(1);
+      const out = await sweepNow(at);
+      expect(out.closed).toBeGreaterThanOrEqual(1);
+      expect(out.overdue).toBeGreaterThanOrEqual(1);
+      expect(seen).toEqual([at, at]);
     } finally { stop(); tickets.stop(); }
-    const r = await api(s.baseUrl, "GET", `/api/requests/${req.id}`, undefined, f.claude.token);
-    expect(r.json.status).toBe("expired");
-    expect(r.json.closedAt).not.toBeNull();
+    expect((await api(s.baseUrl, "GET", `/api/requests/${expiring.id}`, undefined, f.claude.token)).json.status).toBe("expired");
+    const w = (await api(s.baseUrl, "GET", `/api/requests/${working.id}`, undefined, f.claude.token)).json;
+    expect(w.status).toBe("working");
+    expect(w.acceptances[0].overdueNotifiedAt).toEqual(expect.any(String));
   });
 });

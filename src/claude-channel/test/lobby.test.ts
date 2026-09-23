@@ -208,7 +208,7 @@ describe("the Lobby over the channel", () => {
 
     // The deadline passes while the session is away, and the sweeper closes it.
     await s!.core.db.$client.unsafe("update requests set expires_at = now() - interval '1 minute' where id = $1", [requestId] as never);
-    expect(await s!.sweepNow()).toBeGreaterThanOrEqual(1);
+    expect((await s!.sweepNow()).closed).toBeGreaterThanOrEqual(1);
 
     await withChannel(stateDir, async (a2) => {
       const got = collectNotifications(a2);

@@ -28,6 +28,9 @@ export type AppDeps = {
   requestSweepMs?: number;
 };
 
+/** What one pass of the request sweep did: requests closed as expired, and overdue notices emitted. */
+export type SweepResult = { closed: number; overdue: number };
+
 /**
  * The app and the one background job that comes with it. `sweepNow` is the same pass the interval
  * makes, for a caller that will not wait for it; `stop` ends the interval at teardown, beside the
@@ -35,7 +38,7 @@ export type AppDeps = {
  */
 export type LoomApp = {
   app: Hono<Env>;
-  sweepNow: (now?: Date) => Promise<number>;
+  sweepNow: (now?: Date) => Promise<SweepResult>;
   stop: () => void;
 };
 
@@ -89,9 +92,15 @@ export function buildApp(deps: AppDeps): LoomApp {
     }
   }
 
-  // Status is computed on read, so nothing depends on this having run; it is what turns a crossed
-  // deadline into the `request.closed` that stops everyone waiting on it.
-  const sweepNow = (now?: Date) => deps.core.sweepRequests(now);
+  // Status is computed on read, so nothing depends on this having run: it is what turns a crossed
+  // deadline into the `request.closed` that stops everyone waiting on it, and a missed work
+  // deadline into the `request.overdue` its requester acts on. One clock read serves both passes,
+  // the same process clock `accept` writes due times from (spec §6.4).
+  const sweepNow = async (now: Date = new Date()): Promise<SweepResult> => {
+    const closed = await deps.core.sweepRequests(now);
+    const overdue = await deps.core.sweepOverdue(now);
+    return { closed, overdue };
+  };
   const sweep = setInterval(() => {
     void sweepNow().catch((e) => {
       // Before the first boot created it there is no Lobby to sweep, and nothing to say about it.
