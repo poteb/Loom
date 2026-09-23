@@ -1,3 +1,5 @@
+import type { OnboardingFacts } from "./onboarding.js";
+
 export class LoomToolError extends Error {
   constructor(public readonly code: string, message: string) { super(message); this.name = "LoomToolError"; }
 }
@@ -45,7 +47,8 @@ export type LoomToolBackend = {
   keeperAdd(credential: string, name: string): Promise<unknown>;
   keeperRemove(credential: string, id: string): Promise<void>;
   keeperAgentsList(credential: string): Promise<unknown[]>;
-  keeperAgentsAdd(credential: string, name: string): Promise<unknown>;                                   // { agent, key }
+  keeperAgentsAdd(credential: string, name: string, owner?: string): Promise<unknown>;                  // { agent, key }
+  keeperAgentsSetOwner(credential: string, id: string, owner: string): Promise<unknown>;                  // the agent
   keeperAgentsRevoke(credential: string, id: string): Promise<void>;
   setWeaveGuidelines(credential: string, weaveId: string, guidelines: string): Promise<unknown>;         // { weave, seq }
   /** Public: the instance text is read before a connection has any credential. */
@@ -68,7 +71,14 @@ export type LoomToolBackend = {
   listRequests(credential: string, opts: { status?: string; limit?: number }): Promise<unknown[]>;
   getRequest(credential: string, requestId: string): Promise<unknown>;
   offer(credential: string, requestId: string, input: OfferInput): Promise<unknown>;
-  acceptRequest(credential: string, requestId: string, participantIds: string[]): Promise<unknown>;      // { request, invitationIds }
+  acceptRequest(credential: string, requestId: string, participantIds: string[], deadlineMs?: number): Promise<unknown>; // { request, invitationIds }
   cancelRequest(credential: string, requestId: string): Promise<unknown>;
+  completeRequest(credential: string, requestId: string, note?: string): Promise<unknown>;               // Request shape
+  removeParticipant(credential: string, threadId: string, participantId: string): Promise<unknown>;      // { seq, created, acceptanceRemoved, targetRemoved }
   inviteToWeave(credential: string, participantId: string, targetWeaveId: string, targetThreadId: string): Promise<unknown>; // { invitationId, seq }
+  /**
+   * get_started's facts (spec §5.1). Optional: the remote `/mcp` backend implements it over core;
+   * the Claude Code channel has no agent key and does not, so get_started refuses there.
+   */
+  onboardingFacts?(credential: string): Promise<OnboardingFacts>;
 };

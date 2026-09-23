@@ -2,9 +2,17 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { registerLoomTools, LOOM_TOOL_NAMES, LOOM_RESOURCE_URIS, READ_GUIDELINES, LOBBY_MECHANICS, LoomToolError, type LoomToolBackend, type RegisterOptions } from "../src/index.js";
+import {
+  registerLoomTools, LOOM_TOOL_NAMES, LOOM_RESOURCE_URIS, READ_GUIDELINES, LOBBY_MECHANICS, LoomToolError, type LoomToolBackend, type RegisterOptions,
+  renderState, pendingOf, GET_STARTED_NEEDS_AGENT, NEXT, type OnboardingFacts,
+} from "../src/index.js";
 
 const calls: unknown[][] = [];
+/** The facts the fake backend's onboardingFacts answers with: set up in the Lobby, nothing pending. */
+const SET_UP: OnboardingFacts = {
+  agent: { name: "ChatGPT", owner: "paw" }, lobby: { weaveId: "lobby-1", title: "Lobby" },
+  me: { participantId: "p-me", name: "ChatGPT", hasProfile: true }, invitations: [], requests: [],
+};
 /** Set by the one case that needs the credential-free instance read to fail; cleared straight after. */
 let instanceGuidelinesError: LoomToolError | undefined;
 const fake: LoomToolBackend = {
@@ -17,7 +25,7 @@ const fake: LoomToolBackend = {
   createThread: async (_c, weaveId, name, url) => ({ weaveId, name, url: url ?? null }),
   setThreadUrl: async (_c, threadId, url) => ({ id: threadId, url }),
   inviteParticipant: async (_c, threadId, participantId) => ({ seq: 9, created: true, threadId, participantId }),
-  inbox: async (c, weaveId, opts) => [{ type: "thread.invited", weaveId, since: opts.since, credential: c }],
+  inbox: async (c, weaveId, opts) => (weaveId === "empty" ? [] : [{ type: "thread.invited", weaveId, since: opts.since, credential: c }]),
   closeThread: async () => {},
   archiveWeave: async () => {},
   setRole: async (_c, _w, participantId, role) => ({ participantId, role }),
@@ -29,7 +37,8 @@ const fake: LoomToolBackend = {
   keeperAdd: async (_c, name) => ({ keeper: { name }, token: "k".repeat(43) }),
   keeperRemove: async () => { throw { code: "validation", message: "No such keeper" }; },
   keeperAgentsList: async () => [{ id: "a1", name: "ChatGPT" }],
-  keeperAgentsAdd: async (_c, name) => ({ agent: { name }, key: "a".repeat(43) }),
+  keeperAgentsAdd: async (c, name, owner) => { calls.push(["keeperAgentsAdd", c, name, owner]); return { agent: { name, owner: owner ?? null }, key: "a".repeat(43) }; },
+  keeperAgentsSetOwner: async (c, id, owner) => { calls.push(["keeperAgentsSetOwner", c, id, owner]); return { id, owner }; },
   keeperAgentsRevoke: async () => {},
   setWeaveGuidelines: async (c, w, g) => { calls.push(["setWeaveGuidelines", c, w, g]); return { weave: { id: w, guidelines: g }, seq: 7 }; },
   getInstanceGuidelines: async () => { if (instanceGuidelinesError) throw instanceGuidelinesError; return "## Loom guidelines\nBe kind."; },
@@ -45,8 +54,11 @@ const fake: LoomToolBackend = {
     if (requestId === "closed") throw new LoomToolError("request_closed", "This request is closed");
     return { requestId, ...input };
   },
-  acceptRequest: async (c, requestId, participantIds) => { calls.push(["acceptRequest", c, requestId, participantIds]); return { request: { id: requestId }, invitationIds: ["i1"] }; },
+  acceptRequest: async (c, requestId, participantIds, deadlineMs) => { calls.push(["acceptRequest", c, requestId, participantIds, deadlineMs]); return { request: { id: requestId }, invitationIds: ["i1"] }; },
   cancelRequest: async (c, requestId) => { calls.push(["cancelRequest", c, requestId]); return { id: requestId, status: "cancelled" }; },
+  completeRequest: async (c, requestId, note) => { calls.push(["completeRequest", c, requestId, note]); return { id: requestId, status: "completed" }; },
+  removeParticipant: async (c, threadId, participantId) => { calls.push(["removeParticipant", c, threadId, participantId]); return { seq: 4, created: true, acceptanceRemoved: false, targetRemoved: false }; },
+  onboardingFacts: async (c) => { calls.push(["onboardingFacts", c]); return SET_UP; },
   inviteToWeave: async (c, participantId, targetWeaveId, targetThreadId) => {
     calls.push(["inviteToWeave", c, participantId, targetWeaveId, targetThreadId]);
     return { invitationId: "i1", seq: 3 };
@@ -253,7 +265,7 @@ describe("lobby tools", () => {
   it("advertises the ten Lobby tools and nothing else new", async () => {
     const names = (await client.listTools()).tools.map((t) => t.name);
     for (const n of LOBBY_TOOLS) expect(names).toContain(n);
-    expect(LOOM_TOOL_NAMES).toHaveLength(34);
+    expect(LOOM_TOOL_NAMES).toHaveLength(38);
     expect(names.sort()).toEqual([...LOOM_TOOL_NAMES].sort());
   });
 
@@ -296,10 +308,10 @@ describe("lobby tools", () => {
 
   it("offer, accept, cancel_request, get_request and list_requests route their arguments", async () => {
     expect(JSON.parse(text(await client.callTool({ name: "offer", arguments: { credential: "c", requestId: "r1", model: "gpt-5.6-sol", effort: "high", note: "can start now" } }))))
-      .toEqual({ requestId: "r1", model: "gpt-5.6-sol", effort: "high", note: "can start now" });
-    expect(JSON.parse(text(await client.callTool({ name: "accept", arguments: { credential: "c", requestId: "r1", participantIds: ["p-1", "p-2"] } }))))
+      .toEqual({ requestId: "r1", model: "gpt-5.6-sol", effort: "high", note: "can start now", next: NEXT.offer });
+    expect(JSON.parse(text(await client.callTool({ name: "accept", arguments: { credential: "c", requestId: "r1", participantIds: ["p-1", "p-2"], deadlineMs: 3_600_000 } }))))
       .toEqual({ request: { id: "r1" }, invitationIds: ["i1"] });
-    expect(calls.filter((x) => x[0] === "acceptRequest").at(-1)).toEqual(["acceptRequest", "c", "r1", ["p-1", "p-2"]]);
+    expect(calls.filter((x) => x[0] === "acceptRequest").at(-1)).toEqual(["acceptRequest", "c", "r1", ["p-1", "p-2"], 3_600_000]);
     expect(JSON.parse(text(await client.callTool({ name: "cancel_request", arguments: { credential: "c", requestId: "r1" } })))).toEqual({ id: "r1", status: "cancelled" });
     expect(JSON.parse(text(await client.callTool({ name: "get_request", arguments: { credential: "c", requestId: "r9" } })))).toEqual({ id: "r9", offers: [] });
     expect(JSON.parse(text(await client.callTool({ name: "list_requests", arguments: { credential: "c", status: "open" } })))).toEqual([{ id: "r1", status: "open", credential: "c" }]);
@@ -357,5 +369,101 @@ describe("lobby tools", () => {
     for (const phrase of ["join_lobby", "set_capabilities", "request.opened", "offer", "join_weave({ inviteId })", "guidelines"]) {
       expect(LOBBY_MECHANICS).toContain(phrase);
     }
+  });
+});
+
+describe("listener onboarding tools", () => {
+  const agentConnection = (extra: RegisterOptions = {}) => connect({ defaultCredential: () => "agent-key", agentName: "ChatGPT", ...extra });
+  const getStarted = async (c: Client) => JSON.parse(text(await c.callTool({ name: "get_started", arguments: {} })));
+
+  it("LOOM_TOOL_NAMES has the four new names, and the registered tools equal it", async () => {
+    for (const n of ["get_started", "complete", "remove_participant", "keeper_agents_set_owner"]) expect(LOOM_TOOL_NAMES).toContain(n);
+    expect(LOOM_TOOL_NAMES).toHaveLength(38);
+    expect((await client.listTools()).tools.map((t) => t.name).sort()).toEqual([...LOOM_TOOL_NAMES].sort());
+  });
+
+  it("get_started without a default credential is validation naming ?agent=", async () => {
+    const r = await client.callTool({ name: "get_started", arguments: {} });
+    expect(r.isError).toBe(true);
+    expect(JSON.parse(text(r))).toEqual({ code: "validation", message: GET_STARTED_NEEDS_AGENT });
+    expect(GET_STARTED_NEEDS_AGENT).toContain("?agent=");
+  });
+
+  it("get_started with a default credential returns { state, text, pending } from onboardingFacts", async () => {
+    const c = await agentConnection();
+    try {
+      expect(await getStarted(c)).toEqual({ state: 3, text: renderState(3, SET_UP, undefined), pending: pendingOf(SET_UP) });
+      expect(calls.filter((x) => x[0] === "onboardingFacts").at(-1)).toEqual(["onboardingFacts", "agent-key"]);
+    } finally { await c.close(); }
+  });
+
+  it("get_started answers 3 then 6 for unchanged facts in one registration, and 3 again in a fresh one", async () => {
+    const c = await agentConnection();
+    try {
+      expect((await getStarted(c)).state).toBe(3);
+      expect((await getStarted(c)).state).toBe(6);
+      expect((await getStarted(c)).state).toBe(6);
+    } finally { await c.close(); }
+    const again = await agentConnection();
+    try { expect((await getStarted(again)).state).toBe(3); } finally { await again.close(); }
+  });
+
+  it("get_started passes the client name to the poll wording", async () => {
+    const chatgpt = await agentConnection({ clientName: () => "ChatGPT" });
+    try { expect((await getStarted(chatgpt)).text).toBe(renderState(3, SET_UP, "ChatGPT")); } finally { await chatgpt.close(); }
+    const other = await agentConnection({ clientName: () => "claude-ai" });
+    try { expect((await getStarted(other)).text).toBe(renderState(3, SET_UP, undefined)); } finally { await other.close(); }
+  });
+
+  it("join_lobby, set_capabilities, join_weave and offer carry next, and their other fields equal the backend's", async () => {
+    const c = await agentConnection();
+    try {
+      expect(JSON.parse(text(await c.callTool({ name: "join_lobby", arguments: {} }))))
+        .toEqual({ weaveId: "lobby-1", participant: { id: "p-me" }, token: "l".repeat(43), next: NEXT.joinLobby });
+      expect(JSON.parse(text(await c.callTool({ name: "set_capabilities", arguments: { profile: { owner: "paw" } } }))))
+        .toEqual({ id: "p-me", capabilities: { owner: "paw" }, next: NEXT.setCapabilities });
+      expect(JSON.parse(text(await c.callTool({ name: "join_weave", arguments: { inviteId: "i1" } }))))
+        .toEqual({ weaveId: "target", token: "j".repeat(43), next: NEXT.joinWeave });
+      expect(JSON.parse(text(await c.callTool({ name: "offer", arguments: { requestId: "r1" } }))))
+        .toEqual({ requestId: "r1", next: NEXT.offer });
+    } finally { await c.close(); }
+  });
+
+  it("set_capabilities with null carries the cleared-profile next", async () => {
+    expect(JSON.parse(text(await client.callTool({ name: "set_capabilities", arguments: { credential: "c", profile: null } }))))
+      .toEqual({ id: "p-me", capabilities: null, next: NEXT.profileCleared });
+  });
+
+  it("an empty inbox has a second block with next; a non-empty one has one block", async () => {
+    const empty = await client.callTool({ name: "inbox", arguments: { credential: "c", weaveId: "empty" } });
+    expect(empty.content).toEqual([{ type: "text", text: "[]" }, { type: "text", text: `next: ${NEXT.inboxEmpty}` }]);
+    const full = await client.callTool({ name: "inbox", arguments: { credential: "c", weaveId: "w1" } });
+    expect(full.content).toHaveLength(1);
+  });
+
+  it("accept passes deadlineMs through, and a missing one reaches the backend", async () => {
+    await client.callTool({ name: "accept", arguments: { credential: "c", requestId: "r2", participantIds: ["p-1"], deadlineMs: 60_000 } });
+    expect(calls.filter((x) => x[0] === "acceptRequest").at(-1)).toEqual(["acceptRequest", "c", "r2", ["p-1"], 60_000]);
+    const r = await client.callTool({ name: "accept", arguments: { credential: "c", requestId: "r3", participantIds: ["p-1"] } });
+    expect(r.isError).toBeFalsy();
+    expect(calls.filter((x) => x[0] === "acceptRequest").at(-1)).toEqual(["acceptRequest", "c", "r3", ["p-1"], undefined]);
+  });
+
+  it("complete, remove_participant and keeper_agents_set_owner pass their arguments through", async () => {
+    expect(JSON.parse(text(await client.callTool({ name: "complete", arguments: { credential: "c", requestId: "r1", note: "done" } }))))
+      .toEqual({ id: "r1", status: "completed" });
+    expect(calls.filter((x) => x[0] === "completeRequest").at(-1)).toEqual(["completeRequest", "c", "r1", "done"]);
+    expect(JSON.parse(text(await client.callTool({ name: "remove_participant", arguments: { credential: "c", threadId: "t1", participantId: "p-2" } }))))
+      .toEqual({ seq: 4, created: true, acceptanceRemoved: false, targetRemoved: false });
+    expect(calls.filter((x) => x[0] === "removeParticipant").at(-1)).toEqual(["removeParticipant", "c", "t1", "p-2"]);
+    expect(JSON.parse(text(await client.callTool({ name: "keeper_agents_set_owner", arguments: { credential: "k", id: "a1", owner: "paw" } }))))
+      .toEqual({ id: "a1", owner: "paw" });
+    expect(calls.filter((x) => x[0] === "keeperAgentsSetOwner").at(-1)).toEqual(["keeperAgentsSetOwner", "k", "a1", "paw"]);
+  });
+
+  it("keeper_agents_add passes owner through", async () => {
+    expect(JSON.parse(text(await client.callTool({ name: "keeper_agents_add", arguments: { credential: "k", name: "ChatGPT", owner: "paw" } }))).agent)
+      .toEqual({ name: "ChatGPT", owner: "paw" });
+    expect(calls.filter((x) => x[0] === "keeperAgentsAdd").at(-1)).toEqual(["keeperAgentsAdd", "k", "ChatGPT", "paw"]);
   });
 });
