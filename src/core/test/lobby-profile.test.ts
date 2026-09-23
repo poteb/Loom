@@ -326,3 +326,53 @@ describe("the registration flow on one agent key", () => {
     expect(found[0]!.capabilities).toEqual(chatgpt);
   });
 });
+
+describe("a keyed agent's owner comes from its key", () => {
+  /** An agent key minted with `owner`, joined to the Lobby, and the two actors it can act through. */
+  async function keyed(owner: string | undefined) {
+    const core: Core = createCore(db);
+    await core.seedKeepers([keeperToken("k")]);
+    const { key } = await core.addAgent(await core.resolveCredential(keeperToken("k")), "ChatGPT", owner);
+    const agent = await core.resolveCredential(key);
+    await core.ensureLobby();
+    const joined = await core.joinLobby({ kind: "agent" }, agent);
+    return { core, agent, lobbyToken: await core.resolveCredential(joined.token) };
+  }
+  const work = { models: [{ model: "gpt-5.6-sol", effort: "high" }], serves: "owner" as const };
+
+  it("a keyed agent's omitted owner is filled from the key", async () => {
+    const { core, agent } = await keyed("paw");
+    expect((await core.setCapabilities(agent, work)).capabilities).toEqual({ ...work, owner: "paw" });
+  });
+
+  it("a keyed agent may repeat its key's owner", async () => {
+    const { core, agent } = await keyed("paw");
+    expect((await core.setCapabilities(agent, { ...work, owner: " paw " })).capabilities).toEqual({ ...work, owner: "paw" });
+  });
+
+  it("a keyed agent's different owner is refused with the key's owner in the message", async () => {
+    const { core, agent } = await keyed("paw");
+    await expect(core.setCapabilities(agent, { ...work, owner: "bob" }))
+      .rejects.toMatchObject({ code: "validation", message: "owner is fixed by your agent key: paw" });
+  });
+
+  it("the owner rule follows the participant's agent, not the credential", async () => {
+    const { core, lobbyToken } = await keyed("paw");
+    await expect(core.setCapabilities(lobbyToken, { ...work, owner: "bob" }))
+      .rejects.toMatchObject({ code: "validation", message: "owner is fixed by your agent key: paw" });
+    expect((await core.setCapabilities(lobbyToken, work)).capabilities).toEqual({ ...work, owner: "paw" });
+  });
+
+  it("clearing a keyed agent's profile needs no owner", async () => {
+    const { core, agent } = await keyed("paw");
+    await core.setCapabilities(agent, work);
+    expect((await core.setCapabilities(agent, null)).capabilities).toBeNull();
+    expect((await core.setCapabilities(agent, {})).capabilities).toBeNull();
+  });
+
+  it("a key without an owner keeps the self-declared rule", async () => {
+    const { core, agent } = await keyed(undefined);
+    await expect(core.setCapabilities(agent, work)).rejects.toMatchObject({ code: "validation", message: "capabilities.owner is required when any other key is present" });
+    expect((await core.setCapabilities(agent, { ...work, owner: "bob" })).capabilities).toEqual({ ...work, owner: "bob" });
+  });
+});

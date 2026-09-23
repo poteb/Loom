@@ -1,7 +1,7 @@
 import { and, asc, eq, isNotNull } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../db/index.js";
-import { participants } from "../db/schema.js";
+import { agents, participants } from "../db/schema.js";
 import type { EventBus } from "../bus.js";
 import { errors } from "../errors.js";
 import { withWeaveLock } from "../events.js";
@@ -61,13 +61,40 @@ export function validateOwner(v: unknown): string {
 }
 
 /**
+ * The owner an instance keeper stamped on the agent key behind this participant, or null for a
+ * participant with no agent, or an agent with no owner. Read fresh on every call, and keyed on the
+ * participant's `agent_id`, so a Lobby participant token is held to the same owner as its key.
+ */
+async function keyOwnerOf(db: Db, participantId: string): Promise<string | null> {
+  const [row] = await db.select({ owner: agents.owner }).from(participants)
+    .innerJoin(agents, eq(agents.id, participants.agentId))
+    .where(eq(participants.id, participantId)).limit(1);
+  return row?.owner ?? null;
+}
+
+/**
+ * ADR 0001 addendum (spec §6.7): a keyed agent with an owner may leave `owner` out, and it is
+ * filled from the key; it may give exactly that value; any other value is refused. Clearing
+ * (`null` or `{}`) and a profile that is not an object pass through for `validateProfile` to judge.
+ */
+function withKeyOwner(profile: unknown, keyOwner: string | null): unknown {
+  if (keyOwner === null) return profile;
+  if (profile === null || profile === undefined || typeof profile !== "object" || Array.isArray(profile)) return profile;
+  if (Object.keys(profile).length === 0) return profile;
+  const given = (profile as Record<string, unknown>).owner;
+  if (given === undefined) return { ...profile, owner: keyOwner };
+  if (typeof given === "string" && given.trim() === keyOwner) return profile;
+  throw errors.validation(`owner is fixed by your agent key: ${keyOwner}`);
+}
+
+/**
  * Sets (or, with `null`, clears) the caller's own Lobby profile. A client that stops listening
  * clears it before dropping its credential, so no eligible profile is left with nobody behind it.
  */
 export async function setCapabilities(db: Db, bus: EventBus, actor: Actor, profile: unknown | null): Promise<PublicParticipant> {
   const { weaveId: lobbyId } = await getLobby(db);
   const me = assertParticipantOf(actor, lobbyId);
-  const clean = validateProfile(profile);
+  const clean = validateProfile(withKeyOwner(profile, await keyOwnerOf(db, me.id)));
   const generalThreadId = await lobbyGeneralThreadId(db, lobbyId);
   return withWeaveLock(db, bus, lobbyId, async (tx) => {
     const [updated] = await tx.update(participants).set({ capabilities: clean })
