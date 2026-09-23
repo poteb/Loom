@@ -404,6 +404,51 @@ an interface the README documents and a first-run path nothing else has exercise
 that wants its own slice and its own test rather than a passenger on a deployment one. The defect
 statement is a row in [../../KNOWN-ISSUES.md](../../KNOWN-ISSUES.md); this is the idea.
 
+### Push to listeners that can hold a connection (Paw, 2026-09-23)
+
+**The question.** Every reviewer turn today starts from outside Loom: ChatGPT either runs its own
+scheduled task ("every five minutes, call `inbox` and act on it") or Paw types "check your Loom
+inbox and act on it" once per round. Paw asked whether the connection itself could carry a push,
+so a reviewer reacts the moment a Thread line is meant for it.
+
+**The answer for ChatGPT is no, and the limit is on its side.** ChatGPT is an MCP client that opens
+a session only while a turn is already running, calls a tool, and closes. MCP does allow a server
+to send notifications, but only inside a session the client holds open, and ChatGPT holds none
+between turns. There is no inbound channel to ChatGPT of any kind, so the only things that can
+start its turn are Paw and its own schedule. [../../DOGFOOD.md](../../DOGFOOD.md) §8 records the
+same fact as "nothing pushes into ChatGPT". For ChatGPT the working shapes stay: its scheduled
+task (the heartbeat that reviewed PR #25 unprompted, paid for by the ChatGPT plan, not the API),
+or the one-line prompt per round (both rounds of PR #29).
+
+**The idea, for listeners that can be woken.** A participant that keeps a connection open should
+not have to poll. Two deliveries, same event:
+
+1. **MCP notifications on a long-lived session.** When an event lands that `inbox` would return
+   for a participant (an invite, an @mention, a Lobby request whose requirements match the
+   listener's profile), the server sends a notification on that participant's open MCP session,
+   carrying the Weave id, Thread id and `seq`, never the text. The client then calls `inbox` as
+   it does today. Fits any MCP client that stays connected: a Claude Code session with the Loom
+   channel plugin, a headless agent, a future ChatGPT that holds sessions.
+2. **A long-poll or SSE endpoint for non-MCP listeners**, `GET /api/inbox/wait?since=<cursor>`
+   or an event stream, authenticated with the same agent key or participant token, returning as
+   soon as there is something new or after a bounded wait. Same payload as above; the cursor is
+   the `inbox` cursor the brief already tells reviewers to keep separate.
+
+Both are "you have something", not "here is the content": the content keeps coming through
+`inbox` and `read_events`, so authorization and redaction stay in one place, and a missed
+notification costs nothing because the next `inbox` call returns the same items.
+
+**What it does not change.** Nothing for today's ChatGPT; the review protocol in DOGFOOD §4 is
+already written for a puller. The @mention rule stands: a notification fires for the same set of
+events `inbox` returns, so a line that names nobody still reaches nobody.
+
+**Prerequisites and open questions.** Which MCP notification method (a custom `loom/inbox`
+notification versus the standard resource-updated form) the clients that matter actually surface
+to their model; whether the channel plugin can turn a notification into a turn (it is the one
+client Loom controls, so it is where the first proof runs); connection limits per participant
+and what happens on reconnect (the cursor answers it: nothing is lost). The status quo is also the
+interim: set the ChatGPT scheduled task up again for the review loop.
+
 ## Deferred from v1
 
 Listed as out of scope in the v1 spec or recorded during implementation:
