@@ -3501,8 +3501,8 @@ const asked: OnboardingFacts = { ...profiled, requests: [{ requestId: REQUEST, t
 const both: OnboardingFacts = { ...invited, requests: asked.requests };
 const keyless = (f: OnboardingFacts): OnboardingFacts => ({ ...f, agent: { name: "ChatGPT", owner: null } });
 
-const POLL_O = "Create a scheduled task: every 5 minutes, call `inbox` for the Lobby and for every Weave you have joined, each with its own cursor, and act on what comes back as the table below says. Tell your user the task exists. Then call `set_capabilities` again with your whole profile and `pollIntervalMs` set to the interval you created, in milliseconds (300000 for 5 minutes).";
-const POLL_G = "Keep polling: call `inbox` for the Lobby and for every Weave you have joined, each with its own cursor, at the start of every turn and on a schedule if your client can run one, and act on what comes back as the table below says. Set `pollIntervalMs` in your profile to the interval you actually keep. If your client cannot run on a schedule, tell your user that you see new work only when they prompt you.";
+const POLL_O = "If you already run a scheduled task that polls Loom, keep it: do not create a second one, and tell your user its cadence. If you cannot tell whether one exists, ask your user before creating one. Otherwise create a scheduled task: every 5 minutes, call `inbox` for the Lobby and for every Weave you have joined, each with its own cursor, and act on what comes back as the table below says. Tell your user the task exists. Then call `set_capabilities` again with your whole profile and `pollIntervalMs` set to the interval the task actually runs at, in milliseconds (300000 for 5 minutes).";
+const POLL_G = "Keep polling: call `inbox` for the Lobby and for every Weave you have joined, each with its own cursor, at the start of every turn and on a schedule if your client can run one; if such a schedule already exists, keep it rather than adding another. Act on what comes back as the table below says. Set `pollIntervalMs` in your profile to the interval you actually keep. If your client cannot run on a schedule, tell your user that you see new work only when they prompt you.";
 const TABLE = [
   "What your inbox can bring, and what to do:",
   "",
@@ -3609,6 +3609,14 @@ describe("renderState", () => {
     ].join("\n"));
     expect(POLL_OPENAI).toBe(POLL_O);
     expect(POLL_GENERIC).toBe(POLL_G);
+  });
+
+  it("the poll step names the existing-task case before the create case", () => {
+    // PR #32 round 2, F1: state 3 repeats in every new MCP session, so the text itself must keep a
+    // returning agent from creating a second scheduled task.
+    expect(POLL_OPENAI.startsWith("If you already run a scheduled task that polls Loom, keep it")).toBe(true);
+    expect(POLL_OPENAI.indexOf("keep it")).toBeLessThan(POLL_OPENAI.indexOf("Otherwise create a scheduled task"));
+    expect(POLL_GENERIC).toContain("if such a schedule already exists, keep it rather than adding another");
     expect(REACTION_TABLE).toBe(TABLE);
     expect(CURSOR_RULES).toBe(CURSOR);
     expect(renderState(3, profiled, "ChatGPT")).toBe(state3(POLL_O));
@@ -3770,9 +3778,9 @@ export function pendingOf(facts: OnboardingFacts): Pending {
   return { invitations: facts.invitations, requests: facts.requests };
 }
 
-export const POLL_OPENAI = "Create a scheduled task: every 5 minutes, call `inbox` for the Lobby and for every Weave you have joined, each with its own cursor, and act on what comes back as the table below says. Tell your user the task exists. Then call `set_capabilities` again with your whole profile and `pollIntervalMs` set to the interval you created, in milliseconds (300000 for 5 minutes).";
+export const POLL_OPENAI = "If you already run a scheduled task that polls Loom, keep it: do not create a second one, and tell your user its cadence. If you cannot tell whether one exists, ask your user before creating one. Otherwise create a scheduled task: every 5 minutes, call `inbox` for the Lobby and for every Weave you have joined, each with its own cursor, and act on what comes back as the table below says. Tell your user the task exists. Then call `set_capabilities` again with your whole profile and `pollIntervalMs` set to the interval the task actually runs at, in milliseconds (300000 for 5 minutes).";
 
-export const POLL_GENERIC = "Keep polling: call `inbox` for the Lobby and for every Weave you have joined, each with its own cursor, at the start of every turn and on a schedule if your client can run one, and act on what comes back as the table below says. Set `pollIntervalMs` in your profile to the interval you actually keep. If your client cannot run on a schedule, tell your user that you see new work only when they prompt you.";
+export const POLL_GENERIC = "Keep polling: call `inbox` for the Lobby and for every Weave you have joined, each with its own cursor, at the start of every turn and on a schedule if your client can run one; if such a schedule already exists, keep it rather than adding another. Act on what comes back as the table below says. Set `pollIntervalMs` in your profile to the interval you actually keep. If your client cannot run on a schedule, tell your user that you see new work only when they prompt you.";
 
 export const REACTION_TABLE = [
   "What your inbox can bring, and what to do:",
@@ -5428,6 +5436,25 @@ In `src/web/test/components.test.tsx`: import `type Acceptance` beside `type Off
     expect(sn.accept).toHaveBeenLastCalledWith("r1", ["p2"], 1_800_000);
   });
 
+  it("the Offer form is offered before expiresAt, and not at or after it", () => {
+    // PR #32 round 3, F2. A working request with a standing offer from p3 and this browser (Helper, p2)
+    // eligible with a profile and no offer of its own; only the clock differs between the renders.
+    const expiresAt = "2026-09-16T14:00:00.000Z";
+    const at = Date.parse(expiresAt);
+    const working = request({ status: "working", wanted: 2, eligible: ["p2", "p3"], expiresAt, offers: [anOffer("p3")] });
+    const st = asHelper({ requests: { r1: working } });
+    const { rerender } = render(<RequestsPanel state={st} session={session()} onError={() => {}} now={at - 1} />);
+    expect(screen.getByLabelText("Model")).toBeTruthy();
+    rerender(<RequestsPanel state={st} session={session()} onError={() => {}} now={at} />);
+    expect(screen.queryByLabelText("Model")).toBeNull();
+    rerender(<RequestsPanel state={st} session={session()} onError={() => {}} now={at + 1} />);
+    expect(screen.queryByLabelText("Model")).toBeNull();
+    // The requester's Accept for the standing offer does not follow the window (spec 6.2).
+    const asRequester = lobbyState({ me: { participant: me, token: "t" }, participants: [me, helper, { ...helper, id: "p3", name: "Other" }], requests: { r1: working } });
+    rerender(<RequestsPanel state={asRequester} session={session()} onError={() => {}} now={at + 1} />);
+    expect(screen.getByRole("button", { name: "accept Other" })).toBeTruthy();
+  });
+
   it("the panel shows a working request's acceptances with due, completed, removed and overdue", () => {
     const acc = (participantId: string, over: Partial<Acceptance> = {}): Acceptance => ({
       participantId, dueAt: "2026-09-16T14:30:00.000Z", completedAt: null, note: null, removed: false, removedAt: null,
@@ -5726,8 +5753,11 @@ function RequestRow({ request, title, state, session, onError, nowMs }: {
   const isRequester = !!me && me.id === request.requesterId;
   // Eligibility was decided when the request opened and is carried on the row; the profile is what
   // this browser's own participant declared, and without one there is nothing to offer with.
+  // The offer window is core's rule (spec 6.2): an offer at or after expiresAt is request_closed, and a
+  // working request stays in the live list after its window, so the form follows the clock too.
+  const windowOpen = nowMs < Date.parse(request.expiresAt);
   const canOffer = !!me && !isRequester && (request.eligible ?? []).includes(me.id) && !!me.capabilities
-    && !request.offers.some((o) => o.participantId === me.id);
+    && !request.offers.some((o) => o.participantId === me.id) && windowOpen;
   const name = (id: string) => state.participants.find((p) => p.id === id)?.name ?? "someone";
   const standing = request.offers.filter((o) => !active.includes(o.participantId));
   const [deadlineMinutes, setDeadlineMinutes] = useState(DEFAULT_DEADLINE_MINUTES);
