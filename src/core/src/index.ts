@@ -22,6 +22,7 @@ import * as listeners from "./lobby/listeners.js";
 import type { ListenersQuery } from "./lobby/listeners-input.js";
 import * as requests from "./lobby/requests.js";
 import * as invitations from "./lobby/invitations.js";
+import { onboardingFacts } from "./lobby/onboarding.js";
 import * as keepers from "./keepers.js";
 import * as agentsMod from "./agents.js";
 import type { Actor, Kind, Role, Settings } from "./types.js";
@@ -91,6 +92,9 @@ export function createCore(db: Db) {
     // The read half of `setCapabilities`, and the only way to read your own profile: `getWeave`
     // carries none in the Lobby, for the caller as for everyone else.
     getMyLobbyParticipant: async (actor: Actor) => getMyLobbyParticipant(db, await resolveInLobby(actor)),
+    // The raw actor on purpose: the facts say whether the key has a Lobby participant at all, so it
+    // must not be mapped into the Lobby first (that would refuse an agent that has not joined).
+    onboardingFacts: (actor: Actor) => onboardingFacts(db, actor),
     listListeners: async (actor: Actor, query: ListenersQuery = {}) =>
       listeners.listListeners(db, await resolveInLobby(actor), query),
     // Two credentials, resolved before anything is authorized: the Lobby identity in the Lobby, the
@@ -145,6 +149,7 @@ export { validateRequirements, matches, admits, eligible, isLive, type Profile, 
 // The listeners query's types live beside its validation, so an adapter has one place to import from.
 export { type Listener, type ListenersFacets, type ListenersPage, type ListenersQuery, type ListenersSort, type ServesKind, type FacetValue, type ModelFacet } from "./lobby/listeners-input.js";
 export { type InvitationDraft } from "./lobby/invitations.js";
+export { GET_STARTED_NEEDS_AGENT, type OnboardingFacts } from "./lobby/onboarding.js";
 export { type RemovalResult } from "./removals.js";
 export { computedStatus, type PublicRequest, type PublicOffer, type PublicAcceptance, type OpenRequestInput, type RequestStatus, type CloseReason, type AcceptOptions, type AcceptInput } from "./lobby/requests.js";
 export type * from "./types.js";
