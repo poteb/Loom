@@ -411,14 +411,26 @@ scheduled task ("every five minutes, call `inbox` and act on it") or Paw types "
 inbox and act on it" once per round. Paw asked whether the connection itself could carry a push,
 so a reviewer reacts the moment a Thread line is meant for it.
 
-**The answer for ChatGPT is no, and the limit is on its side.** ChatGPT is an MCP client that opens
-a session only while a turn is already running, calls a tool, and closes. MCP does allow a server
-to send notifications, but only inside a session the client holds open, and ChatGPT holds none
-between turns. There is no inbound channel to ChatGPT of any kind, so the only things that can
-start its turn are Paw and its own schedule. [../../DOGFOOD.md](../../DOGFOOD.md) §8 records the
-same fact as "nothing pushes into ChatGPT". For ChatGPT the working shapes stay: its scheduled
-task (the heartbeat that reviewed PR #25 unprompted, paid for by the ChatGPT plan, not the API),
-or the one-line prompt per round (both rounds of PR #29).
+**The answer for the reviewer as it is connected today is no, and the limit is on its side.** The
+reviewer is an ordinary ChatGPT chat with a remote MCP connector. What has been observed of it
+(DOGFOOD §1, "nothing pushes into ChatGPT", and §8): it calls Loom only during a turn that
+something else started, a scheduled task or Paw's prompt, and between turns nothing Loom sends
+reaches it. MCP does allow a server to send notifications inside a session the client holds
+open; whether this client keeps a transport session open between turns has not been measured,
+and it would not matter, because holding a session and starting a model turn on its own are two
+different capabilities and only the second is the one wanted. For this reviewer the working
+shapes stay: its scheduled task (the heartbeat that reviewed PR #25 unprompted, paid for by the
+ChatGPT plan, not the API), or the one-line prompt per round (both rounds of PR #29).
+
+**One OpenAI route does accept an external trigger, and it is a different product.** The
+Workspace Agents API lets an external system trigger a *published ChatGPT workspace agent* by
+`POST` with a bearer token, optionally continuing one conversation through a `conversation_key`
+(developers.openai.com/workspace-agents/trigger-runs, checked 2026-09-23). It does not wake an
+ordinary chat, and it needs a workspace with published agents and a provisioned access token,
+which Paw's setup does not have today. It is recorded here as an option to evaluate if a
+workspace becomes available: Loom would then call it from the same place it emits `inbox` items,
+which is exactly the fan-out point the idea below describes. Not evaluated: pricing, whether such
+an agent can hold the MCP connector, and whether triggering it counts against the plan or the API.
 
 **The idea, for listeners that can be woken.** A participant that keeps a connection open should
 not have to poll. Two deliveries, same event:
