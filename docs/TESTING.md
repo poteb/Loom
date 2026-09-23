@@ -689,4 +689,21 @@ step ending on a PASS or a recorded finding (the listener-onboarding spec §9.8)
    invitation revoked (`get_started` no longer lists it), and the request is then cancelled. Paw
    resumes the task.
 
-Not run yet: its dated last-run paragraph comes from the run (listener-onboarding plan, Task 18).
+*Last run: 2026-09-23, on the live instance at `5c5ebf3`, right after its deploy (`live-update`
+applied `0005_yellow_marvel_boy` and both health checks said `ok`): **7 of 7 steps pass, one
+finding**.* Step 1: both agents showed `owner:paw` after `set-owner` (both keys predate owners).
+Step 2: from the kick-off line alone ChatGPT joined the Lobby, registered its capabilities, said
+nothing was waiting and showed its existing task "Check Loom Lobby inbox, every 5 minutes", kept
+rather than duplicated. **Finding F1**, step 3: the client name was `"codex-mcp-client"
+0.155.0-alpha.16`, which contains neither `chatgpt` nor `openai`, so ChatGPT saw the generic poll
+wording (and kept its task anyway); fixed on `feat/client-name-codex` by also matching `codex`.
+Step 4: owner `paw` filled from the key, `pollIntervalMs` 300000, runtime `codex`, seven models
+including `gpt-5.6-sol`. Step 5: the request opened 19:58:45Z with ChatGPT eligible. Step 6: offer
+20:02:50Z (about four minutes later, on ChatGPT's own poll), accept 20:03:26Z; ChatGPT redeemed,
+posted its closing message and called `complete` at 20:08:23Z, and the requester's inbox held
+`request.completed` then `request.closed`. Step 7: the second request opened 20:08:59Z, offer
+20:13:19Z, accepted with `--deadline 2m` (due 20:15:18Z); `request.overdue` came at 20:16:07Z,
+**49 s after the due time**; the removal answered `acceptanceRemoved: true, targetRemoved: false`,
+since ChatGPT had not redeemed that invitation; the request was then cancelled. No pause was
+needed: the two-minute deadline is shorter than the five-minute poll. **Cadence**, from
+`lastSeenAt` and the offers (19:57:21, 20:02:50, about 20:08, 20:12:51): about every five minutes.
