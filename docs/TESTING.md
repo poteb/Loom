@@ -181,24 +181,27 @@ guarded by `typeof document !== "undefined"` because the package runs Vitest wit
 
 ## Current totals
 
-As of **listener onboarding** on `feat/listener-onboarding` (measured at code commit `0b9ae49`, the
-branch's last code commit; the commit after it changes only documents and deletes one PowerShell
-helper, which no vitest suite reads): **1978 tests in 73 files**: core 655 in 29, web 760 in 14,
-server 225 in 10, claude-channel 145 in 9, cli 79 in 5, client 47 in 4, mcp-tools 67 in 2, from
-`pnpm -r build`, `pnpm -r typecheck` (clean) and `pnpm --workspace-concurrency=1 -r test`, every
-suite passing. The baseline recorded by the plan's Task 0 was the live instance's 1820 in 68 (core
-575/25, web 749/14, server 208/10, claude-channel 139/9, cli 70/5, client 45/4, mcp-tools 34/1), so
-the slice added **158 tests and five files**. **All seven packages moved, and that is the
-measurement**: core by four files and 80 tests (`liveness.test.ts`, `lobby-overdue.test.ts`,
-`thread-removal.test.ts`, `lobby-onboarding.test.ts`, and new cases in existing files), mcp-tools by
-one file and 33 tests (`onboarding.test.ts`, and the four new tools in `tools.test.ts`), and server
-+17, web +11, cli +9, claude-channel +6 and client +2, each inside files that already existed. That
-matches the slice's shape: a rule change in core, new MCP tools and texts, and every adapter
-following the new request lifecycle.
+As of **listener onboarding** on `feat/listener-onboarding` (measured at `6c52788`, the code commit
+of the fix wave after the whole-branch review; the commits after it change only documents):
+**1993 tests in 73 files**: core 659 in 29, web 761 in 14, server 229 in 10, claude-channel 145 in
+9, cli 80 in 5, client 47 in 4, mcp-tools 72 in 2, from `pnpm -r build`, `pnpm -r typecheck`
+(clean) and `pnpm --workspace-concurrency=1 -r test`, every suite passing. The baseline recorded by
+the plan's Task 0 was the live instance's 1820 in 68 (core 575/25, web 749/14, server 208/10,
+claude-channel 139/9, cli 70/5, client 45/4, mcp-tools 34/1), so the slice added **173 tests and
+five files**. **All seven packages moved, and that is the measurement**: core by four files and 84
+tests (`liveness.test.ts`, `lobby-overdue.test.ts`, `thread-removal.test.ts`,
+`lobby-onboarding.test.ts`, and new cases in existing files), mcp-tools by one file and 38 tests
+(`onboarding.test.ts`, and the four new tools and the pinned descriptions in `tools.test.ts`), and
+server +21, web +12, cli +10, claude-channel +6 and client +2, each inside files that already
+existed. That matches the slice's shape: a rule change in core, new MCP tools and texts, and every
+adapter following the new request lifecycle. Of those, 15 came from the fix wave (core +4, mcp-tools
++5, server +4, web +1, cli +1): the export's and the web's renderings of the new events, the CLI's
+counts, the 10 000 ms stamp boundary, `complete` by a Lobby keeper, a removal after a re-accept,
+the log line's cleaning, and the five tool descriptions.
 
 The shell contract tests are **not** in that figure and are their own run: `pnpm test:deploy` was
 **28 cases, 27 passed, 0 failed, 1 skipped** on Windows at the live instance (`65e684d`), exit 0,
-and this slice changed nothing under `deploy/test/`. It is a `bash` runner rather than a `vitest`
+and this slice changed only one comment line under `deploy/test/` (in `run.sh`). It is a `bash` runner rather than a `vitest`
 suite, so its cases are not tests in the sense the table above counts; see §"The shell contract
 tests" for the skip and how to make it fail rather than skip.
 
