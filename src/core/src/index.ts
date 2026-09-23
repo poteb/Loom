@@ -99,8 +99,10 @@ export function createCore(db: Db) {
         await resolveInWeave(db, targetActor ?? actor, input.targetWeaveId), input),
     offer: async (actor: Actor, requestId: string, input: { model?: string; effort?: string; note?: string }) =>
       requests.offer(db, bus, await resolveInLobby(actor), requestId, input),
-    acceptRequest: async (actor: Actor, requestId: string, participantIds: string[]) =>
-      requests.accept(db, bus, await resolveInLobby(actor), requestId, participantIds),
+    acceptRequest: async (actor: Actor, requestId: string, participantIds: string[], deadlineMs?: unknown) =>
+      requests.accept(db, bus, await resolveInLobby(actor), requestId, participantIds, { deadlineMs }),
+    completeRequest: async (actor: Actor, requestId: string, note?: string) =>
+      requests.complete(db, bus, await resolveInLobby(actor), requestId, { note }),
     cancelRequest: async (actor: Actor, requestId: string) =>
       requests.cancelRequest(db, bus, await resolveInLobby(actor), requestId),
     // Resolved against the **target** Weave, not the Lobby: the authority an invitation needs is
@@ -140,5 +142,5 @@ export { validateRequirements, matches, admits, eligible, isLive, type Profile, 
 // The listeners query's types live beside its validation, so an adapter has one place to import from.
 export { type Listener, type ListenersFacets, type ListenersPage, type ListenersQuery, type ListenersSort, type ServesKind, type FacetValue, type ModelFacet } from "./lobby/listeners-input.js";
 export { type InvitationDraft } from "./lobby/invitations.js";
-export { computedStatus, type PublicRequest, type PublicOffer, type OpenRequestInput, type RequestStatus, type CloseReason, type AcceptOptions } from "./lobby/requests.js";
+export { computedStatus, type PublicRequest, type PublicOffer, type PublicAcceptance, type OpenRequestInput, type RequestStatus, type CloseReason, type AcceptOptions, type AcceptInput } from "./lobby/requests.js";
 export type * from "./types.js";

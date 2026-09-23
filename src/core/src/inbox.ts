@@ -42,6 +42,8 @@ export async function inbox(db: Db, actor: Actor, weaveId: string, opts: { since
         sql`(${events.payload}->>'to' = ${me.id} OR ${events.payload}->'to' ? ${me.id})`),
       and(eq(events.type, "request.accepted"), sql`${events.payload}->'participantIds' ? ${me.id}`),
       and(eq(events.type, "weave.invited"), sql`${events.payload}->>'participantId' = ${me.id}`),
+      // Work an accepted agent finished, addressed to the requester the way request.offered is.
+      and(eq(events.type, "request.completed"), sql`${events.payload}->>'to' = ${me.id}`),
     ),
   ];
   if (opts.since !== undefined) conds.push(gt(events.seq, opts.since));

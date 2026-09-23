@@ -25,7 +25,8 @@ export type InvitationDraft = {
 /**
  * Writes the invitation row and returns the `weave.invited` event that announces it. `accept` and
  * `inviteToWeave` both go through here, so the payload has one source — and so the rule that it
- * never carries the target Weave's secret is stated in one place.
+ * never carries the target Weave's secret is stated in one place. The payload carries the request id
+ * (null for a direct invitation), so an accepted agent knows which request to complete.
  */
 export async function invitationRowAndEvent(tx: Tx, draft: InvitationDraft): Promise<NewEvent> {
   await tx.insert(weaveInvitations).values({
@@ -37,7 +38,7 @@ export async function invitationRowAndEvent(tx: Tx, draft: InvitationDraft): Pro
   return {
     threadId: draft.threadId, type: "weave.invited", actor: draft.createdBy,
     payload: { invitationId: draft.invitationId, participantId: draft.inviteeParticipantId,
-      targetWeaveTitle: draft.targetWeaveTitle },
+      targetWeaveTitle: draft.targetWeaveTitle, requestId: draft.requestId },
   };
 }
 

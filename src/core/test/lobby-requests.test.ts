@@ -13,7 +13,7 @@ import { setRole } from "../src/participants.js";
 import { ensureLobby, joinLobby } from "../src/lobby/lobby.js";
 import { setCapabilities } from "../src/lobby/profile.js";
 import {
-  accept, cancelRequest, getRequest, listRequests, offer, openRequest, sweepRequests,
+  accept, cancelRequest, complete, getRequest, listRequests, offer, openRequest, sweepRequests,
   type OpenRequestInput,
 } from "../src/lobby/requests.js";
 import { createCore } from "../src/index.js";
@@ -27,6 +27,12 @@ beforeEach(async () => { db = await freshDb(); bus = new EventBus(); });
 const MODEL = { model: "gpt-5.6-sol", effort: "high" };
 const REQUIREMENTS = { models: [MODEL] };
 const TARGET_TITLE = "Loom session 2026-09-16";
+/** Every existing acceptance in this file gives the agents an hour. */
+const DEADLINE = { deadlineMs: 3_600_000 };
+/** Sets a removal directly: what these cases test is how accept and complete read `removed_at`. */
+const markRemoved = (requestId: string, participantId: string) =>
+  db.update(requestOffers).set({ removedAt: new Date() })
+    .where(and(eq(requestOffers.requestId, requestId), eq(requestOffers.participantId, participantId)));
 
 /**
  * The success scenario of the spec, as rows: a Lobby with four listeners (the requester Claude with
@@ -327,60 +333,37 @@ async function twoOffers(f: Fixture) {
 }
 
 describe("accept", () => {
-  it("accepts one of two wanted and leaves the request open", async () => {
+  it("accepts one of two wanted and moves the request to working", async () => {
     const f = await setup();
     const req = await twoOffers(f);
-    const { request, invitationIds } = await accept(db, bus, f.claude.actor, req.id, [f.pawbot.id]);
+    const { request, invitationIds } = await accept(db, bus, f.claude.actor, req.id, [f.pawbot.id], DEADLINE);
 
-    expect(request.status).toBe("open");
+    expect(request.status).toBe("working");
     expect(invitationIds).toHaveLength(1);
-    expect((await offersOf(req.id)).filter((o) => o.accepted).map((o) => o.participantId)).toEqual([f.pawbot.id]);
+    const accepted = (await offersOf(req.id)).filter((o) => o.accepted);
+    expect(accepted.map((o) => o.participantId)).toEqual([f.pawbot.id]);
     const [inv] = await invitationsOf(req.id);
     expect(inv!).toMatchObject({
       targetWeaveId: f.target.weave.id, targetThreadId: f.prThread.id,
-      inviteeParticipantId: f.pawbot.id, requestId: req.id, redeemedAt: null,
+      inviteeParticipantId: f.pawbot.id, requestId: req.id, redeemedAt: null, revokedAt: null,
     });
 
     const evs = await threadEvents(f, req.threadId);
     expect(evs.slice(-2).map((e) => e.type)).toEqual(["request.accepted", "weave.invited"]);
-    expect(evs.at(-2)!.payload).toEqual({ requestId: req.id, requesterId: f.claude.id, participantIds: [f.pawbot.id], targetWeaveTitle: TARGET_TITLE });
-    expect(evs.at(-1)!.payload).toEqual({ invitationId: inv!.id, participantId: f.pawbot.id, targetWeaveTitle: TARGET_TITLE });
-  });
-
-  it("closes the request as filled in the same transaction as the last acceptance", async () => {
-    const f = await setup();
-    const req = await twoOffers(f);
-    await accept(db, bus, f.claude.actor, req.id, [f.pawbot.id]);
-    const before = (await threadEvents(f, req.threadId)).length;
-    const { request } = await accept(db, bus, f.claude.actor, req.id, [f.shared.id]);
-
-    expect(request.status).toBe("filled");
-    const row = await rowOf(req.id);
-    expect(row.status).toBe("filled");
-    expect(row.closedAt).not.toBeNull();
-    const [thread] = await db.select().from(threads).where(eq(threads.id, req.threadId));
-    expect(thread!.closedAt).not.toBeNull();
-
-    const evs = await threadEvents(f, req.threadId);
-    expect(evs.slice(before).map((e) => e.type)).toEqual(["request.accepted", "weave.invited", "request.closed", "thread.closed"]);
-    // one uninterrupted run of seqs: the acceptance and the closure committed together
-    expect(evs.slice(before).map((e) => e.seq)).toEqual([0, 1, 2, 3].map((i) => evs[before]!.seq + i));
-    const closed = evs.at(-2)!;
-    expect(closed.payload).toEqual({ requestId: req.id, requesterId: f.claude.id, to: [f.claude.id], reason: "filled", accepted: [f.pawbot.id, f.shared.id] });
-    expect(evs.at(-1)!.payload).toEqual({ threadId: req.threadId, requestId: req.id });
-    expect(row.lastEventSeq).toBe(closed.seq);
+    expect(evs.at(-2)!.payload).toEqual({ requestId: req.id, requesterId: f.claude.id, participantIds: [f.pawbot.id], targetWeaveTitle: TARGET_TITLE, dueAt: accepted[0]!.dueAt!.toISOString() });
+    expect(evs.at(-1)!.payload).toEqual({ invitationId: inv!.id, participantId: f.pawbot.id, targetWeaveTitle: TARGET_TITLE, requestId: req.id });
   });
 
   it("refuses an accept by someone who is neither the requester nor a Lobby keeper", async () => {
     const f = await setup();
     const req = await twoOffers(f);
-    await expect(accept(db, bus, f.pawbot.actor, req.id, [f.shared.id])).rejects.toMatchObject({ code: "forbidden" });
+    await expect(accept(db, bus, f.pawbot.actor, req.id, [f.shared.id], DEADLINE)).rejects.toMatchObject({ code: "forbidden" });
   });
 
   it("refuses a participant that has not offered", async () => {
     const f = await setup();
     const req = await twoOffers(f);
-    await expect(accept(db, bus, f.claude.actor, req.id, [f.bobbot.id])).rejects.toMatchObject({ code: "validation" });
+    await expect(accept(db, bus, f.claude.actor, req.id, [f.bobbot.id], DEADLINE)).rejects.toMatchObject({ code: "validation" });
   });
 
   it("refuses to accept more than wanted", async () => {
@@ -388,14 +371,14 @@ describe("accept", () => {
     const req = await openRequest(db, bus, f.claude.actor, f.targetKeeper, inputFor(f, { wanted: 1 }));
     await offer(db, bus, f.pawbot.actor, req.id, {});
     await offer(db, bus, f.shared.actor, req.id, {});
-    await expect(accept(db, bus, f.claude.actor, req.id, [f.pawbot.id, f.shared.id])).rejects.toMatchObject({ code: "validation" });
+    await expect(accept(db, bus, f.claude.actor, req.id, [f.pawbot.id, f.shared.id], DEADLINE)).rejects.toMatchObject({ code: "validation" });
   });
 
   it("refuses once the requester has lost keeper standing in the target Weave", async () => {
     const f = await setup();
     const req = await twoOffers(f);
     const demote = () => setRole(db, bus, f.paw, f.target.weave.id, f.targetJoin.participant.id, "member").then(() => undefined);
-    await expect(accept(db, bus, f.claude.actor, req.id, [f.pawbot.id], { beforeLock: demote }))
+    await expect(accept(db, bus, f.claude.actor, req.id, [f.pawbot.id], DEADLINE, { beforeLock: demote }))
       .rejects.toMatchObject({ code: "forbidden" });
     expect((await offersOf(req.id)).filter((o) => o.accepted)).toEqual([]);
     expect(await invitationsOf(req.id)).toEqual([]);
@@ -405,7 +388,7 @@ describe("accept", () => {
     const f = await setup();
     const req = await twoOffers(f);
     const archive = () => archiveWeave(db, bus, f.paw, f.target.weave.id);
-    await expect(accept(db, bus, f.claude.actor, req.id, [f.pawbot.id], { beforeLock: archive }))
+    await expect(accept(db, bus, f.claude.actor, req.id, [f.pawbot.id], DEADLINE, { beforeLock: archive }))
       .rejects.toMatchObject({ code: "weave_archived" });
     expect(await invitationsOf(req.id)).toEqual([]);
   });
@@ -414,7 +397,7 @@ describe("accept", () => {
     const f = await setup();
     const req = await twoOffers(f);
     const close = () => closeThread(db, bus, f.paw, f.prThread.id);
-    await expect(accept(db, bus, f.claude.actor, req.id, [f.pawbot.id], { beforeLock: close }))
+    await expect(accept(db, bus, f.claude.actor, req.id, [f.pawbot.id], DEADLINE, { beforeLock: close }))
       .rejects.toMatchObject({ code: "thread_closed" });
     expect(await invitationsOf(req.id)).toEqual([]);
   });
@@ -425,7 +408,7 @@ describe("accept", () => {
     await setRole(db, bus, f.instanceKeeper, f.lobbyId, f.pawbot.id, "keeper");
     const lobbyKeeper = await resolveCredential(db, f.pawbot.token);
     await setRole(db, bus, f.paw, f.target.weave.id, f.targetJoin.participant.id, "member");
-    await expect(accept(db, bus, lobbyKeeper, req.id, [f.shared.id])).rejects.toMatchObject({ code: "forbidden" });
+    await expect(accept(db, bus, lobbyKeeper, req.id, [f.shared.id], DEADLINE)).rejects.toMatchObject({ code: "forbidden" });
     expect(await invitationsOf(req.id)).toEqual([]);
   });
 
@@ -433,7 +416,7 @@ describe("accept", () => {
     const f = await setup();
     const req = await twoOffers(f);
     const before = (await threadEvents(f, req.threadId)).length;
-    await expect(accept(db, bus, f.claude.actor, req.id, [f.pawbot.id], { afterMutation: async () => { throw new Error("boom"); } }))
+    await expect(accept(db, bus, f.claude.actor, req.id, [f.pawbot.id], DEADLINE, { afterMutation: async () => { throw new Error("boom"); } }))
       .rejects.toThrow("boom");
     expect((await offersOf(req.id)).filter((o) => o.accepted)).toEqual([]);
     expect(await invitationsOf(req.id)).toEqual([]);
@@ -446,7 +429,7 @@ describe("accept", () => {
     const req = await twoOffers(f);
     const held = await holdWeaveRow(f.target.weave.id);
 
-    const accepting = accept(db, bus, f.claude.actor, req.id, [f.pawbot.id]).then(() => "done" as const);
+    const accepting = accept(db, bus, f.claude.actor, req.id, [f.pawbot.id], DEADLINE).then(() => "done" as const);
     expect(await settledWithin(accepting, 200)).toBe("waiting");
 
     await held.release();
@@ -459,7 +442,7 @@ describe("accept", () => {
     const req = await twoOffers(f);
     const held = await holdWeaveRow(f.lobbyId);
 
-    const accepting = accept(db, bus, f.claude.actor, req.id, [f.pawbot.id]).then(() => "done" as const);
+    const accepting = accept(db, bus, f.claude.actor, req.id, [f.pawbot.id], DEADLINE).then(() => "done" as const);
     let targetFree: boolean;
     try {
       expect(await settledWithin(accepting, 200)).toBe("waiting");
@@ -477,16 +460,23 @@ describe("accept", () => {
 });
 
 describe("cancelRequest", () => {
-  it("addresses the closure to the requester and the offerers it did not accept", async () => {
+  it("cancel on a working request addresses the requester, the unaccepted offerers and the active uncompleted acceptances", async () => {
     const f = await setup();
     const req = await twoOffers(f);
-    await accept(db, bus, f.claude.actor, req.id, [f.pawbot.id]);
+    await accept(db, bus, f.claude.actor, req.id, [f.pawbot.id], DEADLINE);
     const cancelled = await cancelRequest(db, bus, f.claude.actor, req.id);
-
     expect(cancelled.status).toBe("cancelled");
     const evs = await threadEvents(f, req.threadId);
     expect(evs.slice(-2).map((e) => e.type)).toEqual(["request.closed", "thread.closed"]);
-    expect(evs.at(-2)!.payload).toEqual({ requestId: req.id, requesterId: f.claude.id, to: [f.claude.id, f.shared.id], reason: "cancelled", accepted: [f.pawbot.id] });
+    expect(evs.at(-2)!.payload).toEqual({ requestId: req.id, requesterId: f.claude.id, to: [f.claude.id, f.shared.id, f.pawbot.id], reason: "cancelled", accepted: [f.pawbot.id] });
+
+    // An acceptance that has already completed is not at work any more, so it is not told.
+    const second = await twoOffers(f);
+    await accept(db, bus, f.claude.actor, second.id, [f.pawbot.id, f.shared.id], DEADLINE);
+    await complete(db, bus, f.pawbot.actor, second.id);
+    await cancelRequest(db, bus, f.claude.actor, second.id);
+    const closed = (await threadEvents(f, second.threadId)).find((e) => e.type === "request.closed")!;
+    expect(closed.payload.to).toEqual([f.claude.id, f.shared.id]);
   });
 
   it("lets a Lobby keeper cancel", async () => {
@@ -564,7 +554,7 @@ describe("a deadline crossed while waiting for the Weave lock", () => {
     const held = await holdWeaveRow(f.target.weave.id);
 
     await expiresIn(req.id, 400);
-    const accepting = codeOf(accept(db, bus, f.claude.actor, req.id, [f.pawbot.id]));
+    const accepting = codeOf(accept(db, bus, f.claude.actor, req.id, [f.pawbot.id], DEADLINE));
     expect(await settledWithin(accepting, 200)).toBe("waiting");
     await sleep(1200);                                   // the deadline passes while accept waits
     await held.release();
@@ -682,5 +672,244 @@ describe("reading requests", () => {
     expect((await listRequests(db, f.claude.actor, {})).map((r) => r.id)).toEqual([second.id, first.id]);
     expect((await listRequests(db, f.claude.actor, { limit: 1 })).map((r) => r.id)).toEqual([second.id]);
     await expect(listRequests(db, f.claude.actor, { limit: 0 })).rejects.toMatchObject({ code: "validation" });
+  });
+});
+
+describe("accept with a deadline", () => {
+  it("accept requires deadlineMs", async () => {
+    const f = await setup();
+    const req = await twoOffers(f);
+    await expect(accept(db, bus, f.claude.actor, req.id, [f.pawbot.id], {})).rejects.toMatchObject({ code: "validation", message: "deadlineMs is required" });
+    for (const deadlineMs of [59_999, 604_800_001, 1.5]) {
+      await expect(accept(db, bus, f.claude.actor, req.id, [f.pawbot.id], { deadlineMs }))
+        .rejects.toMatchObject({ code: "validation", message: "deadlineMs must be 60000-604800000" });
+    }
+    expect((await accept(db, bus, f.claude.actor, req.id, [f.pawbot.id], { deadlineMs: 60_000 })).request.status).toBe("working");
+    expect((await accept(db, bus, f.claude.actor, req.id, [f.shared.id], { deadlineMs: 604_800_000 })).request.status).toBe("working");
+  });
+
+  it("the first accept moves open to working and sets each dueAt from one clock read", async () => {
+    const f = await setup();
+    const req = await twoOffers(f);
+    // The host clock can step back by about a second (see the lock-wait describe below), so the
+    // window is widened by two on each side; one clock read is what the equal due times prove.
+    const before = Date.now() - 2_000;
+    const { request } = await accept(db, bus, f.claude.actor, req.id, [f.pawbot.id, f.shared.id], DEADLINE);
+    const after = Date.now() + 2_000;
+    expect(request.status).toBe("working");
+    expect((await rowOf(req.id)).status).toBe("working");
+    const dues = (await offersOf(req.id)).map((o) => o.dueAt!.getTime());
+    expect(new Set(dues).size).toBe(1);
+    expect(dues[0]!).toBeGreaterThanOrEqual(before + 3_600_000);
+    expect(dues[0]!).toBeLessThanOrEqual(after + 3_600_000);
+  });
+
+  it("request.accepted carries dueAt", async () => {
+    const f = await setup();
+    const req = await twoOffers(f);
+    await accept(db, bus, f.claude.actor, req.id, [f.pawbot.id], DEADLINE);
+    const accepted = (await threadEvents(f, req.threadId)).find((e) => e.type === "request.accepted")!;
+    const due = (await offersOf(req.id)).find((o) => o.participantId === f.pawbot.id)!.dueAt!;
+    expect(accepted.payload.dueAt).toBe(due.toISOString());
+  });
+
+  it("accept no longer closes a request that reaches wanted", async () => {
+    const f = await setup();
+    const req = await twoOffers(f);
+    await accept(db, bus, f.claude.actor, req.id, [f.pawbot.id], DEADLINE);
+    const { request } = await accept(db, bus, f.claude.actor, req.id, [f.shared.id], DEADLINE);
+    expect(request.status).toBe("working");
+    expect(request.closedAt).toBeNull();
+    const [thread] = await db.select().from(threads).where(eq(threads.id, req.threadId));
+    expect(thread!.closedAt).toBeNull();
+    expect((await threadEvents(f, req.threadId)).map((e) => e.type)).not.toContain("request.closed");
+  });
+
+  it("a working request never reads expired", async () => {
+    const f = await setup();
+    const req = await twoOffers(f);
+    await accept(db, bus, f.claude.actor, req.id, [f.pawbot.id], DEADLINE);
+    const later = new Date(Date.parse(req.expiresAt) + 60_000);
+    expect((await getRequest(db, f.claude.actor, req.id, later)).status).toBe("working");
+    expect(await sweepRequests(db, bus, later)).toBe(0);
+    expect((await rowOf(req.id)).status).toBe("working");
+  });
+
+  it("offer is accepted on a working request until expiresAt and refused after it with request_closed", async () => {
+    const f = await setup();
+    const req = await openRequest(db, bus, f.claude.actor, f.targetKeeper, inputFor(f, { wanted: 2 }));
+    await offer(db, bus, f.pawbot.actor, req.id, {});
+    await accept(db, bus, f.claude.actor, req.id, [f.pawbot.id], DEADLINE);
+    expect((await offer(db, bus, f.shared.actor, req.id, { note: "still in the window" })).participantId).toBe(f.shared.id);
+
+    const late = await openRequest(db, bus, f.claude.actor, f.targetKeeper, inputFor(f, { title: "Review PR 15", wanted: 2 }));
+    await offer(db, bus, f.pawbot.actor, late.id, {});
+    await accept(db, bus, f.claude.actor, late.id, [f.pawbot.id], DEADLINE);
+    await db.update(requestsTable).set({ expiresAt: new Date(Date.now() - 1_000) }).where(eq(requestsTable.id, late.id));
+    await expect(offer(db, bus, f.shared.actor, late.id, {})).rejects.toMatchObject({ code: "request_closed" });
+  });
+
+  it("a standing offer can be accepted on a working request after expiresAt", async () => {
+    const f = await setup();
+    const req = await twoOffers(f);
+    await accept(db, bus, f.claude.actor, req.id, [f.pawbot.id], DEADLINE);
+    await db.update(requestsTable).set({ expiresAt: new Date(Date.now() - 1_000) }).where(eq(requestsTable.id, req.id));
+    const { request } = await accept(db, bus, f.claude.actor, req.id, [f.shared.id], DEADLINE);
+    expect(request.acceptances.map((a) => a.participantId)).toEqual([f.pawbot.id, f.shared.id]);
+  });
+
+  it("removed acceptances do not count toward wanted", async () => {
+    const f = await setup();
+    const req = await openRequest(db, bus, f.claude.actor, f.targetKeeper, inputFor(f, { wanted: 1 }));
+    await offer(db, bus, f.pawbot.actor, req.id, {});
+    await offer(db, bus, f.shared.actor, req.id, {});
+    await accept(db, bus, f.claude.actor, req.id, [f.pawbot.id], DEADLINE);
+    await expect(accept(db, bus, f.claude.actor, req.id, [f.shared.id], DEADLINE)).rejects.toMatchObject({ code: "validation", message: "This request wants at most 1" });
+    await markRemoved(req.id, f.pawbot.id);
+    const { request } = await accept(db, bus, f.claude.actor, req.id, [f.shared.id], DEADLINE);
+    expect(request.acceptances.filter((a) => !a.removed).map((a) => a.participantId)).toEqual([f.shared.id]);
+  });
+
+  it("accepting a removed offer revives it with a new dueAt and a new invitation", async () => {
+    const f = await setup();
+    const req = await twoOffers(f);
+    const first = await accept(db, bus, f.claude.actor, req.id, [f.pawbot.id], { deadlineMs: 60_000 });
+    const firstDue = (await offersOf(req.id)).find((o) => o.participantId === f.pawbot.id)!.dueAt!;
+    await db.update(requestOffers).set({ removedAt: new Date(), overdueAt: new Date(), completionNote: "stale" })
+      .where(and(eq(requestOffers.requestId, req.id), eq(requestOffers.participantId, f.pawbot.id)));
+    const again = await accept(db, bus, f.claude.actor, req.id, [f.pawbot.id], DEADLINE);
+    const revived = (await offersOf(req.id)).find((o) => o.participantId === f.pawbot.id)!;
+    expect(revived).toMatchObject({ accepted: true, removedAt: null, overdueAt: null, completedAt: null, completionNote: null });
+    expect(revived.dueAt!.getTime()).toBeGreaterThan(firstDue.getTime());
+    expect((await invitationsOf(req.id)).map((i) => i.id).sort()).toEqual([...first.invitationIds, ...again.invitationIds].sort());
+  });
+});
+
+describe("complete", () => {
+  /** A request wanting two, with both eligible listeners accepted. */
+  async function bothAccepted(f: Fixture) {
+    const req = await twoOffers(f);
+    await accept(db, bus, f.claude.actor, req.id, [f.pawbot.id, f.shared.id], DEADLINE);
+    return req;
+  }
+
+  it("complete by the accepted agent appends request.completed addressed to the requester", async () => {
+    const f = await setup();
+    const req = await bothAccepted(f);
+    const done = await complete(db, bus, f.pawbot.actor, req.id, { note: "  posted my review  " });
+    expect(done.status).toBe("working");
+    const ev = (await threadEvents(f, req.threadId)).at(-1)!;
+    expect(ev).toMatchObject({ type: "request.completed", actor: f.pawbot.id });
+    expect(ev.payload).toEqual({ requestId: req.id, participantId: f.pawbot.id, note: "posted my review", to: f.claude.id });
+    expect(done.acceptances.find((a) => a.participantId === f.pawbot.id)).toMatchObject({ note: "posted my review", completedAt: expect.any(String) });
+    expect((await rowOf(req.id)).lastEventSeq).toBe(ev.seq);
+  });
+
+  it("the last active completion closes the request as completed with thread.closed", async () => {
+    const f = await setup();
+    const req = await bothAccepted(f);
+    await complete(db, bus, f.pawbot.actor, req.id);
+    const before = (await threadEvents(f, req.threadId)).length;
+    const done = await complete(db, bus, f.shared.actor, req.id);
+    expect(done.status).toBe("completed");
+    const evs = (await threadEvents(f, req.threadId)).slice(before);
+    expect(evs.map((e) => e.type)).toEqual(["request.completed", "request.closed", "thread.closed"]);
+    expect(evs[1]!.payload).toEqual({ requestId: req.id, requesterId: f.claude.id, to: [f.claude.id], reason: "completed", accepted: [f.pawbot.id, f.shared.id] });
+    expect(evs[2]!.payload).toEqual({ threadId: req.threadId, requestId: req.id });
+    const [thread] = await db.select().from(threads).where(eq(threads.id, req.threadId));
+    expect(thread!.closedAt).not.toBeNull();
+    expect((await rowOf(req.id)).lastEventSeq).toBe(evs[1]!.seq);
+  });
+
+  it("complete is idempotent", async () => {
+    const f = await setup();
+    const req = await bothAccepted(f);
+    await complete(db, bus, f.pawbot.actor, req.id);
+    const whileWorking = (await threadEvents(f, req.threadId)).length;
+    expect((await complete(db, bus, f.pawbot.actor, req.id)).status).toBe("working");
+    expect((await threadEvents(f, req.threadId)).length).toBe(whileWorking);
+    await complete(db, bus, f.shared.actor, req.id);
+    const afterClose = (await threadEvents(f, req.threadId)).length;
+    expect((await complete(db, bus, f.pawbot.actor, req.id)).status).toBe("completed");
+    expect((await threadEvents(f, req.threadId)).length).toBe(afterClose);
+  });
+
+  it("complete by a non-accepted participant is forbidden, and by a removed one too", async () => {
+    const f = await setup();
+    const req = await twoOffers(f);
+    await accept(db, bus, f.claude.actor, req.id, [f.pawbot.id], DEADLINE);
+    await expect(complete(db, bus, f.shared.actor, req.id)).rejects.toMatchObject({ code: "forbidden", message: "You have no accepted offer on this request" });
+    await expect(complete(db, bus, f.claude.actor, req.id)).rejects.toMatchObject({ code: "forbidden", message: "You have no accepted offer on this request" });
+    await markRemoved(req.id, f.pawbot.id);
+    await expect(complete(db, bus, f.pawbot.actor, req.id)).rejects.toMatchObject({ code: "forbidden", message: "Your acceptance was removed from this request" });
+  });
+
+  it("complete on a cancelled request is request_closed", async () => {
+    const f = await setup();
+    const req = await twoOffers(f);
+    await accept(db, bus, f.claude.actor, req.id, [f.pawbot.id], DEADLINE);
+    await cancelRequest(db, bus, f.claude.actor, req.id);
+    await expect(complete(db, bus, f.pawbot.actor, req.id)).rejects.toMatchObject({ code: "request_closed" });
+  });
+
+  it("complete rejects a note over 1000 characters", async () => {
+    const f = await setup();
+    const req = await bothAccepted(f);
+    await expect(complete(db, bus, f.pawbot.actor, req.id, { note: "n".repeat(1001) })).rejects.toMatchObject({ code: "validation" });
+    const done = await complete(db, bus, f.pawbot.actor, req.id, { note: "n".repeat(1000) });
+    expect(done.acceptances.find((a) => a.participantId === f.pawbot.id)!.note).toHaveLength(1000);
+  });
+});
+
+describe("reading the lifecycle", () => {
+  it("list_requests filters working and completed, and still lists filled", async () => {
+    const f = await setup();
+    const working = await twoOffers(f);
+    await accept(db, bus, f.claude.actor, working.id, [f.pawbot.id], DEADLINE);
+    const done = await openRequest(db, bus, f.claude.actor, f.targetKeeper, inputFor(f, { title: "Review PR 15" }));
+    await offer(db, bus, f.pawbot.actor, done.id, {});
+    await accept(db, bus, f.claude.actor, done.id, [f.pawbot.id], DEADLINE);
+    await complete(db, bus, f.pawbot.actor, done.id);
+    // `filled` is legacy: nothing writes it any more, so a row from before this slice is made by hand.
+    const legacy = await openRequest(db, bus, f.claude.actor, f.targetKeeper, inputFor(f, { title: "Review PR 16" }));
+    await db.update(requestsTable).set({ status: "filled", closedAt: new Date() }).where(eq(requestsTable.id, legacy.id));
+    expect((await listRequests(db, f.claude.actor, { status: "working" })).map((r) => r.id)).toEqual([working.id]);
+    expect((await listRequests(db, f.claude.actor, { status: "completed" })).map((r) => r.id)).toEqual([done.id]);
+    expect((await listRequests(db, f.claude.actor, { status: "filled" })).map((r) => r.id)).toEqual([legacy.id]);
+  });
+
+  it("an unknown status is refused with a message naming all six", async () => {
+    const f = await setup();
+    await expect(listRequests(db, f.claude.actor, { status: "done" as never }))
+      .rejects.toMatchObject({ code: "validation", message: "status must be open, working, completed, expired, cancelled or filled" });
+  });
+
+  it("getRequest returns acceptances with dueAt, completion, removal, computed overdue and lastSeenAt", async () => {
+    const f = await setup();
+    const req = await twoOffers(f);
+    await accept(db, bus, f.claude.actor, req.id, [f.pawbot.id, f.shared.id], DEADLINE);
+    await complete(db, bus, f.pawbot.actor, req.id, { note: "done" });
+    const seen = new Date("2026-09-23T09:00:00.000Z");
+    await db.update(participants).set({ lastSeenAt: seen }).where(eq(participants.id, f.shared.id));
+    const due = (await offersOf(req.id)).find((o) => o.participantId === f.shared.id)!.dueAt!;
+    const beforeDue = await getRequest(db, f.claude.actor, req.id, new Date(due.getTime() - 1));
+    expect(beforeDue.acceptances).toEqual([
+      { participantId: f.pawbot.id, dueAt: due.toISOString(), completedAt: expect.any(String), note: "done", removed: false, removedAt: null, overdue: false, overdueNotifiedAt: null, lastSeenAt: expect.any(String) },
+      { participantId: f.shared.id, dueAt: due.toISOString(), completedAt: null, note: null, removed: false, removedAt: null, overdue: false, overdueNotifiedAt: null, lastSeenAt: seen.toISOString() },
+    ]);
+    // Computed on read: no sweep has run, and a reader at the due time already sees it.
+    expect((await getRequest(db, f.claude.actor, req.id, due)).acceptances[1]!.overdue).toBe(true);
+    await markRemoved(req.id, f.shared.id);
+    expect((await getRequest(db, f.claude.actor, req.id, due)).acceptances[1]).toMatchObject({ removed: true, removedAt: expect.any(String), overdue: false });
+  });
+
+  it("the open-request cap does not count working requests", async () => {
+    const f = await setup();
+    for (let i = 0; i < 5; i++) {
+      const r = await openRequest(db, bus, f.claude.actor, f.targetKeeper, inputFor(f, { title: `Ask ${i}` }));
+      await offer(db, bus, f.pawbot.actor, r.id, {});
+      await accept(db, bus, f.claude.actor, r.id, [f.pawbot.id], DEADLINE);
+    }
+    expect((await openRequest(db, bus, f.claude.actor, f.targetKeeper, inputFor(f, { title: "The sixth" }))).status).toBe("open");
   });
 });

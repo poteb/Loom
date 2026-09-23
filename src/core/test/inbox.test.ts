@@ -6,7 +6,7 @@ import { createThread } from "../src/threads.js";
 import { setRole } from "../src/participants.js";
 import { ensureLobby, joinLobby } from "../src/lobby/lobby.js";
 import { setCapabilities } from "../src/lobby/profile.js";
-import { accept, offer, openRequest, sweepRequests } from "../src/lobby/requests.js";
+import { accept, complete, offer, openRequest, sweepRequests } from "../src/lobby/requests.js";
 import { inviteParticipant } from "../src/invites.js";
 import { postMessage } from "../src/messages.js";
 import { inbox } from "../src/inbox.js";
@@ -132,11 +132,12 @@ type Lobby = Awaited<ReturnType<typeof lobbySetup>>;
 const types = async (f: Lobby, who: { actor: Actor }) =>
   (await inbox(db, who.actor, f.lobbyId, {})).map((e) => e.type);
 
-/** Both listeners offer; the requester accepts one, which fills the request and closes it. */
+/** Both listeners offer; the requester accepts one, who completes, which closes the request. */
 async function fillIt(f: Lobby) {
   await offer(db, bus, f.pawbot.actor, f.request.id, {});
   await offer(db, bus, f.shared.actor, f.request.id, {});
-  await accept(db, bus, f.claude.actor, f.request.id, [f.pawbot.id]);
+  await accept(db, bus, f.claude.actor, f.request.id, [f.pawbot.id], { deadlineMs: 3_600_000 });
+  await complete(db, bus, f.pawbot.actor, f.request.id);
 }
 
 describe("inbox: addressed Lobby events", () => {
@@ -173,5 +174,15 @@ describe("inbox: addressed Lobby events", () => {
     const f = await lobbySetup();
     await fillIt(f);
     expect(await types(f, f.quiet)).toEqual(["request.opened"]);
+  });
+
+  it("inbox returns request.completed and request.overdue addressed to me and not to others", async () => {
+    const f = await lobbySetup();
+    await offer(db, bus, f.pawbot.actor, f.request.id, {});
+    await accept(db, bus, f.claude.actor, f.request.id, [f.pawbot.id], { deadlineMs: 3_600_000 });
+    await complete(db, bus, f.pawbot.actor, f.request.id);
+    expect((await types(f, f.claude)).filter((t) => t === "request.completed")).toEqual(["request.completed"]);
+    expect(await types(f, f.shared)).not.toContain("request.completed");
+    expect(await types(f, f.pawbot)).not.toContain("request.completed");
   });
 });
