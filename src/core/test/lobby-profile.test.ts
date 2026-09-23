@@ -178,7 +178,7 @@ describe("getMyLobbyParticipant", () => {
   it("returns the caller's own participant with its profile", async () => {
     const { join, actor } = await lobbyWith("ChatGPT", chatgpt);
     const me = await getMyLobbyParticipant(db, actor);
-    expect(me).toEqual({ ...join.participant, capabilities: chatgpt });
+    expect(me).toEqual({ ...join.participant, capabilities: chatgpt, lastSeenAt: expect.any(String) });
   });
 
   // The Actor carries the participant as it was when the credential resolved; a profile another
@@ -232,7 +232,7 @@ describe("getMyLobbyParticipant", () => {
     const joined = await core.joinLobby({ kind: "agent" }, agent);
     await core.setCapabilities(agent, chatgpt);
     const me = await core.getMyLobbyParticipant(agent);
-    expect(me).toEqual({ ...joined.participant, capabilities: chatgpt });
+    expect(me).toEqual({ ...joined.participant, capabilities: chatgpt, lastSeenAt: expect.any(String) });
   });
 
   it("refuses an agent key that has not joined the Lobby", async () => {

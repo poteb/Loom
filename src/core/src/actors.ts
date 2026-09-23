@@ -1,7 +1,7 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, lt, or, sql, type SQL } from "drizzle-orm";
 import type { Db, Queryable } from "./db/index.js";
 import type { Tx } from "./events.js";
-import { participants, keepers, weaves, agents } from "./db/schema.js";
+import { participants, keepers, weaves, agents, settings } from "./db/schema.js";
 import { errors } from "./errors.js";
 import { isUuid } from "./ids.js";
 import { hashKey, toPublicAgent } from "./agent-keys.js";
@@ -11,18 +11,47 @@ import type { Actor, PublicParticipant } from "./types.js";
 export function toPublicParticipant(p: typeof participants.$inferSelect): PublicParticipant {
   return { id: p.id, weaveId: p.weaveId, name: p.name, kind: p.kind, role: p.role,
     joinedAt: p.joinedAt.toISOString(), agentId: p.agentId ?? null,
-    capabilities: (p.capabilities as Profile | null) ?? null };
+    capabilities: (p.capabilities as Profile | null) ?? null,
+    lastSeenAt: p.lastSeenAt ? p.lastSeenAt.toISOString() : null };
 }
 
-/** Resolves a bearer credential: participant token, keeper token, agent key, or weave secret. */
-export async function resolveCredential(db: Db, credential: string): Promise<Actor> {
+/** A participant's `last_seen_at` is written at most once per this many milliseconds (spec §6.6). */
+export const SEEN_THROTTLE_MS = 10_000;
+
+/**
+ * Liveness (spec §6.6): sets `last_seen_at = now` on the participants `which` selects, unless one
+ * was written less than ten seconds before `now`. It is not an event and takes no Weave lock, so a
+ * poll neither grows the log nor wakes anyone. A stamp that fails fails the call, which was about
+ * to use the same database anyway.
+ */
+export async function stampSeen(db: Db, which: SQL, now: Date): Promise<void> {
+  const cutoff = new Date(now.getTime() - SEEN_THROTTLE_MS);
+  await db.update(participants).set({ lastSeenAt: now })
+    .where(and(which, or(isNull(participants.lastSeenAt), lt(participants.lastSeenAt, cutoff))));
+}
+
+/**
+ * Resolves a bearer credential: participant token, keeper token, agent key, or weave secret. Every
+ * authenticated call passes through here, so this is where liveness is stamped: a participant
+ * token stamps that participant, an agent key its Lobby participant if it has one. A Weave secret
+ * and an instance keeper token stand for no participant and stamp nothing.
+ */
+export async function resolveCredential(db: Db, credential: string, now: Date = new Date()): Promise<Actor> {
   if (!credential) throw errors.invalidToken();
   const [p] = await db.select().from(participants).where(eq(participants.token, credential)).limit(1);
-  if (p) return { kind: "participant", participant: toPublicParticipant(p) };
+  if (p) {
+    await stampSeen(db, eq(participants.id, p.id), now);
+    return { kind: "participant", participant: toPublicParticipant(p) };
+  }
   const [k] = await db.select().from(keepers).where(eq(keepers.token, credential)).limit(1);
   if (k) return { kind: "keeper", keeperId: k.id, name: k.name };
   const [a] = await db.select().from(agents).where(and(eq(agents.keyHash, hashKey(credential)), isNull(agents.revokedAt))).limit(1);
-  if (a) return { kind: "agent", agent: toPublicAgent(a) };
+  if (a) {
+    // The Lobby is where "is this agent listening" is read. Inside another Weave, resolveInWeave
+    // stamps that Weave's participant when the call maps the key there.
+    await stampSeen(db, sql`${participants.agentId} = ${a.id} and ${participants.weaveId} = (select ${settings.lobbyWeaveId} from ${settings} where ${settings.id} = 1)`, now);
+    return { kind: "agent", agent: toPublicAgent(a) };
+  }
   const [w] = await db.select({ id: weaves.id }).from(weaves).where(eq(weaves.secret, credential)).limit(1);
   if (w) return { kind: "secret", weaveId: w.id };
   throw errors.invalidToken();
@@ -46,6 +75,7 @@ export async function resolveInWeave(db: Db, actor: Actor, weaveId: string): Pro
   if (!isUuid(weaveId)) throw errors.weaveNotFound();
   const me = await participantForAgent(db, actor.agent.id, weaveId);
   if (!me) throw errors.forbidden("Join the Weave first");
+  await stampSeen(db, eq(participants.id, me.id), new Date());
   return { kind: "participant", participant: me };
 }
 

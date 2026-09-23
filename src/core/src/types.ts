@@ -28,6 +28,12 @@ export type PublicParticipant = {
    * with `getMyLobbyParticipant`.
    */
   capabilities: Profile | null;
+  /**
+   * When a credential standing for this participant last made a call, stamped by core and throttled
+   * to once per ten seconds (spec §6.6). Null until the first stamp. Loom stores no threshold: each
+   * reader decides what "alive" means, and a request's `maxResponseMs` is the one rule that reads it.
+   */
+  lastSeenAt: string | null;
 };
 export type PublicThread = {
   id: string; weaveId: string; name: string; isGeneral: boolean;
