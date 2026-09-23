@@ -49,6 +49,16 @@ export function validateProfile(p: unknown): Profile | null {
 }
 
 /**
+ * The one rule for an owner name, shared by a profile's `owner` and an agent key's (spec §6.7):
+ * trimmed, 1 to 64 characters. Returns the trimmed value.
+ */
+export function validateOwner(v: unknown): string {
+  const s = typeof v === "string" ? v.trim() : "";
+  if (s.length < 1 || s.length > 64) throw errors.validation("owner must be 1-64 characters");
+  return s;
+}
+
+/**
  * Sets (or, with `null`, clears) the caller's own Lobby profile. A client that stops listening
  * clears it before dropping its credential, so no eligible profile is left with nobody behind it.
  */

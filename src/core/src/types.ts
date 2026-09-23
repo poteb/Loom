@@ -37,7 +37,7 @@ export type PublicWeave = {
   id: string; title: string; createdAt: string; archivedAt: string | null; lastSeq: number;
   guidelines: string;
 };
-export type PublicAgent = { id: string; name: string; createdAt: string; revokedAt: string | null };
+export type PublicAgent = { id: string; name: string; createdAt: string; revokedAt: string | null; owner: string | null };
 
 export type Actor =
   | { kind: "participant"; participant: PublicParticipant }

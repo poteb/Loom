@@ -115,7 +115,8 @@ export function createCore(db: Db) {
     listKeepers: (actor: Actor) => keepers.listKeepers(db, actor),
     addKeeper: (actor: Actor, name: string) => keepers.addKeeper(db, actor, name),
     removeKeeper: (actor: Actor, id: string) => keepers.removeKeeper(db, actor, id),
-    addAgent: (actor: Actor, name: string) => agentsMod.addAgent(db, actor, name),
+    addAgent: (actor: Actor, name: string, owner?: string) => agentsMod.addAgent(db, actor, name, owner),
+    setAgentOwner: (actor: Actor, id: string, owner: string) => agentsMod.setAgentOwner(db, actor, id, owner),
     listAgents: (actor: Actor) => agentsMod.listAgents(db, actor),
     revokeAgent: (actor: Actor, id: string) => agentsMod.revokeAgent(db, actor, id),
     resolveInWeave: (actor: Actor, weaveId: string) => resolveInWeave(db, actor, weaveId),
@@ -134,7 +135,7 @@ export { EventBus } from "./bus.js";
 export type { CreateWeaveInput, CreateWeaveResult, WeaveInfo, JoinResult } from "./weaves.js";
 export type { PublicKeeper, SeedKeepersResult } from "./keepers.js";
 export type { Lobby } from "./lobby/lobby.js";
-export { validateProfile, MAX_PROFILE_LENGTH, type AgentFilter, type FoundAgent } from "./lobby/profile.js";
+export { validateProfile, validateOwner, MAX_PROFILE_LENGTH, type AgentFilter, type FoundAgent } from "./lobby/profile.js";
 export { validateRequirements, matches, admits, eligible, type Profile, type ModelSpec, type Requirements } from "./lobby/matching.js";
 // The listeners query's types live beside its validation, so an adapter has one place to import from.
 export { type Listener, type ListenersFacets, type ListenersPage, type ListenersQuery, type ListenersSort, type ServesKind, type FacetValue, type ModelFacet } from "./lobby/listeners-input.js";
