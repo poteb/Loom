@@ -37,6 +37,15 @@ export function formatEvent(e: LoomEvent, threads: Thread[], participants: Parti
   if (e.type === "weave.invited") {
     return `${head} invited ${name(e.payload.participantId)} to "${str(e.payload.targetWeaveTitle)}" (invite ${str(e.payload.invitationId)})`;
   }
+  if (e.type === "request.completed") return `${head} ${name(e.payload.participantId)} finished "${thread}"`;
+  if (e.type === "request.overdue") {
+    const seen = typeof e.payload.lastSeenAt === "string" ? hhmm(e.payload.lastSeenAt) : "never";
+    return `${head} ${name(e.payload.participantId)} missed the deadline of "${thread}" (due ${hhmm(e.payload.dueAt)}, last seen ${seen})`;
+  }
+  if (e.type === "thread.removed") {
+    const by = str(e.payload.removedBy).startsWith("keeper:") ? "Keeper" : name(e.payload.removedBy);
+    return `${head} ${name(e.payload.participantId)} was removed from this Thread by ${by}`;
+  }
   if (e.type === "participant.capabilities_changed") {
     return `${head} profile ${e.payload.capabilities ? "set" : "cleared"} by ${name(e.payload.participantId)}`;
   }

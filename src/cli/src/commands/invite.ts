@@ -12,6 +12,18 @@ export function registerInviteCommands(program: Command, ctx: () => CliContext):
       emit(c, r, r.created ? `Invited ${participantId} to thread ${threadId} (seq ${r.seq})` : `Already invited (seq ${r.seq})`);
     });
 
+  program.command("remove <threadId> <participantId>")
+    .description("Take a participant off a thread (thread creator or keeper); on a Lobby request's thread it also removes that acceptance")
+    .addHelpText("after", "\nThe credential is the one stored for the current Weave (--weave <id>): for a Lobby request's thread pass the Lobby's weave id, or set LOOM_AGENT_KEY.")
+    .action(async (threadId: string, participantId: string) => {
+      const c = ctx();
+      const { entry } = c.resolveWeave();
+      const r = await c.client(entry.token).removeParticipant(threadId, participantId);
+      emit(c, r, r.created
+        ? `Removed ${participantId} from thread ${threadId} (seq ${r.seq})${r.acceptanceRemoved ? "; its acceptance is removed" : ""}${r.targetRemoved ? "; removed from the work thread too" : ""}`
+        : `Already removed (seq ${r.seq})`);
+    });
+
   program.command("inbox")
     .description("Invites and mentions addressed to you in the current Weave")
     // InvalidArgumentError (not a plain Error) is what commander turns into a usage error and exit 2,

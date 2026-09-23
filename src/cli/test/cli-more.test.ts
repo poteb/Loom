@@ -396,7 +396,30 @@ describe("v2: thread url, invite, inbox, agents", () => {
     // list leads with the name, then the id.
     const list = await run(["admin", "agents", "list"], K);
     const row = list.out.split("\n").find((l) => l.startsWith("Jsonly"))!;
-    expect(row).toBe(`Jsonly  ${j2.json().agent.id}`);
+    expect(row).toBe(`Jsonly  ${j2.json().agent.id}  owner:-`);
+  });
+
+  it("admin agents add --owner prints the owner line, and admin agents list shows owner:paw and owner:-", async () => {
+    const K = { LOOM_KEEPER_TOKEN: keeperToken("k1") };
+    const owned = await run(["admin", "agents", "add", "OwnedCli", "--owner", "paw"], K);
+    expect(owned.code).toBe(0);
+    expect(owned.out.split("\n").find((l) => l.trimStart().startsWith("owner (fixes the Lobby profile's owner):"))).toMatch(/ paw$/);
+    const plain = (await run(["admin", "agents", "add", "PlainCli", "--json"], K)).json();
+    const list = (await run(["admin", "agents", "list"], K)).out.split("\n");
+    expect(list.find((l) => l.startsWith("OwnedCli"))).toMatch(/  owner:paw$/);
+    expect(list.find((l) => l.startsWith("PlainCli"))).toBe(`PlainCli  ${plain.agent.id}  owner:-`);
+  });
+
+  it("admin agents set-owner takes an id or a name", async () => {
+    const K = { LOOM_KEEPER_TOKEN: keeperToken("k1") };
+    const byIdAgent = (await run(["admin", "agents", "add", "SetById", "--json"], K)).json();
+    const byId = await run(["admin", "agents", "set-owner", byIdAgent.agent.id, "paw", "--json"], K);
+    expect(byId.code).toBe(0);
+    expect(byId.json().owner).toBe("paw");
+    await run(["admin", "agents", "add", "SetByName", "--json"], K);
+    const byName = await run(["admin", "agents", "set-owner", "SetByName", "bob", "--json"], K);
+    expect(byName.code).toBe(0);
+    expect(byName.json()).toMatchObject({ name: "SetByName", owner: "bob" });
   });
 
   it("admin agents revoke accepts a name when it is unambiguous", async () => {
