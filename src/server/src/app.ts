@@ -3,10 +3,12 @@ import path from "node:path";
 import { Hono } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { LoomError, type Core } from "@loom/core";
+import { renderDocument } from "@loom/mcp-tools";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { bearer, type Env } from "./auth.js";
 import { statusFor } from "./errors.js";
 import { logError } from "./log.js";
+import { publicOrigin } from "./origin.js";
 import type { TicketStore } from "./tickets.js";
 import { guidelinesRoutes } from "./routes/guidelines.js";
 import { weaveRoutes } from "./routes/weaves.js";
@@ -24,6 +26,7 @@ export type AppDeps = {
   webDist?: string;
   mcpConnect?: MountMcpOptions["connect"];
   mcpSessionTtlMs?: MountMcpOptions["sessionTtlMs"];
+  mcpLog?: MountMcpOptions["log"];
   /** How often crossed requests are swept. A test seam; a minute in production. */
   requestSweepMs?: number;
 };
@@ -50,6 +53,12 @@ export function buildApp(deps: AppDeps): LoomApp {
 
   app.use("*", bearer);
   app.get("/health", (c) => c.json({ ok: true }));
+  // The walkthrough as a document (spec §7): public, reads no database, reflects nothing from the
+  // request but its origin. Registered here, not in the webDist block, so an API-only server serves it.
+  app.get("/join-loom.md", (c) => c.body(renderDocument(publicOrigin(c)), 200, {
+    "Content-Type": "text/markdown; charset=utf-8",
+    "Cache-Control": "max-age=300",
+  }));
 
   app.notFound((c) => c.json({ code: "not_found", message: "No such route" }, 404));
   app.onError((err, c) => {
@@ -73,7 +82,7 @@ export function buildApp(deps: AppDeps): LoomApp {
   app.route("/api/admin", adminRoutes(deps.core));
   app.route("/api/auth", authRoutes(deps.core, deps.tickets));
 
-  mountMcp(app, deps.core, { connect: deps.mcpConnect, sessionTtlMs: deps.mcpSessionTtlMs });
+  mountMcp(app, deps.core, { connect: deps.mcpConnect, sessionTtlMs: deps.mcpSessionTtlMs, log: deps.mcpLog });
 
   if (deps.webDist) {
     const indexHtml = readFileSync(path.join(deps.webDist, "index.html"), "utf8");

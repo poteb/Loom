@@ -15,6 +15,8 @@ export type TestServerOpts = {
   authTtlMs?: number;
   /** How often the server sweeps crossed requests; the app's default (a minute) when omitted. */
   requestSweepMs?: number;
+  /** Where MCP session lines go; silent unless a test wants them, so the suites stay pristine. */
+  mcpLog?: (line: string) => void;
 };
 
 /** Spelled out because the inferred type would reach into @loom/core's internal dist paths. */
@@ -32,7 +34,7 @@ export type TestServer = {
 export async function startTestServer(opts: TestServerOpts = {}): Promise<TestServer> {
   const core = createCore(await freshDb());
   const tickets = new TicketStore();
-  const { app, sweepNow, stop: stopSweep } = buildApp({ core, tickets, requestSweepMs: opts.requestSweepMs });
+  const { app, sweepNow, stop: stopSweep } = buildApp({ core, tickets, requestSweepMs: opts.requestSweepMs, mcpLog: opts.mcpLog ?? (() => {}) });
   const server: ServerType = await new Promise((resolve) => {
     const s = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolve(s));
   });

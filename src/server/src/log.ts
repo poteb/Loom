@@ -13,6 +13,11 @@ export function redact(s: string): string {
   return s.replace(TOKEN_RUN, "[redacted]").replace(URL_CREDENTIALS, "://[redacted]@");
 }
 
+/** One informational line on stdout, redacted like everything else this server writes (spec §4.4). */
+export function logInfo(line: string): void {
+  process.stdout.write(`${redact(line)}\n`);
+}
+
 /**
  * Logs an error as one line, carrying only its identity: name, code, a redacted message and a
  * short stack.

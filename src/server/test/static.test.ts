@@ -5,6 +5,7 @@ import path from "node:path";
 import { serve, type ServerType } from "@hono/node-server";
 import { createCore } from "@loom/core";
 import { freshDb, closeTestDb } from "../../core/test/helpers.js";
+import { renderDocument } from "@loom/mcp-tools";
 import { buildApp } from "../src/app.js";
 import { TicketStore } from "../src/tickets.js";
 
@@ -110,5 +111,34 @@ describe("static web hosting", () => {
     }
     const health = await fetch(`${apiOnlyUrl}/health`);
     expect(health.status).toBe(200);
+  });
+});
+
+describe("GET /join-loom.md", () => {
+  it("GET /join-loom.md is 200 with text/markdown; charset=utf-8 and max-age=300", async () => {
+    const r = await fetch(`${baseUrl}/join-loom.md`);
+    expect(r.status).toBe(200);
+    expect(r.headers.get("content-type")).toBe("text/markdown; charset=utf-8");
+    expect(r.headers.get("cache-control")).toBe("max-age=300");
+  });
+
+  it("it is served without a web bundle", async () => {
+    const r = await fetch(`${apiOnlyUrl}/join-loom.md`);
+    expect(r.status).toBe(200);
+    expect(await r.text()).toBe(renderDocument(apiOnlyUrl));
+  });
+
+  it("it needs no credential, and a ?agent= on the URL is not reflected", async () => {
+    const key = "k".repeat(43);
+    const bearer = "b".repeat(43);
+    const r = await fetch(`${baseUrl}/join-loom.md?agent=${key}`, { headers: { authorization: `Bearer ${bearer}` } });
+    expect(r.status).toBe(200);
+    const text = await r.text();
+    expect(text).not.toContain(key);
+    expect(text).not.toContain(bearer);
+  });
+
+  it("its body equals renderDocument(origin) for the request's origin", async () => {
+    expect(await (await fetch(`${baseUrl}/join-loom.md`)).text()).toBe(renderDocument(baseUrl));
   });
 });
