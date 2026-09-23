@@ -467,3 +467,39 @@ describe("listener onboarding tools", () => {
     expect(calls.filter((x) => x[0] === "keeperAgentsAdd").at(-1)).toEqual(["keeperAgentsAdd", "k", "ChatGPT", "paw"]);
   });
 });
+
+describe("the tool descriptions are the spec's", () => {
+  const described = async () => new Map((await client.listTools()).tools.map((t) => [t.name, t.description ?? ""]));
+
+  it("get_started, complete, remove_participant, accept, keeper_agents_set_owner and keeper_agents_add read exactly as the spec gives them", async () => {
+    const d = await described();
+    expect(d.get("get_started")).toBe("Where you stand on this Loom and what to do next: the Lobby, your profile, your inbox poll, and anything waiting for you. Call it first, and again after each step. Agent-key connections only. Returns { state, text, pending }: do what `text` says.");
+    expect(d.get("complete")).toBe("Say your accepted work on a request is done. Post your closing message in the work Thread first, then call this. Only an agent whose offer was accepted may call it; a second call returns the request unchanged. note at most 1000 characters. The requester sees request.completed; once every accepted agent has completed, the request closes as completed.");
+    expect(d.get("remove_participant")).toBe("Take a participant off a Thread: it is told with thread.removed and cannot post there until it is invited again. Thread creator or Weave keeper only; not the General Thread. On a Lobby request's Thread, given the Lobby participant id of an accepted agent, it also removes that acceptance (it no longer counts toward completing the request), withdraws its unredeemed invitations, and removes it from the work Thread it joined. Returns { seq, created, acceptanceRemoved, targetRemoved }.");
+    expect(d.get("accept")).toBe("Accept offers on your own request (or, as a Lobby keeper, on the requester's behalf), giving each accepted agent deadlineMs, 60000-604800000 (1 minute to 7 days), to call complete. Each accepted participant is handed one single-use invitation into the request's target Thread and sees weave.invited. Active acceptances plus these may not exceed wanted. The request moves to working; it closes as completed once every accepted agent has called complete, and a request.overdue reaches you when one misses its deadline. No target credential is needed: the authority recorded when the request was opened is re-checked server-side. Returns the request and the invitation ids.");
+    expect(d.get("keeper_agents_set_owner")).toBe("Set the owner of an existing agent key (instance keepers only), 1-64 characters. The agent's next set_capabilities takes its owner from the key. An unknown or revoked id is not_found.");
+    expect(d.get("keeper_agents_add")).toBe("Mint an agent key for a remote MCP client (instance keepers only). Returns the agent and its key, shown once.");
+  });
+
+  it("keeper_agents_add describes its owner argument as the spec does", async () => {
+    const schema = (await client.listTools()).tools.find((t) => t.name === "keeper_agents_add")!.inputSchema as { properties: Record<string, { description?: string }> };
+    expect(schema.properties.owner!.description).toBe("The person whose tokens this agent spends, 1-64 characters; fixes the owner of the agent's Lobby profile");
+  });
+
+  it("set_capabilities ends with the owner-from-key and pollIntervalMs sentences", async () => {
+    expect((await described()).get("set_capabilities")).toContain("When your agent key names an owner, owner is filled from the key: leave it out, or give exactly that value. pollIntervalMs, 60000-86400000, is how often you check your inbox; requests that ask for a maximum response time read it.");
+  });
+
+  it("find_agents names maxResponseMs among its filter keys", async () => {
+    expect((await described()).get("find_agents")).toContain("maxResponseMs is a filter key too: only agents whose pollIntervalMs is at most this and who were seen within twice their pollIntervalMs.");
+  });
+
+  it("list_requests lists all six statuses", async () => {
+    expect((await described()).get("list_requests")).toContain("open, working, completed, expired, cancelled or filled");
+  });
+
+  it("LOBBY_MECHANICS ends its second paragraph with the deadline sentence", () => {
+    expect(LOBBY_MECHANICS.split("\n")[1]).toContain("An accept gives you a deadline: when the work is done, post your closing message in the work Thread, then call complete(requestId); a requester who sees request.overdue decides whether to remove you and accept someone else.");
+    expect(LOBBY_MECHANICS.endsWith("accept someone else.")).toBe(true);
+  });
+});
