@@ -93,8 +93,8 @@ live in survives every branch and no feature branch's migration touches it. Its 
 **[`deploy/`](../deploy) is the whole of it, and not one file in it is generated** — it is read by a
 human deciding whether to trust the update that is about to run: the compose project, the site
 block, `.env.example` with the `openssl` line that generates each secret, `live-update.sh`, the two
-local wrappers, the two texts this document also carries (§3 step 2 and §4), the two onboarding
-helpers, and `deploy/test/`, the shell contract tests
+local wrappers, the two texts this document also carries (§3 step 2 and §4), the onboarding
+helper, and `deploy/test/`, the shell contract tests
 ([TESTING.md](TESTING.md) §"The shell contract tests").
 
 **The update is one command**, run from Paw's PC after a merge:

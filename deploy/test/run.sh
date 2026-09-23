@@ -16,7 +16,7 @@
 #     MANUAL RECOVERY REQUIRED, restored the previous deployment, REFUSING TO RUN,
 #     REFUSING TO RECONCILE. Pinning prose makes a test that fails on every edit to prose.
 #   * Any timing other than the deadlines handed to the stubbed `timeout`.
-#   * The two PowerShell wrappers and the two .ps1 helpers: they are Windows-side and are
+#   * The two PowerShell wrappers and the .ps1 helper: they are Windows-side and are
 #     exercised by spec section 9 steps 8 and 12.
 #
 # ONE BOUNDARY INSIDE THAT BOUNDARY: THE HARNESS STUBS THE TRANSPORT, SO IT CAN NEVER TEST THE

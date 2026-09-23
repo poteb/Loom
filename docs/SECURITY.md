@@ -214,8 +214,9 @@ an authorization claim. For a keyed agent this changed with the listener-onboard
 instance keeper may stamp an owner on the key (`loom admin agents add --owner`, `set-owner`), and
 `set_capabilities` then fills or enforces it, so such an agent can no longer declare another. A
 keyless participant (the channel, a browser) is still self-declared, which is exactly ADR 0001's
-standing trade. The upgrade path (stamp `owner` on the agent key at mint, derive a request's
-owner from the authenticated key, require a key to register) is in the ADR and in the spec's §4a.
+standing trade. The first step of the upgrade path, an owner on the key, is that change; what is
+left of it (derive a request's owner from the authenticated key, require a key to register) is in
+the ADR and in the spec's §4a.
 
 **Authority, by contrast, is never self-declared.** Because a request spans two Weaves,
 `openRequest` demands **two credentials**: `credential` is the caller's Lobby identity (who is
@@ -274,7 +275,7 @@ below means a participant with `role = "keeper"` **or** any instance keeper (`as
 | Set a Lobby profile | The caller, on its **own** Lobby participant only; anything else is `forbidden` | [`setCapabilities`](../src/core/src/lobby/profile.ts) |
 | Read profiles / requests | Any Lobby participant, or the Lobby secret | `assertCanRead` in [`profile.ts`](../src/core/src/lobby/profile.ts), [`requests.ts`](../src/core/src/lobby/requests.ts) |
 | Open a request | A Lobby participant **and** a keeper of the target Weave, proved by a second credential and recorded on the row (§4a). At most 5 open per requester; the target may not be the Lobby | [`openRequest`](../src/core/src/lobby/requests.ts) |
-| Offer on a request | A participant in that request's `eligible` snapshot, while it is open; `model`/`effort` must be the offerer's own. A second offer returns the first | [`offer`](../src/core/src/lobby/requests.ts) |
+| Offer on a request | A participant in that request's `eligible` snapshot, while its offer window is open (stored `open` or `working`, before `expiresAt`); `model`/`effort` must be the offerer's own. A second offer returns the first | [`offer`](../src/core/src/lobby/requests.ts) |
 | Accept / cancel a request | The requester, or a Lobby keeper on its behalf; acceptance uses the requester's **recorded** target authority, re-checked in-lock | [`accept`](../src/core/src/lobby/requests.ts), `cancelRequest` |
 | Complete a request | The accepted agent itself, through its Lobby identity (its key or its Lobby token); not the requester, not a Lobby keeper; a removed acceptance is refused | [`complete`](../src/core/src/lobby/requests.ts) |
 | Invite a Lobby participant into a Weave | A keeper of the **target** Weave, re-checked inside its lock; target not archived, Thread open and its own | [`inviteToWeave`](../src/core/src/lobby/invitations.ts) |

@@ -12,12 +12,12 @@ retry of writes. The only rule it enforces locally is that the base URL must be 
 client for another credential against the same server.
 
 - **Weaves** — `createWeave`, `joinWeave`, `getWeave`, `lookupWeave`, `archiveWeave`, `exportWeave`
-- **Threads** — `createThread`, `setThreadUrl`, `closeThread` · **Invites** — `inviteParticipant`
+- **Threads** — `createThread`, `setThreadUrl`, `closeThread` · **Invites** — `inviteParticipant`, `removeParticipant` (on a request's Thread it also removes that acceptance)
 - **Messages** — `postMessage`, `readEvents` · **Inbox** — `inbox` · **Participants** — `setRole`
 - **Lobby** — `getLobby` (no credential), `joinLobby` (no secret), `setCapabilities` (`null` clears), `findAgents`, `listListeners` (the paged, faceted directory: `filter` travels as JSON, the rest as plain query parameters), `getMyLobbyParticipant` (your own participant and profile)
-- **Requests** — `openRequest` (this client's token is the Lobby identity; `targetCredential` travels in the input), `listRequests`, `getRequest`, `offer`, `acceptRequest`, `cancelRequest` · **Invitations** — `inviteToWeave`, `joinByInvite`
+- **Requests** — `openRequest` (this client's token is the Lobby identity; `targetCredential` travels in the input), `listRequests`, `getRequest`, `offer`, `acceptRequest` (with `deadlineMs`, which the server requires), `completeRequest` (always sends a JSON body, `{}` without a note), `cancelRequest` · **Invitations** — `inviteToWeave`, `joinByInvite`
 - **Streaming** — `wsTicket`, `stream(weaveId, opts)`
-- **Admin** (`.admin`) — `listWeaves`, `getSettings`, `updateSettings`, `listKeepers`, `addKeeper`, `removeKeeper`, `listAgents`, `addAgent`, `revokeAgent`
+- **Admin** (`.admin`) — `listWeaves`, `getSettings`, `updateSettings`, `listKeepers`, `addKeeper`, `removeKeeper`, `listAgents`, `addAgent` (with an optional owner), `setAgentOwner`, `revokeAgent`
 
 `openStream(client, weaveId, opts)` (also `client.stream`) fetches a ws-ticket, connects to
 `/api/weaves/:id/stream?since=<lastSeq>&ticket=…` and reports `connecting` / `open` / `reconnecting`

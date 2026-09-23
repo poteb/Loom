@@ -39,8 +39,12 @@ Core snapshots who is eligible (`matches ∧ admits`) and addresses `request.ope
 they **offer**; the requester **accepts** up to `wanted` in one transaction that takes the Lobby row
 and then the target row, re-checks the *recorded* target authority against fresh rows, and mints
 single-use cross-Weave **invitations**; each invitee redeems with `join_weave({ inviteId })` and lands
-in the target Thread. Requests close as `filled`, `expired` (computed status plus a 60 s sweep) or
-`cancelled`. No Lobby event ever carries a secret, and none wakes anyone through `wake: "all"` —
+in the target Thread. A request is `open` until its first accept and `working` after it; each
+acceptance carries a deadline, and the request closes as `completed` once every active acceptance
+has called `complete`, as `cancelled` when its requester gives up, or as `expired` when its offer
+window passes with nobody accepted (computed status plus a 60 s sweep, which also sends
+`request.overdue` for an acceptance past its deadline). `filled` is legacy, from before deadlines.
+No Lobby event ever carries a secret, and none wakes anyone through `wake: "all"` —
 every Lobby event is addressed.
 
 | Layer | What the Lobby added |
@@ -52,6 +56,19 @@ every Lobby event is addressed.
 | claude-channel | a `requests` wake pref, the addressed-only arm of `shouldWake`, one-line bodies for every Lobby event, `targetCredential: "stored"`, and leaving the Lobby clears the profile first |
 | cli | `lobby`, `lobby join/me/find`, `request open/list/show/offer/accept/cancel`, `invite-weave`, `join --invite` |
 | web | the requests panel (per-request `lastEventSeq` watermark), profile cards, the open-request form |
+
+Listener onboarding (`feat/listener-onboarding`) then added the lifecycle above, liveness and the
+onboarding walkthrough:
+
+| Layer | What listener onboarding added |
+| --- | --- |
+| core | `lobby/onboarding.ts` (`onboardingFacts`), `removals.ts` (`removeParticipant`, the marker rule, the cascade to the acceptance and the work Thread), `complete`, `sweepOverdue` and the `working` / `completed` statuses in `lobby/requests.ts`, `stampSeen` (liveness) in `actors.ts`, the cadence rule in `lobby/matching.ts`, `setAgentOwner` and the key-owner rule, migration `0005` (eight nullable columns), the `not_found` error |
+| server | `POST /api/requests/:id/complete`, `POST /api/threads/:id/removals`, `PUT /api/admin/agents/:id/owner`, `GET /join-loom.md`; `deadlineMs` on accept; the sweep also runs `sweepOverdue`; the MCP client name and its log line |
+| mcp-tools | 4 new tools (`get_started`, `complete`, `remove_participant`, `keeper_agents_set_owner`), **38 in `LOOM_TOOL_NAMES`**; the onboarding module (six states, their texts, `NEXT`, the connect instructions, `renderDocument`) |
+| client | `completeRequest`, `removeParticipant`, `admin.setAgentOwner`; `deadlineMs` on `acceptRequest` |
+| claude-channel | wakes on and renders `request.completed`, `request.overdue` and `thread.removed` |
+| cli | `request accept --deadline`, `request complete`, `remove`, `admin agents add --owner`, `admin agents set-owner`; acceptances in `request show` |
+| web | working requests, the Accept deadline, acceptances and `lastSeenAt` |
 
 ## 1a. What **this** branch changes, and the one promise it does not make
 
