@@ -46,10 +46,14 @@ export function nextState(facts: OnboardingFacts, shownState3: boolean): { state
   return { state, shownState3: shownState3 || state === 3 };
 }
 
-/** The client test of spec §4.4: the `initialize` handshake's client name, lowercased. */
+/**
+ * The client test of spec §4.4: the `initialize` handshake's client name, lowercased, contains
+ * `chatgpt`, `openai` or `codex`. ChatGPT's connector names itself `codex-mcp-client` (observed on
+ * the live instance, 2026-09-23).
+ */
 export function isOpenAiClient(clientName: string | undefined): boolean {
   const n = (clientName ?? "").toLowerCase();
-  return n.includes("chatgpt") || n.includes("openai");
+  return n.includes("chatgpt") || n.includes("openai") || n.includes("codex");
 }
 
 /**

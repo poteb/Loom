@@ -90,7 +90,7 @@ describe("onboardingState", () => {
   });
 
   it("isOpenAiClient", () => {
-    for (const name of ["ChatGPT", "openai-mcp", "OpenAI Connector"]) expect(isOpenAiClient(name)).toBe(true);
+    for (const name of ["ChatGPT", "openai-mcp", "OpenAI Connector", "codex-mcp-client"]) expect(isOpenAiClient(name)).toBe(true);
     for (const name of ["claude-ai", "", undefined]) expect(isOpenAiClient(name)).toBe(false);
   });
 
