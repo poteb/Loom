@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/preact";
+import { render, screen, fireEvent, within } from "@testing-library/preact";
 import { LoomClient, type Listener, type ListenersPage } from "@loom/client";
 import { App, routeOf } from "../src/app.js";
 import { ListenersLink } from "../src/components/ListenersLink.js";
@@ -175,8 +175,9 @@ function harness(opts: MountOpts) {
     /** The credential the n-th **directory** query was made with. */
     authOf: (n: number) => (directoryCalls()[n]?.[1]?.headers as Record<string, string> | undefined)?.authorization,
     heading: () => !!screen.queryByRole("heading", { level: 2, name: "Listeners" }),
-    /** The names on the cards, in the order the grid renders them. */
-    names: () => [...document.querySelectorAll(".profile-name")].map((e) => e.textContent),
+    /** The names on the table's rows, in the order it renders them. A row's opened profile is a
+     *  row of its own under it, and not a listener, so only the listener rows are read. */
+    names: () => [...document.querySelectorAll(".listeners tbody tr.listener-row .listener-name")].map((e) => e.textContent),
   };
   return h;
 }
@@ -207,7 +208,7 @@ function mountApp(opts: MountOpts = {}) {
  */
 function mountLobby(opts: MountOpts = {}) {
   const v = mountApp({ storage: joined(), ...opts, path: opts.path ?? "/lobby/listeners" });
-  const line = (): HTMLElement | null => screen.queryByRole("button", { name: /^Listeners/ });
+  const line = (): HTMLElement | null => screen.queryByRole("button", { name: /^View all/ });
   return {
     ...v,
     line,
@@ -774,7 +775,7 @@ describe("a 401 that lands too late (spec §6.1)", () => {
 
 describe("the draft survives the round trip (spec §3.5)", () => {
   const TYPED = "half a message";
-  const composer = () => screen.getByPlaceholderText(/^Write a message/) as HTMLTextAreaElement;
+  const composer = () => screen.getByPlaceholderText(/^Message #/) as HTMLTextAreaElement;
 
   it("keeps the text and the caret across a look at the directory", async () => {
     const v = mountLobby({ path: "/lobby" });
@@ -881,7 +882,7 @@ describe("a rejoin restores the view (spec §3.1)", () => {
  * is held — which is why this block runs on the test's own clock.
  */
 describe("a delayed discovery leaves the Thread writable (spec §5)", () => {
-  const composer = () => screen.getByPlaceholderText(/^Write a message/) as HTMLTextAreaElement;
+  const composer = () => screen.getByPlaceholderText(/^Message #/) as HTMLTextAreaElement;
 
   async function held() {
     vi.useFakeTimers();
@@ -932,7 +933,7 @@ describe("a delayed discovery leaves the Thread writable (spec §5)", () => {
 
 /** Spec §12.20: a Lobby with no pointer is still a writable Thread, which is the rule. */
 describe("a failed or absent Lobby still leaves the Thread writable (spec §5)", () => {
-  const composer = () => screen.getByPlaceholderText(/^Write a message/) as HTMLTextAreaElement;
+  const composer = () => screen.getByPlaceholderText(/^Message #/) as HTMLTextAreaElement;
   /** `LobbyRoute`'s own discovery answers; every call the session makes gets the second answer. */
   const afterTheFirst = (answer: () => Response | Promise<Response>) => {
     let n = 0;
@@ -966,10 +967,10 @@ describe("a failed or absent Lobby still leaves the Thread writable (spec §5)",
   });
 });
 
-describe("the directory grid and its counts (spec §5.3)", () => {
+describe("the directory table and its counts (spec §5.3)", () => {
   const two = [listener("ada", "ada@example.com"), listener("bo", "bo@example.com")];
 
-  it("renders one card per listener", async () => {
+  it("renders one row per listener", async () => {
     const v = mountLobby({ storage: joined(), routes: { [LISTENERS]: () => json(directory(two)) } });
     await settle();
     expect(v.names()).toEqual(["ada", "bo"]);
@@ -1011,6 +1012,115 @@ describe("the directory grid and its counts (spec §5.3)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
     await settle();
     expect(v.queries().map((q) => q.has("filter"))).toEqual([true, false]);
+  });
+});
+
+describe("a row of the table (Listeners.dc.html)", () => {
+  /** The cells of the n-th listener row, by column, as text. */
+  const cells = (v: { container: Element }, n = 0) =>
+    [...v.container.querySelectorAll(".listeners tbody tr.listener-row")[n]!.querySelectorAll("td")].map((td) => td.textContent);
+
+  it("carries the profile in columns, with the tools cut at three", async () => {
+    const seen = new Date(Date.now() - 3 * 60_000).toISOString();
+    const row: Listener = {
+      participant: { ...JOINED.participant, kind: "agent", id: "p-ada", name: "ada", lastSeenAt: seen, joinedAt: seen },
+      capabilities: { owner: "ada@example.com", models: [{ model: "opus-5", effort: "high" }, { model: "fable", effort: "max" }],
+        tools: ["shell", "git", "web", "mcp", "docker"], runtime: "node", serves: "anyone" },
+    };
+    const v = mountLobby({ storage: joined(), routes: { [LISTENERS]: () => json(directory([row])) } });
+    await settle();
+    const heads = [...v.container.querySelectorAll(".listeners thead th")].map((th) => th.textContent);
+    expect([heads, cells(v).slice(0, 7), !!v.container.querySelector(`.listeners tbody time[datetime="${seen}"]`)]).toEqual([
+      ["Listener", "Owner", "Models", "Tools", "Runtime", "Serves", "Last seen", "Joined", "Actions"],
+      ["ada", "ada@example.com", "opus-5/high, fable/max", "shell, git, web +2", "node", "anyone", "3 min ago"],
+      true,
+    ]);
+  });
+
+  it("says never for a listener that has not been seen, and its owner for a default serves", async () => {
+    const v = mountLobby({ storage: joined() });
+    await settle();
+    expect([cells(v)[5], cells(v)[6]]).toEqual(["its owner", "never"]);
+  });
+
+  it("names how many listeners the Lobby holds beside the heading", async () => {
+    const v = mountLobby({ storage: joined() });
+    await settle();
+    expect(v.container.querySelector(".listeners-header")!.textContent).toBe("Listeners12 listeners on Lobby");
+  });
+});
+
+/**
+ * A row's two actions. Invite reaches the Thread this browser has open, so it is offered only where
+ * `canEditThread` says this browser may invite to it (dana created `General`), and only to someone
+ * not invited yet. Profile opens the full card in a row of its own under the listener's.
+ */
+describe("a row's Invite and Profile", () => {
+  const INVITES = `${BASE}/api/threads/g1/invites`;
+  const invites = (v: { fetchStub: ReturnType<typeof stubFetch> }) =>
+    v.fetchStub.mock.calls.filter((c) => String(c[0]) === INVITES);
+  const inviteButton = () => screen.queryByRole("button", { name: "Invite ada" }) as HTMLButtonElement | null;
+  const invitedButton = () => screen.queryByRole("button", { name: "Invited ada" }) as HTMLButtonElement | null;
+
+  it("is offered when this browser may edit the current Thread", async () => {
+    mountLobby({ storage: joined() });
+    await settle();
+    expect([!!inviteButton(), !!invitedButton()]).toEqual([true, false]);
+  });
+
+  it("is not offered to a member who did not create the current Thread", async () => {
+    const v = mountLobby({ storage: joined(), routes: {
+      [WEAVE]: () => json(weaveBody({ threads: [{ ...GENERAL, createdBy: "p-someone" }] })),
+    } });
+    await settle();
+    expect([v.names(), !!inviteButton(), !!invitedButton()]).toEqual([["ada"], false, false]);
+  });
+
+  it("invites once, then says Invited and takes no second click", async () => {
+    const v = mountLobby({ storage: joined(), routes: { [INVITES]: () => json({ seq: 1, created: true }, 201) } });
+    await settle();
+    fireEvent.click(inviteButton()!);
+    fireEvent.click(inviteButton()!);                 // a double click, before the first has answered
+    await settle();
+    fireEvent.click(invitedButton()!);
+    await settle();
+    expect([invites(v).length, JSON.parse(String(invites(v)[0]![1]!.body)), invitedButton()!.disabled, !!inviteButton()])
+      .toEqual([1, { participantId: "p-ada" }, true, false]);
+  });
+
+  it("says Invited for someone the log already shows invited to this Thread", async () => {
+    const v = mountLobby({ storage: joined(), routes: {
+      [EVENTS]: () => json({ events: [{ weaveId: LOBBY.weaveId, seq: 1, threadId: "g1", type: "thread.invited",
+        actor: "p-dana", at: "", payload: { participantId: "p-ada" } }] }),
+    } });
+    await settle();
+    expect([!!inviteButton(), invitedButton()?.disabled, invites(v).length]).toEqual([false, true, 0]);
+  });
+
+  it("puts a failed invite on the directory's own error line and leaves Invite to retry", async () => {
+    const v = mountLobby({ storage: joined(), routes: { [INVITES]: fail("forbidden", "Not allowed here", 403) } });
+    await settle();
+    fireEvent.click(inviteButton()!);
+    await settle();
+    expect([within(v.container.querySelector(".listeners") as HTMLElement).getByRole("alert").textContent,
+      v.container.querySelector(".error-bar"), !!inviteButton(), !!invitedButton()])
+      .toEqual(["Not allowed here", null, true, false]);
+  });
+
+  it("opens the full profile under its row, and closes it again", async () => {
+    const v = mountLobby({ storage: joined() });
+    await settle();
+    const toggle = screen.getByRole("button", { name: "Profile of ada" });
+    const card = () => v.container.querySelector(".listeners tbody tr.listener-details .profile-card");
+    const closed = [toggle.getAttribute("aria-expanded"), !!card()];
+    fireEvent.click(toggle);
+    await settle();
+    const open = [toggle.getAttribute("aria-expanded"), card()?.querySelector(".profile-name")?.textContent,
+      card()?.querySelector(".profile-owner")?.textContent, v.names()];
+    fireEvent.click(toggle);
+    await settle();
+    expect([closed, open, toggle.getAttribute("aria-expanded"), !!card()])
+      .toEqual([["false", false], ["true", "ada", "ada@example.com", ["ada"]], "false", false]);
   });
 });
 
@@ -1082,8 +1192,8 @@ describe("Clear filters (spec §9, CR5)", () => {
     await settle();
     const last = v.queries().at(-1)!;
     expect([
-      (screen.getByLabelText("sort") as HTMLSelectElement).value,
-      (screen.getByLabelText("direction") as HTMLSelectElement).value,
+      (screen.getByLabelText("Sort") as HTMLSelectElement).value,
+      (screen.getByLabelText("Direction") as HTMLSelectElement).value,
       last.get("sort"), last.get("dir"),
     ]).toEqual(["name", "asc", "name", "asc"]);
   });
@@ -1103,8 +1213,8 @@ describe("the controls and the query string (spec §5.4)", () => {
     await settle();
     expect([
       (screen.getByLabelText("Search") as HTMLInputElement).value,
-      (screen.getByLabelText("sort") as HTMLSelectElement).value,
-      (screen.getByLabelText("direction") as HTMLSelectElement).value,
+      (screen.getByLabelText("Sort") as HTMLSelectElement).value,
+      (screen.getByLabelText("Direction") as HTMLSelectElement).value,
       chip(/^shell/).getAttribute("aria-pressed"),
     ]).toEqual(["fable", "owner", "desc", "true"]);
   });
@@ -1227,7 +1337,7 @@ describe("a control pressed while the typing has not settled (spec §5.3)", () =
 
   it("supersedes it with a sort change the same way", async () => {
     const v = await typingThen(() =>
-      fireEvent.change(screen.getByLabelText("sort"), { target: { value: "owner" } }));
+      fireEvent.change(screen.getByLabelText("Sort"), { target: { value: "owner" } }));
     const last = v.queries().at(-1)!;
     expect([last.get("sort"), last.get("q"), v.asked()]).toEqual(["owner", "fab", 2]);
   });
@@ -1743,20 +1853,21 @@ describe("the states this page says out loud (spec §5.3)", () => {
 
   it("announces the refresh that is keeping the old rows on screen", async () => {
     const held = gated(() => json(directory([listener("bo", "b")])));
-    mountLobby({ storage: joined(), routes: {
+    const v = mountLobby({ storage: joined(), routes: {
       [LISTENERS]: inTurn(() => json(directory([listener("ada", "a")])), held.answer),
     } });
     await settle();
     fireEvent.click(chip(/^shell/));
     await settle();
-    expect(screen.getByRole("status").textContent).toBe("updating…");
+    // Scoped to the directory: the header's connection pill is a status region of its own.
+    expect(within(v.container.querySelector(".listeners") as HTMLElement).getByRole("status").textContent).toBe("updating…");
   });
 
   it("announces the first load, which has no rows to keep", async () => {
     const held = gated(() => json(directory([])));
-    mountLobby({ storage: joined(), routes: { [LISTENERS]: held.answer } });
+    const v = mountLobby({ storage: joined(), routes: { [LISTENERS]: held.answer } });
     await settle();
-    expect(screen.getByRole("status").textContent).toBe("Loading…");
+    expect(within(v.container.querySelector(".listeners") as HTMLElement).getByRole("status").textContent).toBe("Loading…");
   });
 });
 
@@ -1786,37 +1897,37 @@ describe("the Lobby sidebar's listeners line (spec §5.1)", () => {
 
   it("shows how many listeners the Lobby holds", () => {
     const { container } = render(<ListenersLink active={false} onToggle={() => {}} state={lobbyState({ listenerCount: 3 })} />);
-    expect(line(container)).toBe("Listeners (3)");
+    expect(line(container)).toBe("ListenersView all 3");
   });
 
   // Before the first answer: no number, and not a word about a failure that has not happened.
-  it("reads Listeners, with nothing beside it, before the first count answers", () => {
+  it("reads View all, with no number and nothing beside it, before the first count answers", () => {
     const { container } = render(<ListenersLink active={false} onToggle={() => {}} state={lobbyState()} />);
-    expect(line(container)).toBe("Listeners");
+    expect(line(container)).toBe("ListenersView all");
   });
 
   // The whole text, so the rule that makes this worth having is asserted in the same breath: an
   // absent count is an absent number, never an invented `(0)`.
   it("says the count is unavailable when the read failed, and invents no zero", () => {
     const { container } = render(<ListenersLink active={false} onToggle={() => {}} state={lobbyState({ listenerCountError: true })} />);
-    expect(line(container)).toBe("Listenerscount unavailable");
+    expect(line(container)).toBe("ListenersView allcount unavailable");
   });
 
   it("keeps the last known number when a later count read fails, and says nothing beside it", () => {
     const { container } = render(<ListenersLink active={false} onToggle={() => {}} state={lobbyState({ listenerCount: 7, listenerCountError: true })} />);
-    expect(line(container)).toBe("Listeners (7)");
+    expect(line(container)).toBe("ListenersView all 7");
   });
 
   it("drops that note again when a later count answers", () => {
     const { container } = render(<ListenersLink active={false} onToggle={() => {}} state={lobbyState({ listenerCount: 9, listenerCountError: false })} />);
-    expect(line(container)).toBe("Listeners (9)");
+    expect(line(container)).toBe("ListenersView all 9");
   });
 
   // A zero the server actually answered is a number like any other: what §5.1 forbids is inventing
   // one, not reporting one.
   it("shows a zero the Lobby really answered", () => {
     const { container } = render(<ListenersLink active={false} onToggle={() => {}} state={lobbyState({ listenerCount: 0, listenerCountError: false })} />);
-    expect(line(container)).toBe("Listeners (0)");
+    expect(line(container)).toBe("ListenersView all 0");
   });
 
   // A 401 on the own-profile read of a secret-link visit leaves the page ready with no `me` at all
@@ -1825,7 +1936,7 @@ describe("the Lobby sidebar's listeners line (spec §5.1)", () => {
     const { container } = render(
       <ListenersLink active={false} onToggle={() => {}} state={lobbyState({ me: undefined, readOnlyReason: "secret-fallback", listenerCount: 4 })} />,
     );
-    expect(line(container)).toBe("Listeners (4)");
+    expect(line(container)).toBe("ListenersView all 4");
   });
 
   it("renders nothing on a Weave that is not the Lobby", () => {
@@ -1851,7 +1962,7 @@ describe("the listeners line on the Lobby page (spec §5.1)", () => {
   it("is in the Lobby's sidebar, carrying the number the Lobby answered", async () => {
     const v = mountLobby({ path: "/lobby", storage: joined() });
     await settle();
-    expect(v.container.querySelector(".sidebar")!.textContent).toContain("Listeners (12)");
+    expect(v.container.querySelector(".sidebar")!.textContent).toContain("View all 12");
   });
 
   // The removal itself: the sidebar used to stack a card per listener, and there is no card and no

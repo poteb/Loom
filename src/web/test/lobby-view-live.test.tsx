@@ -94,11 +94,13 @@ function mountLobby(f: Awaited<ReturnType<typeof lobbyFixture>>) {
   return {
     ...view,
     asked: () => asked,
-    line: () => screen.queryByRole("button", { name: /^Listeners/ }),
-    /** The stream's own state as the header prints it: the DOM's proof of a socket. */
-    connection: () => view.container.querySelector(".conn")?.textContent,
-    threads: () => [...view.container.querySelectorAll(".thread-pick")].map((e) => e.textContent),
-    rows: () => [...view.container.querySelectorAll(".profile-name")].map((e) => e.textContent),
+    line: () => screen.queryByRole("button", { name: /^View all/ }),
+    /** The stream's own state as the header's pill carries it (`conn-<state>`): the DOM's proof of a socket. */
+    connection: () => /conn-([a-z]+)/.exec(view.container.querySelector(".conn")?.className ?? "")?.[1],
+    threads: () => [...view.container.querySelectorAll(".thread-pick .thread-name")].map((e) => e.textContent),
+    // The directory's rows are table rows (`ListenersPage`), one name each; `.profile-name` lives
+    // only in a row's expanded Profile card, which nothing here opens.
+    rows: () => [...view.container.querySelectorAll(".listeners tbody tr.listener-row .listener-name")].map((e) => e.textContent),
     directory: () => !!screen.queryByRole("heading", { level: 2, name: "Listeners" }),
     composerSlot: () => view.container.querySelector(".composer-slot") as HTMLElement | null,
   };

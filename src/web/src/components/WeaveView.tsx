@@ -5,6 +5,8 @@ import type { Session, SessionState } from "../session.js";
 import { Header } from "./Header.js";
 import { HomeLink } from "./HomeLink.js";
 import { ThreadList } from "./ThreadList.js";
+import { ThreadHeader } from "./ThreadHeader.js";
+import { ThreadDetails } from "./ThreadDetails.js";
 import { MessageList } from "./MessageList.js";
 import { Composer } from "./Composer.js";
 import { NamePrompt } from "./NamePrompt.js";
@@ -12,7 +14,7 @@ import { InviteBanner } from "./InviteBanner.js";
 import { GuidelinesPanel } from "./GuidelinesPanel.js";
 import { RequestsPanel } from "./RequestsPanel.js";
 import { ListenersLink } from "./ListenersLink.js";
-import { ListenersPage } from "./listeners/ListenersPage.js";
+import { ListenersPage, type InviteTarget } from "./listeners/ListenersPage.js";
 import type { MainArea } from "../lobby-view.js";
 
 /**
@@ -60,6 +62,11 @@ export function WeaveView({ session, state, banner, noCredential, openMainInPlac
   // The read-only banner's Join opens the same prompt a blocked send opens, asked for outright
   // rather than provoked by typing a message the session cannot post.
   const [askName, setAskName] = useState(false);
+  // Two switches of the Thread view, UI state only. Folding is on until the human turns it off; the
+  // details panel starts open where the page is wide enough for three columns, closed below that.
+  const [fold, setFold] = useState(true);
+  const [detailsOpen, setDetailsOpen] = useState(() =>
+    typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(min-width: 1200px)").matches);
 
   // The banner rides on every state the page can be in, not just the loaded one. The case that
   // forces it: a §2.6 invalidation whose write reached only memory, on an entry with no secret,
@@ -126,23 +133,38 @@ export function WeaveView({ session, state, banner, noCredential, openMainInPlac
   // that forgot the gate would not be a missing directory, it would be a broken Thread.
   const showListeners = lobbyGate && view === "listeners";
 
+  const current = state.threads.find((t) => t.id === state.currentThreadId);
+  // A directory row's Invite reaches the Thread this browser has open, and only where it may invite
+  // to it: the same `canEditThread` the details panel's invite controls are drawn under.
+  const inviteTarget: InviteTarget | undefined = current && session.canEditThread(current)
+    ? { threadId: current.id, invited: state.invited[current.id], meId: state.me?.participant.id } : undefined;
+  const threadCount = `${state.threads.length} thread${state.threads.length === 1 ? "" : "s"}`;
+  const listenerCount = lobbyGate && state.listenerCount !== undefined
+    ? ` · ${state.listenerCount.toLocaleString()} listener${state.listenerCount === 1 ? "" : "s"}` : "";
+
   return (
     <div class="layout">
       {banner}
       <Header state={state} session={session} onError={reportError} openMainInPlace={openMainInPlace} />
       <div class="body">
-        <aside class="sidebar">
+        <aside class="sidebar" aria-label="Weave">
           {/* The selection is kept; only its mark is withheld, so the sidebar line below is the one
               and only entry saying "this is what you are looking at" (spec §8). */}
           <ThreadList state={state} session={session} onError={reportError} onPick={() => onView?.("thread")}
             markCurrent={!showListeners} />
-          <GuidelinesPanel state={state} session={session} onError={reportError} />
           {/* Both render nothing away from the Lobby, so every other Weave's sidebar is unchanged. */}
-          <RequestsPanel state={state} session={session} onError={reportError} />
           <ListenersLink state={state} active={showListeners}
             onToggle={() => onView?.(showListeners ? "thread" : "listeners")} />
+          <RequestsPanel state={state} session={session} onError={reportError} />
+          <GuidelinesPanel state={state} session={session} onError={reportError} />
+          <div class="sidebar-foot muted">Weave <span class="mono">{state.weave?.title ?? ""}</span>{` · ${threadCount}`}{listenerCount}</div>
         </aside>
-        <div class="main">
+        {/* The page's one <main>: the center column, whichever of the two views it shows. */}
+        <main class="main">
+          {!showListeners && current && (
+            <ThreadHeader thread={current} fold={fold} onFold={setFold}
+              detailsOpen={detailsOpen} onToggleDetails={() => setDetailsOpen((v) => !v)} />
+          )}
           {archived && <div class="banner">This Weave is archived and read-only.</div>}
           {readOnly && (
             <div class="banner">
@@ -152,13 +174,22 @@ export function WeaveView({ session, state, banner, noCredential, openMainInPlac
           )}
           {state.refreshError && <div class="warn-bar">Having trouble syncing: {state.refreshError}</div>}
           {!showListeners && <InviteBanner state={state} session={session} />}
-          {!showListeners && <MessageList state={state} />}
+          {!showListeners && <MessageList state={state} fold={fold} />}
           {showListeners && (
             <section class="listeners-view">
-              {/* Demoted from <h1>: the page's <h1> is the Weave title in the header, and this is
-                  the heading of one region of it (spec §3.3). */}
-              <h2>Listeners</h2>
-              <ListenersPage key={viewKey} session={session} />
+              <div class="listeners-header">
+                {/* Demoted from <h1>: the page's <h1> is the Weave title in the header, and this is
+                    the heading of one region of it (spec §3.3). */}
+                <h2>Listeners</h2>
+                {/* The session's own count read, the number the sidebar line carries; only once known. */}
+                {state.listenerCount !== undefined && (
+                  <span class="muted thread-subtitle">
+                    {state.listenerCount.toLocaleString()} listener{state.listenerCount === 1 ? "" : "s"} on{" "}
+                    <span class="mono">{state.weave?.title ?? ""}</span>
+                  </span>
+                )}
+              </div>
+              <ListenersPage key={viewKey} session={session} invite={inviteTarget} />
             </section>
           )}
           {/* In both views, because `reportError` is the failure channel of the header and of all
@@ -175,7 +206,11 @@ export function WeaveView({ session, state, banner, noCredential, openMainInPlac
               <Composer state={state} onSend={send} draft={draft} />
             </div>
           )}
-        </div>
+        </main>
+        {/* The Thread's own panel, beside the Thread only: the directory is not a Thread. */}
+        {!showListeners && detailsOpen && current && (
+          <ThreadDetails thread={current} state={state} session={session} onError={reportError} />
+        )}
       </div>
       {(pending !== null || askName || (state.needsName && !state.me)) && (
         <NamePrompt onSubmit={join} onCancel={dismissPrompt} error={joinError} />

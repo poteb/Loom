@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import type { JSX } from "preact";
 import { LoomClientError } from "@loom/client";
-import type { Listener, ListenersFacets, ListenersSort, ServesKind } from "@loom/client";
+import type { Listener, ListenersFacets, ListenersSort, Profile, ServesKind } from "@loom/client";
 import type { Session } from "../../session.js";
 import { viewOfPath } from "../../lobby-view.js";
-import { ProfileCard } from "../ProfileCard.js";
+import { ProfileCard, agoText, modelSpecs } from "../ProfileCard.js";
 import { FacetChips, ModelChips } from "./FacetChips.js";
 import {
   EMPTY_VIEW, queryFromView, viewFromSearch, writeSearch, type ListenersView,
@@ -42,18 +43,29 @@ type PageState = {
 };
 
 const SORTS: { value: ListenersSort; label: string }[] = [
-  { value: "name", label: "name" }, { value: "owner", label: "owner" }, { value: "joined", label: "joined" },
+  { value: "name", label: "Name" }, { value: "owner", label: "Owner" }, { value: "joined", label: "Joined" },
 ];
 /** The three stored words, said the way §5.3 says them. The URL still carries the words themselves. */
 const SERVES: Record<string, string> = { anyone: "anyone", owner: "its owner", list: "a named list" };
 
+/** The table's columns, in order; the details row spans all of them. */
+const COLUMNS = ["Listener", "Owner", "Models", "Tools", "Runtime", "Serves", "Last seen", "Joined", "Actions"];
+
 /**
- * The Lobby's directory: search, four facet filters, sort, the `ProfileCard` grid and Show more
- * (spec §5.3). One view of the Lobby page, and it reads nothing from `SessionState` — what it has
- * is a session to ask and its own answers. The only live thing on it is the quiet "the list has
- * changed" line, because it has no stream of its own (§5.5).
+ * Where a row's Invite goes: the Thread this browser has open. `WeaveView` hands it down only when
+ * `canEditThread` says this browser may invite to that Thread, so its absence is the whole of "no
+ * Invite on any row". `invited` is the session's own record of who already is (`state.invited`).
  */
-export function ListenersPage({ session }: { session: Session }) {
+export type InviteTarget = { threadId: string; invited?: ReadonlySet<string>; meId?: string };
+
+/**
+ * The Lobby's directory: search, four facet filters, sort, the listeners table and Show more
+ * (spec §5.3). One view of the Lobby page, and it reads nothing from `SessionState` itself: what it
+ * has is a session to ask, its own answers, and the one slice `WeaveView` hands it for the rows'
+ * Invite. The only live thing on it is the quiet "the list has changed" line, because it has no
+ * stream of its own (§5.5).
+ */
+export function ListenersPage({ session, invite }: { session: Session; invite?: InviteTarget }) {
   // The link this page was opened with, read once. `partial` latches with it: it describes that
   // link, not the controls, which the human has been driving ever since.
   //
@@ -72,6 +84,9 @@ export function ListenersPage({ session }: { session: Session }) {
   const draftRef = useRef(draft);
   const [state, setState] = useState<PageState>({ status: "loading", rows: [] });
   const [changed, setChanged] = useState(false);
+  // A row's failed Invite, on this page's own line: the error bar belongs to the header and the
+  // sidebar panels, and an invite made from here is this page's to report.
+  const [inviteError, setInviteError] = useState<string | undefined>();
   // One generation for the page: every query takes the next number and applies its answer — or its
   // rejection — only while it is still the newest thing asked for (spec §7).
   const gen = useRef(0);
@@ -215,6 +230,18 @@ export function ListenersPage({ session }: { session: Session }) {
    *  cannot survive. */
   const reload = () => { firstTotal.current = undefined; setChanged(false); apply((v) => ({ ...v })); };
   const showMore = () => { if (state.nextCursor && !state.appending) run(view, state.nextCursor); };
+  /** One row's Invite, answering whether it landed. "no_identity" is not an error to display, as in
+   *  `WeaveView`'s `reportError`: the session has already raised its name prompt. */
+  const inviteOne = async (threadId: string, participantId: string): Promise<boolean> => {
+    setInviteError(undefined);
+    try { await session.invite(threadId, participantId); return true; }
+    catch (e) {
+      if (live.current && !(e instanceof LoomClientError && e.code === "no_identity")) {
+        setInviteError(e instanceof Error ? e.message : String(e));
+      }
+      return false;
+    }
+  };
 
   const n = (v: number) => v.toLocaleString();
   // `of` before `matched` and `out of` before `total`: three numbers in one sentence need the two
@@ -225,82 +252,86 @@ export function ListenersPage({ session }: { session: Session }) {
       : `Showing ${n(state.rows.length)} of ${n(state.matched)} matches (out of ${n(state.total)} listeners)`
     : undefined;
 
+  const updating = state.status === "loading" && state.rows.length > 0;
+
   return (
     <div class="listeners">
-      {opened.partial && (
-        <p class="listeners-partial muted">Part of this link was not understood, so it was ignored.</p>
-      )}
-
-      <div class="listeners-controls">
-        <label class="listeners-search">Search
-          <input type="search" value={draft} placeholder="name or owner" maxLength={MAX_Q}
-            onInput={(e) => type((e.target as HTMLInputElement).value)} />
-        </label>
-        <label>sort
-          <select value={view.sort}
-            onChange={(e) => { const s = (e.target as HTMLSelectElement).value as ListenersSort;
-                               apply((v) => ({ ...v, sort: s })); }}>
-            {SORTS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
-          </select>
-        </label>
-        <label>direction
-          <select value={view.dir}
+      <div class="listeners-toolbar">
+        <div class="listeners-controls">
+          <label class="listeners-search">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" /></svg>
+            <span class="visually-hidden">Search</span>
+            <input type="search" value={draft} placeholder="Filter by name or owner" maxLength={MAX_Q}
+              onInput={(e) => type((e.target as HTMLInputElement).value)} />
+          </label>
+          <span class="spacer" />
+          <label>Sort
+            <select value={view.sort}
+              onChange={(e) => { const s = (e.target as HTMLSelectElement).value as ListenersSort;
+                                 apply((v) => ({ ...v, sort: s })); }}>
+              {SORTS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+            </select>
+          </label>
+          {/* Beside the sort it orders, under the same visible word; its own name is for a reader. */}
+          <select aria-label="Direction" value={view.dir}
             onChange={(e) => { const d = (e.target as HTMLSelectElement).value as "asc" | "desc";
                                apply((v) => ({ ...v, dir: d })); }}>
-            <option value="asc">asc</option>
-            <option value="desc">desc</option>
+            <option value="asc">Ascending</option>
+            <option value="desc">Descending</option>
           </select>
-        </label>
-        <button type="button" class="link" disabled={atDefaults} onClick={clear}>Clear filters</button>
+          <button type="button" class="btn btn-ghost" disabled={atDefaults} onClick={clear}>Clear filters</button>
+        </div>
+
+        {state.facets && (
+          <div class="listeners-facets">
+            {/* At the cap only an *unselected* chip is refused: taking one off is the one move that
+                still gets anywhere, so the selected ones stay live. */}
+            <ModelChips facet={state.facets.models} selected={view.models}
+              atCap={view.models.length >= MAX_MODELS ? `At most ${MAX_MODELS} models at once` : undefined}
+              onToggleModel={toggleModel} onToggleEffort={toggleEffort} />
+            <FacetChips label="tools" hint="all of these" values={state.facets.tools.values}
+              more={state.facets.tools.more} selected={view.tools} onToggle={toggleTool}
+              atCap={view.tools.length >= MAX_TOOLS ? `At most ${MAX_TOOLS} tools at once` : undefined} />
+            <FacetChips label="runtime" hint="one of these" values={state.facets.runtimes.values}
+              more={state.facets.runtimes.more} selected={view.runtime ? [view.runtime] : []} onToggle={toggleRuntime} />
+            <FacetChips label="serves" hint="one of these" values={state.facets.serves.values}
+              more={false} selected={view.serves ? [view.serves] : []} onToggle={toggleServes}
+              labelOf={(v) => SERVES[v] ?? v} />
+          </div>
+        )}
       </div>
 
-      {state.facets && (
-        <div class="listeners-facets">
-          {/* At the cap only an *unselected* chip is refused: taking one off is the one move that
-              still gets anywhere, so the selected ones stay live. */}
-          <ModelChips facet={state.facets.models} selected={view.models}
-            atCap={view.models.length >= MAX_MODELS ? `At most ${MAX_MODELS} models at once` : undefined}
-            onToggleModel={toggleModel} onToggleEffort={toggleEffort} />
-          <FacetChips label="tools" hint="all of these" values={state.facets.tools.values}
-            more={state.facets.tools.more} selected={view.tools} onToggle={toggleTool}
-            atCap={view.tools.length >= MAX_TOOLS ? `At most ${MAX_TOOLS} tools at once` : undefined} />
-          <FacetChips label="runtime" hint="one of these" values={state.facets.runtimes.values}
-            more={state.facets.runtimes.more} selected={view.runtime ? [view.runtime] : []} onToggle={toggleRuntime} />
-          <FacetChips label="serves" hint="one of these" values={state.facets.serves.values}
-            more={false} selected={view.serves ? [view.serves] : []} onToggle={toggleServes}
-            labelOf={(v) => SERVES[v] ?? v} />
-        </div>
+      {opened.partial && (
+        <p class="listeners-note muted">Part of this link was not understood, so it was ignored.</p>
       )}
-
-      {/* Above the rows, never instead of them (spec §7) — and announced, because the rows below it
+      {/* Above the rows, never instead of them (spec §7), and announced, because the rows below it
           do not change when a query fails and there is nothing else to notice. */}
-      {state.status === "error" && <p class="error" role="alert">{state.error}</p>}
+      {state.status === "error" && <p class="listeners-note error" role="alert">{state.error}</p>}
+      {inviteError && <p class="listeners-note error" role="alert">{inviteError}</p>}
       {changed && (
-        <p class="listeners-changed muted">
+        <p class="listeners-note muted">
           <span>The list has changed since you loaded it.</span>{" "}
           <button type="button" class="link" onClick={reload}>Reload the list</button>
         </p>
       )}
 
-      <p class="listeners-counts">
-        {counts && <span>{counts}</span>}
-        {state.status === "loading" && state.rows.length > 0 && (
-          // The rows are deliberately kept on screen while this runs (spec §5.3), so the only sign
-          // that anything is happening is this word. `CreateWeaveForm` sets the precedent.
-          <span class="listeners-updating" role="status">updating…</span>
-        )}
-      </p>
+      <Table state={state} invite={invite} onInvite={inviteOne} />
 
-      <Grid state={state} />
-
-      {/* The error outlives the button: a cursor core refused with `validation` is forgotten, and
-          the reason it was refused must not go with it. */}
-      {(state.nextCursor || state.moreError) && (
-        <div class="listeners-more">
-          {state.nextCursor && (
-            <button type="button" onClick={showMore} disabled={state.appending}>Show more</button>
+      {(counts || updating || state.nextCursor || state.moreError) && (
+        <div class="listeners-foot muted">
+          {counts && <span>{counts}</span>}
+          {updating && (
+            // The rows are deliberately kept on screen while this runs (spec §5.3), so the only sign
+            // that anything is happening is this word. `CreateWeaveForm` sets the precedent.
+            <span class="listeners-updating" role="status">updating…</span>
           )}
+          <span class="spacer" />
+          {/* The error outlives the button: a cursor core refused with `validation` is forgotten, and
+              the reason it was refused must not go with it. */}
           {state.moreError && <span class="error" role="alert">{state.moreError}</span>}
+          {state.nextCursor && (
+            <button type="button" class="btn btn-ghost btn-sm" onClick={showMore} disabled={state.appending}>Show more</button>
+          )}
         </div>
       )}
     </div>
@@ -309,27 +340,121 @@ export function ListenersPage({ session }: { session: Session }) {
 
 /**
  * The rows, or the one sentence that stands in for them. "No listener matches these filters" is
- * reachable **only** from a successful read that returned nothing — a failed query still renders
+ * reachable **only** from a successful read that returned nothing: a failed query still renders
  * whatever rows it has, and a first load renders "Loading…" (spec §5.3, §7).
  */
-function Grid({ state }: { state: PageState }) {
+function Table({ state, invite, onInvite }: {
+  state: PageState; invite?: InviteTarget;
+  onInvite: (threadId: string, participantId: string) => Promise<boolean>;
+}) {
   if (state.rows.length === 0) {
-    if (state.status === "loading") return <p class="muted" role="status">Loading…</p>;
-    if (state.status === "ready") {
-      return state.total === 0
+    let line: JSX.Element | null = null;             // an error, whose message is already above
+    if (state.status === "loading") line = <p class="muted" role="status">Loading…</p>;
+    else if (state.status === "ready") {
+      line = state.total === 0
         ? <p class="muted">Nobody has declared a profile yet.</p>
         : <p class="muted">No listener matches these filters.</p>;
     }
-    return null;                               // an error, whose message is already above
+    return line && <div class="listeners-empty">{line}</div>;
   }
+  const now = Date.now();
   return (
-    <div class={`listeners-grid${state.status === "loading" ? " listeners-grid-stale" : ""}`}>
-      {/* A `Listener` carries the profile *beside* the participant, and `getWeave` blanks the
-          participant's own copy in the Lobby (spec §3.1) — so the card is handed the pair put back
-          together rather than a participant whose `capabilities` is null. */}
-      {state.rows.map((l) => (
-        <ProfileCard key={l.participant.id} participant={{ ...l.participant, capabilities: l.capabilities }} />
-      ))}
+    <div class="listeners-table-wrap">
+      {/* A control change keeps the rows and dims them; the table never blanks between queries. */}
+      <table class={`listeners-table${state.status === "loading" ? " listeners-table-stale" : ""}`}>
+        <thead>
+          <tr>{COLUMNS.map((c) => <th key={c} scope="col" class={c === "Actions" ? "listener-actions" : undefined}>{c}</th>)}</tr>
+        </thead>
+        <tbody>
+          {state.rows.map((l) => <Row key={l.participant.id} listener={l} now={now} invite={invite} onInvite={onInvite} />)}
+        </tbody>
+      </table>
     </div>
+  );
+}
+
+/** `serves` as one of the three words the facet row uses; a named list is spelled out in the details. */
+function servesWord(profile: Profile): string {
+  const v = profile.serves;
+  const word = Array.isArray(v) ? "list" : v ?? "owner";
+  return SERVES[word] ?? word;
+}
+
+/** When the listener joined: the time alone today, the date on any other day. */
+function joinedText(iso: string): string | null {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return new Date().toDateString() === d.toDateString()
+    ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : d.toLocaleDateString();
+}
+
+/**
+ * One listener: its row, and under it, while its Profile toggle is pressed, a row of its own holding
+ * the full `ProfileCard`. Invite is offered only with an `InviteTarget` and never to this browser's
+ * own participant; once it lands, or once the session's log shows the invite, it reads Invited and
+ * takes no click. The ref, not the state, is what refuses a second click before the first answers:
+ * two clicks in one tick both run before the re-render that would disable the button.
+ */
+function Row({ listener: l, now, invite, onInvite }: {
+  listener: Listener; now: number; invite?: InviteTarget;
+  onInvite: (threadId: string, participantId: string) => Promise<boolean>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const inFlight = useRef(false);
+  // The Thread the invite landed on, not a flag: a flag would go on saying Invited for another Thread.
+  const [doneFor, setDoneFor] = useState<string | undefined>();
+  const p = l.participant;
+  const profile = l.capabilities;
+  const tools = profile.tools ?? [];
+  const joined = joinedText(p.joinedAt);
+  const canInvite = invite !== undefined && p.id !== invite.meId;
+  const invited = canInvite && (!!invite.invited?.has(p.id) || doneFor === invite.threadId);
+  const details = `listener-details-${p.id}`;
+
+  const doInvite = async () => {
+    if (!invite || inFlight.current) return;
+    inFlight.current = true;
+    setBusy(true);
+    const threadId = invite.threadId;
+    const ok = await onInvite(threadId, p.id);
+    inFlight.current = false;
+    setBusy(false);
+    if (ok) setDoneFor(threadId);
+  };
+
+  return (
+    <>
+      <tr class="listener-row">
+        <td><span class="mono listener-name">{p.name}</span></td>
+        <td>{profile.owner ? String(profile.owner) : ""}</td>
+        <td>{modelSpecs(profile).join(", ")}</td>
+        <td>{tools.slice(0, 3).join(", ")}{tools.length > 3 && <span class="muted"> +{tools.length - 3}</span>}</td>
+        <td>{profile.runtime ? String(profile.runtime) : ""}</td>
+        <td>{servesWord(profile)}</td>
+        <td class="mono muted">{agoText(p.lastSeenAt, now)}</td>
+        <td class="mono muted">{joined && <time dateTime={p.joinedAt}>{joined}</time>}</td>
+        <td class="listener-actions">
+          {canInvite && (invited
+            ? <button type="button" class="btn btn-sm" disabled aria-label={`Invited ${p.name}`}>Invited</button>
+            : <button type="button" class="btn btn-sm" disabled={busy} aria-label={`Invite ${p.name}`}
+                onClick={() => void doInvite()}>Invite</button>)}
+          <button type="button" class="btn btn-ghost btn-sm" aria-label={`Profile of ${p.name}`}
+            aria-expanded={open} aria-controls={open ? details : undefined}
+            onClick={() => setOpen((o) => !o)}>Profile</button>
+        </td>
+      </tr>
+      {/* A `Listener` carries the profile *beside* the participant, and `getWeave` blanks the
+          participant's own copy in the Lobby (spec §3.1), so the card is handed the pair put back
+          together rather than a participant whose `capabilities` is null. */}
+      {open && (
+        <tr class="listener-details" id={details}>
+          <td colSpan={COLUMNS.length}>
+            <ProfileCard participant={{ ...p, capabilities: profile }} now={now} />
+          </td>
+        </tr>
+      )}
+    </>
   );
 }

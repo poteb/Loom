@@ -2,7 +2,12 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/preact";
 import { ThreadList } from "../src/components/ThreadList.js";
+import { ThreadDetails } from "../src/components/ThreadDetails.js";
+import { ThreadHeader } from "../src/components/ThreadHeader.js";
+import { Header } from "../src/components/Header.js";
+import { initials } from "../src/components/initials.js";
 import { MessageList } from "../src/components/MessageList.js";
+import { Composer } from "../src/components/Composer.js";
 import { InviteBanner } from "../src/components/InviteBanner.js";
 import { GuidelinesPanel, GUIDELINES_MAX } from "../src/components/GuidelinesPanel.js";
 import { RequestsPanel } from "../src/components/RequestsPanel.js";
@@ -10,7 +15,7 @@ import { ProfileCard } from "../src/components/ProfileCard.js";
 import { WeaveView } from "../src/components/WeaveView.js";
 import { App, routeOf } from "../src/app.js";
 import { MAX_GUIDELINES_LENGTH } from "@loom/core";
-import { LoomClient, type Acceptance, type Offer } from "@loom/client";
+import { LoomClient, type Acceptance, type Offer, type Thread } from "@loom/client";
 import { CLOSED_REQUESTS_PAGE, type Session, type SessionState } from "../src/session.js";
 import type { VersionedRequest } from "../src/requests-state.js";
 import { memoryStorage, type KeyValueStorage } from "../src/storage.js";
@@ -62,12 +67,19 @@ function lobbyState(over: Partial<SessionState> = {}): SessionState {
 }
 
 describe("ThreadList", () => {
-  it("shows a thread's url as a truncated link and highlights a thread with an unread invite", () => {
+  it("tags a GitHub pull request thread PR <n> and highlights a thread with an unread invite", () => {
     render(<ThreadList state={state({ invitesForMe: new Set(["t1"]) })} session={session()} onError={() => {}} />);
-    const link = screen.getByRole("link", { name: /github.com\/poteb\/Loom\/pull\/12/ });
-    expect(link.getAttribute("href")).toBe(pr.url);
-    expect(screen.getByText("PR 12").closest("li")!.className).toContain("invited");
+    const row = screen.getByRole("button", { name: /^PR 12/ });
+    expect(row.querySelector(".thread-tag")!.textContent).toBe("PR 12");
+    expect(row.closest("li")!.className).toContain("invited");
     expect(screen.getByText(/invited/i)).toBeTruthy();
+    // The artefact link itself lives in the thread header and the details panel now, not in the list.
+    expect(screen.queryByRole("link")).toBeNull();
+  });
+  it("tags any other http(s) artefact with its host", () => {
+    const other = { ...pr, url: "https://docs.example.com/design/7" };
+    render(<ThreadList state={state({ threads: [general, other] })} session={session()} onError={() => {}} />);
+    expect(screen.getByRole("button", { name: /^PR 12/ }).querySelector(".thread-tag")!.textContent).toBe("docs.example.com");
   });
   it("is a navigation landmark, not a second complementary one inside the sidebar aside", () => {
     // app.tsx wraps this in <aside class="sidebar">; an <aside> here would nest two
@@ -76,32 +88,291 @@ describe("ThreadList", () => {
     expect(container.querySelector(".threads")!.tagName).toBe("NAV");
   });
 
-  it("renders a non-http url as plain text, never as a link", () => {
+  it("gives a non-http url no link and no tag", () => {
     const evil = { ...pr, url: "javascript:alert(1)" };
     render(<ThreadList state={state({ threads: [general, evil] })} session={session()} onError={() => {}} />);
-    expect(screen.queryByRole("link")).toBeNull();
-    expect(screen.getByText("javascript:alert(1)")).toBeTruthy();
+    expect([screen.queryByRole("link"), screen.getByRole("button", { name: /^PR 12/ }).querySelector(".thread-tag")])
+      .toEqual([null, null]);
   });
-  it("new-thread form sends the url; invite button only for creator/keeper and only for others", async () => {
+  it("new-thread form sends the url", async () => {
     const s = session();
     render(<ThreadList state={state({ currentThreadId: "t1" })} session={s} onError={() => {}} />);
-    fireEvent.click(screen.getByText("New thread"));
+    fireEvent.click(screen.getByRole("button", { name: "New thread" }));
     fireEvent.input(screen.getByPlaceholderText("Thread name"), { target: { value: "PR 13" } });
     fireEvent.input(screen.getByPlaceholderText("Artefact URL (optional)"), { target: { value: "https://e.com/13" } });
     fireEvent.submit(screen.getByPlaceholderText("Thread name").closest("form")!);
     await Promise.resolve();
     expect(s.createThread).toHaveBeenCalledWith("PR 13", "https://e.com/13");
+  });
+  it("renders no close control in the list: closing a thread lives in the details panel", () => {
+    render(<ThreadList state={state()} session={session({ canModerate: () => true })} onError={() => {}} />);
+    expect(screen.queryByRole("button", { name: /^close( thread)?$/i })).toBeNull();
+  });
+
+  describe("the thread filter", () => {
+    const closedA = { ...pr, id: "t2", name: "Old review", closedAt: "2026-09-20T10:00:00.000Z" };
+    const closedB = { ...pr, id: "t3", name: "Expiry check", closedAt: "2026-09-20T11:00:00.000Z", url: null };
+    const threeWay = (over: Partial<SessionState> = {}) => state({ threads: [general, pr, closedA, closedB], ...over });
+    const names = (container: Element) => [...container.querySelectorAll(".thread-name")].map((e) => e.textContent);
+    const tab = (name: RegExp) => screen.getByRole("button", { name });
+
+    it("counts the open and the closed threads on its tabs", () => {
+      render(<ThreadList state={threeWay()} session={session()} onError={() => {}} />);
+      expect([tab(/^Open/).textContent, tab(/^Closed/).textContent, tab(/^All$/).textContent])
+        .toEqual(["Open · 2", "Closed · 2", "All"]);
+    });
+
+    it("shows the open threads by default and hides the closed ones", () => {
+      const { container } = render(<ThreadList state={threeWay()} session={session()} onError={() => {}} />);
+      expect([names(container), tab(/^Open/).getAttribute("aria-pressed")]).toEqual([["General", "PR 12"], "true"]);
+    });
+
+    it("shows only the closed threads, and every thread under All", () => {
+      const { container } = render(<ThreadList state={threeWay({ currentThreadId: "t2" })} session={session()} onError={() => {}} />);
+      fireEvent.click(tab(/^Closed/));
+      const closed = names(container);
+      fireEvent.click(tab(/^All$/));
+      expect([closed, names(container), tab(/^All$/).getAttribute("aria-pressed"), tab(/^Closed/).getAttribute("aria-pressed")])
+        .toEqual([["Old review", "Expiry check"], ["General", "PR 12", "Old review", "Expiry check"], "true", "false"]);
+    });
+
+    it("always lists the current thread, even where the filter would hide it", () => {
+      const { container } = render(<ThreadList state={threeWay({ currentThreadId: "t3" })} session={session()} onError={() => {}} />);
+      expect(names(container)).toEqual(["General", "PR 12", "Expiry check"]);
+    });
+
+    it("keeps the current General thread on the Closed tab", () => {
+      const { container } = render(<ThreadList state={threeWay({ currentThreadId: "g1" })} session={session()} onError={() => {}} />);
+      fireEvent.click(tab(/^Closed/));
+      expect(names(container)).toEqual(["General", "Old review", "Expiry check"]);
+    });
+  });
+});
+
+describe("ThreadDetails", () => {
+  const at = "2026-09-24T13:07:00.000Z";
+  const mine = { ...pr, createdAt: at };
+  const details = (over: Partial<SessionState> = {}, s: Session = session(), thread: Thread = mine) =>
+    render(<ThreadDetails thread={thread} state={state({ currentThreadId: thread.id, threads: [general, thread], ...over })} session={s} onError={() => {}} />);
+  const fact = (container: Element, label: string) => {
+    const dt = [...container.querySelectorAll(".facts dt")].find((e) => e.textContent === label);
+    return dt?.nextElementSibling?.textContent ?? null;
+  };
+
+  it("is the complementary region named Thread details", () => {
+    details();
+    expect(screen.getByRole("complementary", { name: "Thread details" })).toBeTruthy();
+  });
+
+  it("states the thread's status, creator, link and message counts", () => {
+    const msg = (seq: number) => ({ weaveId: "w1", seq, threadId: "t1", type: "message" as const, actor: "p1", at, payload: { text: "hi" } });
+    const sys = (seq: number) => ({ weaveId: "w1", seq, threadId: "t1", type: "participant.joined" as const, actor: "p2", at, payload: { participantId: "p2" } });
+    const elsewhere = { ...msg(9), threadId: "g1" };
+    const { container } = details({ events: [msg(1), sys(2), sys(3), msg(4), elsewhere] });
+    expect([fact(container, "Status"), fact(container, "Created")!.endsWith("· Paw"), fact(container, "Messages")])
+      .toEqual(["open", true, "2 · 2 system events"]);
+    const link = screen.getByRole("link", { name: /github.com\/poteb\/Loom\/pull\/12/ });
+    expect(link.getAttribute("href")).toBe(pr.url);
+  });
+
+  it("gives only the time when the creator is not a participant, and names a keeper Keeper", () => {
+    const { container } = details({}, session(), { ...mine, createdBy: "p-gone" });
+    const stranger = fact(container, "Created");
+    const time = container.querySelector(".facts time")!.textContent;
+    const keeper = details({}, session(), { ...mine, createdBy: "keeper:k1" }).container;
+    expect([stranger, fact(keeper, "Created")]).toEqual([time, `${time} · Keeper`]);
+  });
+
+  it("says none when the thread links to no artefact, and closed for a closed thread", () => {
+    const { container } = details({}, session(), { ...mine, url: null, closedAt: at });
+    expect([fact(container, "Linked artefact"), fact(container, "Status")]).toEqual(["none", "closed"]);
+  });
+
+  it("renders a non-http url as plain text, never as a link", () => {
+    details({}, session(), { ...mine, url: "javascript:alert(1)" });
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.getByText("javascript:alert(1)")).toBeTruthy();
+  });
+
+  it("saves the artefact link for whoever may edit the thread", async () => {
+    const s = session();
+    details({}, s);
+    const box = screen.getByLabelText("Artefact link") as HTMLInputElement;
+    const before = box.value;
+    fireEvent.input(box, { target: { value: " https://e.com/99 " } });
+    fireEvent.click(screen.getByRole("button", { name: "Save link" }));
+    await Promise.resolve();
+    expect([before, (s.setThreadUrl as ReturnType<typeof vi.fn>).mock.calls]).toEqual([pr.url, [["t1", "https://e.com/99"]]]);
+  });
+
+  it("offers no link form to someone who may not edit the thread", () => {
+    details({}, session({ canEditThread: () => false }));
+    expect([screen.queryByLabelText("Artefact link"), screen.queryByRole("button", { name: "Save link" })]).toEqual([null, null]);
+  });
+
+  it("offers Close thread to a keeper on an open thread that is not General, and closes it", async () => {
+    const closeThread = vi.fn(async () => {});
+    details({}, session({ canModerate: () => true, closeThread }));
+    fireEvent.click(screen.getByRole("button", { name: "Close thread" }));
+    await Promise.resolve();
+    expect(closeThread).toHaveBeenCalledWith("t1");
+  });
+
+  it("offers no Close thread on General, on a closed thread, or to a member", () => {
+    details({}, session({ canModerate: () => true }), { ...general, createdAt: at });
+    details({}, session({ canModerate: () => true }), { ...mine, closedAt: at });
+    details({}, session());
+    expect(screen.queryAllByRole("button", { name: "Close thread" })).toHaveLength(0);
+  });
+
+  /** Each people row as [name, its right-hand text or null, whether the name is mono]. */
+  const peopleRows = (root: Element) => [...root.querySelectorAll(".people li")].map((li) => [li.querySelector(".person-name")!.textContent,
+    li.querySelector(".person-role, .pill")?.textContent ?? null, li.querySelector(".person-name")!.classList.contains("mono")]);
+
+  it("lists who is in the Weave, with me marked as you and agents in mono under an agent pill", () => {
+    const { container } = details();
+    expect([screen.getByText("In this Weave · 2").tagName, peopleRows(container)])
+      .toEqual(["SPAN", [["Paw", "you · member", false], ["Bot", "agent", true]]]);
+    expect(container.querySelector(".people .pill")!.className).toBe("pill pill-working");
+  });
+
+  it("lists me first, marks a keeper as keeper, and gives a human member no right-hand text", () => {
+    const ann = { ...me, id: "p3", name: "Ann", role: "keeper" as const };
+    const bo = { ...me, id: "p4", name: "Bo" };
+    const { container } = details({ participants: [ann, bot, me, bo] });
+    expect(peopleRows(container)).toEqual([["Paw", "you · member", false], ["Ann", "keeper", false],
+      ["Bot", "agent", true], ["Bo", null, false]]);
+  });
+
+  describe("a long people list", () => {
+    const many = (n: number) => Array.from({ length: n }, (_, i) => ({ ...me, id: `h${i}`, name: `H${i}` }));
+
+    it("shows eight rows and folds the rest behind a details element that reads <n> more", () => {
+      const { container } = details({ participants: [...many(11), me] });
+      const more = container.querySelector<HTMLDetailsElement>(".details details")!;
+      const outside = [...container.querySelectorAll(".people li")].filter((li) => !more.contains(li));
+      expect([outside.map((li) => li.querySelector(".person-name")!.textContent), more.open,
+        more.querySelector("summary")!.textContent, peopleRows(more).map((r) => r[0])])
+        .toEqual([["Paw", "H0", "H1", "H2", "H3", "H4", "H5", "H6"], false, "4 more", ["H7", "H8", "H9", "H10"]]);
+    });
+
+    it("opens the rest when its summary is clicked", () => {
+      const { container } = details({ participants: [...many(11), me] });
+      fireEvent.click(screen.getByText("4 more"));
+      expect(container.querySelector<HTMLDetailsElement>(".details details")!.open).toBe(true);
+    });
+
+    it("folds nothing when there are eight people or fewer", () => {
+      const { container } = details({ participants: [me, ...many(7)] });
+      expect([container.querySelector(".details details"), container.querySelectorAll(".people li").length]).toEqual([null, 8]);
+    });
+
+    it("keeps an invite control on the folded rows for whoever may invite", () => {
+      details({ participants: [me, ...many(9)] });
+      expect(screen.getAllByRole("button", { name: /^invite /i }).map((b) => b.getAttribute("aria-label")))
+        .toEqual(Array.from({ length: 9 }, (_, i) => `invite H${i}`));
+    });
+  });
+
+  it("invite button only for creator/keeper and only for others", () => {
+    const s = session();
+    details({}, s);
     const inviteButtons = screen.getAllByRole("button", { name: /^invite /i });
-    expect(inviteButtons.map((b) => b.textContent)).toEqual(["invite Bot"]);   // not myself
+    expect(inviteButtons.map((b) => b.getAttribute("aria-label"))).toEqual(["invite Bot"]);   // not myself
     fireEvent.click(inviteButtons[0]!);
     expect(s.invite).toHaveBeenCalledWith("t1", "p2");
   });
-  it("shows a check mark instead of the invite button for someone already invited; no invite controls for a plain member", () => {
-    render(<ThreadList state={state({ currentThreadId: "t1", invited: { t1: new Set(["p2"]) } })} session={session()} onError={() => {}} />);
+
+  it("shows an invited mark instead of the invite button for someone already invited; no invite controls for a plain member", () => {
+    details({ invited: { t1: new Set(["p2"]) } });
     expect(screen.queryByRole("button", { name: /^invite /i })).toBeNull();
     expect(screen.getByTitle("invited")).toBeTruthy();
-    render(<ThreadList state={state({ currentThreadId: "t1" })} session={session({ canEditThread: () => false })} onError={() => {}} />);
+    details({}, session({ canEditThread: () => false }));
     expect(screen.queryAllByRole("button", { name: /^invite /i })).toHaveLength(0);
+  });
+});
+
+describe("ThreadHeader", () => {
+  const header = (thread: Thread = pr, fold = true, open = false) => {
+    const onFold = vi.fn();
+    const onToggleDetails = vi.fn();
+    const r = render(<ThreadHeader thread={thread} fold={fold} onFold={onFold} detailsOpen={open} onToggleDetails={onToggleDetails} />);
+    return { ...r, onFold, onToggleDetails };
+  };
+
+  it("names the thread with its status pill", () => {
+    header();
+    expect([screen.getByRole("heading", { level: 2 }).textContent, screen.getByText("open").className])
+      .toEqual(["# PR 12", "pill pill-open"]);
+  });
+
+  it("calls General the Weave-wide thread", () => {
+    header(general);
+    expect(screen.getByText("Weave-wide thread")).toBeTruthy();
+  });
+
+  it("links an http(s) artefact under the name, and shows nothing for any other url", () => {
+    header();
+    const href = screen.getByRole("link").getAttribute("href");
+    header({ ...pr, id: "t9", url: "javascript:alert(1)" });
+    expect([href, screen.getAllByRole("link").length, screen.queryByText(/javascript/)]).toEqual([pr.url, 1, null]);
+  });
+
+  it("reports the fold checkbox", () => {
+    const { onFold } = header();
+    const box = screen.getByRole("checkbox", { name: "Fold system events" }) as HTMLInputElement;
+    const was = box.checked;
+    fireEvent.click(box);
+    expect([was, onFold.mock.calls]).toEqual([true, [[false]]]);
+  });
+
+  it("says whether the details panel is open on its toggle", () => {
+    const { onToggleDetails } = header();
+    const closed = screen.getByRole("button", { name: "Thread details" });
+    const was = closed.getAttribute("aria-expanded");
+    fireEvent.click(closed);
+    header(pr, true, true);
+    const all = screen.getAllByRole("button", { name: "Thread details" }).map((b) => b.getAttribute("aria-expanded"));
+    expect([was, all, onToggleDetails.mock.calls.length]).toEqual(["false", ["false", "true"], 1]);
+  });
+});
+
+describe("Header", () => {
+  const pill = () => screen.getByRole("status");
+
+  for (const [connection, text] of [
+    ["open", "Connected"], ["connecting", "Connecting…"], ["reconnecting", "Reconnecting…"], ["closed", "Disconnected"],
+  ] as const) {
+    it(`says ${text} while the stream is ${connection}`, () => {
+      render(<Header state={state({ connection })} session={session()} onError={() => {}} />);
+      expect([pill().textContent, pill().classList.contains("conn"), pill().classList.contains(`conn-${connection}`)])
+        .toEqual([text, true, true]);
+    });
+  }
+
+  it("shows who I am as initials, name and role", () => {
+    const { container } = render(<Header state={state({ me: { participant: { ...me, name: "Paw_browser" }, token: "t" } })}
+      session={session()} onError={() => {}} />);
+    expect([container.querySelector(".avatar")!.textContent, container.querySelector(".header-right strong")!.textContent,
+      container.querySelector(".who-role")!.textContent]).toEqual(["PB", "Paw_browser", "member"]);
+  });
+
+  it("says reading as guest without an identity", () => {
+    const { container } = render(<Header state={state({ me: undefined })} session={session()} onError={() => {}} />);
+    expect([screen.getByText("reading as guest").tagName, container.querySelector(".avatar")]).toEqual(["SPAN", null]);
+  });
+
+  it("offers Archive Weave to a keeper only", () => {
+    render(<Header state={state()} session={session()} onError={() => {}} />);
+    const member = screen.queryByRole("button", { name: "Archive Weave" });
+    render(<Header state={state()} session={session({ canModerate: () => true })} onError={() => {}} />);
+    expect([member, screen.getAllByRole("button", { name: "Archive Weave" }).length]).toEqual([null, 1]);
+  });
+});
+
+describe("initials", () => {
+  it("takes the first letters of the first two name parts, else the first two letters", () => {
+    expect(["Paw_browser", "seed-14", "dana", "a", "x.y.z"].map(initials)).toEqual(["PB", "S1", "DA", "A", "XY"]);
   });
 });
 
@@ -132,7 +403,7 @@ describe("MessageList", () => {
       { weaveId: "w1", seq: 1, threadId: "t1", type: "thread.invited" as const, actor: "p1", at: new Date().toISOString(), payload: { threadId: "t1", participantId: "p2", invitedBy: "p1" } },
       { weaveId: "w1", seq: 2, threadId: "t1", type: "thread.url_changed" as const, actor: "p1", at: new Date().toISOString(), payload: { threadId: "t1", url: "https://e.com/x" } },
     ];
-    render(<MessageList state={state({ currentThreadId: "t1", events })} />);
+    render(<MessageList state={state({ currentThreadId: "t1", events })} fold={false} />);
     expect(screen.getByText(/Bot invited by Paw/)).toBeTruthy();
     expect(screen.getByText(/now links to https:\/\/e.com\/x/)).toBeTruthy();
   });
@@ -140,11 +411,11 @@ describe("MessageList", () => {
   it("names the actor and renders the new text beneath a guidelines change, and says cleared for an empty one", () => {
     const change = { weaveId: "w1", seq: 3, threadId: "t1", type: "weave.guidelines_changed" as const, actor: "p1",
       at: new Date().toISOString(), payload: { guidelines: "Be **kind**", previous: "" } };
-    const { container, rerender } = render(<MessageList state={state({ currentThreadId: "t1", events: [change] })} />);
+    const { container, rerender } = render(<MessageList state={state({ currentThreadId: "t1", events: [change] })} fold={true} />);
     expect(screen.getByText(/Paw changed the Weave guidelines/)).toBeTruthy();
     expect(container.querySelector(".system-body strong")!.textContent).toBe("kind");
     const cleared = { ...change, seq: 4, payload: { guidelines: "", previous: "Be **kind**" } };
-    rerender(<MessageList state={state({ currentThreadId: "t1", events: [cleared] })} />);
+    rerender(<MessageList state={state({ currentThreadId: "t1", events: [cleared] })} fold={true} />);
     expect(screen.getByText(/Paw cleared the Weave guidelines/)).toBeTruthy();
     expect(container.querySelector(".system-body")).toBeNull();
   });
@@ -158,8 +429,8 @@ describe("MessageList", () => {
       { ...base, seq: 4, type: "weave.invited" as const, payload: { invitationId: "i1", participantId: "p2", targetWeaveTitle: "Loom session" } },
       { ...base, seq: 5, type: "request.closed" as const, payload: { requestId: "r1", requesterId: "p1", to: ["p1"], reason: "filled", accepted: ["p2"] } },
     ];
-    const { container } = render(<MessageList state={lobbyState({ currentThreadId: "th1", events })} />);
-    expect(container.querySelectorAll(".system")).toHaveLength(5);
+    const { container } = render(<MessageList state={lobbyState({ currentThreadId: "th1", events })} fold={false} />);
+    expect(container.querySelectorAll(".sysrow")).toHaveLength(5);
     expect(screen.getByText(/request "Review PR 14" opened by Paw: wants 2/)).toBeTruthy();
     expect(screen.getByText(/Helper offered \(gpt-5\.6-sol\/high\): "ready"/)).toBeTruthy();
     expect(screen.getByText(/Helper accepted for "Loom session"/)).toBeTruthy();
@@ -178,8 +449,8 @@ describe("MessageList", () => {
       { ...base, seq: 4, type: "thread.removed" as const, actor: "p1", payload: { threadId: "th1", participantId: "p2", removedBy: "p1", requestId: "r1" } },
       { ...base, seq: 5, type: "thread.removed" as const, actor: "keeper:k1", payload: { threadId: "th1", participantId: "p2", removedBy: "keeper:k1" } },
     ];
-    const { container } = render(<MessageList state={lobbyState({ currentThreadId: "th1", events })} />);
-    const lines = [...container.querySelectorAll(".system > div")].map((d) => d.textContent!.split(" · ")[0]);
+    const { container } = render(<MessageList state={lobbyState({ currentThreadId: "th1", events })} fold={false} />);
+    const lines = [...container.querySelectorAll(".sysrow .sys-text")].map((d) => d.textContent);
     const clock = (iso: string) => new Date(iso).toLocaleTimeString();
     expect(lines).toEqual([
       `Helper finished "Review PR 14"`,
@@ -188,6 +459,140 @@ describe("MessageList", () => {
       "Helper was removed from this Thread by Paw",
       "Helper was removed from this Thread by Keeper",
     ]);
+  });
+
+  describe("a message", () => {
+    const at = "2026-09-24T13:12:04.000Z";
+    const said = (actor: string, seq = 1) => ({ weaveId: "w1", seq, threadId: "g1", type: "message" as const, actor, at, payload: { text: "hi **there**" } });
+    const head = (el: Element) => ({
+      avatar: el.querySelector(".msg-avatar")!.textContent, agentAvatar: el.querySelector(".msg-avatar")!.classList.contains("agent"),
+      name: el.querySelector(".msg-name")!.textContent, pill: el.querySelector(".msg-head .pill")?.textContent ?? null,
+      role: el.querySelector(".msg-role")?.textContent ?? null,
+    });
+
+    it("draws a human with initials, the name and the time, and the Markdown body", () => {
+      const { container } = render(<MessageList state={state({ events: [said("p1")] })} fold={true} />);
+      const msg = container.querySelector("article.msg")!;
+      const time = msg.querySelector(".msg-head time")!;
+      expect([head(msg), time.getAttribute("dateTime"), time.textContent, msg.querySelector(".msg-body strong")!.textContent])
+        .toEqual([{ avatar: "PA", agentAvatar: false, name: "Paw", pill: null, role: null }, at, new Date(at).toLocaleTimeString(), "there"]);
+    });
+
+    it("marks an agent with an agent pill and the agent avatar", () => {
+      const { container } = render(<MessageList state={state({ events: [said("p2")] })} fold={true} />);
+      expect(head(container.querySelector("article.msg")!)).toEqual({ avatar: "BO", agentAvatar: true, name: "Bot", pill: "agent", role: null });
+    });
+
+    it("shows the role only for a keeper", () => {
+      const keeper = { ...me, role: "keeper" as const };
+      const { container } = render(<MessageList state={state({ participants: [keeper, bot], events: [said("p1"), said("p2", 2)] })} fold={true} />);
+      expect([...container.querySelectorAll("article.msg")].map((m) => head(m).role)).toEqual(["keeper", null]);
+    });
+
+    it("calls a keeper actor Keeper, with K on the avatar", () => {
+      const { container } = render(<MessageList state={state({ events: [said("keeper:k1")] })} fold={true} />);
+      expect(head(container.querySelector("article.msg")!)).toEqual({ avatar: "K", agentAvatar: false, name: "Keeper", pill: null, role: null });
+    });
+  });
+
+  describe("folding system events", () => {
+    const sys = (seq: number, type: "participant.joined" | "participant.capabilities_changed", at: string) =>
+      ({ weaveId: "w1", seq, threadId: "g1", type, actor: "p2", at, payload: { participantId: "p2", capabilities: {} } });
+    const said = (seq: number) => ({ weaveId: "w1", seq, threadId: "g1", type: "message" as const, actor: "p1", at: "2026-09-24T13:08:00.000Z", payload: { text: "hi" } });
+    const t1 = "2026-09-24T13:07:09.000Z"; const t3 = "2026-09-24T13:07:11.000Z";
+    const run = [sys(1, "participant.joined", t1), sys(2, "participant.capabilities_changed", "2026-09-24T13:07:10.000Z"), sys(3, "participant.capabilities_changed", t3)];
+    const rows = (c: Element) => [...c.querySelectorAll(".sysrow")];
+
+    it("folds a run of system events into one row with a summary, the time range and a Show button", () => {
+      const { container } = render(<MessageList state={state({ events: run })} fold={true} />);
+      const row = rows(container)[0]!;
+      const button = screen.getByRole("button", { name: "Show 3 events" });
+      expect([rows(container).length, row.querySelector("strong")!.textContent, row.querySelector(".sys-text")!.textContent,
+        row.querySelector("time.mono")!.textContent, button.getAttribute("aria-expanded"), row.contains(button)])
+        .toEqual([1, "1 joined", "1 joined · 2 profile updates",
+          `${new Date(t1).toLocaleTimeString()}-${new Date(t3).toLocaleTimeString()}`, "false", true]);
+      expect(screen.queryByText(/Bot joined/)).toBeNull();
+    });
+
+    it("expands the run in place, and Hide folds it again", () => {
+      const { container } = render(<MessageList state={state({ events: [...run, said(4)] })} fold={true} />);
+      fireEvent.click(screen.getByRole("button", { name: "Show 3 events" }));
+      const hide = screen.getByRole("button", { name: "Hide" });
+      const open = [rows(container).length, hide.getAttribute("aria-expanded"), !!screen.getByText("Bot joined"),
+        container.querySelector(".messages")!.lastElementChild!.previousElementSibling!.matches("article.msg")];
+      fireEvent.click(hide);
+      expect([open, rows(container).length, !!screen.getByRole("button", { name: "Show 3 events" })])
+        .toEqual([[4, "true", true, true], 1, true]);
+    });
+
+    it("shows a single system event as it is", () => {
+      const { container } = render(<MessageList state={state({ events: [said(1), sys(2, "participant.joined", t1), said(3)] })} fold={true} />);
+      expect([rows(container).length, container.querySelector(".sysrow .sys-text")!.textContent, screen.queryByRole("button")])
+        .toEqual([1, "Bot joined", null]);
+    });
+
+    it("draws every system event as its own row when folding is off", () => {
+      const { container } = render(<MessageList state={state({ events: run })} fold={false} />);
+      expect([[...container.querySelectorAll(".sysrow .sys-text")].map((e) => e.textContent), screen.queryByRole("button")])
+        .toEqual([["Bot joined", "Bot updated their Lobby profile", "Bot updated their Lobby profile"], null]);
+    });
+  });
+
+  describe("the connection row", () => {
+    const conn = (c: Element) => {
+      const row = c.querySelector(".sysrow-conn");
+      return row && [row.textContent, row.querySelector(".conn-row-dot")!.classList.contains("warn") ? "warn" : "danger",
+        row === c.querySelector(".messages")!.lastElementChild!.previousElementSibling];
+    };
+
+    it("is absent while the stream is open or first connecting", () => {
+      const open = render(<MessageList state={state({ connection: "open" })} fold={true} />).container;
+      const connecting = render(<MessageList state={state({ connection: "connecting" })} fold={true} />).container;
+      expect([conn(open), conn(connecting)]).toEqual([null, null]);
+    });
+
+    it("says the connection is lost, with an amber dot, at the end of the stream while reconnecting", () => {
+      const { container } = render(<MessageList state={state({ connection: "reconnecting" })} fold={true} />);
+      expect(conn(container)).toEqual(["Connection lost. Reconnecting…", "warn", true]);
+    });
+
+    it("says Disconnected, with a red dot, once the stream has given up", () => {
+      const { container } = render(<MessageList state={state({ connection: "closed" })} fold={true} />);
+      expect(conn(container)).toEqual(["Disconnected.", "danger", true]);
+    });
+  });
+});
+
+describe("Composer", () => {
+  const draw = (over: Partial<SessionState> = {}, onSend = vi.fn(async (_: string) => {})) => {
+    render(<Composer state={state(over)} onSend={onSend} />);
+    return { onSend, box: screen.getByRole("textbox", { name: /^Message #/ }) as HTMLTextAreaElement };
+  };
+
+  it("labels the box with the thread and says how to mention", () => {
+    const { box } = draw();
+    expect([screen.getByLabelText("Message #General"), box.placeholder]).toEqual([box, "Message #General, @name to mention"]);
+  });
+
+  it("says a closed thread is closed, and is disabled", () => {
+    const { box } = draw({ threads: [general, { ...pr, closedAt: "2026-09-24T10:00:00.000Z" }], currentThreadId: "t1" });
+    expect([box.placeholder, box.disabled]).toEqual(["This thread is closed", true]);
+  });
+
+  it("states the keys in its footer beside Send", () => {
+    const { container } = render(<Composer state={state()} onSend={async () => {}} />);
+    expect([container.querySelector(".composer-hint")!.textContent, [...container.querySelectorAll(".composer-hint .kbd")].map((k) => k.textContent),
+      container.querySelector(".composer-foot button")!.textContent]).toEqual(["Markdown · Enter send · Shift Enter newline", ["Enter", "Shift Enter"], "Send"]);
+  });
+
+  it("sends the trimmed text on Enter and clears the box, but not on Shift Enter", async () => {
+    const { box, onSend } = draw();
+    fireEvent.input(box, { target: { value: "  hello  " } });
+    fireEvent.keyDown(box, { key: "Enter", shiftKey: true });
+    const before = onSend.mock.calls.length;
+    fireEvent.keyDown(box, { key: "Enter" });
+    await vi.waitFor(() => expect(box.value).toBe(""));
+    expect([before, onSend.mock.calls]).toEqual([0, [["hello"]]]);
   });
 });
 
@@ -606,6 +1011,90 @@ describe("WeaveView (spec §2.6, §2.7, §3.3)", () => {
     const { container } = render(<WeaveView session={session()} state={noCredentialState()}
       banner={<div class="bar">note</div>} noCredential={<p>Join the Lobby here</p>} />);
     expect([container.firstElementChild!.className, container.querySelectorAll(".bar").length]).toEqual(["bar", 1]);
+  });
+});
+
+/** The three-column shell around the Thread: the thread header, the details panel and the sidebar footer. */
+describe("the Weave page shell", () => {
+  const panel = () => screen.queryByRole("complementary", { name: "Thread details" });
+  const toggle = () => screen.getByRole("button", { name: "Thread details" });
+
+  it("draws the details panel closed below 1200px, and its toggle opens and closes it", () => {
+    render(<WeaveView session={session()} state={state()} />);
+    const closed = [toggle().getAttribute("aria-expanded"), panel()];
+    fireEvent.click(toggle());
+    const open = [toggle().getAttribute("aria-expanded"), !!panel()];
+    fireEvent.click(toggle());
+    expect([closed, open, [toggle().getAttribute("aria-expanded"), panel()]])
+      .toEqual([["false", null], ["true", true], ["false", null]]);
+  });
+
+  it("opens the details panel by default at 1200px and wider", () => {
+    const wide = vi.spyOn(window, "matchMedia").mockImplementation((q: string) => ({ matches: q.includes("1200px"), media: q } as MediaQueryList));
+    try {
+      render(<WeaveView session={session()} state={state()} />);
+      expect([toggle().getAttribute("aria-expanded"), !!panel()]).toEqual(["true", true]);
+    } finally { wide.mockRestore(); }
+  });
+
+  it("puts the invite buttons and the link form in the open panel, not in the sidebar", () => {
+    const { container } = render(<WeaveView session={session()} state={state({ currentThreadId: "t1" })} />);
+    const before = screen.queryAllByRole("button", { name: /^invite /i }).length;
+    fireEvent.click(toggle());
+    expect([before, screen.getAllByRole("button", { name: /^invite /i }).length, !!panel()!.querySelector("form.url-form"),
+      !!container.querySelector(".sidebar form.url-form")]).toEqual([0, 1, true, false]);
+  });
+
+  it("starts with Fold system events on", () => {
+    render(<WeaveView session={session()} state={state()} />);
+    const box = screen.getByRole("checkbox", { name: "Fold system events" }) as HTMLInputElement;
+    const was = box.checked;
+    fireEvent.click(box);
+    expect([was, box.checked]).toEqual([true, false]);
+  });
+
+  it("folds the stream while the checkbox is on, and unfolds it when it is turned off", () => {
+    const joined = (seq: number) => ({ weaveId: "w1", seq, threadId: "g1", type: "participant.joined" as const, actor: "p2",
+      at: "2026-09-24T13:07:09.000Z", payload: { participantId: "p2" } });
+    const { container } = render(<WeaveView session={session()} state={state({ events: [joined(1), joined(2)] })} />);
+    const folded = container.querySelectorAll(".messages .sysrow").length;
+    fireEvent.click(screen.getByRole("checkbox", { name: "Fold system events" }));
+    expect([folded, container.querySelectorAll(".messages .sysrow").length]).toEqual([1, 2]);
+  });
+
+  it("has one main landmark, the center column, holding the thread header, the stream and the composer", () => {
+    const { container } = render(<WeaveView session={session()} state={state()} />);
+    const mains = container.querySelectorAll("main");
+    expect([mains.length, ...[".thread-header", ".messages", ".composer"].map((c) => !!mains[0]?.querySelector(c))])
+      .toEqual([1, true, true, true]);
+  });
+
+  it("draws neither the thread header nor the details panel while the listeners directory is the main area", () => {
+    const wide = vi.spyOn(window, "matchMedia").mockImplementation((q: string) => ({ matches: true, media: q } as MediaQueryList));
+    try {
+      render(<WeaveView session={session()} state={lobbyState()} view="listeners" />);
+      expect([screen.queryByRole("button", { name: "Thread details" }), panel(),
+        screen.queryByRole("checkbox", { name: "Fold system events" })]).toEqual([null, null, null]);
+    } finally { wide.mockRestore(); }
+  });
+
+  it("closes the sidebar with a footer line naming the Weave and its thread count", () => {
+    const { container } = render(<WeaveView session={session()} state={state()} />);
+    expect(container.querySelector(".sidebar-foot")!.textContent).toBe("Weave W · 2 threads");
+  });
+
+  it("adds the listener count to that line on the Lobby once it is known", () => {
+    const { container } = render(<WeaveView session={session()} state={lobbyState({ listenerCount: 62 })} />);
+    const known = container.querySelector(".sidebar-foot")!.textContent;
+    render(<WeaveView session={session()} state={lobbyState()} />);
+    expect([known, document.querySelectorAll(".sidebar-foot")[1]!.textContent])
+      .toEqual(["Weave W · 2 threads · 62 listeners", "Weave W · 2 threads"]);
+  });
+
+  it("orders the Lobby sidebar Threads, Listeners, Requests, Guidelines", () => {
+    const { container } = render(<WeaveView session={session()} state={lobbyState({ listenerCount: 3 })} />);
+    const labels = [...container.querySelectorAll(".sidebar .sec")].map((e) => e.textContent);
+    expect(labels).toEqual(["Threads", "Listeners", "Requests", "Guidelines"]);
   });
 });
 

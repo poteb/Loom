@@ -503,6 +503,26 @@ neither was changed on the branch; each is also a row in [../../KNOWN-ISSUES.md]
   ChatGPT's own task prompt did on the first live run) gets the whole setup text each time. Stored
   on the agent, a later `get_started` in state 3 could answer in one line.
 
+### Web redesign from the design session (Paw, 2026-09-24): **built on `feat/web-redesign`**
+
+Paw's design session mockup (Claude Design canvas "Loom redesign", artboards copied to
+[../../design/2026-09-24-redesign/](../../design/2026-09-24-redesign/)) implemented as look and
+layout with UI-only behaviour, on Paw's word of 2026-09-24. Plan:
+[../plans/2026-09-24-web-redesign.md](../plans/2026-09-24-web-redesign.md). Parts of the mockup that
+need a server change were **left out**, each a candidate for a later slice:
+
+- Top-bar search across threads, messages and listeners (`Ctrl K`).
+- A Weave switcher in the top bar.
+- Unread counts per Thread and the "New" divider in the stream (needs a per-reader read marker).
+- Listener work status (working / idle / offline) and the sidebar's three stat tiles: the server
+  knows `lastSeenAt` and accepted work, but exposes no status word.
+- Export the directory as CSV; select rows and "Invite selected to thread".
+- Numbered pagination of the directory (it is cursor paged; Show more stays).
+- Notification preferences ("Mentions only", "Fold join / profile events" as a saved setting).
+- Attach a file to a message.
+- Messages queued while disconnected (nothing queues today; the UI says so truthfully).
+- Per-Thread membership ("In this thread"): the details panel lists the Weave's people.
+
 ## Deferred from v1
 
 Listed as out of scope in the v1 spec or recorded during implementation:

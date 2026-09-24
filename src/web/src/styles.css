@@ -1,89 +1,275 @@
-:root { --bg: #fff; --fg: #1a1a1a; --muted: #6b7280; --line: #e5e7eb; --accent: #2563eb; --danger: #b91c1c; --warn: #b45309; --mention: #dbeafe; }
-@media (prefers-color-scheme: dark) { :root { --bg: #111827; --fg: #f3f4f6; --muted: #9ca3af; --line: #374151; --accent: #60a5fa; --danger: #f87171; --warn: #fbbf24; --mention: #1e3a8a; } }
+/* --- Theme: one dark token set, from the design session artboards (docs/design/2026-09-24-redesign).
+   Every colour in this file is a token below; a rule that needs a colour names the token. ------- */
+:root {
+  color-scheme: dark;
+  --font-sans: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  /* Surfaces, darkest to lightest: chrome (top bar, sidebars, cards), page, sunken (fields, code),
+     raised (buttons, popups), hover. */
+  --bg-chrome: #0b0f14;
+  --bg-page: #0e1319;
+  --bg-sunken: #11161d;
+  --bg-raised: #171d26;
+  --bg-hover: #1e2632;
+  --line: #1c2430;
+  --line-strong: #2b3441;
+  --line-row: #151c25;
+  --line-sys: #263040;
+  --fg: #e6eaf0;
+  --fg-2: #c9d1dc;
+  --muted: #8f9aa8;
+  --faint: #7f8a99;
+  --pill-text: #a3adbb;
+  --accent: #2f6fe0;
+  --accent-hover: #3b7cf0;
+  --on-accent: #fff;
+  --link: #7fb3ff;
+  --link-hover: #a9ccff;
+  --selected: #1a2a44;
+  --info: #8ab8ff;
+  --ok: #6fe3a5;
+  --ok-bg: #123524;
+  --ok-bg-deep: #10271b;
+  --warn: #f0b35a;
+  --warn-bg: #2a2210;
+  --danger: #ff8b8b;
+  --danger-line: #7a2f2f;
+  --neutral: #242b35;
+  --offline: #4a5563;
+  --offline-bg: #1a1d22;
+  --scrim: rgba(0, 0, 0, .55);
+  --shadow: 0 8px 24px rgba(0, 0, 0, .45);
+  scrollbar-color: var(--line-strong) transparent;
+}
 * { box-sizing: border-box; }
-body { margin: 0; font: 14px/1.45 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+body { margin: 0; font: 14px/1.45 var(--font-sans); background: var(--bg-page); color: var(--fg); }
+a { color: var(--link); } a:hover { color: var(--link-hover); }
+.mono, code, pre, kbd { font-family: var(--font-mono); }
+/* Visible on every focusable thing, keyboard first: the artboards' accent as a 2px ring. */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* --- Base components, copied from the artboards' <style> block ----------------------------------
+   A plain `button` gets the `.btn` look, and a plain submit button the primary look, so components
+   nobody has touched yet are already in style. Both are wrapped in `:where()` (no specificity), so
+   any class rule below, such as the link-looking buttons, wins without a fight. */
+:where(button), .btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px; padding: 0 12px;
+  border-radius: 6px; border: 1px solid var(--line-strong); background: var(--bg-raised); color: var(--fg);
+  font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap;
+}
+:where(button:not(:disabled):hover), .btn:not(:disabled):hover { background: var(--bg-hover); }
+:where(button[type="submit"]), .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+:where(button[type="submit"]:not(:disabled):hover), .btn-primary:not(:disabled):hover { background: var(--accent-hover); }
+.btn-ghost { border-color: transparent; background: transparent; color: var(--pill-text); }
+.btn-ghost:not(:disabled):hover { background: var(--bg-hover); color: var(--fg); }
+/* The two smaller heights the artboards use inline: 28px row buttons, 26px section-header buttons. */
+.btn-sm { height: 28px; font-size: 12px; }
+.btn-xs { height: 26px; padding: 0 8px; font-size: 12px; }
+button:disabled, .btn:disabled { opacity: .5; cursor: default; }
+button.danger { color: var(--danger); }
+/* Text-only actions ("close", "invite x", "Clear filters"): a link's colour on a real button. */
+button.link { display: inline; height: auto; border: none; background: none; color: var(--link); padding: 0 4px; font-size: 12px; font-weight: 400; }
+button.link:not(:disabled):hover { background: none; color: var(--link-hover); text-decoration: underline; }
+
+:where(input:not([type="checkbox"]):not([type="radio"])), :where(select), :where(textarea) {
+  font: inherit; font-size: 13px; border-radius: 6px; border: 1px solid var(--line-strong); background: var(--bg-sunken); color: var(--fg);
+}
+:where(input:not([type="checkbox"]):not([type="radio"])), :where(select) { height: 32px; padding: 0 10px; }
+:where(select) { padding: 0 8px; }
+:where(textarea) { padding: 8px 10px; }
+:where(input, select, textarea):focus { border-color: var(--accent); }
+:where(input, select, textarea):focus-visible { outline-offset: 0; }
+::placeholder { color: var(--faint); }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
+
+.pill { display: inline-flex; align-items: center; gap: 6px; height: 20px; padding: 0 8px; border-radius: 10px; font-size: 11px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; }
+.pill-open { background: var(--ok-bg); color: var(--ok); }
+.pill-closed { background: var(--neutral); color: var(--pill-text); }
+.pill-working { background: var(--selected); color: var(--info); }
+.pill-idle { background: var(--neutral); color: var(--pill-text); }
+.pill-offline { background: var(--offline-bg); color: var(--faint); }
+/* A section label: the artboards' THREADS / LISTENERS / REQUESTS headings. */
+.sec { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
+.muted { color: var(--muted); }
+.kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--line-strong); border-radius: 4px; font-family: var(--font-mono); font-size: 11px; color: var(--pill-text); background: var(--bg-sunken); }
+
+/* --- The Weave page: three columns under a top bar (Main.dc.html) ------------------------------ */
 .layout { display: flex; flex-direction: column; height: 100vh; }
-.header { display: flex; justify-content: space-between; align-items: center; padding: 8px 16px; border-bottom: 1px solid var(--line); }
-.header h1 { font-size: 16px; margin: 0; display: inline; }
-/* The wordmark, left of the title: the page's way back to `/` (§3.1). Unobtrusive on purpose — the
+/* Top bar: 48px of chrome. */
+.header { flex-shrink: 0; display: flex; align-items: center; gap: 16px; height: 48px; padding: 0 16px; border-bottom: 1px solid var(--line); background: var(--bg-chrome); }
+.header-left { display: flex; align-items: center; gap: 10px; min-width: 244px; flex: 1; overflow: hidden; }
+.header h1 { margin: 0; font-size: 14px; font-weight: 600; color: var(--fg); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.header-slash { font-size: 13px; }
+/* The wordmark, left of the title: the page's way back to `/` (§3.1). Unobtrusive on purpose: the
    Weave's own title is what the header is for. The in-place variant is a button and must read as
    the same thing: only the element differs, exactly as in My Weaves. */
-.header .home-link { margin-right: 10px; color: var(--muted); font-size: 13px; text-decoration: none; }
-.header .home-link:hover { text-decoration: underline; }
-.header button.home-link { padding: 0; border: 0; background: none; font: inherit; font-size: 13px; cursor: pointer; }
+.header .home-link { color: var(--link); font-size: 14px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; text-decoration: none; }
+.header .home-link:hover { color: var(--link-hover); }
+.header button.home-link { display: inline; height: auto; padding: 0; border: 0; background: none; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
 /* "Go to the main page" on the cards that replace a Weave. Same rule, same shape: when leaving is
    not safe it is a button, and it must read as the link it stands in for. */
-.home-back { padding: 0; border: 0; background: none; font: inherit; color: var(--accent); text-decoration: underline; cursor: pointer; }
+.home-back { display: inline; height: auto; padding: 0; border: 0; background: none; font: inherit; color: var(--link); text-decoration: underline; cursor: pointer; }
+.home-back:not(:disabled):hover { background: none; color: var(--link-hover); }
 /* Under the join form on a credential-less Lobby page, where it is the only way out. */
 .page-join-home { margin: 12px 0 0; text-align: center; }
-.header-right { display: flex; gap: 12px; align-items: center; color: var(--muted); }
-.conn { font-size: 12px; } .conn-open { color: #16a34a; } .conn-reconnecting, .conn-connecting { color: #d97706; } .conn-closed { color: var(--danger); }
+.header-right { display: flex; align-items: center; gap: 16px; flex-shrink: 0; font-size: 13px; }
+/* The connection pill: green while the stream is open, amber while it is getting there, red when it
+   has given up. The closed state has no red fill in the artboards, so it is drawn as an outline. */
+.conn { display: inline-flex; align-items: center; gap: 8px; height: 26px; padding: 0 10px; border-radius: 13px; font-size: 12px; font-weight: 500; white-space: nowrap; }
+.conn-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.conn-open { background: var(--ok-bg); color: var(--ok); }
+.conn-connecting, .conn-reconnecting { background: var(--warn-bg); color: var(--warn); }
+.conn-closed { border: 1px solid var(--danger-line); color: var(--danger); }
+.who { display: flex; align-items: center; gap: 8px; }
+.who strong { font-weight: 500; }
+.avatar { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: var(--on-accent); font-size: 11px; font-weight: 600; }
+.header .btn-ghost.danger { color: var(--danger); }
+
 .body { display: flex; flex: 1; min-height: 0; }
-.sidebar { width: 220px; border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
-.threads { padding: 8px; }
-.threads-head { display: flex; justify-content: space-between; align-items: center; font-weight: 600; margin-bottom: 8px; }
-.threads ul { list-style: none; margin: 0; padding: 0; }
-.threads li { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 0 8px; border-radius: 6px; }
-.threads li .thread-pick { flex: 1; display: flex; gap: 6px; align-items: center; text-align: left; padding: 6px 0; border: none; background: none; color: inherit; font: inherit; cursor: pointer; }
-.threads li.active { background: var(--mention); }
-.threads li.invited > .thread-pick { font-weight: 600; }
-/* Themed like .badge, but inverted so it stands out — including on the active row, whose background is --mention. */
-.badge-invited { background: var(--accent); color: var(--bg); }
-.thread-url { display: block; flex-basis: 100%; font-size: 0.8em; opacity: 0.8; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; padding-bottom: 4px; }
-.thread-form { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; } .thread-form input { flex: 1 1 100%; }
-.guidelines { padding: 8px; border-top: 1px solid var(--line); }
-.guidelines-head { display: flex; justify-content: space-between; align-items: center; font-weight: 600; margin-bottom: 8px; }
-.guidelines-body { font-size: 13px; } .guidelines-body > :first-child { margin-top: 0; } .guidelines-body > :last-child { margin-bottom: 0; }
-.guidelines-form { display: flex; flex-wrap: wrap; gap: 4px; } .guidelines-form textarea { flex: 1 1 100%; font: inherit; resize: vertical; }
+
+/* Left nav: 260px of chrome, sections split by an inset line. */
+.sidebar { width: 260px; flex-shrink: 0; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; border-right: 1px solid var(--line); background: var(--bg-chrome); }
+.nav-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 12px 8px 14px; }
+.nav-section { position: relative; margin-top: 14px; padding-top: 15px; font-size: 13px; }
+.nav-section::before { content: ""; position: absolute; top: 0; left: 12px; right: 12px; height: 1px; background: var(--line); }
+.nav-section > :not(.nav-head) { margin: 0 14px 6px; }
+.nav-note { display: block; font-size: 12px; }
+.threads-head { padding-top: 14px; }
+.thread-form { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 8px; }
+.thread-form input { flex: 1 1 100%; min-width: 0; }
+.thread-filter { display: flex; gap: 2px; padding: 0 12px 8px; }
+.thread-filter-tab.btn { height: 24px; padding: 0 8px; font-size: 12px; }
+.thread-filter-tab.on, .thread-filter-tab.on:not(:disabled):hover { background: var(--bg-raised); color: var(--fg); }
+.threads ul { display: flex; flex-direction: column; gap: 2px; list-style: none; margin: 0; padding: 0 8px; }
+/* A thread row is the artboards' .nav-item, on the real button that selects it. */
+.threads .thread-pick { display: flex; align-items: center; justify-content: flex-start; gap: 8px; width: 100%; height: 34px; padding: 0 10px; border: 0; border-radius: 6px; background: none; color: var(--fg-2); font: inherit; font-size: 13px; font-weight: 400; text-align: left; cursor: pointer; }
+.threads li.closed .thread-pick { color: var(--muted); }
+.threads .thread-pick:not(:disabled):hover { background: var(--bg-raised); color: var(--fg); }
+.threads li.active .thread-pick, .threads li.active .thread-pick:not(:disabled):hover { background: var(--selected); color: var(--fg); }
+.thread-name { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.threads li.active .thread-name, .threads li.invited .thread-name { font-weight: 500; }
+.thread-tag { flex-shrink: 0; max-width: 96px; overflow: hidden; text-overflow: ellipsis; padding: 1px 6px; border-radius: 4px; background: var(--bg-raised); color: var(--pill-text); font-size: 11px; }
+.thread-pill.pill { flex-shrink: 0; height: 18px; font-size: 10px; }
+/* The invited mark sits where the artboards draw the blue unread count. */
+.badge-invited { flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 6px; border-radius: 9px; background: var(--accent); color: var(--on-accent); font-size: 11px; font-weight: 600; }
+.sidebar-foot { margin-top: auto; padding: 12px 14px; border-top: 1px solid var(--line); font-size: 12px; overflow-wrap: anywhere; }
+.guidelines-body { font-size: 13px; color: var(--fg-2); } .guidelines-body > :first-child { margin-top: 0; } .guidelines-body > :last-child { margin-bottom: 0; }
+.guidelines-form { display: flex; flex-wrap: wrap; gap: 6px; } .guidelines-form textarea { flex: 1 1 100%; resize: vertical; }
 .counter { flex: 1 1 100%; color: var(--muted); font-size: 12px; } .counter.over { color: var(--danger); }
-.instance-guidelines { margin-top: 8px; font-size: 12px; color: var(--muted); } .instance-guidelines summary { cursor: pointer; }
-.thread-tools { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 8px; }
-.url-form { display: flex; gap: 4px; margin-bottom: 6px; } .url-form input { flex: 1; min-width: 0; }
-.invite-list { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; font-size: 12px; }
-.invite-head { color: var(--muted); font-weight: 600; }
-.invited-mark { color: var(--muted); }
+.instance-guidelines { font-size: 12px; color: var(--muted); } .instance-guidelines summary { cursor: pointer; color: var(--link); }
+
+/* Center column. */
 .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-.messages { flex: 1; overflow-y: auto; padding: 12px 16px; }
-/* Layout, not appearance: what `.messages` does for a Thread, this does for the directory — the open
+.thread-header, .listeners-header { flex-shrink: 0; display: flex; align-items: center; gap: 12px; height: 52px; padding: 0 20px; border-bottom: 1px solid var(--line); }
+.thread-header h2, .listeners-header h2 { margin: 0; font-size: 16px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.thread-subtitle { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+a.thread-subtitle { text-decoration: none; }
+.spacer { flex: 1; }
+.fold-toggle { display: flex; align-items: center; gap: 8px; flex-shrink: 0; font-size: 12px; color: var(--pill-text); cursor: pointer; }
+.fold-toggle input { margin: 0; }
+.icon-btn.btn { flex-shrink: 0; padding: 0 8px; }
+.icon-btn[aria-expanded="true"] { color: var(--fg); }
+
+/* Right: the details panel, 300px of chrome. */
+.details { width: 300px; flex-shrink: 0; display: flex; flex-direction: column; gap: 18px; padding: 16px; overflow-y: auto; border-left: 1px solid var(--line); background: var(--bg-chrome); }
+.details-sec { display: flex; flex-direction: column; gap: 8px; }
+.facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; margin: 0; font-size: 13px; }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+.facts a { text-decoration: none; }
+.url-form { display: flex; gap: 6px; margin-top: 4px; }
+.url-form input { flex: 1; min-width: 0; height: 28px; font-size: 12px; }
+.details-actions { display: flex; gap: 6px; }
+.details-actions .btn { flex: 1; }
+.people { display: flex; flex-direction: column; gap: 2px; list-style: none; margin: 0; padding: 0; font-size: 13px; }
+.people li { display: flex; align-items: center; gap: 8px; height: 30px; }
+.people .pill { flex-shrink: 0; height: 16px; font-size: 10px; }
+/* Everyone past the first eight, behind the artboard's muted 12px summary with its own chevron. */
+.people-more { margin-top: 4px; }
+.people-more summary { cursor: pointer; font-size: 12px; color: var(--muted); list-style: none; }
+.people-more summary::-webkit-details-marker { display: none; }
+.people-more summary::before { content: "▸ "; }
+.people-more[open] summary::before { content: "▾ "; }
+.people-more .people { margin-top: 2px; }
+/* No work status is known yet, so only "you" is coloured; everyone else gets a neutral dot. */
+.person-dot { flex-shrink: 0; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+.person-dot.me { background: var(--accent); }
+.person-name { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.person-role { flex-shrink: 0; font-size: 12px; }
+.invited-mark { flex-shrink: 0; font-size: 12px; }
+/* The stream: messages and system rows, 4px apart, the newest at the bottom. The first child's
+   `margin-top: auto` is the artboard's `justify-content: flex-end` in a form that still scrolls. */
+.messages { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; padding: 16px 20px; }
+.messages > :first-child { margin-top: auto; }
+/* Layout, not appearance: what `.messages` does for a Thread, this does for the directory. The open
    view scrolls inside the layout, so the header, the sidebar and the connection indicator stay where
    they are (spec §1 success scenario). `min-height: 0` is the half that matters: without it a flex
-   item's automatic minimum size is its content, and 50 cards push the page past `100vh`. The one CSS
-   rule of `feat/lobby-listeners-view`, added on the owner's word of 2026-09-20. */
-.listeners-view { flex: 1; min-height: 0; overflow-y: auto; }
-.msg { margin-bottom: 12px; } .msg-head { color: var(--muted); font-size: 12px; } .msg-body p { margin: 4px 0; }
-.msg-body pre { background: rgba(127,127,127,.15); padding: 8px; border-radius: 6px; overflow-x: auto; }
-.system { color: var(--muted); font-size: 12px; font-style: italic; margin: 6px 0; }
-.system-body { margin-left: 12px; font-style: normal; }
-.mention { background: var(--mention); border-radius: 4px; padding: 0 3px; }
-.composer { position: relative; display: flex; gap: 8px; padding: 8px 16px; border-top: 1px solid var(--line); }
-.composer textarea { flex: 1; resize: vertical; font: inherit; padding: 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
-.suggest { position: absolute; bottom: 100%; left: 16px; list-style: none; margin: 0 0 4px; padding: 4px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,.15); }
-.suggest li { padding: 4px 8px; cursor: pointer; border-radius: 4px; } .suggest li.active { background: var(--mention); }
-.badge { font-size: 11px; padding: 1px 6px; border-radius: 10px; background: var(--line); color: var(--muted); margin-left: 6px; }
-.banner { padding: 8px 16px; background: var(--line); color: var(--muted); }
-.invite-banner { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+   item's automatic minimum size is its content, and 50 rows push the page past `100vh`. The rule of
+   `feat/lobby-listeners-view` (owner's word of 2026-09-20), split in two since the redesign: the
+   view holds the 52px header still, and `.listeners` under it is what scrolls. */
+.listeners-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* A message: a 32px square avatar (accent for people, the working blue for agents), then the head
+   line and the body. */
+.msg { display: flex; gap: 12px; padding: 6px 0; }
+.msg-avatar { flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 6px; background: var(--accent); color: var(--on-accent); font-size: 11px; font-weight: 600; }
+.msg-avatar.agent { background: var(--selected); color: var(--info); font-family: var(--font-mono); }
+.msg-main { flex-grow: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.msg-head { display: flex; align-items: baseline; gap: 8px; font-size: 13px; }
+.msg-name { font-weight: 600; }
+.msg-pill.pill { height: 16px; font-size: 10px; }
+.msg-role, .msg-head time { font-size: 12px; }
+.msg-body { font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.msg-body p { margin: 0 0 6px; } .msg-body > :last-child { margin-bottom: 0; }
+.msg-body pre { background: var(--bg-sunken); border: 1px solid var(--line); padding: 8px; border-radius: 6px; overflow-x: auto; }
+/* A system row: 28px, sunken, dashed. `min-height` rather than the artboard's `height`, so a long
+   line (a request note, an overdue notice) wraps instead of being cut off. */
+.sysrow { display: flex; align-items: center; gap: 10px; min-height: 28px; padding: 4px 12px; border-radius: 6px; background: var(--bg-sunken); border: 1px dashed var(--line-sys); color: var(--muted); font-size: 12px; }
+.sys-line { min-width: 0; overflow-wrap: anywhere; }
+.sysrow strong { color: var(--pill-text); font-weight: 500; }
+.sys-chevron { flex-shrink: 0; transition: transform .1s; } .sys-chevron.open { transform: rotate(90deg); }
+button.link.sys-toggle { flex-shrink: 0; margin-left: auto; padding: 0; text-decoration: none; }
+.system-body { margin: 4px 0 4px 12px; font-size: 13px; color: var(--fg-2); }
+/* The stream while it is not live: solid, not dashed, with the header pill's amber or red dot. */
+.sysrow-conn { border-style: solid; color: var(--pill-text); }
+.conn-row-dot { flex-shrink: 0; width: 8px; height: 8px; border-radius: 50%; }
+.conn-row-dot.warn { background: var(--warn); } .conn-row-dot.danger { background: var(--danger); }
+.mention { background: var(--selected); color: var(--info); border-radius: 4px; padding: 0 3px; }
+/* The composer: one bordered box holding the borderless textarea and a footer strip. The box takes
+   the focus colour, because the textarea inside it draws no outline of its own. */
+.composer { position: relative; flex-shrink: 0; padding: 0 20px 16px; }
+.composer-box { display: flex; flex-direction: column; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--bg-sunken); }
+.composer-box:focus-within { border-color: var(--accent); }
+.composer-input { display: block; width: 100%; min-height: 72px; padding: 12px; border: 0; border-radius: 8px 8px 0 0; outline: 0; background: transparent; color: var(--fg); font-size: 14px; resize: vertical; }
+.composer-input:focus, .composer-input:focus-visible { border: 0; outline: 0; }
+.composer-foot { display: flex; align-items: center; gap: 12px; padding: 6px 8px 8px 12px; border-top: 1px solid var(--line); }
+.composer-hint { font-size: 12px; }
+.composer-send.btn { height: 28px; }
+.suggest { position: absolute; bottom: 100%; left: 20px; min-width: 160px; list-style: none; margin: 0 0 4px; padding: 4px; background: var(--bg-raised); border: 1px solid var(--line-strong); border-radius: 6px; box-shadow: var(--shadow); font-size: 13px; }
+.suggest li { padding: 4px 8px; cursor: pointer; border-radius: 4px; color: var(--fg-2); } .suggest li.active { background: var(--selected); color: var(--fg); }
+/* Read by assistive technology, drawn nowhere: the composer's label. */
+.visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.badge { display: inline-flex; align-items: center; height: 18px; font-size: 10px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; padding: 0 6px; border-radius: 9px; background: var(--neutral); color: var(--pill-text); margin-left: 6px; }
+.banner { padding: 8px 16px; background: var(--bg-sunken); border-bottom: 1px solid var(--line); color: var(--fg-2); }
+.invite-banner { display: flex; justify-content: space-between; align-items: center; gap: 8px; background: var(--selected); color: var(--info); }
 .error, .error-bar { color: var(--danger); } .error-bar { padding: 4px 16px; }
-.warn-bar { color: var(--warn); padding: 4px 16px; font-size: 12px; }
-.center { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; }
-.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; }
-.modal { background: var(--bg); padding: 20px; border-radius: 10px; min-width: 320px; display: flex; flex-direction: column; gap: 8px; }
-.modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
-button { font: inherit; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); cursor: pointer; }
-button.danger { color: var(--danger); } button.link { border: none; background: none; color: var(--accent); padding: 0 4px; font-size: 12px; }
-button:disabled { opacity: .5; cursor: default; }
-input { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+.warn-bar { color: var(--warn); background: var(--warn-bg); padding: 4px 16px; font-size: 12px; }
+/* A page that stands in for a whole Weave (loading, an error, no key, no page): one card, centred
+   horizontally and set a little below the top, in the main page's card style. */
+.center { display: flex; flex-direction: column; align-items: center; justify-content: center; max-width: 520px; margin: 18vh auto 0; padding: 24px; text-align: center; background: var(--bg-chrome); border: 1px solid var(--line); border-radius: 8px; }
+.center h1 { margin: 0 0 8px; color: var(--link); font-size: 14px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.center p { margin: 6px 0; }
+.modal-backdrop { position: fixed; inset: 0; background: var(--scrim); display: flex; align-items: center; justify-content: center; }
+.modal { background: var(--bg-chrome); border: 1px solid var(--line-strong); box-shadow: var(--shadow); padding: 20px; border-radius: 8px; min-width: 320px; display: flex; flex-direction: column; gap: 8px; }
+.modal h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.modal p { margin: 0; color: var(--muted); font-size: 13px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 /* --- Lobby: requests panel, the listeners line and the cards it links to ----- */
-.requests, .listeners-line { padding: 8px; border-top: 1px solid var(--line); }
-.requests-head { display: flex; justify-content: space-between; align-items: center; font-weight: 600; margin-bottom: 8px; }
-/* The sidebar's way into the directory (§5.1), reading as a section heading like the ones above it
-   — a link, or the button that stands in for it on a browser that would lose its credential to a
-   page load (§3.1). Same words and same weight either way; only the element differs. */
-.listeners-line { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; font-size: 13px; }
-.listeners-line-link { font-weight: 600; color: var(--accent); }
-button.listeners-line-link { padding: 0; border: 0; background: none; font: inherit; font-weight: 600; color: var(--accent); text-decoration: underline; cursor: pointer; }
-.listeners-line .muted { font-size: 12px; }
+/* The Listeners section's `View all <n>`: the directory toggle (§5.1), reading as the artboards'
+   small header link. Always a button (§3.1); underlined while the directory is on screen. */
+button.listeners-line-link { display: inline; height: auto; padding: 0; border: 0; background: none; font: inherit; font-size: 12px; font-weight: 400; color: var(--link); text-decoration: none; cursor: pointer; }
+button.listeners-line-link:not(:disabled):hover { background: none; color: var(--link-hover); }
+button.listeners-line-link[aria-current="true"] { text-decoration: underline; }
 .request-list, .offers, .closed-requests ul { list-style: none; margin: 0; padding: 0; }
-.request { border: 1px solid var(--line); border-radius: 6px; padding: 6px; margin-bottom: 8px; }
+.request { border: 1px solid var(--line); background: var(--bg-sunken); border-radius: 6px; padding: 8px; margin-bottom: 8px; }
 .request-head { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
 .req-needs, .req-count { color: var(--muted); font-size: 12px; }
 .offers li { display: flex; flex-wrap: wrap; gap: 4px; align-items: baseline; font-size: 12px; margin-top: 4px; }
@@ -93,14 +279,12 @@ button.listeners-line-link { padding: 0; border: 0; background: none; font: inhe
 .open-request label { flex: 1 1 45%; color: var(--muted); font-size: 12px; }
 .closed-requests { margin-top: 8px; font-size: 12px; color: var(--muted); } .closed-requests summary { cursor: pointer; }
 .closed-requests li { margin: 4px 0; }
-.profile-card { border: 1px solid var(--line); border-radius: 6px; padding: 6px; margin-bottom: 8px; font-size: 12px; }
+.profile-card { border: 1px solid var(--line); background: var(--bg-chrome); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; font-size: 12px; }
 .profile-name { font-weight: 600; }
 .profile-card dl { display: grid; grid-template-columns: auto 1fr; gap: 0 8px; margin: 4px 0 0; }
-.profile-card dt { color: var(--muted); } .profile-card dd { margin: 0; overflow-wrap: anywhere; }
-select { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+.profile-card dt { color: var(--muted); } .profile-card dd { margin: 0; overflow-wrap: anywhere; color: var(--fg-2); }
 /* --- Main page: join the Lobby --------------------------------------------- */
-.join-lobby { padding: 12px 16px; border-bottom: 1px solid var(--line); }
-.join-lobby h2 { font-size: 16px; margin: 0; }
+.join-lobby h2 { margin: 0; }
 .join-lobby-title { margin: 2px 0 8px; color: var(--muted); }
 .join-lobby form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .join-lobby label { display: flex; gap: 6px; align-items: center; }
@@ -108,76 +292,105 @@ select { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid 
 .join-lobby .hint { color: var(--muted); font-size: 12px; }
 .join-taken p { margin: 0 0 6px; }
 /* The same form as the whole page, when a Weave route turns out to be the unjoined Lobby (§3.3). */
-.page-join { max-width: 560px; margin: 48px auto; }
-.page-join .join-lobby { border: 1px solid var(--line); border-radius: 10px; }
+.page-join { max-width: 560px; margin: 48px auto; padding: 0 16px; }
 /* --- Main page: the shell, the notice, the guidelines and the Lobby summary --- */
 .main-page { max-width: 680px; margin: 0 auto; padding: 24px 16px 48px; }
-.main-page > h1 { font-size: 22px; margin: 0 0 12px; }
-.main-page > section { margin-bottom: 16px; }
-.main-page h2 { font-size: 16px; margin: 0 0 6px; }
-.persistence-bar { display: flex; gap: 8px; align-items: baseline; padding: 8px 12px; margin-bottom: 16px; border: 1px solid var(--warn); border-radius: 8px; color: var(--warn); }
+/* The wordmark, as the top bar spells it. */
+.main-page > h1 { margin: 0 0 16px; color: var(--link); font-size: 16px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+/* Every cell is a card: chrome surface, line border, 8px radius. */
+.main-page > section, .page-join .join-lobby { margin-bottom: 12px; padding: 16px; background: var(--bg-chrome); border: 1px solid var(--line); border-radius: 8px; }
+/* Cell headings read as the artboards' section labels. */
+.main-page h2, .page-join .join-lobby h2 { margin: 0 0 10px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
+.main-page .join-lobby h2, .page-join .join-lobby h2 { margin-bottom: 4px; }
+.persistence-bar { display: flex; gap: 8px; align-items: center; padding: 8px 12px; margin-bottom: 16px; background: var(--warn-bg); border-radius: 8px; color: var(--warn); }
 .persistence-bar p { margin: 0; flex: 1; font-size: 13px; }
-.main-guidelines-body { font-size: 13px; } .main-guidelines-body > :first-child { margin-top: 0; }
+.main-guidelines-body { font-size: 13px; color: var(--fg-2); } .main-guidelines-body > :first-child { margin-top: 0; } .main-guidelines-body > :last-child { margin-bottom: 0; }
 .lobby-summary-title { margin: 0 0 4px; font-weight: 600; }
 .lobby-counts { display: flex; flex-wrap: wrap; gap: 4px 12px; list-style: none; margin: 0; padding: 0; color: var(--muted); font-size: 13px; }
-.lobby-open { margin: 0 0 16px; }
-.muted { color: var(--muted); }
+.lobby-open { margin: 0 0 12px; padding: 0 2px; color: var(--fg-2); }
 /* My Weaves (§4.2): a list rather than cards, because this has to survive hundreds of rows. */
 .weave-filter { display: flex; gap: 6px; align-items: center; margin: 0 0 8px; color: var(--muted); font-size: 13px; }
+.weave-filter input { flex: 1; min-width: 0; }
 .weave-list { list-style: none; margin: 0; padding: 0; }
-.weave-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.weave-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-height: 44px; padding: 6px 0; border-bottom: 1px solid var(--line-row); }
+.weave-row:last-child { border-bottom: 0; }
 .weave-row-title { font-weight: 600; }
 /* A row whose credentials live only in this page's memory opens in place, so its title is a button
    rather than a link (§3.1). It has to read as the same title: only the element differs. */
 .weave-row-title-inplace, .lobby-open-inplace {
-  padding: 0; border: 0; background: none; font: inherit; color: var(--accent); text-decoration: underline; cursor: pointer;
+  display: inline; height: auto; padding: 0; border: 0; background: none; font: inherit; color: var(--link); text-decoration: underline; cursor: pointer;
 }
+.weave-row-title-inplace:not(:disabled):hover, .lobby-open-inplace:not(:disabled):hover { background: none; color: var(--link-hover); }
+.weave-row-title-inplace { font-weight: 600; }
 .lobby-open-inplace { font-weight: inherit; }
 .weave-row-state, .weave-row-note { color: var(--muted); font-size: 12px; }
 /* Nothing left to open it with, or gone from the server: greyed, unlinked, and only Forget. */
 .weave-row-dead .weave-row-title { font-weight: 400; color: var(--muted); }
-.weave-row-copy, .weave-row-forget { font-size: 12px; }
+/* Row actions: the artboards' 28px row buttons. */
+.weave-row-copy, .weave-row-forget, .weave-row-hide, .create-more, .create-copy { height: 28px; font-size: 12px; }
 .weave-row-copy { margin-left: auto; }
 .weave-row-dead .weave-row-forget { margin-left: auto; }
 .weave-row-copied { color: var(--muted); font-size: 12px; }
 /* The one place a secret reaches the DOM (§5), and only after a click on that row: the clipboard
    was missing or refused, so the link is offered to be selected and copied by hand. */
 .weave-row-copy-manual { flex: 1 1 100%; display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); }
-.weave-row-link { flex: 1; font-size: 12px; }
-.weave-row-hide { font-size: 12px; }
+.weave-row-link { flex: 1; font-size: 12px; font-family: var(--font-mono); }
 .weave-more { margin-top: 8px; }
-/* --- The Lobby listeners directory (§5.3) ----------------------------------- */
-.listeners { max-width: 1040px; margin: 0 auto; padding: 16px 16px 48px; }
-.listeners-partial { margin: 8px 0 0; font-size: 13px; }
-.listeners-controls { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin: 12px 0; }
-.listeners-controls label { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 13px; }
-.listeners-search { flex: 1 1 260px; }
-.listeners-search input { flex: 1; min-width: 0; }
+/* --- The Lobby listeners directory (§5.3, Listeners.dc.html) ------------------------------------
+   Under the 52px header: the toolbar, the notices, the table, and a footer strip that stays at the
+   bottom of the scrolling area while the rows scroll under it. */
+.listeners { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
+.listeners-toolbar { flex-shrink: 0; display: flex; flex-direction: column; gap: 10px; padding: 12px 20px; border-bottom: 1px solid var(--line); }
+.listeners-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.listeners-controls label:not(.listeners-search) { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--pill-text); }
+/* The search field is the label: a 32px box with the magnifier, holding a borderless input. The box
+   takes the focus ring, because the input inside it draws none of its own (as `.composer-box`). */
+.listeners-search { display: flex; align-items: center; gap: 8px; width: 320px; max-width: 100%; height: 32px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg-sunken); color: var(--muted); font-size: 13px; }
+.listeners-search:focus-within { border-color: var(--accent); outline: 2px solid var(--accent); outline-offset: 0; }
+.listeners-search input { flex: 1; min-width: 0; height: 30px; padding: 0; border: 0; outline: 0; background: transparent; }
+.listeners-search input:focus, .listeners-search input:focus-visible { border: 0; outline: 0; }
+.listeners-controls .spacer { flex: 1; }
 /* One row per facet: the label, what the row means in words, and the chips themselves. The
    semantics are on screen because "any of these" and "all of these" cannot be told apart by colour. */
-.listeners-facets { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
-.facet { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
-.facet-label { min-width: 64px; font-weight: 600; font-size: 13px; }
+.listeners-facets { display: flex; flex-direction: column; gap: 8px; }
+.facet { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+.facet-label { min-width: 64px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
 .facet-hint, .facet-more { color: var(--muted); font-size: 12px; }
-.chips { display: flex; flex-wrap: wrap; gap: 4px; list-style: none; margin: 0; padding: 0; align-items: baseline; }
-.chips li { display: flex; flex-wrap: wrap; gap: 4px; align-items: baseline; }
-.chip { padding: 2px 8px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); font-size: 12px; cursor: pointer; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; margin: 0; padding: 0; align-items: center; }
+.chips li { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 14px; border: 1px solid var(--line-strong); background: transparent; color: var(--pill-text); font: inherit; font-size: 12px; font-weight: 500; cursor: pointer; }
+.chip:not(:disabled):hover { background: transparent; color: var(--fg); }
+/* "shell · 3", the artboard's "Idle · 58": the dot is drawn, the text stays "shell 3". */
+.chip-count::before { content: "· "; }
 .chip-count { color: var(--muted); }
-/* A selected chip is the one chip that can show a zero — it is the filter that emptied the result,
+/* A selected chip is the one chip that can show a zero: it is the filter that emptied the result,
    so it stays on screen to be unclicked (§2.7). It must not read as an ordinary chip with a count. */
-.chip-on { border-color: var(--accent); background: var(--mention); font-weight: 600; }
-.chip-on .chip-count { color: inherit; }
+.chip.on, .chip.on:not(:disabled):hover { border-color: var(--accent); background: var(--selected); color: var(--fg); }
+.chip.on .chip-count { color: inherit; }
 /* Refused because this row already holds as many values as core accepts. It has to read as out of
    reach rather than as an ordinary chip that ignores a click; its `title` says why. */
 .chip:disabled { opacity: 0.5; cursor: not-allowed; }
 .chips-effort { flex-basis: 100%; margin-left: 16px; }
-.listeners-changed { margin: 8px 0; font-size: 13px; }
-.listeners-counts { margin: 8px 0; color: var(--muted); font-size: 13px; display: flex; gap: 8px; min-height: 1.45em; }
+/* The link notice, a failed query or invite, and "the list has changed": lines between the toolbar
+   and the rows. */
+.listeners-note { margin: 10px 20px 0; font-size: 13px; }
+.listeners-empty { padding: 16px 20px; }
+.listeners-empty p { margin: 0; }
+.listeners-table-wrap { flex-shrink: 0; overflow-x: auto; padding: 0 20px; }
+.listeners-table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.listeners-table th { height: 36px; padding: 0 12px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
+.listeners-table td { height: 44px; padding: 0 12px; border-bottom: 1px solid var(--line-row); vertical-align: middle; white-space: nowrap; }
+.listeners-table tr.listener-row:hover td { background: var(--bg-sunken); }
+.listeners-table .listener-actions { text-align: right; }
+.listener-actions .btn + .btn { margin-left: 4px; }
+.listener-name { font-weight: 500; }
+/* The opened profile: the full card, in a row of its own under the listener's, wrapping freely. */
+.listeners-table tr.listener-details td { height: auto; padding: 8px 12px 12px; white-space: normal; background: var(--bg-sunken); }
+.listener-details .profile-card { margin: 0; max-width: 560px; }
+/* A control change keeps the rows and dims them; the table never blanks between queries (§5.3). */
+.listeners-table-stale { opacity: .6; }
+.listeners-foot { position: sticky; bottom: 0; flex-shrink: 0; margin-top: auto; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 20px; border-top: 1px solid var(--line); background: var(--bg-page); font-size: 12px; }
 .listeners-updating { font-style: italic; }
-.listeners-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
-/* A control change keeps the rows and dims them; the grid never blanks between queries (§5.3). */
-.listeners-grid-stale { opacity: .6; }
-.listeners-more { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center; margin-top: 16px; }
 /* The Lobby identity this browser held has been retired; the form below it is the way back in. */
 .page-join-invalid { margin: 0 0 8px; text-align: center; }
 /* The end of the fallback chain: the stored secret itself was refused, so the form is all there is. */
@@ -186,18 +399,17 @@ select { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid 
 .create-weave form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .create-weave label { display: flex; gap: 6px; align-items: center; }
 .create-weave .create-opener, .create-weave .create-guidelines { flex: 1 1 100%; align-items: flex-start; }
-.create-weave textarea { flex: 1; font: inherit; min-height: 44px; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+.create-weave textarea { flex: 1; min-height: 44px; }
 .create-weave .hint, .create-weave .error { flex: 1 1 100%; margin: 0; }
 .create-weave .hint { color: var(--muted); font-size: 12px; }
-.create-more { font-size: 12px; }
 .create-closed { margin: 0 0 8px; }
 /* The save-this-link panel: the only place a freshly created secret is on screen (§5), and — when
    the entry that carries it reached only this tab's memory — the recovery panel that says so. */
-.create-saved { border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
-.create-saved-hardened { border-color: var(--warn); }
+.create-saved { border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+.main-page > .create-saved-hardened, .create-saved-hardened { border-color: var(--warn); }
 .create-saved-title { margin: 0 0 8px; color: var(--muted); }
 .create-saved-link { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; }
-.create-link { flex: 1 1 240px; font-size: 12px; }
+.create-link { flex: 1 1 240px; font-size: 12px; font-family: var(--font-mono); }
 .create-copied { color: var(--muted); font-size: 12px; }
 .create-warning { margin: 0 0 8px; font-size: 13px; }
 .create-warning-hard { color: var(--warn); }

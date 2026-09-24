@@ -96,7 +96,7 @@ direction.
 
 **The Lobby.** The Lobby is an ordinary Weave page (`/lobby`, or `/w/<lobby secret>`) with two
 additions, and the session only builds them when `state.lobby.weaveId` is the Weave it is showing.
-The sidebar gets one **Listeners (N)** line into the directory at `/lobby/listeners`
+The sidebar gets a **Listeners** section whose **View all N** toggle opens the directory at `/lobby/listeners`
 ([ListenersLink](src/components/ListenersLink.tsx)) — a link, or a button that renders the directory
 in place when leaving is not safe — and the **requests panel**: open requests with their requirements, `wanted`/accepted, a
 countdown and the offers so far, with the terminal ones collapsed below. `listRequests` is paged
@@ -116,7 +116,7 @@ page reader. Both are non-fatal, both carry the session generation **and** a req
 both the answer and the rejection are dropped unless both still hold — a rejection retires a
 credential, which is the one stale outcome that cannot be undone. The profile cache is owned by the
 `{ participantId, token }` it was read for. A count that has never arrived is an **absent** number,
-never `Listeners (0)`; `listenerCountError` is what keeps "not answered yet" and "asked and failed"
+never `View all 0`; `listenerCountError` is what keeps "not answered yet" and "asked and failed"
 apart, and a last known number is kept behind a failed refresh. Beside that count read, and with the
 same reader, the session serves the **directory** itself: `listListeners(query)` returns
 `{ issue, page }` and performs **no** side effect on either outcome — no write, no `onWrite`, no
@@ -144,13 +144,20 @@ the stream stay live across a flip, the composer stays **mounted** in a `hidden`
 half-written message survives a look at the directory, and the mutation error bar is drawn in both
 views because its writers — the header and all three sidebar panels — stay live in both. The
 credential is the **session's**, through two calls kept deliberately apart (`Session.listListeners`
-and `Session.reportCredentialFailure`, below). `ListenersPage` takes `{ session }` and is everything
-else: a debounced search, the four facet-fed filters through `FacetChips` (counts,
+and `Session.reportCredentialFailure`, below). `ListenersPage` takes `{ session, invite }` and is
+everything else: a debounced search, the four facet-fed filters through `FacetChips` (counts,
 selected state, a selected chip whose count is now zero, and the nested effort row under a selected
-model), sort, the counts line, the `ProfileCard` grid, **Show more** — which sends the cursor,
+model), sort, a **table** with one row per listener (name, owner, models, the first three tools and
+`+n`, runtime, serves, last seen, joined) whose **Profile** toggle opens the full `ProfileCard` in a
+row of its own under it, the counts line in the footer strip, **Show more** — which sends the cursor,
 `facets: false` and *appends*, keeps its own error beside its own button, and forgets a cursor the
 server refused — and the four states in which an error is **never** an empty directory. One
-generation counter per page decides which answer, and which **rejection**, is allowed to land.
+generation counter per page decides which answer, and which **rejection**, is allowed to land. A
+row's **Invite** reaches the Thread this browser has open: `invite` (an `InviteTarget`: the Thread's
+id, the session's `state.invited` set for it and `me`'s id) is handed down by `WeaveView` only when
+`canEditThread` allows it, so without it no row offers Invite; with it every row but this browser's
+own does, reading a disabled **Invited** once `session.invite` has landed or the log shows the
+invite. A failed invite is said on the directory's own error line, and `no_identity` is not.
 [src/components/listeners/listeners-query.ts](src/components/listeners/listeners-query.ts) is the
 codec both ways, and the place the directory's **own** query string is written: `replaceState` only,
 only while `location.pathname` is already this page's (either spelling), and only when the string
@@ -270,24 +277,29 @@ re-reads storage.
 - [src/weaves-signal.ts](src/weaves-signal.ts) — `WeavesSignal`: "the stored Weaves changed", one per page, beside the storage instance
 - [src/markdown.ts](src/markdown.ts) — `renderMarkdown`: escaping, safe hrefs, mention spans
 - [src/styles.css](src/styles.css) — the stylesheet
-- [src/components/Header.tsx](src/components/Header.tsx) — the **Loom** wordmark back to `/` (a button that switches in place when the session is memory-only), title, identity, connection state, archive button
-- [src/components/ThreadList.tsx](src/components/ThreadList.tsx) — threads, artefact links, new-thread form; `markCurrent` (default `true`) withholds the selected Thread's `active`/`aria-current` while the main area shows something other than a Thread, so only one sidebar entry is ever marked — the selection itself is kept
-- [src/components/ThreadTools.tsx](src/components/ThreadTools.tsx) — per-thread URL field and invite list
-- [src/components/MessageList.tsx](src/components/MessageList.tsx) — rendered messages and system events
-- [src/components/Composer.tsx](src/components/Composer.tsx) — the text box and mention popup
+- [src/components/Header.tsx](src/components/Header.tsx) — the top bar: the **Loom** wordmark back to `/` (a button that switches in place when the session is memory-only), title, the connection pill (`role="status"`: Connected, Connecting…, Reconnecting…, Disconnected), identity (initials avatar, name, role), archive button
+- [src/components/ThreadList.tsx](src/components/ThreadList.tsx) — threads with their artefact tag (`PR <n>` or the host), the Open / Closed / All filter (UI state, default Open, the current Thread always listed), new-thread form; `markCurrent` (default `true`) withholds the selected Thread's `active`/`aria-current` while the main area shows something other than a Thread, so only one sidebar entry is ever marked — the selection itself is kept
+- [src/components/ThreadTools.tsx](src/components/ThreadTools.tsx) — `LinkForm` (the artefact link field, keyed per Thread) and `InviteControl` (one participant's invite button or invited mark), used by the details panel
+- [src/components/ThreadHeader.tsx](src/components/ThreadHeader.tsx): the header over a Thread: name, status pill, subtitle ("Weave-wide thread" or the artefact link), the **Fold system events** checkbox and the details toggle (`aria-expanded`); the two switches are `WeaveView`'s state
+- [src/components/ThreadDetails.tsx](src/components/ThreadDetails.tsx): the right-hand panel: the Thread's facts, the link form and **Close thread** for whoever may use them, and the people with an invite control each
+- [src/components/artefact.ts](src/components/artefact.ts): `isHttpUrl`, `shortUrl`, `artefactTag`: which urls become links, and the list's tag
+- [src/components/initials.ts](src/components/initials.ts): `initials(name)`, the letters on an avatar
+- [src/components/MessageList.tsx](src/components/MessageList.tsx): the stream, messages (avatar, name, agent pill, a keeper's role, time) and system rows, runs folded while `fold` (the header's checkbox) is on and expanded in place per run, and the connection row at the end while the stream is reconnecting or closed
+- [src/components/fold.ts](src/components/fold.ts): `foldStream`, `runSummary`, `timeRange`: which consecutive system events fold into one run, and how a run is summed up
+- [src/components/Composer.tsx](src/components/Composer.tsx): the bordered box (a visually hidden `Message #<thread>` label, the textarea, the key hints and Send) and the mention popup
 - [src/components/mention-logic.ts](src/components/mention-logic.ts) — `completeMention`, `applyMention`, `clampSelection`
 - [src/components/GuidelinesPanel.tsx](src/components/GuidelinesPanel.tsx) — the Weave's guidelines, the keeper editor, and the collapsed instance text
 - [src/components/RequestsPanel.tsx](src/components/RequestsPanel.tsx) — the Lobby's requests, the Accept/Cancel/Offer controls and the Open-request form
-- [src/components/ProfileCard.tsx](src/components/ProfileCard.tsx) — one Lobby participant's declared capabilities, and `modelSpecs`; used by the directory grid and by the requests panel (the `ProfileCards` column it used to export is gone)
-- [src/components/ListenersLink.tsx](src/components/ListenersLink.tsx) — the Lobby sidebar's **Listeners (N)** line: the Lobby-and-status gate, the four count states, and the toggle — always a `<button>` now, carrying `aria-current` while the directory is the main area
+- [src/components/ProfileCard.tsx](src/components/ProfileCard.tsx) — one Lobby participant's declared capabilities, `modelSpecs` and `agoText`; used by the directory table's opened rows and by the requests panel (the `ProfileCards` column it used to export is gone)
+- [src/components/ListenersLink.tsx](src/components/ListenersLink.tsx) — the Lobby sidebar's **Listeners** section header and its **View all N** toggle: the Lobby-and-status gate, the four count states, and the toggle — always a `<button>` now, carrying `aria-current` while the directory is the main area
 - [src/lobby-view.ts](src/lobby-view.ts) — `MainArea`, `viewOfPath(pathname)` and `pathForView(view)`: the Lobby's two addresses in one module, so `app.tsx` (`routeOf`), `WeaveRoute.tsx` (the push) and `ListenersPage.tsx` (the seeding) all read the same table without an import cycle
-- [src/components/listeners/ListenersPage.tsx](src/components/listeners/ListenersPage.tsx) — the directory over `{ session }`: search, controls, sort, the counts line, the grid, Show more, the always-present **Clear filters**, and every loading/empty/error state
+- [src/components/listeners/ListenersPage.tsx](src/components/listeners/ListenersPage.tsx) — the directory over `{ session, invite }`: search, controls, sort, the table with its row Invite and Profile toggle, the counts line, Show more, the always-present **Clear filters**, and every loading/empty/error state
 - [src/components/listeners/FacetChips.tsx](src/components/listeners/FacetChips.tsx) — one facet's chips: counts, selection, the zero-count selected chip, the nested effort row
 - [src/components/listeners/listeners-query.ts](src/components/listeners/listeners-query.ts) — `ListenersView` ⇄ query string both ways, `queryFromView`, and the one `replaceState` rule
 - [src/components/InviteBanner.tsx](src/components/InviteBanner.tsx) — "your input is wanted here"
 - [src/components/NamePrompt.tsx](src/components/NamePrompt.tsx) — choose a name before taking part
 - [src/components/WeaveRoute.tsx](src/components/WeaveRoute.tsx) — the one place a Weave page is mounted, for all four addresses, plus the `/lobby` lookup, the unjoined-Lobby fork (the session's error sentence when there is one, the join form and its own way home), the `leavingIsSafe` verdict it hands down, and the Lobby's view state: `WeaveSession` holds `{ view, popSeq }` above `key={reloadKey}` with the one `popstate` listener, and `WeaveMount` owns the app's only `pushState` behind its lifetime guard, its change test and a freshly asked `leavingIsSafe`
-- [src/components/WeaveView.tsx](src/components/WeaveView.tsx) — one Weave page: the `banner`, the `no-credential` and read-only/rejoin branches, then the layout — with `showListeners` computed once and read by everything rendered (the four groups, the hidden `composer-slot`, the error bar in both views, the sidebar line's `active`, and `<h2>Listeners</h2>` over the directory)
+- [src/components/WeaveView.tsx](src/components/WeaveView.tsx) — one Weave page: the `banner`, the `no-credential` and read-only/rejoin branches, then the three-column layout (sidebar in the order Threads, Listeners, Requests, Guidelines and a footer line; the center column, the page's one `<main>`; the details panel, open by default at 1200px and wider) — with `showListeners` computed once and read by everything rendered (the four groups, the hidden `composer-slot`, the error bar in both views, the sidebar line's `active`, the thread header and details panel drawn only beside a Thread, and the directory's 52px header, `<h2>Listeners</h2>` with the Lobby's listener count once known, over it; and the row Invite's `InviteTarget`, built only under `canEditThread`)
 - [src/components/HomeLink.tsx](src/components/HomeLink.tsx) — "Go to the main page" on the cards that replace a Weave: an anchor, or the in-place button
 - [src/components/PersistenceBar.tsx](src/components/PersistenceBar.tsx) — the one-time "this browser is not saving anything" bar
 - [src/components/main/MainPage.tsx](src/components/main/MainPage.tsx) — the `/` shell: four independent cells, the migration pass, the one bar
@@ -314,7 +326,7 @@ My Weaves over a `LoomClient` with a stubbed `fetch` (its base URL is `https://l
 client allows plain `http:` on loopback hosts only, so `http://loom.test` is refused as
 `insecure_url`), and `listeners-page.test.tsx` drives the route, the page and the sidebar line over
 a **path-keyed** stub, because every control change is the same path with a different query string —
-what each request asked for is asserted separately. `markdown.test.ts`, `composer-logic.test.ts`,
+what each request asked for is asserted separately. `markdown.test.ts`, `composer-logic.test.ts`, `fold.test.ts` (runs, singles, a message ending a run, the summary words, the time range),
 `requests-state.test.ts` (the version
 watermark, monotonic terminal states, derived expiry), `storage.test.ts` (the durable/memory verdict
 and the override-and-tombstone precedence), `weaves-store.test.ts` (the entry rules, `mergeLegacy`,
