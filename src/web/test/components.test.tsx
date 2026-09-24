@@ -216,11 +216,11 @@ describe("ThreadDetails", () => {
     expect(screen.queryAllByRole("button", { name: "Close thread" })).toHaveLength(0);
   });
 
-  it("lists who is in the thread, with me marked as you and agents in mono", () => {
+  it("lists who is in the Weave, with me marked as you and agents in mono", () => {
     const { container } = details();
     const rows = [...container.querySelectorAll(".people li")].map((li) => [li.querySelector(".person-name")!.textContent,
       li.querySelector(".person-role")!.textContent, li.querySelector(".person-name")!.classList.contains("mono")]);
-    expect([screen.getByText("In this thread · 2").tagName, rows])
+    expect([screen.getByText("In this Weave · 2").tagName, rows])
       .toEqual(["SPAN", [["Paw", "you · member", false], ["Bot", "member", true]]]);
   });
 

@@ -21,9 +21,9 @@ function createdAt(iso: string): string | null {
 
 /**
  * The right-hand panel for the Thread on screen: its facts, the controls whoever may edit it has
- * (the artefact link, and for a keeper, closing it), and the people in it with an invite control
- * each. It holds no state of its own beyond the link form's draft; whether it is on screen at all is
- * the page's.
+ * (the artefact link, and for a keeper, closing it), and the Weave's people with an invite control
+ * each: the Weave's, because a Thread has no membership of its own. It holds no state of its own
+ * beyond the link form's draft; whether it is on screen at all is the page's.
  */
 export function ThreadDetails({ thread, state, session, onError }: {
   thread: Thread; state: SessionState; session: Session; onError: (e: unknown) => void;
@@ -63,7 +63,7 @@ export function ThreadDetails({ thread, state, session, onError }: {
         )}
       </section>
       <section class="details-sec">
-        <span class="sec">In this thread · {state.participants.length}</span>
+        <span class="sec">In this Weave · {state.participants.length}</span>
         <ul class="people">
           {state.participants.map((p) => {
             const mine = p.id === meId;
