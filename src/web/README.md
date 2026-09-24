@@ -277,8 +277,9 @@ re-reads storage.
 - [src/components/ThreadDetails.tsx](src/components/ThreadDetails.tsx): the right-hand panel: the Thread's facts, the link form and **Close thread** for whoever may use them, and the people with an invite control each
 - [src/components/artefact.ts](src/components/artefact.ts): `isHttpUrl`, `shortUrl`, `artefactTag`: which urls become links, and the list's tag
 - [src/components/initials.ts](src/components/initials.ts): `initials(name)`, the letters on an avatar
-- [src/components/MessageList.tsx](src/components/MessageList.tsx) — rendered messages and system events; takes `fold` from the header's checkbox
-- [src/components/Composer.tsx](src/components/Composer.tsx) — the text box and mention popup
+- [src/components/MessageList.tsx](src/components/MessageList.tsx): the stream, messages (avatar, name, agent pill, a keeper's role, time) and system rows, runs folded while `fold` (the header's checkbox) is on and expanded in place per run, and the connection row at the end while the stream is reconnecting or closed
+- [src/components/fold.ts](src/components/fold.ts): `foldStream`, `runSummary`, `timeRange`: which consecutive system events fold into one run, and how a run is summed up
+- [src/components/Composer.tsx](src/components/Composer.tsx): the bordered box (a visually hidden `Message #<thread>` label, the textarea, the key hints and Send) and the mention popup
 - [src/components/mention-logic.ts](src/components/mention-logic.ts) — `completeMention`, `applyMention`, `clampSelection`
 - [src/components/GuidelinesPanel.tsx](src/components/GuidelinesPanel.tsx) — the Weave's guidelines, the keeper editor, and the collapsed instance text
 - [src/components/RequestsPanel.tsx](src/components/RequestsPanel.tsx) — the Lobby's requests, the Accept/Cancel/Offer controls and the Open-request form
@@ -291,7 +292,7 @@ re-reads storage.
 - [src/components/InviteBanner.tsx](src/components/InviteBanner.tsx) — "your input is wanted here"
 - [src/components/NamePrompt.tsx](src/components/NamePrompt.tsx) — choose a name before taking part
 - [src/components/WeaveRoute.tsx](src/components/WeaveRoute.tsx) — the one place a Weave page is mounted, for all four addresses, plus the `/lobby` lookup, the unjoined-Lobby fork (the session's error sentence when there is one, the join form and its own way home), the `leavingIsSafe` verdict it hands down, and the Lobby's view state: `WeaveSession` holds `{ view, popSeq }` above `key={reloadKey}` with the one `popstate` listener, and `WeaveMount` owns the app's only `pushState` behind its lifetime guard, its change test and a freshly asked `leavingIsSafe`
-- [src/components/WeaveView.tsx](src/components/WeaveView.tsx) — one Weave page: the `banner`, the `no-credential` and read-only/rejoin branches, then the three-column layout (sidebar in the order Threads, Listeners, Requests, Guidelines and a footer line; the center column; the details panel, open by default at 1200px and wider) — with `showListeners` computed once and read by everything rendered (the four groups, the hidden `composer-slot`, the error bar in both views, the sidebar line's `active`, the thread header and details panel drawn only beside a Thread, and `<h2>Listeners</h2>` over the directory)
+- [src/components/WeaveView.tsx](src/components/WeaveView.tsx) — one Weave page: the `banner`, the `no-credential` and read-only/rejoin branches, then the three-column layout (sidebar in the order Threads, Listeners, Requests, Guidelines and a footer line; the center column, the page's one `<main>`; the details panel, open by default at 1200px and wider) — with `showListeners` computed once and read by everything rendered (the four groups, the hidden `composer-slot`, the error bar in both views, the sidebar line's `active`, the thread header and details panel drawn only beside a Thread, and `<h2>Listeners</h2>` over the directory)
 - [src/components/HomeLink.tsx](src/components/HomeLink.tsx) — "Go to the main page" on the cards that replace a Weave: an anchor, or the in-place button
 - [src/components/PersistenceBar.tsx](src/components/PersistenceBar.tsx) — the one-time "this browser is not saving anything" bar
 - [src/components/main/MainPage.tsx](src/components/main/MainPage.tsx) — the `/` shell: four independent cells, the migration pass, the one bar
@@ -318,7 +319,7 @@ My Weaves over a `LoomClient` with a stubbed `fetch` (its base URL is `https://l
 client allows plain `http:` on loopback hosts only, so `http://loom.test` is refused as
 `insecure_url`), and `listeners-page.test.tsx` drives the route, the page and the sidebar line over
 a **path-keyed** stub, because every control change is the same path with a different query string —
-what each request asked for is asserted separately. `markdown.test.ts`, `composer-logic.test.ts`,
+what each request asked for is asserted separately. `markdown.test.ts`, `composer-logic.test.ts`, `fold.test.ts` (runs, singles, a message ending a run, the summary words, the time range),
 `requests-state.test.ts` (the version
 watermark, monotonic terminal states, derived expiry), `storage.test.ts` (the durable/memory verdict
 and the override-and-tombstone precedence), `weaves-store.test.ts` (the entry rules, `mergeLegacy`,

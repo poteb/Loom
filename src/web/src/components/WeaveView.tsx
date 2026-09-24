@@ -155,7 +155,8 @@ export function WeaveView({ session, state, banner, noCredential, openMainInPlac
           <GuidelinesPanel state={state} session={session} onError={reportError} />
           <div class="sidebar-foot muted">Weave <span class="mono">{state.weave?.title ?? ""}</span>{` · ${threadCount}`}{listenerCount}</div>
         </aside>
-        <div class="main">
+        {/* The page's one <main>: the center column, whichever of the two views it shows. */}
+        <main class="main">
           {!showListeners && current && (
             <ThreadHeader thread={current} fold={fold} onFold={setFold}
               detailsOpen={detailsOpen} onToggleDetails={() => setDetailsOpen((v) => !v)} />
@@ -192,7 +193,7 @@ export function WeaveView({ session, state, banner, noCredential, openMainInPlac
               <Composer state={state} onSend={send} draft={draft} />
             </div>
           )}
-        </div>
+        </main>
         {/* The Thread's own panel, beside the Thread only: the directory is not a Thread. */}
         {!showListeners && detailsOpen && current && (
           <ThreadDetails thread={current} state={state} session={session} onError={reportError} />

@@ -1,7 +1,9 @@
-import { useEffect, useRef } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import type { LoomEvent } from "@loom/client";
 import type { SessionState } from "../session.js";
 import { renderMarkdown } from "../markdown.js";
+import { foldStream, runSummary, timeRange } from "./fold.js";
+import { initials } from "./initials.js";
 
 /** Display name for an event's actor: a keeper acts as "Keeper", everyone else as their participant name. */
 function who(actor: string, state: SessionState): string {
@@ -62,33 +64,112 @@ function systemLine(e: LoomEvent, state: SessionState): string {
   }
 }
 
-export function MessageList({ state }: {
+
+const time = (iso: string) => new Date(iso).toLocaleTimeString();
+
+/** The chevron of a folded run, from the artboard; turned down while the run is expanded. */
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <svg class={`sys-chevron${open ? " open" : ""}`} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+      <path d="M9 6l6 6-6 6" />
+    </svg>
+  );
+}
+
+/** One message: the avatar, a head line (name, an agent pill, a keeper's role, the time) and the body. */
+function Message({ e, state }: { e: LoomEvent; state: SessionState }) {
+  const keeper = e.actor.startsWith("keeper:");
+  const p = keeper ? undefined : state.participants.find((x) => x.id === e.actor);
+  const agent = p?.kind === "agent";
+  const letters = keeper ? "K" : p ? initials(p.name) : "?";
+  return (
+    <article class="msg">
+      <span class={`msg-avatar${agent ? " agent" : ""}`} aria-hidden="true">{letters}</span>
+      <div class="msg-main">
+        <div class="msg-head">
+          <span class="msg-name">{who(e.actor, state)}</span>
+          {agent && <span class="pill pill-working msg-pill">agent</span>}
+          {p?.role === "keeper" && <span class="muted msg-role">keeper</span>}
+          <time class="muted mono" dateTime={e.at}>{time(e.at)}</time>
+        </div>
+        <div class="msg-body" dangerouslySetInnerHTML={{ __html: renderMarkdown(String(e.payload.text ?? ""), state.participants, (e.payload.mentions as string[] | undefined) ?? []) }} />
+      </div>
+    </article>
+  );
+}
+
+/** One system event on its own row, and under it the guidelines a guidelines change installed. */
+function SystemEvent({ e, state }: { e: LoomEvent; state: SessionState }) {
+  return (
+    <div class="sys">
+      <div class="sysrow">
+        <span class="sys-line"><span class="sys-text">{systemLine(e, state)}</span> · <time class="mono" dateTime={e.at}>{time(e.at)}</time></span>
+      </div>
+      {/* The guidelines the change installed, shown in the thread so the room can read them
+          without opening the panel. Rendered from the event, never from the panel's state. */}
+      {e.type === "weave.guidelines_changed" && e.payload.guidelines ? (
+        <div class="system-body" dangerouslySetInnerHTML={{ __html: renderMarkdown(String(e.payload.guidelines), state.participants, []) }} />
+      ) : null}
+    </div>
+  );
+}
+
+/** A folded run: one row saying what happened and when, with the button that expands it in place. */
+function Run({ events, open, onToggle, state }: { events: LoomEvent[]; open: boolean; onToggle: () => void; state: SessionState }) {
+  const [lead, ...rest] = runSummary(events);
+  return (
+    <>
+      <div class="sysrow sysrow-run">
+        <Chevron open={open} />
+        <span class="sys-line">
+          <span class="sys-text"><strong>{lead}</strong>{rest.map((r) => ` · ${r}`).join("")}</span>
+          {" · "}<time class="mono" dateTime={events[0]!.at}>{timeRange(events)}</time>
+        </span>
+        <button type="button" class="link sys-toggle" aria-expanded={open ? "true" : "false"} onClick={onToggle}>
+          {open ? "Hide" : `Show ${events.length} events`}
+        </button>
+      </div>
+      {open && events.map((e) => <SystemEvent key={e.seq} e={e} state={state} />)}
+    </>
+  );
+}
+
+/** What the stream says while it is not live: the header's pill says it too, this says it in place. */
+function ConnectionRow({ connection }: { connection: "reconnecting" | "closed" }) {
+  const reconnecting = connection === "reconnecting";
+  return (
+    <div class="sysrow sysrow-conn">
+      <span class={`conn-row-dot ${reconnecting ? "warn" : "danger"}`} aria-hidden="true" />
+      <span>{reconnecting ? "Connection lost. Reconnecting…" : "Disconnected."}</span>
+    </div>
+  );
+}
+
+export function MessageList({ state, fold }: {
   state: SessionState;
-  /** Whether runs of system events are folded: the thread header's checkbox, held by `WeaveView`.
-   *  Not read yet; the folding itself is the next change. */
-  fold?: boolean;
+  /** Whether runs of system events are folded: the thread header's checkbox, held by `WeaveView`. */
+  fold: boolean;
 }) {
   const bottom = useRef<HTMLDivElement>(null);
+  // Which runs the human expanded, by the run's key (its first event's seq), so a run that grows
+  // while it is open stays open. UI state only.
+  const [expanded, setExpanded] = useState<ReadonlySet<number>>(() => new Set());
   const events = state.events.filter((e) => e.threadId === state.currentThreadId);
-  useEffect(() => { bottom.current?.scrollIntoView({ block: "end" }); }, [events.length, state.currentThreadId]);
+  const lost = state.connection === "reconnecting" || state.connection === "closed" ? state.connection : null;
+  useEffect(() => { bottom.current?.scrollIntoView({ block: "end" }); }, [events.length, state.currentThreadId, lost]);
+  const toggle = (key: number) => setExpanded((prev) => {
+    const next = new Set(prev);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
   return (
-    <main class="messages">
-      {events.map((e) => e.type === "message" ? (
-        <article key={e.seq} class="msg">
-          <div class="msg-head"><strong>{who(e.actor, state)}</strong> <time dateTime={e.at}>{new Date(e.at).toLocaleTimeString()}</time></div>
-          <div class="msg-body" dangerouslySetInnerHTML={{ __html: renderMarkdown(String(e.payload.text ?? ""), state.participants, (e.payload.mentions as string[] | undefined) ?? []) }} />
-        </article>
-      ) : (
-        <div key={e.seq} class="system">
-          <div>{systemLine(e, state)} · <time dateTime={e.at}>{new Date(e.at).toLocaleTimeString()}</time></div>
-          {/* The guidelines the change installed, shown in the thread so the room can read them
-              without opening the panel. Rendered from the event, never from the panel's state. */}
-          {e.type === "weave.guidelines_changed" && e.payload.guidelines ? (
-            <div class="system-body" dangerouslySetInnerHTML={{ __html: renderMarkdown(String(e.payload.guidelines), state.participants, []) }} />
-          ) : null}
-        </div>
-      ))}
+    <div class="messages">
+      {foldStream(events, fold).map((item) =>
+        item.kind === "message" ? <Message key={item.key} e={item.event} state={state} />
+        : item.kind === "system" ? <SystemEvent key={item.key} e={item.event} state={state} />
+        : <Run key={item.key} events={item.events} open={expanded.has(item.key)} onToggle={() => toggle(item.key)} state={state} />)}
+      {lost && <ConnectionRow connection={lost} />}
       <div ref={bottom} />
-    </main>
+    </div>
   );
 }

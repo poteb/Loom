@@ -7,6 +7,7 @@ import { ThreadHeader } from "../src/components/ThreadHeader.js";
 import { Header } from "../src/components/Header.js";
 import { initials } from "../src/components/initials.js";
 import { MessageList } from "../src/components/MessageList.js";
+import { Composer } from "../src/components/Composer.js";
 import { InviteBanner } from "../src/components/InviteBanner.js";
 import { GuidelinesPanel, GUIDELINES_MAX } from "../src/components/GuidelinesPanel.js";
 import { RequestsPanel } from "../src/components/RequestsPanel.js";
@@ -353,7 +354,7 @@ describe("MessageList", () => {
       { weaveId: "w1", seq: 1, threadId: "t1", type: "thread.invited" as const, actor: "p1", at: new Date().toISOString(), payload: { threadId: "t1", participantId: "p2", invitedBy: "p1" } },
       { weaveId: "w1", seq: 2, threadId: "t1", type: "thread.url_changed" as const, actor: "p1", at: new Date().toISOString(), payload: { threadId: "t1", url: "https://e.com/x" } },
     ];
-    render(<MessageList state={state({ currentThreadId: "t1", events })} />);
+    render(<MessageList state={state({ currentThreadId: "t1", events })} fold={false} />);
     expect(screen.getByText(/Bot invited by Paw/)).toBeTruthy();
     expect(screen.getByText(/now links to https:\/\/e.com\/x/)).toBeTruthy();
   });
@@ -361,11 +362,11 @@ describe("MessageList", () => {
   it("names the actor and renders the new text beneath a guidelines change, and says cleared for an empty one", () => {
     const change = { weaveId: "w1", seq: 3, threadId: "t1", type: "weave.guidelines_changed" as const, actor: "p1",
       at: new Date().toISOString(), payload: { guidelines: "Be **kind**", previous: "" } };
-    const { container, rerender } = render(<MessageList state={state({ currentThreadId: "t1", events: [change] })} />);
+    const { container, rerender } = render(<MessageList state={state({ currentThreadId: "t1", events: [change] })} fold={true} />);
     expect(screen.getByText(/Paw changed the Weave guidelines/)).toBeTruthy();
     expect(container.querySelector(".system-body strong")!.textContent).toBe("kind");
     const cleared = { ...change, seq: 4, payload: { guidelines: "", previous: "Be **kind**" } };
-    rerender(<MessageList state={state({ currentThreadId: "t1", events: [cleared] })} />);
+    rerender(<MessageList state={state({ currentThreadId: "t1", events: [cleared] })} fold={true} />);
     expect(screen.getByText(/Paw cleared the Weave guidelines/)).toBeTruthy();
     expect(container.querySelector(".system-body")).toBeNull();
   });
@@ -379,8 +380,8 @@ describe("MessageList", () => {
       { ...base, seq: 4, type: "weave.invited" as const, payload: { invitationId: "i1", participantId: "p2", targetWeaveTitle: "Loom session" } },
       { ...base, seq: 5, type: "request.closed" as const, payload: { requestId: "r1", requesterId: "p1", to: ["p1"], reason: "filled", accepted: ["p2"] } },
     ];
-    const { container } = render(<MessageList state={lobbyState({ currentThreadId: "th1", events })} />);
-    expect(container.querySelectorAll(".system")).toHaveLength(5);
+    const { container } = render(<MessageList state={lobbyState({ currentThreadId: "th1", events })} fold={false} />);
+    expect(container.querySelectorAll(".sysrow")).toHaveLength(5);
     expect(screen.getByText(/request "Review PR 14" opened by Paw: wants 2/)).toBeTruthy();
     expect(screen.getByText(/Helper offered \(gpt-5\.6-sol\/high\): "ready"/)).toBeTruthy();
     expect(screen.getByText(/Helper accepted for "Loom session"/)).toBeTruthy();
@@ -399,8 +400,8 @@ describe("MessageList", () => {
       { ...base, seq: 4, type: "thread.removed" as const, actor: "p1", payload: { threadId: "th1", participantId: "p2", removedBy: "p1", requestId: "r1" } },
       { ...base, seq: 5, type: "thread.removed" as const, actor: "keeper:k1", payload: { threadId: "th1", participantId: "p2", removedBy: "keeper:k1" } },
     ];
-    const { container } = render(<MessageList state={lobbyState({ currentThreadId: "th1", events })} />);
-    const lines = [...container.querySelectorAll(".system > div")].map((d) => d.textContent!.split(" · ")[0]);
+    const { container } = render(<MessageList state={lobbyState({ currentThreadId: "th1", events })} fold={false} />);
+    const lines = [...container.querySelectorAll(".sysrow .sys-text")].map((d) => d.textContent);
     const clock = (iso: string) => new Date(iso).toLocaleTimeString();
     expect(lines).toEqual([
       `Helper finished "Review PR 14"`,
@@ -409,6 +410,140 @@ describe("MessageList", () => {
       "Helper was removed from this Thread by Paw",
       "Helper was removed from this Thread by Keeper",
     ]);
+  });
+
+  describe("a message", () => {
+    const at = "2026-09-24T13:12:04.000Z";
+    const said = (actor: string, seq = 1) => ({ weaveId: "w1", seq, threadId: "g1", type: "message" as const, actor, at, payload: { text: "hi **there**" } });
+    const head = (el: Element) => ({
+      avatar: el.querySelector(".msg-avatar")!.textContent, agentAvatar: el.querySelector(".msg-avatar")!.classList.contains("agent"),
+      name: el.querySelector(".msg-name")!.textContent, pill: el.querySelector(".msg-head .pill")?.textContent ?? null,
+      role: el.querySelector(".msg-role")?.textContent ?? null,
+    });
+
+    it("draws a human with initials, the name and the time, and the Markdown body", () => {
+      const { container } = render(<MessageList state={state({ events: [said("p1")] })} fold={true} />);
+      const msg = container.querySelector("article.msg")!;
+      const time = msg.querySelector(".msg-head time")!;
+      expect([head(msg), time.getAttribute("dateTime"), time.textContent, msg.querySelector(".msg-body strong")!.textContent])
+        .toEqual([{ avatar: "PA", agentAvatar: false, name: "Paw", pill: null, role: null }, at, new Date(at).toLocaleTimeString(), "there"]);
+    });
+
+    it("marks an agent with an agent pill and the agent avatar", () => {
+      const { container } = render(<MessageList state={state({ events: [said("p2")] })} fold={true} />);
+      expect(head(container.querySelector("article.msg")!)).toEqual({ avatar: "BO", agentAvatar: true, name: "Bot", pill: "agent", role: null });
+    });
+
+    it("shows the role only for a keeper", () => {
+      const keeper = { ...me, role: "keeper" as const };
+      const { container } = render(<MessageList state={state({ participants: [keeper, bot], events: [said("p1"), said("p2", 2)] })} fold={true} />);
+      expect([...container.querySelectorAll("article.msg")].map((m) => head(m).role)).toEqual(["keeper", null]);
+    });
+
+    it("calls a keeper actor Keeper, with K on the avatar", () => {
+      const { container } = render(<MessageList state={state({ events: [said("keeper:k1")] })} fold={true} />);
+      expect(head(container.querySelector("article.msg")!)).toEqual({ avatar: "K", agentAvatar: false, name: "Keeper", pill: null, role: null });
+    });
+  });
+
+  describe("folding system events", () => {
+    const sys = (seq: number, type: "participant.joined" | "participant.capabilities_changed", at: string) =>
+      ({ weaveId: "w1", seq, threadId: "g1", type, actor: "p2", at, payload: { participantId: "p2", capabilities: {} } });
+    const said = (seq: number) => ({ weaveId: "w1", seq, threadId: "g1", type: "message" as const, actor: "p1", at: "2026-09-24T13:08:00.000Z", payload: { text: "hi" } });
+    const t1 = "2026-09-24T13:07:09.000Z"; const t3 = "2026-09-24T13:07:11.000Z";
+    const run = [sys(1, "participant.joined", t1), sys(2, "participant.capabilities_changed", "2026-09-24T13:07:10.000Z"), sys(3, "participant.capabilities_changed", t3)];
+    const rows = (c: Element) => [...c.querySelectorAll(".sysrow")];
+
+    it("folds a run of system events into one row with a summary, the time range and a Show button", () => {
+      const { container } = render(<MessageList state={state({ events: run })} fold={true} />);
+      const row = rows(container)[0]!;
+      const button = screen.getByRole("button", { name: "Show 3 events" });
+      expect([rows(container).length, row.querySelector("strong")!.textContent, row.querySelector(".sys-text")!.textContent,
+        row.querySelector("time.mono")!.textContent, button.getAttribute("aria-expanded"), row.contains(button)])
+        .toEqual([1, "1 joined", "1 joined · 2 profile updates",
+          `${new Date(t1).toLocaleTimeString()}-${new Date(t3).toLocaleTimeString()}`, "false", true]);
+      expect(screen.queryByText(/Bot joined/)).toBeNull();
+    });
+
+    it("expands the run in place, and Hide folds it again", () => {
+      const { container } = render(<MessageList state={state({ events: [...run, said(4)] })} fold={true} />);
+      fireEvent.click(screen.getByRole("button", { name: "Show 3 events" }));
+      const hide = screen.getByRole("button", { name: "Hide" });
+      const open = [rows(container).length, hide.getAttribute("aria-expanded"), !!screen.getByText("Bot joined"),
+        container.querySelector(".messages")!.lastElementChild!.previousElementSibling!.matches("article.msg")];
+      fireEvent.click(hide);
+      expect([open, rows(container).length, !!screen.getByRole("button", { name: "Show 3 events" })])
+        .toEqual([[4, "true", true, true], 1, true]);
+    });
+
+    it("shows a single system event as it is", () => {
+      const { container } = render(<MessageList state={state({ events: [said(1), sys(2, "participant.joined", t1), said(3)] })} fold={true} />);
+      expect([rows(container).length, container.querySelector(".sysrow .sys-text")!.textContent, screen.queryByRole("button")])
+        .toEqual([1, "Bot joined", null]);
+    });
+
+    it("draws every system event as its own row when folding is off", () => {
+      const { container } = render(<MessageList state={state({ events: run })} fold={false} />);
+      expect([[...container.querySelectorAll(".sysrow .sys-text")].map((e) => e.textContent), screen.queryByRole("button")])
+        .toEqual([["Bot joined", "Bot updated their Lobby profile", "Bot updated their Lobby profile"], null]);
+    });
+  });
+
+  describe("the connection row", () => {
+    const conn = (c: Element) => {
+      const row = c.querySelector(".sysrow-conn");
+      return row && [row.textContent, row.querySelector(".conn-row-dot")!.classList.contains("warn") ? "warn" : "danger",
+        row === c.querySelector(".messages")!.lastElementChild!.previousElementSibling];
+    };
+
+    it("is absent while the stream is open or first connecting", () => {
+      const open = render(<MessageList state={state({ connection: "open" })} fold={true} />).container;
+      const connecting = render(<MessageList state={state({ connection: "connecting" })} fold={true} />).container;
+      expect([conn(open), conn(connecting)]).toEqual([null, null]);
+    });
+
+    it("says the connection is lost, with an amber dot, at the end of the stream while reconnecting", () => {
+      const { container } = render(<MessageList state={state({ connection: "reconnecting" })} fold={true} />);
+      expect(conn(container)).toEqual(["Connection lost. Reconnecting…", "warn", true]);
+    });
+
+    it("says Disconnected, with a red dot, once the stream has given up", () => {
+      const { container } = render(<MessageList state={state({ connection: "closed" })} fold={true} />);
+      expect(conn(container)).toEqual(["Disconnected.", "danger", true]);
+    });
+  });
+});
+
+describe("Composer", () => {
+  const draw = (over: Partial<SessionState> = {}, onSend = vi.fn(async (_: string) => {})) => {
+    render(<Composer state={state(over)} onSend={onSend} />);
+    return { onSend, box: screen.getByRole("textbox", { name: /^Message #/ }) as HTMLTextAreaElement };
+  };
+
+  it("labels the box with the thread and says how to mention", () => {
+    const { box } = draw();
+    expect([screen.getByLabelText("Message #General"), box.placeholder]).toEqual([box, "Message #General, @name to mention"]);
+  });
+
+  it("says a closed thread is closed, and is disabled", () => {
+    const { box } = draw({ threads: [general, { ...pr, closedAt: "2026-09-24T10:00:00.000Z" }], currentThreadId: "t1" });
+    expect([box.placeholder, box.disabled]).toEqual(["This thread is closed", true]);
+  });
+
+  it("states the keys in its footer beside Send", () => {
+    const { container } = render(<Composer state={state()} onSend={async () => {}} />);
+    expect([container.querySelector(".composer-hint")!.textContent, [...container.querySelectorAll(".composer-hint .kbd")].map((k) => k.textContent),
+      container.querySelector(".composer-foot button")!.textContent]).toEqual(["Markdown · Enter send · Shift Enter newline", ["Enter", "Shift Enter"], "Send"]);
+  });
+
+  it("sends the trimmed text on Enter and clears the box, but not on Shift Enter", async () => {
+    const { box, onSend } = draw();
+    fireEvent.input(box, { target: { value: "  hello  " } });
+    fireEvent.keyDown(box, { key: "Enter", shiftKey: true });
+    const before = onSend.mock.calls.length;
+    fireEvent.keyDown(box, { key: "Enter" });
+    await vi.waitFor(() => expect(box.value).toBe(""));
+    expect([before, onSend.mock.calls]).toEqual([0, [["hello"]]]);
   });
 });
 
@@ -867,6 +1002,22 @@ describe("the Weave page shell", () => {
     const was = box.checked;
     fireEvent.click(box);
     expect([was, box.checked]).toEqual([true, false]);
+  });
+
+  it("folds the stream while the checkbox is on, and unfolds it when it is turned off", () => {
+    const joined = (seq: number) => ({ weaveId: "w1", seq, threadId: "g1", type: "participant.joined" as const, actor: "p2",
+      at: "2026-09-24T13:07:09.000Z", payload: { participantId: "p2" } });
+    const { container } = render(<WeaveView session={session()} state={state({ events: [joined(1), joined(2)] })} />);
+    const folded = container.querySelectorAll(".messages .sysrow").length;
+    fireEvent.click(screen.getByRole("checkbox", { name: "Fold system events" }));
+    expect([folded, container.querySelectorAll(".messages .sysrow").length]).toEqual([1, 2]);
+  });
+
+  it("has one main landmark, the center column, holding the thread header, the stream and the composer", () => {
+    const { container } = render(<WeaveView session={session()} state={state()} />);
+    const mains = container.querySelectorAll("main");
+    expect([mains.length, ...[".thread-header", ".messages", ".composer"].map((c) => !!mains[0]?.querySelector(c))])
+      .toEqual([1, true, true, true]);
   });
 
   it("draws neither the thread header nor the details panel while the listeners directory is the main area", () => {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useId, useRef, useState } from "preact/hooks";
 import type { SessionState } from "../session.js";
 import { applyMention, clampSelection, completeMention } from "./mention-logic.js";
 
@@ -9,6 +9,7 @@ export function Composer({ state, onSend, draft }: { state: SessionState; onSend
   const [selected, setSelected] = useState(0);
   const [dismissed, setDismissed] = useState(false);
   const ta = useRef<HTMLTextAreaElement>(null);
+  const id = useId();
   const names = state.participants.map((p) => p.name);
   const mention = completeMention(text, caret, names);
   const query = mention?.query;
@@ -51,6 +52,8 @@ export function Composer({ state, onSend, draft }: { state: SessionState; onSend
   };
   const sync = (el: HTMLTextAreaElement) => { setText(el.value); setCaret(el.selectionStart ?? el.value.length); };
 
+  const target = thread ? `Message #${thread.name}` : "Message";
+
   return (
     <div class="composer">
       {suggestions.length > 0 && (
@@ -58,11 +61,18 @@ export function Composer({ state, onSend, draft }: { state: SessionState; onSend
           {suggestions.map((n, i) => <li key={n} class={i === active ? "active" : ""} onMouseDown={(e) => { e.preventDefault(); pick(n); }}>@{n}</li>)}
         </ul>
       )}
-      <textarea ref={ta} value={text} disabled={disabled} rows={3}
-        placeholder={disabled ? "This thread is closed" : "Write a message (Markdown, @name to mention, Enter to send)"}
-        onInput={(e) => sync(e.target as HTMLTextAreaElement)} onKeyUp={(e) => sync(e.target as HTMLTextAreaElement)}
-        onClick={(e) => sync(e.target as HTMLTextAreaElement)} onKeyDown={onKey} />
-      <button onClick={() => void send()} disabled={disabled || busy || !text.trim()}>Send</button>
+      <div class="composer-box">
+        <label for={id} class="visually-hidden">{target}</label>
+        <textarea id={id} ref={ta} class="composer-input" value={text} disabled={disabled} rows={3}
+          placeholder={disabled ? "This thread is closed" : `${target}, @name to mention`}
+          onInput={(e) => sync(e.target as HTMLTextAreaElement)} onKeyUp={(e) => sync(e.target as HTMLTextAreaElement)}
+          onClick={(e) => sync(e.target as HTMLTextAreaElement)} onKeyDown={onKey} />
+        <div class="composer-foot">
+          <span class="muted composer-hint">Markdown · <span class="kbd">Enter</span> send · <span class="kbd">Shift Enter</span> newline</span>
+          <div class="spacer" />
+          <button type="button" class="btn btn-primary composer-send" onClick={() => void send()} disabled={disabled || busy || !text.trim()}>Send</button>
+        </div>
+      </div>
     </div>
   );
 }

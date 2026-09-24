@@ -188,22 +188,56 @@ a.thread-subtitle { text-decoration: none; }
 .person-name { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .person-role { flex-shrink: 0; font-size: 12px; }
 .invited-mark { flex-shrink: 0; font-size: 12px; }
-.messages { flex: 1; overflow-y: auto; padding: 16px 20px; }
+/* The stream: messages and system rows, 4px apart, the newest at the bottom. The first child's
+   `margin-top: auto` is the artboard's `justify-content: flex-end` in a form that still scrolls. */
+.messages { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; padding: 16px 20px; }
+.messages > :first-child { margin-top: auto; }
 /* Layout, not appearance: what `.messages` does for a Thread, this does for the directory — the open
    view scrolls inside the layout, so the header, the sidebar and the connection indicator stay where
    they are (spec §1 success scenario). `min-height: 0` is the half that matters: without it a flex
    item's automatic minimum size is its content, and 50 cards push the page past `100vh`. The one CSS
    rule of `feat/lobby-listeners-view`, added on the owner's word of 2026-09-20. */
 .listeners-view { flex: 1; min-height: 0; overflow-y: auto; }
-.msg { margin-bottom: 12px; } .msg-head { color: var(--muted); font-size: 12px; } .msg-body p { margin: 4px 0; }
+/* A message: a 32px square avatar (accent for people, the working blue for agents), then the head
+   line and the body. */
+.msg { display: flex; gap: 12px; padding: 6px 0; }
+.msg-avatar { flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 6px; background: var(--accent); color: var(--on-accent); font-size: 11px; font-weight: 600; }
+.msg-avatar.agent { background: var(--selected); color: var(--info); font-family: var(--font-mono); }
+.msg-main { flex-grow: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.msg-head { display: flex; align-items: baseline; gap: 8px; font-size: 13px; }
+.msg-name { font-weight: 600; }
+.msg-pill.pill { height: 16px; font-size: 10px; }
+.msg-role, .msg-head time { font-size: 12px; }
+.msg-body { font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.msg-body p { margin: 0 0 6px; } .msg-body > :last-child { margin-bottom: 0; }
 .msg-body pre { background: var(--bg-sunken); border: 1px solid var(--line); padding: 8px; border-radius: 6px; overflow-x: auto; }
-.system { color: var(--muted); font-size: 12px; font-style: italic; margin: 6px 0; }
-.system-body { margin-left: 12px; font-style: normal; }
+/* A system row: 28px, sunken, dashed. `min-height` rather than the artboard's `height`, so a long
+   line (a request note, an overdue notice) wraps instead of being cut off. */
+.sysrow { display: flex; align-items: center; gap: 10px; min-height: 28px; padding: 4px 12px; border-radius: 6px; background: var(--bg-sunken); border: 1px dashed var(--line-sys); color: var(--muted); font-size: 12px; }
+.sys-line { min-width: 0; overflow-wrap: anywhere; }
+.sysrow strong { color: var(--pill-text); font-weight: 500; }
+.sys-chevron { flex-shrink: 0; transition: transform .1s; } .sys-chevron.open { transform: rotate(90deg); }
+button.link.sys-toggle { flex-shrink: 0; margin-left: auto; padding: 0; text-decoration: none; }
+.system-body { margin: 4px 0 4px 12px; font-size: 13px; color: var(--fg-2); }
+/* The stream while it is not live: solid, not dashed, with the header pill's amber or red dot. */
+.sysrow-conn { border-style: solid; color: var(--pill-text); }
+.conn-row-dot { flex-shrink: 0; width: 8px; height: 8px; border-radius: 50%; }
+.conn-row-dot.warn { background: var(--warn); } .conn-row-dot.danger { background: var(--danger); }
 .mention { background: var(--selected); color: var(--info); border-radius: 4px; padding: 0 3px; }
-.composer { position: relative; display: flex; gap: 8px; align-items: flex-end; padding: 12px 20px; border-top: 1px solid var(--line); }
-.composer textarea { flex: 1; resize: vertical; font-size: 14px; padding: 12px; border-radius: 8px; }
-.suggest { position: absolute; bottom: 100%; left: 20px; list-style: none; margin: 0 0 4px; padding: 4px; background: var(--bg-raised); border: 1px solid var(--line-strong); border-radius: 6px; box-shadow: var(--shadow); }
-.suggest li { padding: 4px 8px; cursor: pointer; border-radius: 4px; } .suggest li.active { background: var(--selected); }
+/* The composer: one bordered box holding the borderless textarea and a footer strip. The box takes
+   the focus colour, because the textarea inside it draws no outline of its own. */
+.composer { position: relative; flex-shrink: 0; padding: 0 20px 16px; }
+.composer-box { display: flex; flex-direction: column; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--bg-sunken); }
+.composer-box:focus-within { border-color: var(--accent); }
+.composer-input { display: block; width: 100%; min-height: 72px; padding: 12px; border: 0; border-radius: 8px 8px 0 0; outline: 0; background: transparent; color: var(--fg); font-size: 14px; resize: vertical; }
+.composer-input:focus, .composer-input:focus-visible { border: 0; outline: 0; }
+.composer-foot { display: flex; align-items: center; gap: 12px; padding: 6px 8px 8px 12px; border-top: 1px solid var(--line); }
+.composer-hint { font-size: 12px; }
+.composer-send.btn { height: 28px; }
+.suggest { position: absolute; bottom: 100%; left: 20px; min-width: 160px; list-style: none; margin: 0 0 4px; padding: 4px; background: var(--bg-raised); border: 1px solid var(--line-strong); border-radius: 6px; box-shadow: var(--shadow); font-size: 13px; }
+.suggest li { padding: 4px 8px; cursor: pointer; border-radius: 4px; color: var(--fg-2); } .suggest li.active { background: var(--selected); color: var(--fg); }
+/* Read by assistive technology, drawn nowhere: the composer's label. */
+.visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .badge { display: inline-flex; align-items: center; height: 18px; font-size: 10px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; padding: 0 6px; border-radius: 9px; background: var(--neutral); color: var(--pill-text); margin-left: 6px; }
 .banner { padding: 8px 16px; background: var(--bg-sunken); border-bottom: 1px solid var(--line); color: var(--fg-2); }
 .invite-banner { display: flex; justify-content: space-between; align-items: center; gap: 8px; background: var(--selected); color: var(--info); }

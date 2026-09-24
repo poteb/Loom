@@ -774,7 +774,7 @@ describe("a 401 that lands too late (spec §6.1)", () => {
 
 describe("the draft survives the round trip (spec §3.5)", () => {
   const TYPED = "half a message";
-  const composer = () => screen.getByPlaceholderText(/^Write a message/) as HTMLTextAreaElement;
+  const composer = () => screen.getByPlaceholderText(/^Message #/) as HTMLTextAreaElement;
 
   it("keeps the text and the caret across a look at the directory", async () => {
     const v = mountLobby({ path: "/lobby" });
@@ -881,7 +881,7 @@ describe("a rejoin restores the view (spec §3.1)", () => {
  * is held — which is why this block runs on the test's own clock.
  */
 describe("a delayed discovery leaves the Thread writable (spec §5)", () => {
-  const composer = () => screen.getByPlaceholderText(/^Write a message/) as HTMLTextAreaElement;
+  const composer = () => screen.getByPlaceholderText(/^Message #/) as HTMLTextAreaElement;
 
   async function held() {
     vi.useFakeTimers();
@@ -932,7 +932,7 @@ describe("a delayed discovery leaves the Thread writable (spec §5)", () => {
 
 /** Spec §12.20: a Lobby with no pointer is still a writable Thread, which is the rule. */
 describe("a failed or absent Lobby still leaves the Thread writable (spec §5)", () => {
-  const composer = () => screen.getByPlaceholderText(/^Write a message/) as HTMLTextAreaElement;
+  const composer = () => screen.getByPlaceholderText(/^Message #/) as HTMLTextAreaElement;
   /** `LobbyRoute`'s own discovery answers; every call the session makes gets the second answer. */
   const afterTheFirst = (answer: () => Response | Promise<Response>) => {
     let n = 0;
