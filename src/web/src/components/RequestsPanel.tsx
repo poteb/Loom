@@ -72,10 +72,12 @@ export function RequestsPanel({ state, session, onError, now }: {
   const title = (r: VersionedRequest) => state.threads.find((t) => t.id === r.threadId)?.name ?? "a request";
 
   return (
-    <section class="requests">
-      <div class="requests-head">
-        <span>Requests</span>
-        {state.me && <button type="button" onClick={() => setOpening((v) => !v)}>{opening ? "Never mind" : "Open a request"}</button>}
+    <section class="nav-section requests">
+      <div class="nav-head requests-head">
+        <span class="sec">Requests</span>
+        {/* "+ Open" is what fits the section header; "Open a request" is what it does. */}
+        {state.me && <button type="button" class="btn btn-xs" aria-label={opening ? undefined : "Open a request"}
+          onClick={() => setOpening((v) => !v)}>{opening ? "Never mind" : "+ Open"}</button>}
       </div>
       {opening && <OpenRequestForm session={session} onError={onError} onDone={() => setOpening(false)} />}
       {/* A read that failed is not an empty board: say which of the two this is. */}

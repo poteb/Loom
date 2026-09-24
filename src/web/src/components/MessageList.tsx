@@ -62,7 +62,12 @@ function systemLine(e: LoomEvent, state: SessionState): string {
   }
 }
 
-export function MessageList({ state }: { state: SessionState }) {
+export function MessageList({ state }: {
+  state: SessionState;
+  /** Whether runs of system events are folded: the thread header's checkbox, held by `WeaveView`.
+   *  Not read yet; the folding itself is the next change. */
+  fold?: boolean;
+}) {
   const bottom = useRef<HTMLDivElement>(null);
   const events = state.events.filter((e) => e.threadId === state.currentThreadId);
   useEffect(() => { bottom.current?.scrollIntoView({ block: "end" }); }, [events.length, state.currentThreadId]);

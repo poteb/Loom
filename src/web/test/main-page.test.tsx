@@ -2313,7 +2313,7 @@ describe("a creation on the main page (spec §3.1, §4.5)", () => {
     await createOnPage();
     fireEvent.click(screen.getByRole("button", { name: "Open the Weave" }));
     await settle();
-    expect([v.iAm(), v.container.querySelector(".header-right")?.textContent?.includes("(keeper)"), v.writable()])
+    expect([v.iAm(), v.container.querySelector(".header-right .who-role")?.textContent === "keeper", v.writable()])
       .toEqual(["dana", true, true]);
   });
 

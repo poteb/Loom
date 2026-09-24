@@ -2,6 +2,10 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/preact";
 import { ThreadList } from "../src/components/ThreadList.js";
+import { ThreadDetails } from "../src/components/ThreadDetails.js";
+import { ThreadHeader } from "../src/components/ThreadHeader.js";
+import { Header } from "../src/components/Header.js";
+import { initials } from "../src/components/initials.js";
 import { MessageList } from "../src/components/MessageList.js";
 import { InviteBanner } from "../src/components/InviteBanner.js";
 import { GuidelinesPanel, GUIDELINES_MAX } from "../src/components/GuidelinesPanel.js";
@@ -10,7 +14,7 @@ import { ProfileCard } from "../src/components/ProfileCard.js";
 import { WeaveView } from "../src/components/WeaveView.js";
 import { App, routeOf } from "../src/app.js";
 import { MAX_GUIDELINES_LENGTH } from "@loom/core";
-import { LoomClient, type Acceptance, type Offer } from "@loom/client";
+import { LoomClient, type Acceptance, type Offer, type Thread } from "@loom/client";
 import { CLOSED_REQUESTS_PAGE, type Session, type SessionState } from "../src/session.js";
 import type { VersionedRequest } from "../src/requests-state.js";
 import { memoryStorage, type KeyValueStorage } from "../src/storage.js";
@@ -62,12 +66,19 @@ function lobbyState(over: Partial<SessionState> = {}): SessionState {
 }
 
 describe("ThreadList", () => {
-  it("shows a thread's url as a truncated link and highlights a thread with an unread invite", () => {
+  it("tags a GitHub pull request thread PR <n> and highlights a thread with an unread invite", () => {
     render(<ThreadList state={state({ invitesForMe: new Set(["t1"]) })} session={session()} onError={() => {}} />);
-    const link = screen.getByRole("link", { name: /github.com\/poteb\/Loom\/pull\/12/ });
-    expect(link.getAttribute("href")).toBe(pr.url);
-    expect(screen.getByText("PR 12").closest("li")!.className).toContain("invited");
+    const row = screen.getByRole("button", { name: /^PR 12/ });
+    expect(row.querySelector(".thread-tag")!.textContent).toBe("PR 12");
+    expect(row.closest("li")!.className).toContain("invited");
     expect(screen.getByText(/invited/i)).toBeTruthy();
+    // The artefact link itself lives in the thread header and the details panel now, not in the list.
+    expect(screen.queryByRole("link")).toBeNull();
+  });
+  it("tags any other http(s) artefact with its host", () => {
+    const other = { ...pr, url: "https://docs.example.com/design/7" };
+    render(<ThreadList state={state({ threads: [general, other] })} session={session()} onError={() => {}} />);
+    expect(screen.getByRole("button", { name: /^PR 12/ }).querySelector(".thread-tag")!.textContent).toBe("docs.example.com");
   });
   it("is a navigation landmark, not a second complementary one inside the sidebar aside", () => {
     // app.tsx wraps this in <aside class="sidebar">; an <aside> here would nest two
@@ -76,32 +87,242 @@ describe("ThreadList", () => {
     expect(container.querySelector(".threads")!.tagName).toBe("NAV");
   });
 
-  it("renders a non-http url as plain text, never as a link", () => {
+  it("gives a non-http url no link and no tag", () => {
     const evil = { ...pr, url: "javascript:alert(1)" };
     render(<ThreadList state={state({ threads: [general, evil] })} session={session()} onError={() => {}} />);
-    expect(screen.queryByRole("link")).toBeNull();
-    expect(screen.getByText("javascript:alert(1)")).toBeTruthy();
+    expect([screen.queryByRole("link"), screen.getByRole("button", { name: /^PR 12/ }).querySelector(".thread-tag")])
+      .toEqual([null, null]);
   });
-  it("new-thread form sends the url; invite button only for creator/keeper and only for others", async () => {
+  it("new-thread form sends the url", async () => {
     const s = session();
     render(<ThreadList state={state({ currentThreadId: "t1" })} session={s} onError={() => {}} />);
-    fireEvent.click(screen.getByText("New thread"));
+    fireEvent.click(screen.getByRole("button", { name: "New thread" }));
     fireEvent.input(screen.getByPlaceholderText("Thread name"), { target: { value: "PR 13" } });
     fireEvent.input(screen.getByPlaceholderText("Artefact URL (optional)"), { target: { value: "https://e.com/13" } });
     fireEvent.submit(screen.getByPlaceholderText("Thread name").closest("form")!);
     await Promise.resolve();
     expect(s.createThread).toHaveBeenCalledWith("PR 13", "https://e.com/13");
+  });
+  it("renders no close control in the list: closing a thread lives in the details panel", () => {
+    render(<ThreadList state={state()} session={session({ canModerate: () => true })} onError={() => {}} />);
+    expect(screen.queryByRole("button", { name: /^close( thread)?$/i })).toBeNull();
+  });
+
+  describe("the thread filter", () => {
+    const closedA = { ...pr, id: "t2", name: "Old review", closedAt: "2026-09-20T10:00:00.000Z" };
+    const closedB = { ...pr, id: "t3", name: "Expiry check", closedAt: "2026-09-20T11:00:00.000Z", url: null };
+    const threeWay = (over: Partial<SessionState> = {}) => state({ threads: [general, pr, closedA, closedB], ...over });
+    const names = (container: Element) => [...container.querySelectorAll(".thread-name")].map((e) => e.textContent);
+    const tab = (name: RegExp) => screen.getByRole("button", { name });
+
+    it("counts the open and the closed threads on its tabs", () => {
+      render(<ThreadList state={threeWay()} session={session()} onError={() => {}} />);
+      expect([tab(/^Open/).textContent, tab(/^Closed/).textContent, tab(/^All$/).textContent])
+        .toEqual(["Open · 2", "Closed · 2", "All"]);
+    });
+
+    it("shows the open threads by default and hides the closed ones", () => {
+      const { container } = render(<ThreadList state={threeWay()} session={session()} onError={() => {}} />);
+      expect([names(container), tab(/^Open/).getAttribute("aria-pressed")]).toEqual([["General", "PR 12"], "true"]);
+    });
+
+    it("shows only the closed threads, and every thread under All", () => {
+      const { container } = render(<ThreadList state={threeWay({ currentThreadId: "t2" })} session={session()} onError={() => {}} />);
+      fireEvent.click(tab(/^Closed/));
+      const closed = names(container);
+      fireEvent.click(tab(/^All$/));
+      expect([closed, names(container), tab(/^All$/).getAttribute("aria-pressed"), tab(/^Closed/).getAttribute("aria-pressed")])
+        .toEqual([["Old review", "Expiry check"], ["General", "PR 12", "Old review", "Expiry check"], "true", "false"]);
+    });
+
+    it("always lists the current thread, even where the filter would hide it", () => {
+      const { container } = render(<ThreadList state={threeWay({ currentThreadId: "t3" })} session={session()} onError={() => {}} />);
+      expect(names(container)).toEqual(["General", "PR 12", "Expiry check"]);
+    });
+
+    it("keeps the current General thread on the Closed tab", () => {
+      const { container } = render(<ThreadList state={threeWay({ currentThreadId: "g1" })} session={session()} onError={() => {}} />);
+      fireEvent.click(tab(/^Closed/));
+      expect(names(container)).toEqual(["General", "Old review", "Expiry check"]);
+    });
+  });
+});
+
+describe("ThreadDetails", () => {
+  const at = "2026-09-24T13:07:00.000Z";
+  const mine = { ...pr, createdAt: at };
+  const details = (over: Partial<SessionState> = {}, s: Session = session(), thread: Thread = mine) =>
+    render(<ThreadDetails thread={thread} state={state({ currentThreadId: thread.id, threads: [general, thread], ...over })} session={s} onError={() => {}} />);
+  const fact = (container: Element, label: string) => {
+    const dt = [...container.querySelectorAll(".facts dt")].find((e) => e.textContent === label);
+    return dt?.nextElementSibling?.textContent ?? null;
+  };
+
+  it("is the complementary region named Thread details", () => {
+    details();
+    expect(screen.getByRole("complementary", { name: "Thread details" })).toBeTruthy();
+  });
+
+  it("states the thread's status, creator, link and message counts", () => {
+    const msg = (seq: number) => ({ weaveId: "w1", seq, threadId: "t1", type: "message" as const, actor: "p1", at, payload: { text: "hi" } });
+    const sys = (seq: number) => ({ weaveId: "w1", seq, threadId: "t1", type: "participant.joined" as const, actor: "p2", at, payload: { participantId: "p2" } });
+    const elsewhere = { ...msg(9), threadId: "g1" };
+    const { container } = details({ events: [msg(1), sys(2), sys(3), msg(4), elsewhere] });
+    expect([fact(container, "Status"), fact(container, "Created")!.endsWith("· Paw"), fact(container, "Messages")])
+      .toEqual(["open", true, "2 · 2 system events"]);
+    const link = screen.getByRole("link", { name: /github.com\/poteb\/Loom\/pull\/12/ });
+    expect(link.getAttribute("href")).toBe(pr.url);
+  });
+
+  it("says none when the thread links to no artefact, and closed for a closed thread", () => {
+    const { container } = details({}, session(), { ...mine, url: null, closedAt: at });
+    expect([fact(container, "Linked artefact"), fact(container, "Status")]).toEqual(["none", "closed"]);
+  });
+
+  it("renders a non-http url as plain text, never as a link", () => {
+    details({}, session(), { ...mine, url: "javascript:alert(1)" });
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.getByText("javascript:alert(1)")).toBeTruthy();
+  });
+
+  it("saves the artefact link for whoever may edit the thread", async () => {
+    const s = session();
+    details({}, s);
+    const box = screen.getByLabelText("Artefact link") as HTMLInputElement;
+    const before = box.value;
+    fireEvent.input(box, { target: { value: " https://e.com/99 " } });
+    fireEvent.click(screen.getByRole("button", { name: "Save link" }));
+    await Promise.resolve();
+    expect([before, (s.setThreadUrl as ReturnType<typeof vi.fn>).mock.calls]).toEqual([pr.url, [["t1", "https://e.com/99"]]]);
+  });
+
+  it("offers no link form to someone who may not edit the thread", () => {
+    details({}, session({ canEditThread: () => false }));
+    expect([screen.queryByLabelText("Artefact link"), screen.queryByRole("button", { name: "Save link" })]).toEqual([null, null]);
+  });
+
+  it("offers Close thread to a keeper on an open thread that is not General, and closes it", async () => {
+    const closeThread = vi.fn(async () => {});
+    details({}, session({ canModerate: () => true, closeThread }));
+    fireEvent.click(screen.getByRole("button", { name: "Close thread" }));
+    await Promise.resolve();
+    expect(closeThread).toHaveBeenCalledWith("t1");
+  });
+
+  it("offers no Close thread on General, on a closed thread, or to a member", () => {
+    details({}, session({ canModerate: () => true }), { ...general, createdAt: at });
+    details({}, session({ canModerate: () => true }), { ...mine, closedAt: at });
+    details({}, session());
+    expect(screen.queryAllByRole("button", { name: "Close thread" })).toHaveLength(0);
+  });
+
+  it("lists who is in the thread, with me marked as you and agents in mono", () => {
+    const { container } = details();
+    const rows = [...container.querySelectorAll(".people li")].map((li) => [li.querySelector(".person-name")!.textContent,
+      li.querySelector(".person-role")!.textContent, li.querySelector(".person-name")!.classList.contains("mono")]);
+    expect([screen.getByText("In this thread · 2").tagName, rows])
+      .toEqual(["SPAN", [["Paw", "you · member", false], ["Bot", "member", true]]]);
+  });
+
+  it("invite button only for creator/keeper and only for others", () => {
+    const s = session();
+    details({}, s);
     const inviteButtons = screen.getAllByRole("button", { name: /^invite /i });
-    expect(inviteButtons.map((b) => b.textContent)).toEqual(["invite Bot"]);   // not myself
+    expect(inviteButtons.map((b) => b.getAttribute("aria-label"))).toEqual(["invite Bot"]);   // not myself
     fireEvent.click(inviteButtons[0]!);
     expect(s.invite).toHaveBeenCalledWith("t1", "p2");
   });
-  it("shows a check mark instead of the invite button for someone already invited; no invite controls for a plain member", () => {
-    render(<ThreadList state={state({ currentThreadId: "t1", invited: { t1: new Set(["p2"]) } })} session={session()} onError={() => {}} />);
+
+  it("shows an invited mark instead of the invite button for someone already invited; no invite controls for a plain member", () => {
+    details({ invited: { t1: new Set(["p2"]) } });
     expect(screen.queryByRole("button", { name: /^invite /i })).toBeNull();
     expect(screen.getByTitle("invited")).toBeTruthy();
-    render(<ThreadList state={state({ currentThreadId: "t1" })} session={session({ canEditThread: () => false })} onError={() => {}} />);
+    details({}, session({ canEditThread: () => false }));
     expect(screen.queryAllByRole("button", { name: /^invite /i })).toHaveLength(0);
+  });
+});
+
+describe("ThreadHeader", () => {
+  const header = (thread: Thread = pr, fold = true, open = false) => {
+    const onFold = vi.fn();
+    const onToggleDetails = vi.fn();
+    const r = render(<ThreadHeader thread={thread} fold={fold} onFold={onFold} detailsOpen={open} onToggleDetails={onToggleDetails} />);
+    return { ...r, onFold, onToggleDetails };
+  };
+
+  it("names the thread with its status pill", () => {
+    header();
+    expect([screen.getByRole("heading", { level: 2 }).textContent, screen.getByText("open").className])
+      .toEqual(["# PR 12", "pill pill-open"]);
+  });
+
+  it("calls General the Weave-wide thread", () => {
+    header(general);
+    expect(screen.getByText("Weave-wide thread")).toBeTruthy();
+  });
+
+  it("links an http(s) artefact under the name, and shows nothing for any other url", () => {
+    header();
+    const href = screen.getByRole("link").getAttribute("href");
+    header({ ...pr, id: "t9", url: "javascript:alert(1)" });
+    expect([href, screen.getAllByRole("link").length, screen.queryByText(/javascript/)]).toEqual([pr.url, 1, null]);
+  });
+
+  it("reports the fold checkbox", () => {
+    const { onFold } = header();
+    const box = screen.getByRole("checkbox", { name: "Fold system events" }) as HTMLInputElement;
+    const was = box.checked;
+    fireEvent.click(box);
+    expect([was, onFold.mock.calls]).toEqual([true, [[false]]]);
+  });
+
+  it("says whether the details panel is open on its toggle", () => {
+    const { onToggleDetails } = header();
+    const closed = screen.getByRole("button", { name: "Thread details" });
+    const was = closed.getAttribute("aria-expanded");
+    fireEvent.click(closed);
+    header(pr, true, true);
+    const all = screen.getAllByRole("button", { name: "Thread details" }).map((b) => b.getAttribute("aria-expanded"));
+    expect([was, all, onToggleDetails.mock.calls.length]).toEqual(["false", ["false", "true"], 1]);
+  });
+});
+
+describe("Header", () => {
+  const pill = () => screen.getByRole("status");
+
+  for (const [connection, text] of [
+    ["open", "Connected"], ["connecting", "Connecting…"], ["reconnecting", "Reconnecting…"], ["closed", "Disconnected"],
+  ] as const) {
+    it(`says ${text} while the stream is ${connection}`, () => {
+      render(<Header state={state({ connection })} session={session()} onError={() => {}} />);
+      expect([pill().textContent, pill().classList.contains("conn"), pill().classList.contains(`conn-${connection}`)])
+        .toEqual([text, true, true]);
+    });
+  }
+
+  it("shows who I am as initials, name and role", () => {
+    const { container } = render(<Header state={state({ me: { participant: { ...me, name: "Paw_browser" }, token: "t" } })}
+      session={session()} onError={() => {}} />);
+    expect([container.querySelector(".avatar")!.textContent, container.querySelector(".header-right strong")!.textContent,
+      container.querySelector(".who-role")!.textContent]).toEqual(["PB", "Paw_browser", "member"]);
+  });
+
+  it("says reading as guest without an identity", () => {
+    const { container } = render(<Header state={state({ me: undefined })} session={session()} onError={() => {}} />);
+    expect([screen.getByText("reading as guest").tagName, container.querySelector(".avatar")]).toEqual(["SPAN", null]);
+  });
+
+  it("offers Archive Weave to a keeper only", () => {
+    render(<Header state={state()} session={session()} onError={() => {}} />);
+    const member = screen.queryByRole("button", { name: "Archive Weave" });
+    render(<Header state={state()} session={session({ canModerate: () => true })} onError={() => {}} />);
+    expect([member, screen.getAllByRole("button", { name: "Archive Weave" }).length]).toEqual([null, 1]);
+  });
+});
+
+describe("initials", () => {
+  it("takes the first letters of the first two name parts, else the first two letters", () => {
+    expect(["Paw_browser", "seed-14", "dana", "a", "x.y.z"].map(initials)).toEqual(["PB", "S1", "DA", "A", "XY"]);
   });
 });
 
@@ -606,6 +827,74 @@ describe("WeaveView (spec §2.6, §2.7, §3.3)", () => {
     const { container } = render(<WeaveView session={session()} state={noCredentialState()}
       banner={<div class="bar">note</div>} noCredential={<p>Join the Lobby here</p>} />);
     expect([container.firstElementChild!.className, container.querySelectorAll(".bar").length]).toEqual(["bar", 1]);
+  });
+});
+
+/** The three-column shell around the Thread: the thread header, the details panel and the sidebar footer. */
+describe("the Weave page shell", () => {
+  const panel = () => screen.queryByRole("complementary", { name: "Thread details" });
+  const toggle = () => screen.getByRole("button", { name: "Thread details" });
+
+  it("draws the details panel closed below 1200px, and its toggle opens and closes it", () => {
+    render(<WeaveView session={session()} state={state()} />);
+    const closed = [toggle().getAttribute("aria-expanded"), panel()];
+    fireEvent.click(toggle());
+    const open = [toggle().getAttribute("aria-expanded"), !!panel()];
+    fireEvent.click(toggle());
+    expect([closed, open, [toggle().getAttribute("aria-expanded"), panel()]])
+      .toEqual([["false", null], ["true", true], ["false", null]]);
+  });
+
+  it("opens the details panel by default at 1200px and wider", () => {
+    const wide = vi.spyOn(window, "matchMedia").mockImplementation((q: string) => ({ matches: q.includes("1200px"), media: q } as MediaQueryList));
+    try {
+      render(<WeaveView session={session()} state={state()} />);
+      expect([toggle().getAttribute("aria-expanded"), !!panel()]).toEqual(["true", true]);
+    } finally { wide.mockRestore(); }
+  });
+
+  it("puts the invite buttons and the link form in the open panel, not in the sidebar", () => {
+    const { container } = render(<WeaveView session={session()} state={state({ currentThreadId: "t1" })} />);
+    const before = screen.queryAllByRole("button", { name: /^invite /i }).length;
+    fireEvent.click(toggle());
+    expect([before, screen.getAllByRole("button", { name: /^invite /i }).length, !!panel()!.querySelector("form.url-form"),
+      !!container.querySelector(".sidebar form.url-form")]).toEqual([0, 1, true, false]);
+  });
+
+  it("starts with Fold system events on", () => {
+    render(<WeaveView session={session()} state={state()} />);
+    const box = screen.getByRole("checkbox", { name: "Fold system events" }) as HTMLInputElement;
+    const was = box.checked;
+    fireEvent.click(box);
+    expect([was, box.checked]).toEqual([true, false]);
+  });
+
+  it("draws neither the thread header nor the details panel while the listeners directory is the main area", () => {
+    const wide = vi.spyOn(window, "matchMedia").mockImplementation((q: string) => ({ matches: true, media: q } as MediaQueryList));
+    try {
+      render(<WeaveView session={session()} state={lobbyState()} view="listeners" />);
+      expect([screen.queryByRole("button", { name: "Thread details" }), panel(),
+        screen.queryByRole("checkbox", { name: "Fold system events" })]).toEqual([null, null, null]);
+    } finally { wide.mockRestore(); }
+  });
+
+  it("closes the sidebar with a footer line naming the Weave and its thread count", () => {
+    const { container } = render(<WeaveView session={session()} state={state()} />);
+    expect(container.querySelector(".sidebar-foot")!.textContent).toBe("Weave W · 2 threads");
+  });
+
+  it("adds the listener count to that line on the Lobby once it is known", () => {
+    const { container } = render(<WeaveView session={session()} state={lobbyState({ listenerCount: 62 })} />);
+    const known = container.querySelector(".sidebar-foot")!.textContent;
+    render(<WeaveView session={session()} state={lobbyState()} />);
+    expect([known, document.querySelectorAll(".sidebar-foot")[1]!.textContent])
+      .toEqual(["Weave W · 2 threads · 62 listeners", "Weave W · 2 threads"]);
+  });
+
+  it("orders the Lobby sidebar Threads, Listeners, Requests, Guidelines", () => {
+    const { container } = render(<WeaveView session={session()} state={lobbyState({ listenerCount: 3 })} />);
+    const labels = [...container.querySelectorAll(".sidebar .sec")].map((e) => e.textContent);
+    expect(labels).toEqual(["Threads", "Listeners", "Requests", "Guidelines"]);
   });
 });
 

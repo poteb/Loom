@@ -93,14 +93,17 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .muted { color: var(--muted); }
 .kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--line-strong); border-radius: 4px; font-family: var(--font-mono); font-size: 11px; color: var(--pill-text); background: var(--bg-sunken); }
 
-/* --- The Weave page ----------------------------------------------------------------------------- */
+/* --- The Weave page: three columns under a top bar (Main.dc.html) ------------------------------ */
 .layout { display: flex; flex-direction: column; height: 100vh; }
-.header { display: flex; justify-content: space-between; align-items: center; min-height: 48px; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--bg-chrome); }
-.header h1 { font-size: 16px; font-weight: 600; margin: 0; display: inline; }
-/* The wordmark, left of the title: the page's way back to `/` (§3.1). Unobtrusive on purpose — the
+/* Top bar: 48px of chrome. */
+.header { flex-shrink: 0; display: flex; align-items: center; gap: 16px; height: 48px; padding: 0 16px; border-bottom: 1px solid var(--line); background: var(--bg-chrome); }
+.header-left { display: flex; align-items: center; gap: 10px; min-width: 244px; flex: 1; overflow: hidden; }
+.header h1 { margin: 0; font-size: 14px; font-weight: 600; color: var(--fg); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.header-slash { font-size: 13px; }
+/* The wordmark, left of the title: the page's way back to `/` (§3.1). Unobtrusive on purpose: the
    Weave's own title is what the header is for. The in-place variant is a button and must read as
    the same thing: only the element differs, exactly as in My Weaves. */
-.header .home-link { margin-right: 10px; color: var(--link); font-size: 14px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; text-decoration: none; }
+.header .home-link { color: var(--link); font-size: 14px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; text-decoration: none; }
 .header .home-link:hover { color: var(--link-hover); }
 .header button.home-link { display: inline; height: auto; padding: 0; border: 0; background: none; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
 /* "Go to the main page" on the cards that replace a Weave. Same rule, same shape: when leaving is
@@ -109,34 +112,82 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .home-back:not(:disabled):hover { background: none; color: var(--link-hover); }
 /* Under the join form on a credential-less Lobby page, where it is the only way out. */
 .page-join-home { margin: 12px 0 0; text-align: center; }
-.header-right { display: flex; gap: 12px; align-items: center; color: var(--muted); }
-.conn { font-size: 12px; } .conn-open { color: var(--ok); } .conn-reconnecting, .conn-connecting { color: var(--warn); } .conn-closed { color: var(--danger); }
+.header-right { display: flex; align-items: center; gap: 16px; flex-shrink: 0; font-size: 13px; }
+/* The connection pill: green while the stream is open, amber while it is getting there, red when it
+   has given up. The closed state has no red fill in the artboards, so it is drawn as an outline. */
+.conn { display: inline-flex; align-items: center; gap: 8px; height: 26px; padding: 0 10px; border-radius: 13px; font-size: 12px; font-weight: 500; white-space: nowrap; }
+.conn-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.conn-open { background: var(--ok-bg); color: var(--ok); }
+.conn-connecting, .conn-reconnecting { background: var(--warn-bg); color: var(--warn); }
+.conn-closed { border: 1px solid var(--danger-line); color: var(--danger); }
+.who { display: flex; align-items: center; gap: 8px; }
+.who strong { font-weight: 500; }
+.avatar { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: var(--on-accent); font-size: 11px; font-weight: 600; }
+.header .btn-ghost.danger { color: var(--danger); }
+
 .body { display: flex; flex: 1; min-height: 0; }
-.sidebar { width: 260px; border-right: 1px solid var(--line); background: var(--bg-chrome); display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
-.threads { padding: 8px; }
-.threads-head { display: flex; justify-content: space-between; align-items: center; font-weight: 600; margin-bottom: 8px; }
-.threads ul { list-style: none; margin: 0; padding: 0; }
-.threads li { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 0 8px; border-radius: 6px; color: var(--fg-2); }
-.threads li:hover { background: var(--bg-raised); color: var(--fg); }
-.threads li .thread-pick { flex: 1; display: flex; justify-content: flex-start; height: auto; gap: 6px; align-items: center; text-align: left; padding: 6px 0; border: none; background: none; color: inherit; font: inherit; font-size: 13px; cursor: pointer; white-space: normal; }
-.threads li.active { background: var(--selected); color: var(--fg); }
-.threads li.invited > .thread-pick { font-weight: 600; }
-/* Themed like .badge, but inverted so it stands out, including on the active row, whose background is --selected. */
-.badge-invited { background: var(--accent); color: var(--on-accent); }
-.thread-url { display: block; flex-basis: 100%; font-size: 0.8em; opacity: 0.8; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; padding-bottom: 4px; }
-.thread-form { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; } .thread-form input { flex: 1 1 100%; }
-.guidelines { padding: 8px; border-top: 1px solid var(--line); }
-.guidelines-head { display: flex; justify-content: space-between; align-items: center; font-weight: 600; margin-bottom: 8px; }
+
+/* Left nav: 260px of chrome, sections split by an inset line. */
+.sidebar { width: 260px; flex-shrink: 0; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; border-right: 1px solid var(--line); background: var(--bg-chrome); }
+.nav-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 12px 8px 14px; }
+.nav-section { position: relative; margin-top: 14px; padding-top: 15px; font-size: 13px; }
+.nav-section::before { content: ""; position: absolute; top: 0; left: 12px; right: 12px; height: 1px; background: var(--line); }
+.nav-section > :not(.nav-head) { margin: 0 14px 6px; }
+.nav-note { display: block; font-size: 12px; }
+.threads-head { padding-top: 14px; }
+.thread-form { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 8px; }
+.thread-form input { flex: 1 1 100%; min-width: 0; }
+.thread-filter { display: flex; gap: 2px; padding: 0 12px 8px; }
+.thread-filter-tab.btn { height: 24px; padding: 0 8px; font-size: 12px; }
+.thread-filter-tab.on, .thread-filter-tab.on:not(:disabled):hover { background: var(--bg-raised); color: var(--fg); }
+.threads ul { display: flex; flex-direction: column; gap: 2px; list-style: none; margin: 0; padding: 0 8px; }
+/* A thread row is the artboards' .nav-item, on the real button that selects it. */
+.threads .thread-pick { display: flex; align-items: center; justify-content: flex-start; gap: 8px; width: 100%; height: 34px; padding: 0 10px; border: 0; border-radius: 6px; background: none; color: var(--fg-2); font: inherit; font-size: 13px; font-weight: 400; text-align: left; cursor: pointer; }
+.threads li.closed .thread-pick { color: var(--muted); }
+.threads .thread-pick:not(:disabled):hover { background: var(--bg-raised); color: var(--fg); }
+.threads li.active .thread-pick, .threads li.active .thread-pick:not(:disabled):hover { background: var(--selected); color: var(--fg); }
+.thread-name { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.threads li.active .thread-name, .threads li.invited .thread-name { font-weight: 500; }
+.thread-tag { flex-shrink: 0; max-width: 96px; overflow: hidden; text-overflow: ellipsis; padding: 1px 6px; border-radius: 4px; background: var(--bg-raised); color: var(--pill-text); font-size: 11px; }
+.thread-pill.pill { flex-shrink: 0; height: 18px; font-size: 10px; }
+/* The invited mark sits where the artboards draw the blue unread count. */
+.badge-invited { flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 6px; border-radius: 9px; background: var(--accent); color: var(--on-accent); font-size: 11px; font-weight: 600; }
+.sidebar-foot { margin-top: auto; padding: 12px 14px; border-top: 1px solid var(--line); font-size: 12px; overflow-wrap: anywhere; }
 .guidelines-body { font-size: 13px; color: var(--fg-2); } .guidelines-body > :first-child { margin-top: 0; } .guidelines-body > :last-child { margin-bottom: 0; }
-.guidelines-form { display: flex; flex-wrap: wrap; gap: 4px; } .guidelines-form textarea { flex: 1 1 100%; resize: vertical; }
+.guidelines-form { display: flex; flex-wrap: wrap; gap: 6px; } .guidelines-form textarea { flex: 1 1 100%; resize: vertical; }
 .counter { flex: 1 1 100%; color: var(--muted); font-size: 12px; } .counter.over { color: var(--danger); }
-.instance-guidelines { margin-top: 8px; font-size: 12px; color: var(--muted); } .instance-guidelines summary { cursor: pointer; }
-.thread-tools { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 8px; }
-.url-form { display: flex; gap: 4px; margin-bottom: 6px; } .url-form input { flex: 1; min-width: 0; }
-.invite-list { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; font-size: 12px; }
-.invite-head { color: var(--muted); font-weight: 600; }
-.invited-mark { color: var(--muted); }
+.instance-guidelines { font-size: 12px; color: var(--muted); } .instance-guidelines summary { cursor: pointer; color: var(--link); }
+
+/* Center column. */
 .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.thread-header { flex-shrink: 0; display: flex; align-items: center; gap: 12px; height: 52px; padding: 0 20px; border-bottom: 1px solid var(--line); }
+.thread-header h2 { margin: 0; font-size: 16px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.thread-subtitle { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+a.thread-subtitle { text-decoration: none; }
+.spacer { flex: 1; }
+.fold-toggle { display: flex; align-items: center; gap: 8px; flex-shrink: 0; font-size: 12px; color: var(--pill-text); cursor: pointer; }
+.fold-toggle input { margin: 0; }
+.icon-btn.btn { flex-shrink: 0; padding: 0 8px; }
+.icon-btn[aria-expanded="true"] { color: var(--fg); }
+
+/* Right: the details panel, 300px of chrome. */
+.details { width: 300px; flex-shrink: 0; display: flex; flex-direction: column; gap: 18px; padding: 16px; overflow-y: auto; border-left: 1px solid var(--line); background: var(--bg-chrome); }
+.details-sec { display: flex; flex-direction: column; gap: 8px; }
+.facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; margin: 0; font-size: 13px; }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+.facts a { text-decoration: none; }
+.url-form { display: flex; gap: 6px; margin-top: 4px; }
+.url-form input { flex: 1; min-width: 0; height: 28px; font-size: 12px; }
+.details-actions { display: flex; gap: 6px; }
+.details-actions .btn { flex: 1; }
+.people { display: flex; flex-direction: column; gap: 2px; list-style: none; margin: 0; padding: 0; font-size: 13px; }
+.people li { display: flex; align-items: center; gap: 8px; min-height: 30px; }
+/* No work status is known yet, so only "you" is coloured; everyone else gets a neutral dot. */
+.person-dot { flex-shrink: 0; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+.person-dot.me { background: var(--accent); }
+.person-name { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.person-role { flex-shrink: 0; font-size: 12px; }
+.invited-mark { flex-shrink: 0; font-size: 12px; }
 .messages { flex: 1; overflow-y: auto; padding: 16px 20px; }
 /* Layout, not appearance: what `.messages` does for a Thread, this does for the directory — the open
    view scrolls inside the layout, so the header, the sidebar and the connection indicator stay where
@@ -169,16 +220,11 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .modal p { margin: 0; color: var(--muted); font-size: 13px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 /* --- Lobby: requests panel, the listeners line and the cards it links to ----- */
-.requests, .listeners-line { padding: 8px; border-top: 1px solid var(--line); }
-.requests-head { display: flex; justify-content: space-between; align-items: center; font-weight: 600; margin-bottom: 8px; }
-/* The sidebar's way into the directory (§5.1), reading as a section heading like the ones above it
-   — a link, or the button that stands in for it on a browser that would lose its credential to a
-   page load (§3.1). Same words and same weight either way; only the element differs. */
-.listeners-line { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; font-size: 13px; }
-.listeners-line-link { font-weight: 600; color: var(--link); }
-button.listeners-line-link { display: inline; height: auto; padding: 0; border: 0; background: none; font: inherit; font-weight: 600; color: var(--link); text-decoration: underline; cursor: pointer; }
+/* The Listeners section's `View all <n>`: the directory toggle (§5.1), reading as the artboards'
+   small header link. Always a button (§3.1); underlined while the directory is on screen. */
+button.listeners-line-link { display: inline; height: auto; padding: 0; border: 0; background: none; font: inherit; font-size: 12px; font-weight: 400; color: var(--link); text-decoration: none; cursor: pointer; }
 button.listeners-line-link:not(:disabled):hover { background: none; color: var(--link-hover); }
-.listeners-line .muted { font-size: 12px; }
+button.listeners-line-link[aria-current="true"] { text-decoration: underline; }
 .request-list, .offers, .closed-requests ul { list-style: none; margin: 0; padding: 0; }
 .request { border: 1px solid var(--line); background: var(--bg-sunken); border-radius: 6px; padding: 8px; margin-bottom: 8px; }
 .request-head { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/preact";
+import { render, screen, fireEvent, within } from "@testing-library/preact";
 import { LoomClient, type Listener, type ListenersPage } from "@loom/client";
 import { App, routeOf } from "../src/app.js";
 import { ListenersLink } from "../src/components/ListenersLink.js";
@@ -207,7 +207,7 @@ function mountApp(opts: MountOpts = {}) {
  */
 function mountLobby(opts: MountOpts = {}) {
   const v = mountApp({ storage: joined(), ...opts, path: opts.path ?? "/lobby/listeners" });
-  const line = (): HTMLElement | null => screen.queryByRole("button", { name: /^Listeners/ });
+  const line = (): HTMLElement | null => screen.queryByRole("button", { name: /^View all/ });
   return {
     ...v,
     line,
@@ -1743,20 +1743,21 @@ describe("the states this page says out loud (spec §5.3)", () => {
 
   it("announces the refresh that is keeping the old rows on screen", async () => {
     const held = gated(() => json(directory([listener("bo", "b")])));
-    mountLobby({ storage: joined(), routes: {
+    const v = mountLobby({ storage: joined(), routes: {
       [LISTENERS]: inTurn(() => json(directory([listener("ada", "a")])), held.answer),
     } });
     await settle();
     fireEvent.click(chip(/^shell/));
     await settle();
-    expect(screen.getByRole("status").textContent).toBe("updating…");
+    // Scoped to the directory: the header's connection pill is a status region of its own.
+    expect(within(v.container.querySelector(".listeners") as HTMLElement).getByRole("status").textContent).toBe("updating…");
   });
 
   it("announces the first load, which has no rows to keep", async () => {
     const held = gated(() => json(directory([])));
-    mountLobby({ storage: joined(), routes: { [LISTENERS]: held.answer } });
+    const v = mountLobby({ storage: joined(), routes: { [LISTENERS]: held.answer } });
     await settle();
-    expect(screen.getByRole("status").textContent).toBe("Loading…");
+    expect(within(v.container.querySelector(".listeners") as HTMLElement).getByRole("status").textContent).toBe("Loading…");
   });
 });
 
@@ -1786,37 +1787,37 @@ describe("the Lobby sidebar's listeners line (spec §5.1)", () => {
 
   it("shows how many listeners the Lobby holds", () => {
     const { container } = render(<ListenersLink active={false} onToggle={() => {}} state={lobbyState({ listenerCount: 3 })} />);
-    expect(line(container)).toBe("Listeners (3)");
+    expect(line(container)).toBe("ListenersView all 3");
   });
 
   // Before the first answer: no number, and not a word about a failure that has not happened.
-  it("reads Listeners, with nothing beside it, before the first count answers", () => {
+  it("reads View all, with no number and nothing beside it, before the first count answers", () => {
     const { container } = render(<ListenersLink active={false} onToggle={() => {}} state={lobbyState()} />);
-    expect(line(container)).toBe("Listeners");
+    expect(line(container)).toBe("ListenersView all");
   });
 
   // The whole text, so the rule that makes this worth having is asserted in the same breath: an
   // absent count is an absent number, never an invented `(0)`.
   it("says the count is unavailable when the read failed, and invents no zero", () => {
     const { container } = render(<ListenersLink active={false} onToggle={() => {}} state={lobbyState({ listenerCountError: true })} />);
-    expect(line(container)).toBe("Listenerscount unavailable");
+    expect(line(container)).toBe("ListenersView allcount unavailable");
   });
 
   it("keeps the last known number when a later count read fails, and says nothing beside it", () => {
     const { container } = render(<ListenersLink active={false} onToggle={() => {}} state={lobbyState({ listenerCount: 7, listenerCountError: true })} />);
-    expect(line(container)).toBe("Listeners (7)");
+    expect(line(container)).toBe("ListenersView all 7");
   });
 
   it("drops that note again when a later count answers", () => {
     const { container } = render(<ListenersLink active={false} onToggle={() => {}} state={lobbyState({ listenerCount: 9, listenerCountError: false })} />);
-    expect(line(container)).toBe("Listeners (9)");
+    expect(line(container)).toBe("ListenersView all 9");
   });
 
   // A zero the server actually answered is a number like any other: what §5.1 forbids is inventing
   // one, not reporting one.
   it("shows a zero the Lobby really answered", () => {
     const { container } = render(<ListenersLink active={false} onToggle={() => {}} state={lobbyState({ listenerCount: 0, listenerCountError: false })} />);
-    expect(line(container)).toBe("Listeners (0)");
+    expect(line(container)).toBe("ListenersView all 0");
   });
 
   // A 401 on the own-profile read of a secret-link visit leaves the page ready with no `me` at all
@@ -1825,7 +1826,7 @@ describe("the Lobby sidebar's listeners line (spec §5.1)", () => {
     const { container } = render(
       <ListenersLink active={false} onToggle={() => {}} state={lobbyState({ me: undefined, readOnlyReason: "secret-fallback", listenerCount: 4 })} />,
     );
-    expect(line(container)).toBe("Listeners (4)");
+    expect(line(container)).toBe("ListenersView all 4");
   });
 
   it("renders nothing on a Weave that is not the Lobby", () => {
@@ -1851,7 +1852,7 @@ describe("the listeners line on the Lobby page (spec §5.1)", () => {
   it("is in the Lobby's sidebar, carrying the number the Lobby answered", async () => {
     const v = mountLobby({ path: "/lobby", storage: joined() });
     await settle();
-    expect(v.container.querySelector(".sidebar")!.textContent).toContain("Listeners (12)");
+    expect(v.container.querySelector(".sidebar")!.textContent).toContain("View all 12");
   });
 
   // The removal itself: the sidebar used to stack a card per listener, and there is no card and no

@@ -32,17 +32,17 @@ export function GuidelinesPanel({ state, session, onError }: { state: SessionSta
     try { await session.setGuidelines(text); setWantsEdit(false); } catch (err) { onError(err); }
   };
   return (
-    <section class="guidelines">
-      <div class="guidelines-head">
-        <span>Guidelines</span>
-        {canEdit && !editing && <button type="button" onClick={() => { setDraft(current); setWantsEdit(true); }}>Edit</button>}
+    <section class="nav-section guidelines">
+      <div class="nav-head guidelines-head">
+        <span class="sec">Guidelines</span>
+        {canEdit && !editing && <button type="button" class="btn btn-xs" onClick={() => { setDraft(current); setWantsEdit(true); }}>Edit</button>}
       </div>
       {editing ? (
         <form class="guidelines-form" onSubmit={save}>
           <textarea value={draft} onInput={(e) => setDraft((e.target as HTMLTextAreaElement).value)} rows={8} aria-label="Weave guidelines" />
           <div class={`counter${over ? " over" : ""}`}>{draft.length} / {MAX}</div>
-          <button type="submit" disabled={over || unchanged}>Save</button>
-          <button type="button" onClick={() => setWantsEdit(false)}>Cancel</button>
+          <button type="submit" class="btn btn-primary btn-sm" disabled={over || unchanged}>Save</button>
+          <button type="button" class="btn btn-sm" onClick={() => setWantsEdit(false)}>Cancel</button>
         </form>
       ) : current ? (
         <div class="guidelines-body" dangerouslySetInnerHTML={{ __html: renderMarkdown(current, state.participants, []) }} />
