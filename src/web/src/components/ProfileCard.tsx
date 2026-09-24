@@ -10,16 +10,23 @@ function serves(profile: Profile): string {
 export const modelSpecs = (profile: Profile): string[] =>
   (profile.models ?? []).map((m) => [m.model, m.effort].filter(Boolean).join("/"));
 
+/** How long ago the listener was last seen, in whole minutes (under one is 0), or that it never was
+ *  (spec §5.11). The directory's Last seen column says exactly this; the card prefixes "seen". */
+export function agoText(lastSeenAt: string | null, nowMs: number): string {
+  if (lastSeenAt === null) return "never";
+  return `${Math.max(0, Math.floor((nowMs - Date.parse(lastSeenAt)) / 60_000))} min ago`;
+}
+
 /** When the listener was last seen, in whole minutes (under one is 0), or that it never was (spec §5.11). */
 export function seenText(lastSeenAt: string | null, nowMs: number): string {
-  if (lastSeenAt === null) return "never seen";
-  return `seen ${Math.max(0, Math.floor((nowMs - Date.parse(lastSeenAt)) / 60_000))} min ago`;
+  return lastSeenAt === null ? "never seen" : `seen ${agoText(lastSeenAt, nowMs)}`;
 }
 
 /**
  * What a Lobby participant says it can do. Rendered only where there is a profile, and there is
  * exactly one place that has them to render: the listeners directory, whose rows carry the profile
- * beside the participant (spec §2.1). `getWeave` carries none at all, in the Lobby or out of it.
+ * beside the participant (spec §2.1), and which opens this card under a row when its Profile toggle
+ * is pressed. `getWeave` carries none at all, in the Lobby or out of it.
  */
 export function ProfileCard({ participant, now }: { participant: Participant; now?: number }) {
   const profile = participant.capabilities;

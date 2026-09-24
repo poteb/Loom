@@ -14,7 +14,7 @@ import { InviteBanner } from "./InviteBanner.js";
 import { GuidelinesPanel } from "./GuidelinesPanel.js";
 import { RequestsPanel } from "./RequestsPanel.js";
 import { ListenersLink } from "./ListenersLink.js";
-import { ListenersPage } from "./listeners/ListenersPage.js";
+import { ListenersPage, type InviteTarget } from "./listeners/ListenersPage.js";
 import type { MainArea } from "../lobby-view.js";
 
 /**
@@ -134,7 +134,11 @@ export function WeaveView({ session, state, banner, noCredential, openMainInPlac
   const showListeners = lobbyGate && view === "listeners";
 
   const current = state.threads.find((t) => t.id === state.currentThreadId);
-  const threadCount = `${state.threads.length} thread${state.threads.length === 1 ? "" : "s"}`;
+  // A directory row's Invite reaches the Thread this browser has open, and only where it may invite
+  // to it: the same `canEditThread` the details panel's invite controls are drawn under.
+  const inviteTarget: InviteTarget | undefined = current && session.canEditThread(current)
+    ? { threadId: current.id, invited: state.invited[current.id], meId: state.me?.participant.id } : undefined;
+  const threadCount =`${state.threads.length} thread${state.threads.length === 1 ? "" : "s"}`;
   const listenerCount = lobbyGate && state.listenerCount !== undefined
     ? ` · ${state.listenerCount.toLocaleString()} listener${state.listenerCount === 1 ? "" : "s"}` : "";
 
@@ -173,10 +177,19 @@ export function WeaveView({ session, state, banner, noCredential, openMainInPlac
           {!showListeners && <MessageList state={state} fold={fold} />}
           {showListeners && (
             <section class="listeners-view">
-              {/* Demoted from <h1>: the page's <h1> is the Weave title in the header, and this is
-                  the heading of one region of it (spec §3.3). */}
-              <h2>Listeners</h2>
-              <ListenersPage key={viewKey} session={session} />
+              <div class="listeners-header">
+                {/* Demoted from <h1>: the page's <h1> is the Weave title in the header, and this is
+                    the heading of one region of it (spec §3.3). */}
+                <h2>Listeners</h2>
+                {/* The session's own count read, the number the sidebar line carries; only once known. */}
+                {state.listenerCount !== undefined && (
+                  <span class="muted thread-subtitle">
+                    {state.listenerCount.toLocaleString()} listener{state.listenerCount === 1 ? "" : "s"} on{" "}
+                    <span class="mono">{state.weave?.title ?? ""}</span>
+                  </span>
+                )}
+              </div>
+              <ListenersPage key={viewKey} session={session} invite={inviteTarget} />
             </section>
           )}
           {/* In both views, because `reportError` is the failure channel of the header and of all

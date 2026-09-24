@@ -160,8 +160,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 
 /* Center column. */
 .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-.thread-header { flex-shrink: 0; display: flex; align-items: center; gap: 12px; height: 52px; padding: 0 20px; border-bottom: 1px solid var(--line); }
-.thread-header h2 { margin: 0; font-size: 16px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.thread-header, .listeners-header { flex-shrink: 0; display: flex; align-items: center; gap: 12px; height: 52px; padding: 0 20px; border-bottom: 1px solid var(--line); }
+.thread-header h2, .listeners-header h2 { margin: 0; font-size: 16px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .thread-subtitle { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 a.thread-subtitle { text-decoration: none; }
 .spacer { flex: 1; }
@@ -192,12 +192,13 @@ a.thread-subtitle { text-decoration: none; }
    `margin-top: auto` is the artboard's `justify-content: flex-end` in a form that still scrolls. */
 .messages { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; padding: 16px 20px; }
 .messages > :first-child { margin-top: auto; }
-/* Layout, not appearance: what `.messages` does for a Thread, this does for the directory — the open
+/* Layout, not appearance: what `.messages` does for a Thread, this does for the directory. The open
    view scrolls inside the layout, so the header, the sidebar and the connection indicator stay where
    they are (spec §1 success scenario). `min-height: 0` is the half that matters: without it a flex
-   item's automatic minimum size is its content, and 50 cards push the page past `100vh`. The one CSS
-   rule of `feat/lobby-listeners-view`, added on the owner's word of 2026-09-20. */
-.listeners-view { flex: 1; min-height: 0; overflow-y: auto; }
+   item's automatic minimum size is its content, and 50 rows push the page past `100vh`. The rule of
+   `feat/lobby-listeners-view` (owner's word of 2026-09-20), split in two since the redesign: the
+   view holds the 52px header still, and `.listeners` under it is what scrolls. */
+.listeners-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 /* A message: a 32px square avatar (accent for people, the working blue for agents), then the head
    line and the body. */
 .msg { display: flex; gap: 12px; padding: 6px 0; }
@@ -327,16 +328,23 @@ button.listeners-line-link[aria-current="true"] { text-decoration: underline; }
 .weave-row-copy-manual { flex: 1 1 100%; display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); }
 .weave-row-link { flex: 1; font-size: 12px; font-family: var(--font-mono); }
 .weave-more { margin-top: 8px; }
-/* --- The Lobby listeners directory (§5.3) ----------------------------------- */
-.listeners { max-width: 1040px; margin: 0 auto; padding: 16px 16px 48px; }
-.listeners-partial { margin: 8px 0 0; font-size: 13px; }
-.listeners-controls { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin: 12px 0; }
-.listeners-controls label { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 13px; }
-.listeners-search { flex: 1 1 260px; }
-.listeners-search input { flex: 1; min-width: 0; }
+/* --- The Lobby listeners directory (§5.3, Listeners.dc.html) ------------------------------------
+   Under the 52px header: the toolbar, the notices, the table, and a footer strip that stays at the
+   bottom of the scrolling area while the rows scroll under it. */
+.listeners { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
+.listeners-toolbar { flex-shrink: 0; display: flex; flex-direction: column; gap: 10px; padding: 12px 20px; border-bottom: 1px solid var(--line); }
+.listeners-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.listeners-controls label:not(.listeners-search) { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--pill-text); }
+/* The search field is the label: a 32px box with the magnifier, holding a borderless input. The box
+   takes the focus ring, because the input inside it draws none of its own (as `.composer-box`). */
+.listeners-search { display: flex; align-items: center; gap: 8px; width: 320px; max-width: 100%; height: 32px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg-sunken); color: var(--muted); font-size: 13px; }
+.listeners-search:focus-within { border-color: var(--accent); outline: 2px solid var(--accent); outline-offset: 0; }
+.listeners-search input { flex: 1; min-width: 0; height: 30px; padding: 0; border: 0; outline: 0; background: transparent; }
+.listeners-search input:focus, .listeners-search input:focus-visible { border: 0; outline: 0; }
+.listeners-controls .spacer { flex: 1; }
 /* One row per facet: the label, what the row means in words, and the chips themselves. The
    semantics are on screen because "any of these" and "all of these" cannot be told apart by colour. */
-.listeners-facets { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.listeners-facets { display: flex; flex-direction: column; gap: 8px; }
 .facet { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
 .facet-label { min-width: 64px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
 .facet-hint, .facet-more { color: var(--muted); font-size: 12px; }
@@ -344,23 +352,37 @@ button.listeners-line-link[aria-current="true"] { text-decoration: underline; }
 .chips li { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 14px; border: 1px solid var(--line-strong); background: transparent; color: var(--pill-text); font: inherit; font-size: 12px; font-weight: 500; cursor: pointer; }
 .chip:not(:disabled):hover { background: transparent; color: var(--fg); }
+/* "shell · 3", the artboard's "Idle · 58": the dot is drawn, the text stays "shell 3". */
+.chip-count::before { content: "· "; }
 .chip-count { color: var(--muted); }
-/* A selected chip is the one chip that can show a zero — it is the filter that emptied the result,
-   so it stays on screen to be unclicked (§2.7). It must not read as an ordinary chip with a count.
-   `.chip.on` is the artboards' spelling; `.chip-on` is what the markup carries today. */
-.chip.on, .chip-on, .chip.on:not(:disabled):hover, .chip-on:not(:disabled):hover { border-color: var(--accent); background: var(--selected); color: var(--fg); font-weight: 600; }
-.chip.on .chip-count, .chip-on .chip-count { color: inherit; }
+/* A selected chip is the one chip that can show a zero: it is the filter that emptied the result,
+   so it stays on screen to be unclicked (§2.7). It must not read as an ordinary chip with a count. */
+.chip.on, .chip.on:not(:disabled):hover { border-color: var(--accent); background: var(--selected); color: var(--fg); }
+.chip.on .chip-count { color: inherit; }
 /* Refused because this row already holds as many values as core accepts. It has to read as out of
    reach rather than as an ordinary chip that ignores a click; its `title` says why. */
 .chip:disabled { opacity: 0.5; cursor: not-allowed; }
 .chips-effort { flex-basis: 100%; margin-left: 16px; }
-.listeners-changed { margin: 8px 0; font-size: 13px; }
-.listeners-counts { margin: 8px 0; color: var(--muted); font-size: 13px; display: flex; gap: 8px; min-height: 1.45em; }
+/* The link notice, a failed query or invite, and "the list has changed": lines between the toolbar
+   and the rows. */
+.listeners-note { margin: 10px 20px 0; font-size: 13px; }
+.listeners-empty { padding: 16px 20px; }
+.listeners-empty p { margin: 0; }
+.listeners-table-wrap { flex-shrink: 0; overflow-x: auto; padding: 0 20px; }
+.listeners-table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.listeners-table th { height: 36px; padding: 0 12px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
+.listeners-table td { height: 44px; padding: 0 12px; border-bottom: 1px solid var(--line-row); vertical-align: middle; white-space: nowrap; }
+.listeners-table tr.listener-row:hover td { background: var(--bg-sunken); }
+.listeners-table .listener-actions { text-align: right; }
+.listener-actions .btn + .btn { margin-left: 4px; }
+.listener-name { font-weight: 500; }
+/* The opened profile: the full card, in a row of its own under the listener's, wrapping freely. */
+.listeners-table tr.listener-details td { height: auto; padding: 8px 12px 12px; white-space: normal; background: var(--bg-sunken); }
+.listener-details .profile-card { margin: 0; max-width: 560px; }
+/* A control change keeps the rows and dims them; the table never blanks between queries (§5.3). */
+.listeners-table-stale { opacity: .6; }
+.listeners-foot { position: sticky; bottom: 0; flex-shrink: 0; margin-top: auto; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 20px; border-top: 1px solid var(--line); background: var(--bg-page); font-size: 12px; }
 .listeners-updating { font-style: italic; }
-.listeners-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
-/* A control change keeps the rows and dims them; the grid never blanks between queries (§5.3). */
-.listeners-grid-stale { opacity: .6; }
-.listeners-more { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center; margin-top: 16px; }
 /* The Lobby identity this browser held has been retired; the form below it is the way back in. */
 .page-join-invalid { margin: 0 0 8px; text-align: center; }
 /* The end of the fallback chain: the stored secret itself was refused, so the form is all there is. */

@@ -37,7 +37,7 @@ export function FacetChips({ label, hint, values, more, selected, onToggle, labe
           const on = selected.includes(v.value);
           return (
           <li key={v.value}>
-            <button type="button" class={`chip${on ? " chip-on" : ""}`}
+            <button type="button" class={`chip${on ? " on" : ""}`}
               aria-pressed={on} onClick={() => onToggle(v.value)}
               disabled={atCap !== undefined && !on} title={atCap !== undefined && !on ? atCap : undefined}>
               {labelOf ? labelOf(v.value) : v.value} <span class="chip-count">{v.count}</span>
@@ -76,7 +76,7 @@ export function ModelChips({ facet, selected, onToggleModel, onToggleEffort, atC
           const pick = selected.find((s) => s.model === m.model);
           return (
             <li key={m.model}>
-              <button type="button" class={`chip${pick ? " chip-on" : ""}`} aria-pressed={!!pick}
+              <button type="button" class={`chip${pick ? " on" : ""}`} aria-pressed={!!pick}
                 onClick={() => onToggleModel(m.model)}
                 disabled={atCap !== undefined && !pick} title={atCap !== undefined && !pick ? atCap : undefined}>
                 {m.model} <span class="chip-count">{m.count}</span>
@@ -85,7 +85,7 @@ export function ModelChips({ facet, selected, onToggleModel, onToggleEffort, atC
                 <ul class="chips chips-effort">
                   {m.efforts.map((e) => (
                     <li key={e.value}>
-                      <button type="button" class={`chip${pick.effort === e.value ? " chip-on" : ""}`}
+                      <button type="button" class={`chip${pick.effort === e.value ? " on" : ""}`}
                         aria-pressed={pick.effort === e.value}
                         onClick={() => onToggleEffort(m.model, e.value)}>
                         {e.value} <span class="chip-count">{e.count}</span>
