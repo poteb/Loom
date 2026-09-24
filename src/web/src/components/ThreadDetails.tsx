@@ -1,7 +1,10 @@
-import type { Thread } from "@loom/client";
+import type { Participant, Thread } from "@loom/client";
 import type { Session, SessionState } from "../session.js";
 import { isHttpUrl, shortUrl } from "./artefact.js";
 import { InviteControl, LinkForm } from "./ThreadTools.js";
+
+/** How many people the panel lists before it folds the rest away. */
+const PEOPLE_SHOWN = 8;
 
 /** Who created a Thread, as the stream names actors: a keeper is "Keeper". */
 function creatorName(thread: Thread, state: SessionState): string {
@@ -35,6 +38,27 @@ export function ThreadDetails({ thread, state, session, onError }: {
   const canClose = session.canModerate() && !thread.isGeneral && !thread.closedAt;
   const invited = state.invited[thread.id];
   const meId = state.me?.participant.id;
+  // Me first, then everyone else in the order the Weave lists them; past the first few, the rest
+  // wait behind a fold so a busy Lobby does not bury the panel.
+  const people = [...state.participants.filter((p) => p.id === meId), ...state.participants.filter((p) => p.id !== meId)];
+  const shown = people.slice(0, PEOPLE_SHOWN);
+  const folded = people.slice(PEOPLE_SHOWN);
+  const row = (p: Participant) => {
+    const mine = p.id === meId;
+    return (
+      <li key={p.id}>
+        <span class={`person-dot${mine ? " me" : ""}`} aria-hidden="true" />
+        <span class={`person-name${p.kind === "agent" ? " mono" : ""}`}>{p.name}</span>
+        {mine ? <span class="muted person-role">you · {p.role}</span>
+          : p.role === "keeper" ? <span class="muted person-role">keeper</span>
+          : p.kind === "agent" ? <span class="pill pill-working">agent</span>
+          : null}
+        {canEdit && !mine && (
+          <InviteControl thread={thread} participant={p} invited={!!invited?.has(p.id)} session={session} onError={onError} />
+        )}
+      </li>
+    );
+  };
   const close = async () => {
     try { await session.closeThread(thread.id); } catch (e) { onError(e); }
   };
@@ -64,21 +88,13 @@ export function ThreadDetails({ thread, state, session, onError }: {
       </section>
       <section class="details-sec">
         <span class="sec">In this Weave · {state.participants.length}</span>
-        <ul class="people">
-          {state.participants.map((p) => {
-            const mine = p.id === meId;
-            return (
-              <li key={p.id}>
-                <span class={`person-dot${mine ? " me" : ""}`} aria-hidden="true" />
-                <span class={`person-name${p.kind === "agent" ? " mono" : ""}`}>{p.name}</span>
-                <span class="muted person-role">{mine ? `you · ${p.role}` : p.role}</span>
-                {canEdit && !mine && (
-                  <InviteControl thread={thread} participant={p} invited={!!invited?.has(p.id)} session={session} onError={onError} />
-                )}
-              </li>
-            );
-          })}
-        </ul>
+        <ul class="people">{shown.map(row)}</ul>
+        {folded.length > 0 && (
+          <details class="people-more">
+            <summary>{folded.length} more</summary>
+            <ul class="people">{folded.map(row)}</ul>
+          </details>
+        )}
       </section>
     </aside>
   );

@@ -217,12 +217,53 @@ describe("ThreadDetails", () => {
     expect(screen.queryAllByRole("button", { name: "Close thread" })).toHaveLength(0);
   });
 
-  it("lists who is in the Weave, with me marked as you and agents in mono", () => {
+  /** Each people row as [name, its right-hand text or null, whether the name is mono]. */
+  const peopleRows = (root: Element) => [...root.querySelectorAll(".people li")].map((li) => [li.querySelector(".person-name")!.textContent,
+    li.querySelector(".person-role, .pill")?.textContent ?? null, li.querySelector(".person-name")!.classList.contains("mono")]);
+
+  it("lists who is in the Weave, with me marked as you and agents in mono under an agent pill", () => {
     const { container } = details();
-    const rows = [...container.querySelectorAll(".people li")].map((li) => [li.querySelector(".person-name")!.textContent,
-      li.querySelector(".person-role")!.textContent, li.querySelector(".person-name")!.classList.contains("mono")]);
-    expect([screen.getByText("In this Weave · 2").tagName, rows])
-      .toEqual(["SPAN", [["Paw", "you · member", false], ["Bot", "member", true]]]);
+    expect([screen.getByText("In this Weave · 2").tagName, peopleRows(container)])
+      .toEqual(["SPAN", [["Paw", "you · member", false], ["Bot", "agent", true]]]);
+    expect(container.querySelector(".people .pill")!.className).toBe("pill pill-working");
+  });
+
+  it("lists me first, marks a keeper as keeper, and gives a human member no right-hand text", () => {
+    const ann = { ...me, id: "p3", name: "Ann", role: "keeper" as const };
+    const bo = { ...me, id: "p4", name: "Bo" };
+    const { container } = details({ participants: [ann, bot, me, bo] });
+    expect(peopleRows(container)).toEqual([["Paw", "you · member", false], ["Ann", "keeper", false],
+      ["Bot", "agent", true], ["Bo", null, false]]);
+  });
+
+  describe("a long people list", () => {
+    const many = (n: number) => Array.from({ length: n }, (_, i) => ({ ...me, id: `h${i}`, name: `H${i}` }));
+
+    it("shows eight rows and folds the rest behind a details element that reads <n> more", () => {
+      const { container } = details({ participants: [...many(11), me] });
+      const more = container.querySelector<HTMLDetailsElement>(".details details")!;
+      const outside = [...container.querySelectorAll(".people li")].filter((li) => !more.contains(li));
+      expect([outside.map((li) => li.querySelector(".person-name")!.textContent), more.open,
+        more.querySelector("summary")!.textContent, peopleRows(more).map((r) => r[0])])
+        .toEqual([["Paw", "H0", "H1", "H2", "H3", "H4", "H5", "H6"], false, "4 more", ["H7", "H8", "H9", "H10"]]);
+    });
+
+    it("opens the rest when its summary is clicked", () => {
+      const { container } = details({ participants: [...many(11), me] });
+      fireEvent.click(screen.getByText("4 more"));
+      expect(container.querySelector<HTMLDetailsElement>(".details details")!.open).toBe(true);
+    });
+
+    it("folds nothing when there are eight people or fewer", () => {
+      const { container } = details({ participants: [me, ...many(7)] });
+      expect([container.querySelector(".details details"), container.querySelectorAll(".people li").length]).toEqual([null, 8]);
+    });
+
+    it("keeps an invite control on the folded rows for whoever may invite", () => {
+      details({ participants: [me, ...many(9)] });
+      expect(screen.getAllByRole("button", { name: /^invite /i }).map((b) => b.getAttribute("aria-label")))
+        .toEqual(Array.from({ length: 9 }, (_, i) => `invite H${i}`));
+    });
   });
 
   it("invite button only for creator/keeper and only for others", () => {
