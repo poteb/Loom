@@ -138,7 +138,7 @@ export function WeaveView({ session, state, banner, noCredential, openMainInPlac
   // to it: the same `canEditThread` the details panel's invite controls are drawn under.
   const inviteTarget: InviteTarget | undefined = current && session.canEditThread(current)
     ? { threadId: current.id, invited: state.invited[current.id], meId: state.me?.participant.id } : undefined;
-  const threadCount =`${state.threads.length} thread${state.threads.length === 1 ? "" : "s"}`;
+  const threadCount = `${state.threads.length} thread${state.threads.length === 1 ? "" : "s"}`;
   const listenerCount = lobbyGate && state.listenerCount !== undefined
     ? ` · ${state.listenerCount.toLocaleString()} listener${state.listenerCount === 1 ? "" : "s"}` : "";
 

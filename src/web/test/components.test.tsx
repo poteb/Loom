@@ -175,6 +175,14 @@ describe("ThreadDetails", () => {
     expect(link.getAttribute("href")).toBe(pr.url);
   });
 
+  it("gives only the time when the creator is not a participant, and names a keeper Keeper", () => {
+    const { container } = details({}, session(), { ...mine, createdBy: "p-gone" });
+    const stranger = fact(container, "Created");
+    const time = container.querySelector(".facts time")!.textContent;
+    const keeper = details({}, session(), { ...mine, createdBy: "keeper:k1" }).container;
+    expect([stranger, fact(keeper, "Created")]).toEqual([time, `${time} · Keeper`]);
+  });
+
   it("says none when the thread links to no artefact, and closed for a closed thread", () => {
     const { container } = details({}, session(), { ...mine, url: null, closedAt: at });
     expect([fact(container, "Linked artefact"), fact(container, "Status")]).toEqual(["none", "closed"]);

@@ -6,10 +6,13 @@ import { InviteControl, LinkForm } from "./ThreadTools.js";
 /** How many people the panel lists before it folds the rest away. */
 const PEOPLE_SHOWN = 8;
 
-/** Who created a Thread, as the stream names actors: a keeper is "Keeper". */
-function creatorName(thread: Thread, state: SessionState): string {
+/**
+ * Who created a Thread, as the stream names actors: a keeper is "Keeper". Null when the creator is
+ * no participant here (the Lobby's General thread), so the panel gives the time alone.
+ */
+function creatorName(thread: Thread, state: SessionState): string | null {
   if (thread.createdBy.startsWith("keeper:")) return "Keeper";
-  return state.participants.find((p) => p.id === thread.createdBy)?.name ?? "unknown";
+  return state.participants.find((p) => p.id === thread.createdBy)?.name ?? null;
 }
 
 /** When a Thread was created: the time alone today, the date and time on any other day. */
@@ -34,6 +37,7 @@ export function ThreadDetails({ thread, state, session, onError }: {
   const events = state.events.filter((e) => e.threadId === thread.id);
   const messages = events.filter((e) => e.type === "message").length;
   const when = createdAt(thread.createdAt);
+  const creator = creatorName(thread, state);
   const canEdit = session.canEditThread(thread);
   const canClose = session.canModerate() && !thread.isGeneral && !thread.closedAt;
   const invited = state.invited[thread.id];
@@ -70,7 +74,7 @@ export function ThreadDetails({ thread, state, session, onError }: {
           <dt class="muted">Status</dt>
           <dd>{thread.closedAt ? <span class="pill pill-closed">closed</span> : <span class="pill pill-open">open</span>}</dd>
           <dt class="muted">Created</dt>
-          <dd>{when && <><time dateTime={thread.createdAt}>{when}</time> · </>}{creatorName(thread, state)}</dd>
+          <dd>{when && <time dateTime={thread.createdAt}>{when}</time>}{when && creator && " · "}{creator}</dd>
           <dt class="muted">Linked artefact</dt>
           <dd>{!thread.url ? <span class="muted">none</span>
             : isHttpUrl(thread.url)
