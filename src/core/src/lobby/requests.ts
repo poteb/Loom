@@ -100,7 +100,7 @@ function toAcceptance(o: OfferRow, lastSeenAt: Date | null, now: Date): PublicAc
 }
 
 /** An accepted offer that has not been removed: the only kind that counts (spec §6.2). */
-const isActive = (o: OfferRow): boolean => o.accepted && o.removedAt === null;
+export const isActive = (o: OfferRow): boolean => o.accepted && o.removedAt === null;
 
 /**
  * Still running, in the sense `accept` and `cancel_request` need: computed `open`, or stored
@@ -259,7 +259,7 @@ export function recordedAttribution(row: RequestRow): string {
  * every active acceptance that has not completed, so it stops working (spec §6.3). An acceptance
  * that completed already knows; eligible listeners who never offered are not told.
  */
-async function closeInTx(tx: Tx, row: RequestRow, reason: CloseReason, actor: string, now: Date): Promise<NewEvent[]> {
+export async function closeInTx(tx: Tx, row: RequestRow, reason: CloseReason, actor: string, now: Date): Promise<NewEvent[]> {
   const offers = await tx.select().from(requestOffers)
     .where(eq(requestOffers.requestId, row.id)).orderBy(asc(requestOffers.createdAt));
   const accepted = offers.filter((o) => o.accepted).map((o) => o.participantId);

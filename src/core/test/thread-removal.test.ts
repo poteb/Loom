@@ -2,7 +2,7 @@ import { describe, it, expect, afterAll, beforeEach } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { freshDb, closeTestDb, keeperToken } from "./helpers.js";
 import { EventBus } from "../src/bus.js";
-import { requestOffers, requests as requestsTable, weaveInvitations, weaves } from "../src/db/schema.js";
+import { participants, requestOffers, requests as requestsTable, threads, weaveInvitations, weaves } from "../src/db/schema.js";
 import { readEvents, type NewEvent } from "../src/events.js";
 import { resolveCredential } from "../src/actors.js";
 import { seedKeepers } from "../src/keepers.js";
@@ -15,7 +15,7 @@ import { removeParticipant } from "../src/removals.js";
 import { ensureLobby, joinLobby } from "../src/lobby/lobby.js";
 import { setCapabilities } from "../src/lobby/profile.js";
 import { redeemInvitation } from "../src/lobby/invitations.js";
-import { accept, offer, openRequest, versionOf } from "../src/lobby/requests.js";
+import { accept, complete, offer, openRequest, versionOf } from "../src/lobby/requests.js";
 import type { Db } from "../src/db/index.js";
 import type { LoomEvent } from "../src/types.js";
 
@@ -112,10 +112,11 @@ let tag = 0;
 /**
  * A request in the Lobby, opened by Claude for a work Thread of Paw's Weave; the requester's
  * recorded authority there is its own keeper participant, Claude-target. Pawbot and Shared offered
- * and Pawbot was accepted. `onGeneral` targets the Weave's General Thread instead. Names carry a
- * tag, so one test may build several.
+ * and Pawbot was accepted. `onGeneral` targets the Weave's General Thread instead; `wanted` is 2
+ * unless given; `third` adds a third eligible listener, Third, which offers too. `join` adds a Lobby
+ * participant after the request opened. Names carry a tag, so one test may build several.
  */
-async function requested(opts: { onGeneral?: boolean } = {}) {
+async function requested(opts: { onGeneral?: boolean; wanted?: number; third?: boolean } = {}) {
   const t = ++tag;
   const { weaveId: lobbyId } = await ensureLobby(db);
   await seedKeepers(db, [keeperToken("k")]);
@@ -134,14 +135,16 @@ async function requested(opts: { onGeneral?: boolean } = {}) {
   const claude = await join("Claude", { owner: "paw" });
   const pawbot = await join("Pawbot", { models: [MODEL], owner: "paw", serves: "owner" });
   const shared = await join("Shared", { models: [MODEL], owner: "shared", serves: "anyone" });
+  const third = opts.third ? await join("Third", { models: [MODEL], owner: "shared", serves: "anyone" }) : undefined;
   const request = await openRequest(db, bus, claude.actor, targetKeeper, {
-    title: "Review PR 14", requirements: { models: [MODEL] }, wanted: 2,
+    title: "Review PR 14", requirements: { models: [MODEL] }, wanted: opts.wanted ?? 2,
     targetWeaveId: target.weave.id, targetThreadId: work.id, url: null,
   });
   await offer(db, bus, pawbot.actor, request.id, {});
   await offer(db, bus, shared.actor, request.id, {});
+  if (third) await offer(db, bus, third.actor, request.id, {});
   const { invitationIds } = await accept(db, bus, claude.actor, request.id, [pawbot.id], { deadlineMs: 3_600_000 });
-  return { lobbyId, target, paw, work, there, claude, pawbot, shared, request, invitationId: invitationIds[0]! };
+  return { lobbyId, target, paw, work, there, claude, pawbot, shared, third, request, invitationId: invitationIds[0]!, join };
 }
 type Requested = Awaited<ReturnType<typeof requested>>;
 
@@ -151,6 +154,13 @@ const offerOf = async (f: Requested, participantId: string) =>
   (await db.select().from(requestOffers).where(and(eq(requestOffers.requestId, f.request.id), eq(requestOffers.participantId, participantId))))[0]!;
 const removeFromRequest = (f: Requested, participantId: string) =>
   removeParticipant(db, bus, f.claude.actor, f.request.threadId, participantId);
+const requestRowOf = async (f: Requested) =>
+  (await db.select().from(requestsTable).where(eq(requestsTable.id, f.request.id)))[0]!;
+const closesOf = async (f: Requested) =>
+  (await threadLog(f.lobbyId, f.request.threadId)).filter((e) => e.type === "request.closed");
+/** Shared is accepted beside Pawbot; returns Shared's invitation id. */
+const acceptShared = async (f: Requested) =>
+  (await accept(db, bus, f.claude.actor, f.request.id, [f.shared.id], { deadlineMs: 3_600_000 })).invitationIds[0]!;
 
 /** Holds a Weave row `FOR UPDATE` in a transaction of its own until `release()` is awaited. */
 async function holdWeaveRow(weaveId: string) {
@@ -267,5 +277,100 @@ describe("remove_participant on a request Thread", () => {
     expect((await readEvents(db, f.target.weave.id, {})).length).toBe(targetBefore);
     expect((await threadLog(f.lobbyId, f.request.threadId)).at(-1)!.payload)
       .toEqual({ threadId: f.request.threadId, participantId: f.shared.id, removedBy: f.claude.id, requestId: f.request.id });
+  });
+
+  it("a removal closes a working request as completed when every remaining acceptance has completed", async () => {
+    const f = await requested();
+    await acceptShared(f);
+    await complete(db, bus, f.pawbot.actor, f.request.id);
+    const r = await removeFromRequest(f, f.shared.id);
+    expect(r).toMatchObject({ created: true, acceptanceRemoved: true, targetRemoved: false });
+    const row = await requestRowOf(f);
+    expect(row.status).toBe("completed");
+    expect(row.closedAt).not.toBeNull();
+    const [thread] = await db.select().from(threads).where(eq(threads.id, f.request.threadId));
+    expect(thread!.closedAt).not.toBeNull();
+    const evs = (await threadLog(f.lobbyId, f.request.threadId)).filter((e) => e.seq >= r.seq);
+    expect(evs.map((e) => [e.seq, e.type])).toEqual([[r.seq, "thread.removed"], [r.seq + 1, "request.closed"], [r.seq + 2, "thread.closed"]]);
+    expect(evs[1]!.actor).toBe(f.claude.id);
+    expect(evs[1]!.payload).toEqual({ requestId: f.request.id, requesterId: f.claude.id, to: [f.claude.id], reason: "completed", accepted: [f.pawbot.id, f.shared.id] });
+    expect(evs[2]!.payload).toEqual({ threadId: f.request.threadId, requestId: f.request.id });
+    // Through versionOf, as for every close: thread.closed is not a request mutation, so the version is request.closed's.
+    expect(row.lastEventSeq).toBe(evs[1]!.seq);
+  });
+
+  it("a Lobby keeper's removal that closes the request is attributed to the keeper", async () => {
+    const f = await requested();
+    const instanceKeeper = await resolveCredential(db, keeperToken("k"));
+    const keeper = await f.join("Keeper", { owner: "paw" });
+    await setRole(db, bus, instanceKeeper, f.lobbyId, keeper.id, "keeper");
+    const [keeperRow] = await db.select().from(participants).where(eq(participants.id, keeper.id));
+    const lobbyKeeper = await resolveCredential(db, keeperRow!.token);
+    await acceptShared(f);
+    await complete(db, bus, f.pawbot.actor, f.request.id);
+    const r = await removeParticipant(db, bus, lobbyKeeper, f.request.threadId, f.shared.id);
+    expect(r).toMatchObject({ created: true, acceptanceRemoved: true });
+    expect((await requestRowOf(f)).status).toBe("completed");
+    const [closed] = await closesOf(f);
+    expect(closed).toMatchObject({ seq: r.seq + 1, actor: keeper.id });
+    expect(closed!.payload).toMatchObject({ reason: "completed", accepted: [f.pawbot.id, f.shared.id] });
+  });
+
+  it("a removal leaves the request working while a remaining acceptance has not completed", async () => {
+    const f = await requested({ wanted: 3, third: true });
+    const third = f.third!;
+    await accept(db, bus, f.claude.actor, f.request.id, [f.shared.id, third.id], { deadlineMs: 3_600_000 });
+    await complete(db, bus, f.pawbot.actor, f.request.id);
+    expect(await removeFromRequest(f, third.id)).toMatchObject({ created: true, acceptanceRemoved: true });
+    const row = await requestRowOf(f);
+    expect(row.status).toBe("working");
+    expect(row.closedAt).toBeNull();
+    expect(await closesOf(f)).toEqual([]);
+  });
+
+  it("removing every acceptance leaves the request working", async () => {
+    const f = await requested();
+    expect(await removeFromRequest(f, f.pawbot.id)).toMatchObject({ acceptanceRemoved: true });
+    const row = await requestRowOf(f);
+    expect(row.status).toBe("working");
+    expect(row.closedAt).toBeNull();
+    expect(await closesOf(f)).toEqual([]);
+  });
+
+  it("removing a participant without an active acceptance never closes the request", async () => {
+    const f = await requested({ third: true });
+    const standing = f.third!;
+    await acceptShared(f);
+    await complete(db, bus, f.pawbot.actor, f.request.id);
+    expect(await removeFromRequest(f, standing.id)).toMatchObject({ created: true, acceptanceRemoved: false });
+    const row = await requestRowOf(f);
+    expect(row.status).toBe("working");
+    expect(row.closedAt).toBeNull();
+    expect(await closesOf(f)).toEqual([]);
+  });
+
+  it("after a removal closed the request, accept is request_closed and complete stays idempotent", async () => {
+    const f = await requested();
+    await acceptShared(f);
+    await complete(db, bus, f.pawbot.actor, f.request.id);
+    await removeFromRequest(f, f.shared.id);
+    expect((await requestRowOf(f)).status).toBe("completed");
+    await expect(accept(db, bus, f.claude.actor, f.request.id, [f.shared.id], { deadlineMs: 3_600_000 }))
+      .rejects.toMatchObject({ code: "request_closed" });
+    const n = (await threadLog(f.lobbyId, f.request.threadId)).length;
+    expect((await complete(db, bus, f.pawbot.actor, f.request.id)).status).toBe("completed");
+    expect((await threadLog(f.lobbyId, f.request.threadId)).length).toBe(n);
+  });
+
+  it("the target half still runs when the removal closes the request", async () => {
+    const f = await requested();
+    const sharedInvitation = await acceptShared(f);
+    const landed = await redeemInvitation(db, bus, f.shared.actor, sharedInvitation, { kind: "agent" });
+    await complete(db, bus, f.pawbot.actor, f.request.id);
+    expect(await removeFromRequest(f, f.shared.id)).toMatchObject({ acceptanceRemoved: true, targetRemoved: true });
+    expect((await requestRowOf(f)).status).toBe("completed");
+    const ev = (await threadLog(f.target.weave.id, f.work.id)).at(-1)!;
+    expect(ev).toMatchObject({ type: "thread.removed", actor: f.there.participant.id });
+    expect(ev.payload).toEqual({ threadId: f.work.id, participantId: landed.participant.id, removedBy: f.there.participant.id, requestId: f.request.id });
   });
 });

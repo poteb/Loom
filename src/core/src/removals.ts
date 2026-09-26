@@ -7,7 +7,7 @@ import { isUuid } from "./ids.js";
 import { withWeaveLock, withWeaveLocks, type NewEvent, type WeaveRow } from "./events.js";
 import { actorId, assertIsKeeperOf, assertStillKeeperOf } from "./actors.js";
 import { getThread } from "./threads.js";
-import { recordedAttribution, recordedAuthorityHolds, versionOf, type RequestRow } from "./lobby/requests.js";
+import { closeInTx, isActive, recordedAttribution, recordedAuthorityHolds, versionOf, type RequestRow } from "./lobby/requests.js";
 import type { Actor } from "./types.js";
 
 export type RemovalResult = { seq: number; created: boolean; acceptanceRemoved: boolean; targetRemoved: boolean };
@@ -53,7 +53,9 @@ const unchanged = (seq: number): RemovalResult => ({ seq, created: false, accept
  * On a Lobby request's Thread, given the Lobby participant id of an accepted agent, it also removes
  * that acceptance, withdraws its unredeemed invitations and, under the request's recorded target
  * authority, removes the agent from the work Thread it redeemed into: one transaction under the
- * Lobby lock and then the target's, the order every cross-Weave flow uses.
+ * Lobby lock and then the target's, the order every cross-Weave flow uses. When that removal leaves
+ * a `working` request with at least one active acceptance and every one of them completed, the same
+ * transaction closes the request as `completed`, attributed to the remover (spec 2026-09-26 §2.2).
  */
 export async function removeParticipant(db: Db, bus: EventBus, actor: Actor, threadId: string, participantId: string): Promise<RemovalResult> {
   const t = await getThread(db, threadId);
@@ -129,6 +131,18 @@ async function removeFromRequestThread(
     }
     const lobbyEvents: NewEvent[] = [{ threadId: t.id, type: "thread.removed", actor: me,
       payload: { threadId: t.id, participantId, removedBy: me, requestId: req.id } }];
+    // Spec 2026-09-26 §2.2 (M1): a removal that leaves only completed acceptances closes the request.
+    // The row is read again here, under the lock: `req` was read before it, and its status may be stale.
+    if (active) {
+      const [current] = await tx.select().from(requests).where(eq(requests.id, req.id));
+      if (current!.status === "working") {
+        const after = await tx.select().from(requestOffers).where(eq(requestOffers.requestId, req.id));
+        const remaining = after.filter(isActive);
+        if (remaining.length > 0 && remaining.every((o) => o.completedAt !== null)) {
+          lobbyEvents.push(...await closeInTx(tx, current!, "completed", me, now));
+        }
+      }
+    }
     // A thread.removed carrying a requestId is a request mutation, so the row's version follows it.
     await tx.update(requests).set({ lastEventSeq: versionOf(lobby, lobbyEvents) }).where(eq(requests.id, req.id));
     return {
