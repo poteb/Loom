@@ -1,3 +1,4 @@
+import { Fragment } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { LoomEvent } from "@loom/client";
 import type { SessionState } from "../session.js";
@@ -155,6 +156,9 @@ export function MessageList({ state, fold }: {
   // while it is open stays open. UI state only.
   const [expanded, setExpanded] = useState<ReadonlySet<number>>(() => new Set());
   const events = state.events.filter((e) => e.threadId === state.currentThreadId);
+  // Fixed when the Thread was opened (spec 2026-09-26 §6.4), so nothing that arrives moves it.
+  const na = state.newAfter;
+  const dividerAt = na && na.threadId === state.currentThreadId ? na.firstNew : null;
   const lost = state.connection === "reconnecting" || state.connection === "closed" ? state.connection : null;
   useEffect(() => { bottom.current?.scrollIntoView({ block: "end" }); }, [events.length, state.currentThreadId, lost]);
   const toggle = (key: number) => setExpanded((prev) => {
@@ -165,7 +169,12 @@ export function MessageList({ state, fold }: {
   return (
     <div class="messages">
       {foldStream(events, fold).map((item) =>
-        item.kind === "message" ? <Message key={item.key} e={item.event} state={state} />
+        item.kind === "message" ? (
+          <Fragment key={item.key}>
+            {item.event.seq === dividerAt && <div class="new-divider" role="separator">New</div>}
+            <Message e={item.event} state={state} />
+          </Fragment>
+        )
         : item.kind === "system" ? <SystemEvent key={item.key} e={item.event} state={state} />
         : <Run key={item.key} events={item.events} open={expanded.has(item.key)} onToggle={() => toggle(item.key)} state={state} />)}
       {lost && <ConnectionRow connection={lost} />}

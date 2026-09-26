@@ -68,6 +68,8 @@ export function ThreadList({ state, session, onError, onPick, markCurrent = true
         {shown.map((t) => {
           const tag = artefactTag(t.url);
           const invited = state.invitesForMe.has(t.id);
+          // None for the open Thread, which is being read (spec 2026-09-26 §6.3).
+          const unread = t.id === state.currentThreadId ? 0 : (state.unread[t.id] ?? 0);
           return (
             <li key={t.id} class={[marked(t.id) ? "active" : "", invited ? "invited" : "", t.closedAt ? "closed" : ""].filter(Boolean).join(" ")}>
               {/* A real button, so selecting a thread is reachable by keyboard (Tab, then Enter or Space). */}
@@ -78,6 +80,7 @@ export function ThreadList({ state, session, onError, onPick, markCurrent = true
                 {tag && <span class="mono thread-tag">{tag}</span>}
                 {t.closedAt && <span class="pill pill-closed thread-pill">closed</span>}
                 {invited && <span class="badge-invited">invited</span>}
+                {unread > 0 && <span class="unread-count" aria-label={`${unread} unread`}>{unread}</span>}
               </button>
             </li>
           );

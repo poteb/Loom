@@ -108,6 +108,14 @@ describe("ThreadList", () => {
     render(<ThreadList state={state()} session={session({ canModerate: () => true })} onError={() => {}} />);
     expect(screen.queryByRole("button", { name: /^close( thread)?$/i })).toBeNull();
   });
+  it("ThreadList shows an unread count with its aria-label, none at zero and none for the open Thread", () => {
+    const design = { ...pr, id: "t3", name: "Design", url: null };
+    render(<ThreadList state={state({ threads: [general, pr, design], currentThreadId: "g1", unread: { t1: 2, t3: 0, g1: 5 } })}
+      session={session()} onError={() => {}} />);
+    const count = (name: RegExp) => screen.getByRole("button", { name }).querySelector(".unread-count");
+    expect([count(/^PR 12/)?.textContent, count(/^PR 12/)?.getAttribute("aria-label")]).toEqual(["2", "2 unread"]);
+    expect([count(/^Design/), count(/^General/)]).toEqual([null, null]);
+  });
 
   describe("the thread filter", () => {
     const closedA = { ...pr, id: "t2", name: "Old review", closedAt: "2026-09-20T10:00:00.000Z" };
@@ -559,6 +567,37 @@ describe("MessageList", () => {
     it("says Disconnected, with a red dot, once the stream has given up", () => {
       const { container } = render(<MessageList state={state({ connection: "closed" })} fold={true} />);
       expect(conn(container)).toEqual(["Disconnected.", "danger", true]);
+    });
+  });
+
+  describe("the New divider (spec 2026-09-26 §6.4)", () => {
+    const at = "2026-09-26T10:00:00.000Z";
+    const msg = (seq: number, actor: string) => ({ weaveId: "w1", seq, threadId: "t1", type: "message" as const, actor, at, payload: { text: `m${seq}` } });
+    const joined = { weaveId: "w1", seq: 5, threadId: "t1", type: "participant.joined" as const, actor: "p2", at, payload: { participantId: "p2" } };
+    /** The stream as a list: a message by its text, the divider as New, a system row as sys. */
+    const order = (c: Element) => [...c.querySelectorAll(".messages > *")].filter((el) => el.className !== "")
+      .map((el) => el.classList.contains("new-divider") ? "New" : el.matches("article.msg") ? el.querySelector(".msg-body")!.textContent!.trim() : "sys");
+
+    it("the New divider sits before the first message by others after newAfter, and not at all without one", () => {
+      const events = [msg(3, "p2"), msg(4, "p1"), joined, msg(6, "p2"), msg(7, "p2")];
+      const first = render(<MessageList state={state({ currentThreadId: "t1", events, newAfter: { threadId: "t1", seq: 3, firstNew: 6 } })} fold={false} />);
+      expect(order(first.container)).toEqual(["m3", "m4", "sys", "New", "m6", "m7"]);
+      const sep = first.container.querySelector(".new-divider")!;
+      expect([sep.getAttribute("role"), sep.textContent]).toEqual(["separator", "New"]);
+      first.unmount();
+      const none = render(<MessageList state={state({ currentThreadId: "t1", events, newAfter: { threadId: "t1", seq: 7, firstNew: null } })} fold={false} />);
+      expect(none.container.querySelector(".new-divider")).toBeNull();
+      none.unmount();
+      // A divider captured for another Thread is not this one's.
+      const elsewhere = render(<MessageList state={state({ currentThreadId: "t1", events, newAfter: { threadId: "g1", seq: 3, firstNew: 6 } })} fold={false} />);
+      expect(elsewhere.container.querySelector(".new-divider")).toBeNull();
+    });
+
+    it("the divider does not move when messages arrive while the Thread is open", () => {
+      const newAfter = { threadId: "t1", seq: 3, firstNew: 6 };
+      const view = render(<MessageList state={state({ currentThreadId: "t1", events: [msg(3, "p2"), msg(6, "p2")], newAfter })} fold={false} />);
+      view.rerender(<MessageList state={state({ currentThreadId: "t1", events: [msg(3, "p2"), msg(6, "p2"), msg(8, "p2"), msg(9, "p2")], newAfter })} fold={false} />);
+      expect(order(view.container)).toEqual(["m3", "New", "m6", "m8", "m9"]);
     });
   });
 });
