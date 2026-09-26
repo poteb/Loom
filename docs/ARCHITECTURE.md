@@ -75,6 +75,7 @@ Rule families, all in `src/core/src`:
 | Removal from a Thread and the marker rule | `removals.ts`: `removeParticipant`, `latestMarker`, `lastRemovalSeq`; read by `postMessage` and `inviteParticipant` |
 | Onboarding facts | `lobby/onboarding.ts`: `onboardingFacts` (the words are `@loom/mcp-tools`' `onboarding.ts`) |
 | Work deadlines | `lobby/requests.ts`: `accept` (`deadlineMs`), `complete`, `sweepOverdue`, `stillRunning` |
+| Read positions | `reads.ts`: `markRead`, `markAllRead`, `readPositions`. A read is not an event: no Weave lock, no bus, nothing in the log. The unread count is the web's (`src/web/src/unread.ts`, `unreadCounts`) |
 
 Two authority checks are deliberately done twice: once cheaply up front, once against fresh rows
 inside the transaction (`assertStillKeeperOf`), because an `Actor` carries the authority captured
@@ -97,11 +98,15 @@ Schema: [../src/core/src/db/schema.ts](../src/core/src/db/schema.ts). Public sha
 | `requests` | A Lobby request: `thread_id` (unique — one Thread each), `requester_id`, `owner`, the recorded target authority `requester_target_participant_id` / `requester_target_keeper_id`, `requirements`, `wanted`, `target_weave_id`, `target_thread_id`, `url`, `status`, `expires_at`, `closed_at`, and `last_event_seq` — the Lobby `seq` of the request's latest mutation, which is the **version** every snapshot and event carries. |
 | `request_offers` | `(request_id, participant_id)` primary key, with `model`, `effort`, `note` and `accepted`, and the acceptance's `due_at`, `completed_at`, `completion_note`, `removed_at` and `overdue_at`. |
 | `weave_invitations` | One single-use way into another Weave: `target_weave_id`, `target_thread_id`, `invitee_participant_id` (a Lobby participant), `invitee_agent_id` (copied, for agent-key redemption), `request_id`, `created_by`, `redeemed_at`, `redeemed_participant_id`, and `revoked_at` (withdrawn by a removal). |
+| `read_positions` | `(participant_id, thread_id)` primary key, `seq` (the highest seq of the Weave's log that participant has read in that Thread, never lowered, never past `last_seq`) and `updated_at`. Written by `reads.ts` only; no event records it. |
 | `events` | The log: `(weave_id, seq)` unique, `thread_id`, `type`, `actor`, `at`, JSONB `payload`. |
 
 Migration 0005 added those eight columns, all nullable, so every row from before it is valid
 unchanged; `requests.status` gained the values `working` and `completed`, which needed no DDL
 because the column is text.
+
+Migration 0006 creates `read_positions` and nothing else; nothing is backfilled, so a Thread with no
+row reads from the participant's own `participant.joined`.
 
 The three Lobby tables and the three added columns are migration
 `drizzle/0003_steep_dracula.sql`; it is purely additive. `drizzle/0004_furry_captain_stacy.sql` adds
@@ -203,6 +208,8 @@ All three call the same `Core`.
 ([routes/lobby.ts](../src/server/src/routes/lobby.ts)) and `/api/requests`
 ([routes/requests.ts](../src/server/src/routes/requests.ts)), plus `/health`. The `bearer` middleware
 ([../src/server/src/auth.ts](../src/server/src/auth.ts)) reads `Authorization: Bearer …`.
+Read positions are three routes beside the others: `PUT /api/threads/:id/read` (body `{ seq }`), and
+`POST` and `GET /api/weaves/:id/read`. Reads are not events, so none of them reaches the stream.
 
 Streaming is a two-step handshake, because browsers cannot set headers on a WebSocket:
 `POST /api/auth/ws-ticket` exchanges a valid credential for a single-use ticket (60 s TTL,
@@ -348,6 +355,16 @@ Thread that never appears in `threads`. Metadata refreshes triggered by events a
 retried with backoff, falling back to a slow cadence rather than giving up (`refreshError` surfaces
 in the UI). `invitesForMe` is derived from the log: an invite counts as unopened when its `seq` is
 newer than the highest `seq` seen when that Thread was last opened or marked seen.
+
+**Read state.** After every load or join that ends with an identity, the session reads that
+identity's read positions (`readPositions`), fenced by the identity and the `generation` as the
+own-profile read below is, and derives `unread`, a count per Thread, from the events it holds
+(`unreadCounts` in [unread.ts](../src/web/src/unread.ts)). Opening a Thread marks it read up to its
+newest loaded event and fixes `newAfter`, where the "New" divider goes; `MessageList` lands the
+stream at the divider once per opening, or at the bottom when there is none. While the Thread stays
+open in a visible tab, arrivals move the position, sent at most once per `READ_FLUSH_MS` (5 s) and
+flushed on leaving the Thread, on the tab going hidden and on dispose; while the tab is hidden they
+count as unread. A browser with no identity loads no positions and shows no counts.
 
 **The Lobby page's metadata carries no profiles, so the session makes two side reads.** `getWeave`
 blanks `capabilities` on every participant of the Lobby's Weave (§12), the caller's own included, so

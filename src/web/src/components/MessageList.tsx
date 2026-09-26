@@ -1,3 +1,4 @@
+import { Fragment } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { LoomEvent } from "@loom/client";
 import type { SessionState } from "../session.js";
@@ -151,12 +152,28 @@ export function MessageList({ state, fold }: {
   fold: boolean;
 }) {
   const bottom = useRef<HTMLDivElement>(null);
+  const divider = useRef<HTMLDivElement>(null);
+  // The divider this opening has landed on (spec 2026-09-26 §6.4, Paw 2026-09-26): once per Thread
+  // opened, then the stream sticks to the bottom as before. Cleared when another Thread is opened.
+  const landing = useRef<{ thread: string | undefined; at: number | null }>({ thread: undefined, at: null });
   // Which runs the human expanded, by the run's key (its first event's seq), so a run that grows
   // while it is open stays open. UI state only.
   const [expanded, setExpanded] = useState<ReadonlySet<number>>(() => new Set());
   const events = state.events.filter((e) => e.threadId === state.currentThreadId);
+  // Fixed when the Thread was opened (spec 2026-09-26 §6.4), so nothing that arrives moves it.
+  const na = state.newAfter;
+  const dividerAt = na && na.threadId === state.currentThreadId ? na.firstNew : null;
   const lost = state.connection === "reconnecting" || state.connection === "closed" ? state.connection : null;
-  useEffect(() => { bottom.current?.scrollIntoView({ block: "end" }); }, [events.length, state.currentThreadId, lost]);
+  useEffect(() => {
+    const l = landing.current;
+    if (l.thread !== state.currentThreadId) { l.thread = state.currentThreadId; l.at = null; }
+    if (dividerAt !== null && l.at !== dividerAt && divider.current) {
+      l.at = dividerAt;
+      divider.current.scrollIntoView({ block: "start" });
+      return;
+    }
+    bottom.current?.scrollIntoView({ block: "end" });
+  }, [events.length, state.currentThreadId, lost, dividerAt]);
   const toggle = (key: number) => setExpanded((prev) => {
     const next = new Set(prev);
     if (next.has(key)) next.delete(key); else next.add(key);
@@ -165,7 +182,12 @@ export function MessageList({ state, fold }: {
   return (
     <div class="messages">
       {foldStream(events, fold).map((item) =>
-        item.kind === "message" ? <Message key={item.key} e={item.event} state={state} />
+        item.kind === "message" ? (
+          <Fragment key={item.key}>
+            {item.event.seq === dividerAt && <div ref={divider} class="new-divider" role="separator">New</div>}
+            <Message e={item.event} state={state} />
+          </Fragment>
+        )
         : item.kind === "system" ? <SystemEvent key={item.key} e={item.event} state={state} />
         : <Run key={item.key} events={item.events} open={expanded.has(item.key)} onToggle={() => toggle(item.key)} state={state} />)}
       {lost && <ConnectionRow connection={lost} />}

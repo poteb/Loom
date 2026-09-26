@@ -152,6 +152,12 @@ export function WeaveView({ session, state, banner, noCredential, openMainInPlac
               and only entry saying "this is what you are looking at" (spec §8). */}
           <ThreadList state={state} session={session} onError={reportError} onPick={() => onView?.("thread")}
             markCurrent={!showListeners} />
+          {/* Behaviour and a class hook only (spec 2026-09-26 §6.5); the look and the place are the
+              design session's. A failure takes the view's one error path. */}
+          {state.me && (
+            <button type="button" class="btn btn-xs mark-all-read"
+              onClick={() => { setError(undefined); session.markAllRead().catch(reportError); }}>Mark all read</button>
+          )}
           {/* Both render nothing away from the Lobby, so every other Weave's sidebar is unchanged. */}
           <ListenersLink state={state} active={showListeners}
             onToggle={() => onView?.(showListeners ? "thread" : "listeners")} />

@@ -44,6 +44,10 @@ export type Settings = { instanceName: string; maxMessageLength: number; openWea
 export type Keeper = { id: string; name: string; createdAt: string };
 export type Agent = { id: string; name: string; createdAt: string; revokedAt: string | null; owner: string | null };
 export type InviteResult = { seq: number; created: boolean };
+/** Read positions (spec 2026-09-26 §4), mirrored from core by hand like the rest of this file. */
+export type MarkReadResult = { threadId: string; seq: number };
+export type MarkAllReadResult = { seq: number; threads: number };
+export type ReadPositions = { joinedSeq: number; threads: Record<string, number> };
 
 // ---------------------------------------------------------------------------
 // Lobby. A hand-written mirror of core's public shapes: the client does not

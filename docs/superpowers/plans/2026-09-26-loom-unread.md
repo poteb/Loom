@@ -1711,7 +1711,7 @@ git commit -m "feat(web): the unread count in the Thread list and the New divide
 
 ### Task 6: web: Mark all read, and read positions on the Lobby page
 
-Spec §6.5, §6.6. **This task carries spec §9.4: `Mark all read calls markAllRead and clears every count up to the answered seq`; `it is absent without an identity and in an archived Weave`; `a Mark all read reply delayed past an arrival and a Thread switch never lowers a position`.** It also adds `a Mark all read that succeeds while read state is loading survives the initial readPositions reply` (review round 1, F4: the same "never lowers" rule, for a cutoff that lands before the read state does), `two Mark all read replies arriving in reverse order while read state is loading keep the higher cutoff` (review round 2) and one Lobby case for §6.6, which the spec lists no test for.
+Spec §6.5, §6.6. **This task carries spec §9.4: `Mark all read calls markAllRead and clears every count up to the answered seq`; `it is absent without an identity`; `a Mark all read reply delayed past an arrival and a Thread switch never lowers a position`.** It also adds `a Mark all read that succeeds while read state is loading survives the initial readPositions reply` (review round 1, F4: the same "never lowers" rule, for a cutoff that lands before the read state does), `two Mark all read replies arriving in reverse order while read state is loading keep the higher cutoff` (review round 2) and one Lobby case for §6.6, which the spec lists no test for.
 
 **Files:**
 - Modify: `src/web/src/session.ts` (`Session.markAllRead`, its implementation, the held cutoff `markAllCut` with its merge in `loadReadState` and its reset in `dropReadState`), `src/web/src/components/WeaveView.tsx` (the button)
@@ -1735,12 +1735,14 @@ describe("Mark all read (spec 2026-09-26 §6.5)", () => {
     expect(button()!.classList.contains("mark-all-read")).toBe(true);
   });
 
-  it("it is absent without an identity and in an archived Weave", () => {
-    const stranger = render(<WeaveView session={session()} state={state({ me: undefined })} />);
+  it("it is absent without an identity", () => {
+    render(<WeaveView session={session()} state={state({ me: undefined })} />);
     expect(button()).toBeNull();
-    stranger.unmount();
+  });
+
+  it("it is shown in an archived Weave (spec amended 2026-09-26: marking read is allowed there)", () => {
     render(<WeaveView session={session()} state={state({ weave: { ...state().weave!, archivedAt: "2026-09-26T10:00:00.000Z" } })} />);
-    expect(button()).toBeNull();
+    expect(button()).not.toBeNull();
   });
 
   it("shows a failure through the Weave view's error bar", async () => {
@@ -1966,7 +1968,7 @@ Expected: FAIL. The three component cases find no "Mark all read" button (the fi
 ```tsx
           {/* Behaviour and a class hook only (spec 2026-09-26 §6.5); the look and the place are the
               design session's. A failure takes the view's one error path. */}
-          {state.me && !archived && (
+          {state.me && (
             <button type="button" class="btn btn-xs mark-all-read"
               onClick={() => { setError(undefined); session.markAllRead().catch(reportError); }}>Mark all read</button>
           )}
@@ -1984,7 +1986,7 @@ Run: `pnpm -r typecheck`
 ```bash
 git add src/web/src/session.ts src/web/src/components/WeaveView.tsx src/web/test/session.test.ts src/web/test/components.test.tsx
 git diff --cached --stat
-git commit -m "feat(web): Mark all read, and read positions on the Lobby page" -m "session.markAllRead merges every Thread as max(current, answered seq), fenced like every read call; WeaveView shows .mark-all-read with an identity on a Weave that is not archived. The Lobby page carries the same behaviour with its Lobby identity (a guard test)." -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git commit -m "feat(web): Mark all read, and read positions on the Lobby page" -m "session.markAllRead merges every Thread as max(current, answered seq), fenced like every read call; WeaveView shows .mark-all-read with an identity, archived Weave included. The Lobby page carries the same behaviour with its Lobby identity (a guard test)." -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -2026,7 +2028,7 @@ Read positions are three routes beside the others: `PUT /api/threads/:id/read` (
 - [ ] **Step 2: SECURITY.md.** In the authorization table, after the "Remove a participant from a Thread" row:
 
 ```markdown
-| Read positions (mark a Thread read, mark all read, read my positions) | The participant only, in its own Weave: not an instance keeper, not a Weave secret, not a raw agent key (an agent key acts as the participant it owns there). No route takes a participant id, so nobody reads or writes another's positions. Writes no event, so nothing is exported or delivered. Refused on an archived Weave for the two writes; `readPositions` still answers. `seq` is capped at the Weave's `last_seq` | [`reads.ts`](../src/core/src/reads.ts) |
+| Read positions (mark a Thread read, mark all read, read my positions) | The participant only, in its own Weave: not an instance keeper, not a Weave secret, not a raw agent key (an agent key acts as the participant it owns there). No route takes a participant id, so nobody reads or writes another's positions. Writes no event, so nothing is exported or delivered. Allowed on an archived Weave, all three (a read position is not a change to its content). `seq` is capped at the Weave's `last_seq` | [`reads.ts`](../src/core/src/reads.ts) |
 ```
 
 - [ ] **Step 3: KNOWN-ISSUES.md.** Append to the `## web` table:
@@ -2125,7 +2127,7 @@ git commit -m "docs: read positions and unread counts; the manual check" -m "ARC
 | §9.1 `markRead refuses a negative or fractional seq` | 1 |
 | §9.1 `markRead on an unknown Thread is thread_not_found` | 1 |
 | §9.1 `a participant of another Weave, the instance keeper and a raw agent key are forbidden` | 1 |
-| §9.1 `markRead and markAllRead are weave_archived in an archived Weave; readPositions still answers` | 1 |
+| §9.1 `markRead, markAllRead and readPositions all work in an archived Weave` (renamed by the 2026-09-26 amendment; Task 1 wrote it as `markRead and markAllRead are weave_archived ...`, the fix wave changed it) | 1 |
 | §9.1 `markRead accepts a closed Thread` | 1 |
 | §9.1 `markAllRead sets every Thread of the Weave, open and closed, to last_seq and never lowers one` | 1 |
 | §9.1 `readPositions gives joinedSeq ...`, and only the actor's own positions | 1 |
@@ -2141,7 +2143,7 @@ git commit -m "docs: read positions and unread counts; the manual check" -m "ARC
 | §9.4 `the divider does not move when messages arrive while the Thread is open` | 5 |
 | §9.4 `while visible, arrivals advance the position with at most one markRead per READ_FLUSH_MS (fake timers), and leaving the Thread flushes the pending position` | 4 |
 | §9.4 `while hidden, arrivals count as unread; on visible, positions are reloaded and the Thread is marked read` | 4 |
-| §9.4 `Mark all read calls markAllRead and clears every count up to the answered seq`; `it is absent without an identity and in an archived Weave` | 6 |
+| §9.4 `Mark all read calls markAllRead and clears every count up to the answered seq`; `it is absent without an identity` (plus `it is shown in an archived Weave`, from the 2026-09-26 amendment) | 6 |
 | §9.4 `a browser with no identity loads no positions and shows no counts` | 3 |
 | §9.4 `a failed markRead shows nothing and the next flush sends the latest position` | 4 |
 | §9.4 `joining on a visible secret-only page loads read positions, then counts and the divider follow` | 3 |

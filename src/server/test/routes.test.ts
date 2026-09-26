@@ -355,3 +355,42 @@ describe("listener onboarding over REST", () => {
     expect(info.json.participants.find((p: { id: string }) => p.id === r.participant.id).lastSeenAt).toEqual(expect.any(String));
   });
 });
+
+describe("read positions over REST (spec 2026-09-26 §5)", () => {
+  // Paw's Weave: 1 thread.created, 2 participant.joined, 3 message.
+  const weave = async () => (await api(s.baseUrl, "POST", "/api/weaves", { title: "T", opener: "o", creator: { name: "Paw", kind: "human" } })).json;
+  const UNKNOWN = "00000000-0000-4000-8000-000000000000";
+
+  it("PUT /api/threads/:id/read, POST /api/weaves/:id/read and GET /api/weaves/:id/read round trip with a participant token", async () => {
+    const r = await weave();
+    const put = await api(s.baseUrl, "PUT", `/api/threads/${r.generalThread.id}/read`, { seq: 1 }, r.token);
+    expect([put.status, put.json]).toEqual([200, { threadId: r.generalThread.id, seq: 1 }]);
+    const got = await api(s.baseUrl, "GET", `/api/weaves/${r.weave.id}/read`, undefined, r.token);
+    expect([got.status, got.json]).toEqual([200, { joinedSeq: 2, threads: { [r.generalThread.id]: 1 } }]);
+    const all = await api(s.baseUrl, "POST", `/api/weaves/${r.weave.id}/read`, undefined, r.token);
+    expect([all.status, all.json]).toEqual([200, { seq: 3, threads: 1 }]);
+    // `{}` is accepted as the body of the POST, which reads none.
+    expect((await api(s.baseUrl, "POST", `/api/weaves/${r.weave.id}/read`, {}, r.token)).status).toBe(200);
+    expect((await api(s.baseUrl, "GET", `/api/weaves/${r.weave.id}/read`, undefined, r.token)).json.threads)
+      .toEqual({ [r.generalThread.id]: 3 });
+  });
+
+  it("answers 400 on a bad body, 401 with no credential, and 404 on an unknown Thread and Weave", async () => {
+    const r = await weave();
+    const t = r.generalThread.id;
+    for (const bad of [{ seq: "1" }, {}, { seq: -1 }]) {
+      const res = await api(s.baseUrl, "PUT", `/api/threads/${t}/read`, bad, r.token);
+      expect([res.status, res.json.code]).toEqual([400, "validation"]);
+    }
+    for (const [method, path, payload] of [["PUT", `/api/threads/${t}/read`, { seq: 1 }], ["POST", `/api/weaves/${r.weave.id}/read`, undefined], ["GET", `/api/weaves/${r.weave.id}/read`, undefined]] as const) {
+      const res = await api(s.baseUrl, method, path, payload);
+      expect([res.status, res.json.code]).toEqual([401, "invalid_token"]);
+    }
+    const noThread = await api(s.baseUrl, "PUT", `/api/threads/${UNKNOWN}/read`, { seq: 1 }, r.token);
+    expect([noThread.status, noThread.json.code]).toEqual([404, "thread_not_found"]);
+    const noWeavePost = await api(s.baseUrl, "POST", `/api/weaves/${UNKNOWN}/read`, undefined, r.token);
+    expect([noWeavePost.status, noWeavePost.json.code]).toEqual([404, "weave_not_found"]);
+    const noWeaveGet = await api(s.baseUrl, "GET", `/api/weaves/${UNKNOWN}/read`, undefined, r.token);
+    expect([noWeaveGet.status, noWeaveGet.json.code]).toEqual([404, "weave_not_found"]);
+  });
+});

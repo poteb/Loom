@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { cachedProfile, createCounter, isCurrent, type Now, type OwnProfile, type Stamp } from "../src/side-reads.js";
+import { cachedProfile, createCounter, isCurrent, isOwnedBy, type Now, type OwnProfile, type Stamp } from "../src/side-reads.js";
 
 const STAMP: Stamp = { id: "p1", token: "t1", generation: 3, n: 5 };
 const NOW: Now = { generation: 3, meId: "p1", meToken: "t1", applied: 4 };
@@ -80,5 +80,18 @@ describe("cachedProfile (spec §3.3)", () => {
 
   it("gives a null profile when nothing is cached, rather than leaving the old one on screen", () => {
     expect(cachedProfile(undefined, "p1", "t1")).toBeNull();
+  });
+});
+
+describe("isOwnedBy (spec 2026-09-26 §6.1)", () => {
+  it("asks the generation, the participant and the token, and nothing about order", () => {
+    const owner = { id: "p1", token: "t1", generation: 3 };
+    expect(isOwnedBy(owner, { generation: 3, meId: "p1", meToken: "t1" })).toBe(true);
+    expect([
+      isOwnedBy(owner, { generation: 4, meId: "p1", meToken: "t1" }),
+      isOwnedBy(owner, { generation: 3, meId: "p2", meToken: "t1" }),
+      isOwnedBy(owner, { generation: 3, meId: "p1", meToken: "t2" }),
+      isOwnedBy(owner, { generation: 3, meId: undefined, meToken: undefined }),
+    ]).toEqual([false, false, false, false]);
   });
 });

@@ -6,6 +6,8 @@ summaries, not code. Report in a few lines — what changed, what it cost, what 
 ## Every turn
 
 - **Subagents** run `model: "opus"`, always, and plans are executed by them — never inline.
+- **Subagents run in the background** (`run_in_background: true`), so the main session stays free
+  for Paw to talk to (Paw, 2026-09-26).
 - **Read every subagent's diff yourself** before you push, merge, or dispatch the next task.
 - **Merge on Paw's explicit word, given for that PR.** A past yes is not a standing yes.
 - **Hand-run steps go to Paw one at a time**, real ids and secrets already filled in; wait for the

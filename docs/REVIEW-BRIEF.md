@@ -4,7 +4,7 @@ For an external reviewer (ChatGPT, acting as two independent lenses — **Standa
 doing a review of a branch. Read this first; it says what to review, what to ignore, and what a
 finding must contain.
 
-**This branch is `feat/removal-rules`: two removal rules, M1 and M3 (2026-09-26).** Everything
+**This branch is `feat/unread`: unread counts and the "New" divider (2026-09-26).** Everything
 below §1 describes the codebase as a whole, because the review is against all of `src/`; §1a says
 what *this* branch changed and where to look first.
 
@@ -72,54 +72,90 @@ onboarding walkthrough:
 
 ## 1a. What **this** branch changes, and the promises it does not make
 
-`feat/removal-rules` answers the two questions the listener-onboarding review left for Paw, with
-the rule Paw chose each time: **M1**, a removal that leaves only completed acceptances closes the
-request as `completed`; **M3**, a Weave keeper removed from a Thread may invite itself back. The
-spec is
-[superpowers/specs/2026-09-26-loom-removal-rules-design.md](superpowers/specs/2026-09-26-loom-removal-rules-design.md),
-the plan [superpowers/plans/2026-09-26-loom-removal-rules.md](superpowers/plans/2026-09-26-loom-removal-rules.md);
-both were approved by Paw (PR #36). No migration, no new tool, no new field in any result, no
-route, shape or event type change.
+`feat/unread` adds a read position per participant and Thread, stored on the server, and the web
+behaviour built on it: an unread count per Thread in the Thread list, a red "New" divider in the
+message stream, and a "Mark all read" control. These are the two parts of Paw's mockup that the web
+redesign (PR #35) left out because they need the server. The spec is
+[superpowers/specs/2026-09-26-loom-unread-design.md](superpowers/specs/2026-09-26-loom-unread-design.md),
+the plan [superpowers/plans/2026-09-26-loom-unread.md](superpowers/plans/2026-09-26-loom-unread.md);
+both were approved by Paw (PR #38). One migration (0006), three routes, three client methods; no MCP
+tool, no CLI command, no event type, and no change to any existing route, shape or event.
 
 | Layer | What this branch changed |
 | --- | --- |
-| core | M1 in `removals.ts`: when a removal on a request Thread removes an active acceptance and the row, re-read in the lock, is stored `working`, the same transaction re-reads the offers; if at least one active acceptance remains and every one has completed, it closes the request as `completed` through `closeInTx` (now exported from `lobby/requests.ts`, with `isActive`), attributed to the remover. M3 in `invites.ts`: a participant keeper of the Weave may invite itself into a Thread it has been removed from (`lastRemovalSeq > 0`), with `assertStillKeeperOf` re-checked in the lock for every self-invite |
-| mcp-tools | two texts: one sentence at the end of the requester's `request.overdue` row in `REACTION_TABLE` (`onboarding.ts`), and one sentence in `invite_participant`'s description (`tools.ts`); both pinned by tests |
-| docs | KNOWN-ISSUES (the M1 and M3 rows deleted), SECURITY (the invite row), ARCHITECTURE (both rules), v2-notes (two dated answer lines), the onboarding spec (one "Amended" line) |
+| core | `reads.ts` (new): `markRead` (the Thread must exist and the actor be a participant of its Weave; `seq` a non-negative integer no greater than the Weave's `last_seq`; an upsert that never lowers a position and answers the stored seq), `markAllRead` (every Thread of the Weave, open and closed, raised to one sampled `last_seq` in one statement, a data-modifying CTE), `readPositions` (the actor's own positions, and the seq of its own `participant.joined` as `joinedSeq`), `weaveForRead`. The facade gains `forWeave` beside `forThread`, so an agent key is mapped to its participant only after `weave_not_found` / `thread_not_found`. Migration `0006`: `read_positions`, primary key `(participant_id, thread_id)`, two foreign keys, nothing else. None of it appends an event, takes a Weave lock or publishes on the bus |
+| server | `PUT /api/threads/:id/read` (body `{ seq }`, parsed as a number only), `POST /api/weaves/:id/read` (no body is read), `GET /api/weaves/:id/read` |
+| client | `markRead(threadId, seq)`, `markAllRead(weaveId)`, `readPositions(weaveId)` and their result types |
+| web | `unread.ts` (new, pure): `unreadCounts` (spec §4.4, the one rule the web owns), `mergePositions`, `newestSeqIn`, `firstNewSeq`, `createReadThrottle` (`READ_FLUSH_MS` = 5000), `Visibility`. `session.ts`: the read state of the identity in hand (fetched on a load that ends with an identity, on `join()` and after an invalidation, fetched again when the tab becomes visible, reset on every identity change; every call fenced by identity, token and generation, `readPositions` also by request number, through `isOwnedBy` / `isCurrent` in `side-reads.ts`); the mark on opening, on arrivals while visible (throttled), the flush on leaving and on hiding, the retry on the network or a 5xx only; `state.unread` and `state.newAfter`; `markAllRead` with its max-merge, the held cutoff for a read state not loaded yet, and the Weave-wide floor. `ThreadList`: the `unread-count` (`role="img"`, `aria-label` "N unread"), none at zero and none for the open Thread. `MessageList`: the `new-divider` (`role="separator"`, text "New") before the first message by others after `newAfter`, fixed for the opening, and the landing at it. `WeaveView`: the `mark-all-read` button, shown whenever the browser has an identity, archived Weaves included. The same on the Lobby page. No CSS |
+| docs | ARCHITECTURE (the table, `reads.ts`, the routes, reads are not events), SECURITY (one row), CONTRIBUTING (the lock exemption for read positions), TESTING (manual check 8), KNOWN-ISSUES (five rows, below), v2-notes, the package READMEs |
 
-**The promises it does not make**, stated in the spec's §6 and not to be re-reported: no
-`requestClosed` field on the removal result; no web control for a keeper to readmit itself (the MCP
-tool and `loom invite` do it); no change to who may remove whom; no automatic close when the last
-acceptance is removed and nothing completed (choice 4 stands); no change for requests `open` with
-legacy acceptances.
+**The promises it does not make**, stated in the spec's §11 and not to be re-reported: no count in
+the browser tab title, no notification, no sound; no counts or read positions for agents or the
+CLI; no carrying of a web identity to another device (a v2-notes idea); no live push of a read to
+another open tab (a tab catches up when it becomes visible); no counting on the server (the web
+counts from the history it loads, and the positions need no change if counting moves); no read
+position for mentions or invites.
 
-**Corrections made during implementation**, written into the spec and not drift:
+**Amendments**, each a dated "Amended 2026-09-26" line in the spec, and not drift:
 
-- `lastEventSeq` after a closing removal is the `request.closed` seq, through `versionOf`, as for
-  every close (the approved text said `thread.closed`); `result.seq` stays the `thread.removed` seq.
-- The self-invite check runs before the authority check, so a keeper demoted since its removal is
-  told "You cannot invite yourself"; as a consequence a non-keeper who names its own participant id
-  gets `validation`, not `forbidden` as before.
-- A keeper never removed from the Thread gets that `validation` before the archived and closed
-  checks, as before this branch; a removed keeper's readmission into a closed Thread is still
-  `thread_closed`.
-- The remover learns of a close from `get_request` and the request Thread's log, not from its
-  inbox, which never shows an actor its own events.
+- Marking read is allowed in an archived Weave, all three calls, and Mark all read is shown there
+  (Paw's word, review of Tasks 1 to 3): a read position is not a change to the Weave's content.
+- Only a mark failure that could succeed if sent again (the network, a 5xx) is re-sent (review of
+  Task 4).
+- The count carries `role="img"`, so its "N unread" label is valid ARIA (review of Task 5).
+- An opened Thread lands at its "New" divider, not at the bottom (Paw's word).
+- Mark all read also raises a Weave-wide floor, the default position of any Thread the tab holds
+  none for, so a Thread the tab first hears of after the answer is covered too (whole-branch
+  review).
 
-**The known limit.** A request already stuck `working` before this deploy (every active acceptance
-completed, left by the old rule) stays stuck: removing its completed acceptance leaves none, and
-removing anybody else never closes it. Only `cancel_request` ends it, which records `cancelled`.
-There is no migration (spec §7).
+**Choices made during implementation** (the plan's "Decisions this plan makes" and the per-task
+reviews), not drift:
+
+- The divider is fixed at opening: a Thread opened with nothing new gets none, and a later arrival
+  does not add one. Picking the Thread that is already open is not opening it.
+- "Open" is the session's selected Thread, also while the Lobby page shows the listeners directory
+  in its place (a KNOWN-ISSUES row).
+- The throttle's interval runs from the latest send of any kind; the flushes on leaving, hiding and
+  dispose are never delayed; nothing automatic is sent while the tab is hidden.
+- A failed mark is held for the next send and arms nothing. On becoming visible the mark waits for
+  the reloaded positions, and a reload that fails still marks from the positions already held.
+- A `markRead` answer raises the local position to the stored seq.
+- Mark all read covers every Thread the tab knows of (listed, or known only from its events) and the
+  floor covers the rest. An answer that lands before the read state has loaded is held as a cutoff
+  owned by that identity and generation and max-merged into the read state when it arrives. A stale
+  rejection is dropped unshown; a current credential failure takes the invalid-identity flow and is
+  still shown.
+- Facade order: an agent key on a well-formed but unknown Weave id is `weave_not_found`, where
+  `getWeave` and `readEvents` answer `forbidden`.
+- `markAllRead` is one statement, and read positions take no Weave lock (CONTRIBUTING records the
+  exemption).
+- `createSession` gains two seams, `visibility` and `readFlushMs`.
+- The Mark all read button sits under the Thread list with the existing `btn btn-xs` classes; its
+  look and place are the design session's.
+
+**KNOWN-ISSUES rows added on purpose**, not to be re-reported: the flush on hiding and on dispose has
+no `keepalive`; a read reaches another open tab only when that tab next becomes visible; on the
+Lobby page the selected Thread counts as open while the directory shows; after landing at the
+divider, the next event in the open Thread (or a connection change) still scrolls the stream to the
+bottom; and, found during this branch and kept out of it on Paw's word, a browser that only visited
+a Weave by its link is told its identity is no longer valid.
 
 ## 2. Scope
 
 - **All of `src/` as it stands on this branch** — the seven packages, their tests, their
   configuration. The diff against `main` is the new work; the rest is already-reviewed code you
-  should still judge where this branch changed it (`removeParticipant` on a request Thread,
-  `inviteParticipant`, `closeInTx`).
+  should still judge where this branch changed it (`session.ts`'s load, `join()`, `onEvent`,
+  `selectThread`, `createThread`, `recoverFromCredentialFailure` and `dispose`; `isCurrent` in
+  `side-reads.ts`; `MessageList`'s scroll effect; the facade's `forThread`).
 - **The specs are the binding requirements**, the last one first:
-  - [superpowers/specs/2026-09-26-loom-removal-rules-design.md](superpowers/specs/2026-09-26-loom-removal-rules-design.md)
+  - [superpowers/specs/2026-09-26-loom-unread-design.md](superpowers/specs/2026-09-26-loom-unread-design.md)
     **the spec for this branch**, with
+    [superpowers/plans/2026-09-26-loom-unread.md](superpowers/plans/2026-09-26-loom-unread.md)
+    beside it. Its dated "Amended 2026-09-26" lines are the requirement where they differ from the
+    text around them (§1a lists them). It builds on the web redesign (PR #35) and on the web main
+    page spec below, and changes no other spec.
+  - [superpowers/specs/2026-09-26-loom-removal-rules-design.md](superpowers/specs/2026-09-26-loom-removal-rules-design.md)
+    (the previous branch: two removal rules, M1 and M3), with
     [superpowers/plans/2026-09-26-loom-removal-rules.md](superpowers/plans/2026-09-26-loom-removal-rules.md)
     beside it. It amends the listener onboarding spec, next.
   - [superpowers/specs/2026-09-23-loom-listener-onboarding-design.md](superpowers/specs/2026-09-23-loom-listener-onboarding-design.md)

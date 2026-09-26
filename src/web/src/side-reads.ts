@@ -14,14 +14,23 @@ export type Stamp = { id: string; token: string; generation: number; n: number }
 /** What the session is when an answer — or a rejection — asks to be acted on. */
 export type Now = { generation: number; meId?: string; meToken?: string; applied: number };
 
+/** What a call captured when it was **issued**: whose it is. A `Stamp` is this plus a request number. */
+export type Owner = { id: string; token: string; generation: number };
+
+/**
+ * The ownership half of `isCurrent`, for a call that carries no request number: a write, whose
+ * answer is not ordered against other answers (spec 2026-09-26 §6.1).
+ */
+export function isOwnedBy(owner: Owner, now: Omit<Now, "applied">): boolean {
+  return owner.generation === now.generation && owner.id === now.meId && owner.token === now.meToken;
+}
+
 /** The one ownership-and-ordering rule (spec §3.3): may this answer — or this rejection — be acted on? */
 export function isCurrent(stamp: Stamp, now: Now): boolean {
   // Four questions, and each one has bitten this design: is this session still the one that asked
   // (generation); is this still the identity it was asked for (id, token); and is this the newest
   // answer (n)? A generation guard alone orders nothing within a generation.
-  return stamp.generation === now.generation
-    && stamp.id === now.meId && stamp.token === now.meToken
-    && stamp.n > now.applied;
+  return isOwnedBy(stamp, now) && stamp.n > now.applied;
 }
 
 /**

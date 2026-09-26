@@ -1889,7 +1889,7 @@ describe("the Lobby sidebar's listeners line (spec §5.1)", () => {
     threads: [], participants: [JOINED.participant], events: [],
     me: { participant: JOINED.participant, token: "participant-token" },
     connection: "open", needsName: false, instanceGuidelines: "",
-    invitesForMe: new Set(), invited: {}, requests: {}, requestsLoaded: true, closedRequestsPage: 25,
+    invitesForMe: new Set(), invited: {}, requests: {}, requestsLoaded: true, closedRequestsPage: 25, unread: {},
     ...over,
   });
   /** The line's whole text, so "and nothing else" is assertable. */

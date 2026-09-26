@@ -517,7 +517,8 @@ need a server change were **left out**, each a candidate for a later slice:
 
 - Top-bar search across threads, messages and listeners (`Ctrl K`).
 - A Weave switcher in the top bar.
-- Unread counts per Thread and the "New" divider in the stream (needs a per-reader read marker).
+- Unread counts per Thread and the "New" divider in the stream: **built** by the unread slice
+  ([spec](2026-09-26-loom-unread-design.md), [plan](../plans/2026-09-26-loom-unread.md)).
 - Listener work status (working / idle / offline) and the sidebar's three stat tiles: the server
   knows `lastSeenAt` and accepted work, but exposes no status word.
 - Export the directory as CSV; select rows and "Invite selected to thread".
@@ -526,6 +527,30 @@ need a server change were **left out**, each a candidate for a later slice:
 - Attach a file to a message.
 - Messages queued while disconnected (nothing queues today; the UI says so truthfully).
 - Per-Thread membership ("In this thread"): the details panel lists the Weave's people.
+
+Follow-ups found while building the unread slice (2026-09-26), each its own small PR:
+
+- **Keep the reader's place in the stream.** The message stream scrolls to the bottom on every new
+  event of the open Thread, wherever the reader is, so a Thread opened at its "New" divider jumps to
+  the bottom at the next event there (KNOWN-ISSUES, web). Idea: stick to the bottom only when the
+  stream is already at the bottom.
+- **A readable "not joined" notice.** A browser that only visited a Weave's link and never joined
+  is told its identity in the Weave is no longer valid; web main page spec §2.6 wants only "you are
+  reading with the Weave link" and Join there (KNOWN-ISSUES, web).
+
+### Carry a web identity to another device (Paw, 2026-09-26)
+
+A web identity lives in the browser that joined, so a read position stored on the server follows a
+participant across reloads and tabs, and across devices only once an identity can move to another
+browser. Paw's answer Q4 of the unread brainstorm: not part of the unread slice, its own idea. Open
+questions: how the identity is handed over (a one-time link, a code typed on the other device) and
+how a lost device is cut off.
+
+### Unread counted on the server (follow-up of the unread slice, 2026-09-26)
+
+The web counts unread from the whole event history it already loads (spec 2026-09-26 §2, §11). If
+the web stops loading whole histories, counting moves to the server: a count per Thread for the
+caller, from `read_positions` and the log. The stored positions need no change.
 
 ## Deferred from v1
 

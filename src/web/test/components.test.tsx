@@ -31,7 +31,7 @@ const pr = { id: "t1", weaveId: "w1", name: "PR 12", isGeneral: false, createdBy
 function state(over: Partial<SessionState> = {}): SessionState {
   return { status: "ready", weave: { id: "w1", title: "W", createdAt: "", archivedAt: null, lastSeq: 3, guidelines: "" }, threads: [general, pr], participants: [me, bot],
     events: [], me: { participant: me, token: "t" }, currentThreadId: "g1", connection: "open", needsName: false, invitesForMe: new Set(), invited: {},
-    instanceGuidelines: "", requests: {}, requestsLoaded: true, closedRequestsPage: CLOSED_REQUESTS_PAGE, ...over };
+    instanceGuidelines: "", requests: {}, requestsLoaded: true, closedRequestsPage: CLOSED_REQUESTS_PAGE, unread: {}, ...over };
 }
 function session(over: Partial<Session> = {}): Session {
   return { getState: () => state(), subscribe: () => () => {}, load: async () => {}, join: async () => {}, selectThread: vi.fn(), post: async () => {},
@@ -40,7 +40,7 @@ function session(over: Partial<Session> = {}): Session {
     openRequest: vi.fn(async () => request()), offer: vi.fn(async () => {}), accept: vi.fn(async () => {}), cancel: vi.fn(async () => {}),
     targets: vi.fn(async () => []),
     listListeners: vi.fn(() => ({ issue: { generation: 0 }, page: Promise.resolve({ total: 0, matched: 0, listeners: [] }) })),
-    reportCredentialFailure: vi.fn(), ...over };
+    reportCredentialFailure: vi.fn(), markAllRead: vi.fn(async () => {}), ...over };
 }
 
 // --- Lobby fixtures ---------------------------------------------------------
@@ -107,6 +107,21 @@ describe("ThreadList", () => {
   it("renders no close control in the list: closing a thread lives in the details panel", () => {
     render(<ThreadList state={state()} session={session({ canModerate: () => true })} onError={() => {}} />);
     expect(screen.queryByRole("button", { name: /^close( thread)?$/i })).toBeNull();
+  });
+  it("ThreadList shows an unread count with its aria-label, none at zero and none for the open Thread", () => {
+    const design = { ...pr, id: "t3", name: "Design", url: null };
+    render(<ThreadList state={state({ threads: [general, pr, design], currentThreadId: "g1", unread: { t1: 2, t3: 0, g1: 5 } })}
+      session={session()} onError={() => {}} />);
+    const count = (name: RegExp) => screen.getByRole("button", { name }).querySelector(".unread-count");
+    // Named by role img, so its aria-label is one ARIA 1.2 allows (a bare span is generic and may not be named).
+    const pr12 = screen.getByRole("img", { name: "2 unread" });
+    expect([pr12 === count(/^PR 12/), pr12.textContent]).toEqual([true, "2"]);
+    expect([count(/^Design/), count(/^General/)]).toEqual([null, null]);
+  });
+  it("the unread count sits beside the invited mark when a Thread has both", () => {
+    render(<ThreadList state={state({ invitesForMe: new Set(["t1"]), currentThreadId: "g1", unread: { t1: 3 } })} session={session()} onError={() => {}} />);
+    const button = screen.getByRole("button", { name: /^PR 12/ });
+    expect([!!button.querySelector(".badge-invited"), button.querySelector(".unread-count")?.textContent]).toEqual([true, "3"]);
   });
 
   describe("the thread filter", () => {
@@ -561,6 +576,105 @@ describe("MessageList", () => {
       expect(conn(container)).toEqual(["Disconnected.", "danger", true]);
     });
   });
+
+  describe("the New divider (spec 2026-09-26 §6.4)", () => {
+    const at = "2026-09-26T10:00:00.000Z";
+    const msg = (seq: number, actor: string) => ({ weaveId: "w1", seq, threadId: "t1", type: "message" as const, actor, at, payload: { text: `m${seq}` } });
+    const joined = { weaveId: "w1", seq: 5, threadId: "t1", type: "participant.joined" as const, actor: "p2", at, payload: { participantId: "p2" } };
+    /** The stream as a list: a message by its text, the divider as New, a system row as sys. */
+    const order = (c: Element) => [...c.querySelectorAll(".messages > *")].filter((el) => el.className !== "")
+      .map((el) => el.classList.contains("new-divider") ? "New" : el.matches("article.msg") ? el.querySelector(".msg-body")!.textContent!.trim() : "sys");
+
+    it("the New divider sits before the first message by others after newAfter, and not at all without one", () => {
+      const events = [msg(3, "p2"), msg(4, "p1"), joined, msg(6, "p2"), msg(7, "p2")];
+      const first = render(<MessageList state={state({ currentThreadId: "t1", events, newAfter: { threadId: "t1", seq: 3, firstNew: 6 } })} fold={false} />);
+      expect(order(first.container)).toEqual(["m3", "m4", "sys", "New", "m6", "m7"]);
+      const sep = first.container.querySelector(".new-divider")!;
+      expect([sep.getAttribute("role"), sep.textContent]).toEqual(["separator", "New"]);
+      first.unmount();
+      const none = render(<MessageList state={state({ currentThreadId: "t1", events, newAfter: { threadId: "t1", seq: 7, firstNew: null } })} fold={false} />);
+      expect(none.container.querySelector(".new-divider")).toBeNull();
+      none.unmount();
+      // A divider captured for another Thread is not this one's.
+      const elsewhere = render(<MessageList state={state({ currentThreadId: "t1", events, newAfter: { threadId: "g1", seq: 3, firstNew: 6 } })} fold={false} />);
+      expect(elsewhere.container.querySelector(".new-divider")).toBeNull();
+    });
+
+    it("with system events folded, the divider sits after the folded run and right before the first new message by others", () => {
+      const sysAt = (seq: number, type: "participant.joined" | "participant.capabilities_changed") =>
+        ({ weaveId: "w1", seq, threadId: "t1", type, actor: "p2", at, payload: { participantId: "p2", capabilities: {} } });
+      const events = [msg(3, "p2"), msg(4, "p1"), sysAt(5, "participant.joined"), sysAt(6, "participant.capabilities_changed"), msg(7, "p2"),
+        sysAt(8, "participant.capabilities_changed"), sysAt(9, "participant.capabilities_changed"), msg(10, "p2")];
+      const { container } = render(<MessageList state={state({ currentThreadId: "t1", events, newAfter: { threadId: "t1", seq: 3, firstNew: 7 } })} fold={true} />);
+      expect([order(container), screen.getAllByRole("button", { name: "Show 2 events" }).length])
+        .toEqual([["m3", "m4", "sys", "New", "m7", "sys", "m10"], 2]);
+    });
+
+    it("the divider does not move when messages arrive while the Thread is open", () => {
+      const newAfter = { threadId: "t1", seq: 3, firstNew: 6 };
+      const view = render(<MessageList state={state({ currentThreadId: "t1", events: [msg(3, "p2"), msg(6, "p2")], newAfter })} fold={false} />);
+      view.rerender(<MessageList state={state({ currentThreadId: "t1", events: [msg(3, "p2"), msg(6, "p2"), msg(8, "p2"), msg(9, "p2")], newAfter })} fold={false} />);
+      expect(order(view.container)).toEqual(["m3", "New", "m6", "m8", "m9"]);
+    });
+
+    // happy-dom has no layout, so the seam is the scroll call itself: which element the stream
+    // asked to bring into view, and how. The bottom is the empty sentinel after the last row.
+    /** Every scrollIntoView call from here on, as the element's role and the options it was given. */
+    const scrolls = () => {
+      const calls: [string, unknown][] = [];
+      const spy = vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (this: Element, opts?: unknown) {
+        calls.push([this.classList.contains("new-divider") ? "divider" : this === this.parentElement?.lastElementChild ? "bottom" : "other", opts]);
+      });
+      return { calls, restore: () => spy.mockRestore() };
+    };
+
+    it("opening a Thread with a divider scrolls to the divider; without one, to the bottom", () => {
+      const s = scrolls();
+      try {
+        const events = [msg(3, "p2"), msg(6, "p2"), msg(7, "p2")];
+        const withDivider = render(<MessageList state={state({ currentThreadId: "t1", events, newAfter: { threadId: "t1", seq: 3, firstNew: 6 } })} fold={false} />);
+        const landed = s.calls.at(-1);
+        withDivider.unmount();
+        render(<MessageList state={state({ currentThreadId: "t1", events, newAfter: { threadId: "t1", seq: 7, firstNew: null } })} fold={false} />);
+        expect([landed, s.calls.at(-1)]).toEqual([["divider", { block: "start" }], ["bottom", { block: "end" }]]);
+      } finally { s.restore(); }
+    });
+
+    it("after landing at the divider, arrivals stick to the bottom as before and do not scroll back to it", () => {
+      const s = scrolls();
+      try {
+        const newAfter = { threadId: "t1", seq: 3, firstNew: 6 };
+        const view = render(<MessageList state={state({ currentThreadId: "t1", events: [msg(3, "p2"), msg(6, "p2")], newAfter })} fold={false} />);
+        const landed = s.calls.at(-1);
+        view.rerender(<MessageList state={state({ currentThreadId: "t1", events: [msg(3, "p2"), msg(6, "p2"), msg(8, "p2")], newAfter })} fold={false} />);
+        expect([landed, s.calls.at(-1)]).toEqual([["divider", { block: "start" }], ["bottom", { block: "end" }]]);
+      } finally { s.restore(); }
+    });
+
+    it("a divider that appears once read state arrives, with the Thread already open, is landed on", () => {
+      const s = scrolls();
+      try {
+        const events = [msg(3, "p2"), msg(6, "p2")];
+        const view = render(<MessageList state={state({ currentThreadId: "t1", events })} fold={false} />);
+        const before = s.calls.at(-1);
+        view.rerender(<MessageList state={state({ currentThreadId: "t1", events, newAfter: { threadId: "t1", seq: 3, firstNew: 6 } })} fold={false} />);
+        expect([before, s.calls.at(-1)]).toEqual([["bottom", { block: "end" }], ["divider", { block: "start" }]]);
+      } finally { s.restore(); }
+    });
+
+    it("leaving a Thread and opening it again lands at its divider again", () => {
+      const s = scrolls();
+      try {
+        const events = [msg(3, "p2"), msg(6, "p2"), { ...msg(9, "p2"), threadId: "g1" }];
+        const newAfter = { threadId: "t1", seq: 3, firstNew: 6 };
+        const view = render(<MessageList state={state({ currentThreadId: "t1", events, newAfter })} fold={false} />);
+        view.rerender(<MessageList state={state({ currentThreadId: "g1", events, newAfter: { threadId: "g1", seq: 9, firstNew: null } })} fold={false} />);
+        const elsewhere = s.calls.at(-1);
+        view.rerender(<MessageList state={state({ currentThreadId: "t1", events, newAfter })} fold={false} />);
+        expect([elsewhere, s.calls.at(-1)]).toEqual([["bottom", { block: "end" }], ["divider", { block: "start" }]]);
+      } finally { s.restore(); }
+    });
+  });
 });
 
 describe("Composer", () => {
@@ -1011,6 +1125,34 @@ describe("WeaveView (spec §2.6, §2.7, §3.3)", () => {
     const { container } = render(<WeaveView session={session()} state={noCredentialState()}
       banner={<div class="bar">note</div>} noCredential={<p>Join the Lobby here</p>} />);
     expect([container.firstElementChild!.className, container.querySelectorAll(".bar").length]).toEqual(["bar", 1]);
+  });
+});
+
+describe("Mark all read (spec 2026-09-26 §6.5)", () => {
+  const button = () => screen.queryByRole("button", { name: "Mark all read" });
+
+  it("Mark all read calls markAllRead", () => {
+    const markAllRead = vi.fn(async () => {});
+    render(<WeaveView session={session({ markAllRead })} state={state()} />);
+    fireEvent.click(button()!);
+    expect(markAllRead).toHaveBeenCalledTimes(1);
+    expect(button()!.classList.contains("mark-all-read")).toBe(true);
+  });
+
+  it("it is absent without an identity", () => {
+    render(<WeaveView session={session()} state={state({ me: undefined })} />);
+    expect(button()).toBeNull();
+  });
+
+  it("it is shown in an archived Weave (spec amended 2026-09-26: marking read is allowed there)", () => {
+    render(<WeaveView session={session()} state={state({ weave: { ...state().weave!, archivedAt: "2026-09-26T10:00:00.000Z" } })} />);
+    expect(button()).not.toBeNull();
+  });
+
+  it("shows a failure through the Weave view's error bar", async () => {
+    render(<WeaveView session={session({ markAllRead: vi.fn(async () => { throw new Error("Could not reach Loom"); }) })} state={state()} />);
+    fireEvent.click(button()!);
+    expect((await screen.findByText("Could not reach Loom")).className).toContain("error-bar");
   });
 });
 

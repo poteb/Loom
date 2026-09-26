@@ -70,6 +70,17 @@ export function weaveRoutes(core: Core) {
     return c.json({ events: await core.inbox(actor, c.req.param("id"), q.data) });
   });
 
+  // Read positions: the caller's own. The POST reads no body, so `{}` and nothing are the same call.
+  r.post("/:id/read", async (c) => {
+    const actor = await requireActor(c, core);
+    return c.json(await core.markAllRead(actor, c.req.param("id")));
+  });
+
+  r.get("/:id/read", async (c) => {
+    const actor = await requireActor(c, core);
+    return c.json(await core.readPositions(actor, c.req.param("id")));
+  });
+
   r.post("/:id/threads", async (c) => {
     const actor = await requireActor(c, core);
     const { name, url } = await body(c, z.object({ name: z.string(), url: z.string().nullable().optional() }));

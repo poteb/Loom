@@ -126,6 +126,10 @@ help and version return 0. `src/cli/src/main.ts` assigns the returned code to `p
   `appendInTx` (seq = `weave.lastSeq + 1 …`, advancing `weaves.last_seq`), commits, and only then
   publishes to the bus in seq order. The callback returns `{ result, events }`; it never publishes
   itself and never writes outside `tx`.
+  Read positions ([`src/core/src/reads.ts`](src/core/src/reads.ts)) are the one exception: a read
+  is not an event, the row is independent of the log, so `markRead` and `markAllRead` take no Weave
+  lock (spec 2026-09-26 §4). Do not add the lock there, and do not copy the pattern for a write that
+  appends an event.
 - **Authority is re-checked inside the lock.** Checks made before the transaction
   (`assertIsKeeperOf`) are re-verified against `tx` with `assertStillKeeperOf` / the freshly
   selected row, so a keeper removed in between loses the write

@@ -7,7 +7,8 @@ import {
   saveWeaveEntry, setIdentity, storedWeaves, type ReaderChoice, type WeaveEntry,
 } from "./weaves-store.js";
 import { applyEvent, applySnapshot, isRequestEvent, type Requests } from "./requests-state.js";
-import { cachedProfile, createCounter, isCurrent, type Now, type OwnProfile, type Stamp } from "./side-reads.js";
+import { cachedProfile, createCounter, isCurrent, isOwnedBy, type Now, type Owner, type OwnProfile, type Stamp } from "./side-reads.js";
+import { createReadThrottle, documentVisibility, firstNewSeq, mergePositions, newestSeqIn, READ_FLUSH_MS, unreadCounts, type Visibility } from "./unread.js";
 
 /**
  * What a session is pointed at. A secret is the credential *and* the id the router has; an id is
@@ -54,6 +55,15 @@ export type SessionState = {
    *  is what lets "asked and failed" be worded differently from "not answered yet", which an absent
    *  `listenerCount` cannot say on its own. */
   listenerCountError?: boolean;
+  /** Unread `message` counts by Thread for this browser's identity (spec 2026-09-26 §6.1). Empty
+   *  until that identity's read state has loaded, and always empty without an identity. */
+  unread: Record<string, number>;
+  /**
+   * The open Thread's divider (§6.4): where its read position stood when it was opened (`seq`), and
+   * the first message by someone else after it (`firstNew`, null for none), both fixed at that
+   * moment. Absent until read state has loaded; captured again only when a Thread is opened.
+   */
+  newAfter?: { threadId: string; seq: number; firstNew: number | null };
 };
 
 /** A Weave this browser holds a token for: what an Open-request form's target pickers offer. */
@@ -70,6 +80,8 @@ export type Session = {
   closeThread(id: string): Promise<void>; archive(): Promise<void>; setGuidelines(text: string): Promise<void>;
   canModerate(): boolean; canEditThread(t: Thread): boolean; markSeen(id: string): void;
   dismissNamePrompt(): void; dispose(): void;
+  /** Marks every Thread of the Weave read up to the newest event the server saw (spec 2026-09-26 §6.5). */
+  markAllRead(): Promise<void>;
   // --- Lobby requests. Thin wrappers: each applies the snapshot it gets back through the watermark.
   openRequest(input: OpenRequestInput): Promise<LoomRequest>;
   offer(requestId: string, input: { model?: string; effort?: string; note?: string }): Promise<void>;
@@ -113,19 +125,25 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
    *  "storage is not persisting" notice of §6 for a credential that only reached memory. */
   onWrite?: (r: WriteResult) => void;
   /** Override for `CLOSED_REQUESTS_PAGE`; a knob, and the seam a test uses to fill the page cheaply. */
-  closedRequestsPage?: number }): Session {
+  closedRequestsPage?: number;
+  /** Whether the tab is visible, and told when that changes (spec 2026-09-26 §6.2). The document's
+   *  own by default; the session tests, which run without a document, hand in their own. */
+  visibility?: Visibility;
+  /** Override for `READ_FLUSH_MS`: the knob a session test uses to keep the throttle's clock out of its way. */
+  readFlushMs?: number }): Session {
   const { client, target, storage } = opts;
   // Defaulted rather than optional-called: `onWrite?.(storage.set(…))` would skip the *argument*
   // when nobody is listening, and the write with it.
   const onWrite = opts.onWrite ?? (() => {});
   const retry = opts.retry ?? DEFAULT_RETRY;
   const closedPage = opts.closedRequestsPage ?? CLOSED_REQUESTS_PAGE;
+  const visibility = opts.visibility ?? documentVisibility();
   let weaveId: string | undefined = target.kind === "id" ? target.weaveId : undefined;
   let secret: string | undefined = target.kind === "secret" ? target.secret : undefined;
   let reader: LoomClient = client;                 // replaced by pickReader() on every load()
   let readingWithToken = false;
   let state: SessionState = { status: "loading", threads: [], participants: [], events: [], connection: "closed", needsName: false,
-    invitesForMe: new Set(), invited: {}, instanceGuidelines: "", requests: {}, requestsLoaded: false, closedRequestsPage: closedPage };
+    invitesForMe: new Set(), invited: {}, instanceGuidelines: "", requests: {}, requestsLoaded: false, closedRequestsPage: closedPage, unread: {} };
   const listeners = new Set<() => void>();
   // How far the guidelines text in `state.weave` has been advanced, as a Weave seq. Guidelines are
   // not one-way (they change repeatedly and can be cleared), so the archive trick of "keep whichever
@@ -152,6 +170,26 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
   let ownProfile: OwnProfile | undefined;
   const profileReads = createCounter();
   const countReads = createCounter();
+  /**
+   * The read state of the identity in hand (spec 2026-09-26 §6.1): the positions its `readPositions`
+   * answered, raised by every mark this tab has made since, and its `joinedSeq`. `floor` is the
+   * highest seq a Mark all read has answered for this identity (0 before any): every Thread that
+   * existed when the server sampled it was marked there, and a Thread created later has only events
+   * past it, so `max(joinedSeq, floor)` is the position of a Thread this tab holds none for, even one
+   * it first hears of after the answer (whole-branch review F1), and the floor is a lower bound for
+   * a held position too (PR #39 review round 1, F1). `undefined` until that answer lands,
+   * and again whenever an identity is established, changes or is invalidated, so no position is ever
+   * shown, counted or sent under a participant it did not belong to.
+   */
+  let readState: { id: string; token: string; positions: Record<string, number>; joinedSeq: number; floor: number } | undefined;
+  const readReads = createCounter();
+  /**
+   * A Mark all read that answered while the identity's read state had not loaded yet (spec
+   * 2026-09-26 §6.5, review round 1 F4): the cutoff per Thread, owned by the identity and the
+   * generation it was issued under. `loadReadState` max-merges it into the answer it applies, so a
+   * snapshot the server took before the cutoff cannot bring a count back; an identity change drops it.
+   */
+  let markAllCut: (Owner & { positions: Record<string, number>; floor: number }) | undefined;
 
   const entry = (): WeaveEntry | undefined => (weaveId ? readWeaveEntry(storage, weaveId) : undefined);
 
@@ -185,6 +223,7 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       // Into a variable first, as below: the write happens whether or not anyone is listening.
       const wrote = invalidateIdentity(storage, weaveId);
       onWrite(wrote);
+      forgetReadState();
       // The cache goes with the identity it belonged to, and `me` with it. What is left is the
       // state `WeaveView` already renders as "reading with the Weave link", with a Join.
       ownProfile = undefined;
@@ -200,6 +239,7 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
     // write with it — whenever nobody is listening.
     const wrote = invalidateIdentity(storage, weaveId);
     onWrite(wrote);
+    forgetReadState();
     retriedWithSecret = true;
     if (readWeaveEntry(storage, weaveId)?.secret) return { reload: true };
     // Nothing left to read with. Retire the stream and the generation that owns this session's
@@ -386,6 +426,144 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
 
   /** Both side reads, on the three triggers they share: the load, a late discovery, every refresh. */
   const readLobbySides = (myGeneration: number) => { readListenerCount(myGeneration); readMyProfile(); };
+
+  // --- Read positions (spec 2026-09-26 §6). The counts are this browser's, from the events it holds;
+  // the server stores positions and nothing else.
+
+  /** What the session is at the moment a read-position answer, or rejection, asks to be acted on. */
+  const nowForRead = (): Now =>
+    ({ generation, meId: state.me?.participant.id, meToken: state.me?.token, applied: readReads.applied() });
+  /** Whether a call issued under `owner` still belongs to this session (§6.1 fencing). */
+  const ownsRead = (owner: Owner) => !disposed && isOwnedBy(owner, nowForRead());
+  /** Where a Thread with no position of its own stands: `joinedSeq`, raised by every Mark all read. Callers hold `readState`. */
+  const defaultPosition = () => Math.max(readState!.joinedSeq, readState!.floor);
+  /**
+   * A Thread's local position: the loaded one, raised by this tab's marks, else the default; never
+   * below the floor, which bounds an explicit position too (PR #39 review round 1, F1): a reply issued
+   * before a Mark all read may carry one below its cutoff. Callers hold `readState`.
+   */
+  const localPosition = (threadId: string) => Math.max(readState!.floor, readState!.positions[threadId] ?? readState!.joinedSeq);
+  /** Every held position, raised to the floor: what the counts read. Callers hold `readState`. */
+  const effectivePositions = (): Record<string, number> => {
+    const out: Record<string, number> = {};
+    for (const id of Object.keys(readState!.positions)) out[id] = localPosition(id);
+    return out;
+  };
+  /** `state.unread` for these events: empty until the identity in hand has its read state. */
+  const unreadOf = (events: LoomEvent[]): Record<string, number> =>
+    readState && readState.id === state.me?.participant.id
+      ? unreadCounts(events, readState.id, effectivePositions(), defaultPosition()) : {};
+  /** Drops the read state of an identity that is being replaced, every position held for it (unsent) and its held cutoff. */
+  const dropReadState = () => { readState = undefined; throttle.reset(); markAllCut = undefined; };
+  /** Drops it together with what it showed. */
+  const forgetReadState = () => { dropReadState(); set({ unread: {}, newAfter: undefined }); };
+
+  /**
+   * Whether a failed mark may succeed if sent again: the network, or the server's own failure (5xx).
+   * Any other refusal (validation, not found, forbidden) will be refused the same way next time.
+   */
+  const worthRetrying = (e: unknown) =>
+    !(e instanceof LoomClientError) || e.code === "network" || (e.status !== undefined && e.status >= 500);
+  /**
+   * Sends one position under the identity current at this moment, stamped with it (§6.1). The answer
+   * raises the local position to what the server holds. Either outcome is dropped before any side
+   * effect once the session is another identity or generation. A refused credential takes the
+   * invalid-identity flow; any other failure is silent and the local position stands (§6.2), and is
+   * held for the next send only when sending it again could succeed.
+   */
+  const sendMark = (threadId: string, seq: number) => {
+    const me = state.me;
+    if (!me || !readState || readState.id !== me.participant.id) return;
+    const owner: Owner = { id: me.participant.id, token: me.token, generation };
+    void client.withToken(me.token).markRead(threadId, seq).then(
+      (r) => {
+        if (!ownsRead(owner) || !readState) return;
+        readState = { ...readState, positions: mergePositions(readState.positions, { [r.threadId]: r.seq }) };
+        set({ unread: unreadOf(state.events) });
+      },
+      (e: unknown) => {
+        if (!ownsRead(owner)) return;
+        // Silent: the local position stands, and the next send carries this position again, unless
+        // the server has refused it for good.
+        if (!isCredentialFailure(e)) { if (worthRetrying(e)) throttle.retry(threadId, seq); return; }
+        const recovered = recoverFromCredentialFailure(e, "identity");
+        if (recovered?.reload) void doLoad();
+      },
+    );
+  };
+  /** The mark of an opening: sent at once, and the interval restarts from it. */
+  const markNow = (threadId: string, seq: number) => { throttle.advance(threadId, seq); throttle.flush(); };
+  const throttle = createReadThrottle((threadId, seq) => sendMark(threadId, seq), opts.readFlushMs ?? READ_FLUSH_MS,
+    undefined, () => visibility.visible());
+  /**
+   * The visibility rule's two edges (§6.2): hiding flushes what was read while visible; showing
+   * reloads the positions, and their answer marks the open Thread (if the tab is still visible then).
+   */
+  const offVisibility = visibility.onChange(() => {
+    if (disposed) return;
+    if (!visibility.visible()) { throttle.flush(); return; }
+    loadReadState();
+  });
+  /** Marks the open Thread read up to its newest loaded event, when that is past its local position. */
+  const markOpenRead = () => {
+    const id = state.currentThreadId;
+    if (!readState || !id) return;
+    // Every automatic mark waits for a visible tab (§6.2); the next visibility change does it then.
+    if (!visibility.visible()) return;
+    const top = newestSeqIn(state.events, id);
+    if (top <= localPosition(id)) return;
+    readState = { ...readState, positions: { ...readState.positions, [id]: top } };
+    set({ unread: unreadOf(state.events) });
+    markNow(id, top);
+  };
+  /** Opening Thread `id` (§6.2): the divider where its read position stood, then the mark. Both wait for read state. */
+  const openRead = (id: string) => {
+    if (!readState) return;
+    const after = localPosition(id);
+    set({ newAfter: { threadId: id, seq: after, firstNew: firstNewSeq(state.events, id, after, readState.id) } });
+    markOpenRead();
+  };
+
+  /**
+   * Fetches the read state of the identity in hand (§6.1), with its own token, stamped with that
+   * identity, the generation and a request number. The answer merges into what this tab has marked
+   * since and recomputes the counts; then the open Thread is opened for real if its divider is not
+   * down yet, and otherwise only marked, so a refresh never moves a divider. A failure leaves the
+   * state as it was and says nothing (the next visibility or identity change asks again), but still
+   * marks the open Thread from the positions already held, as the answer would have; a refused
+   * credential takes the invalid-identity flow. Both outcomes are fenced before any side effect.
+   */
+  const loadReadState = () => {
+    const me = state.me;
+    if (!me || !weaveId) return;
+    const stamp: Stamp = { id: me.participant.id, token: me.token, generation, n: readReads.next() };
+    void client.withToken(me.token).readPositions(weaveId).then(
+      (r) => {
+        if (disposed || !isCurrent(stamp, nowForRead())) return;
+        readReads.markApplied(stamp.n);
+        // The floor is this tab's, not the answer's: a reply issued before a Mark all read must not drop it.
+        readState = { id: stamp.id, token: stamp.token, joinedSeq: r.joinedSeq, floor: readState?.floor ?? 0,
+          positions: readState ? mergePositions(readState.positions, r.threads) : { ...r.threads } };
+        if (markAllCut && isOwnedBy(markAllCut, nowForRead())) {
+          readState = { ...readState, positions: mergePositions(readState.positions, markAllCut.positions),
+            floor: Math.max(readState.floor, markAllCut.floor) };
+        }
+        markAllCut = undefined;
+        set({ unread: unreadOf(state.events) });
+        const open = state.currentThreadId;
+        if (open && state.newAfter?.threadId !== open) openRead(open); else markOpenRead();
+      },
+      (e: unknown) => {
+        if (disposed || !isCurrent(stamp, nowForRead())) return;
+        readReads.markApplied(stamp.n);
+        // A failed refresh keeps the positions already loaded, and they are enough to mark the open
+        // Thread by (§6.2, on becoming visible); on a first load there are none, so nothing is marked.
+        if (!isCredentialFailure(e)) { markOpenRead(); return; }
+        const recovered = recoverFromCredentialFailure(e, "identity");
+        if (recovered?.reload) void doLoad();
+      },
+    );
+  };
 
   const refreshInfo = async () => {
     if (!weaveId) return;
@@ -582,7 +760,13 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
   const onEvent = (e: LoomEvent) => {
     if (state.events.some((x) => x.seq === e.seq)) return;
     const events = [...state.events, e].sort((a, b) => a.seq - b.seq);
-    set({ events, ...deriveInvites(events, state.me?.participant.id, seenUpTo) });
+    // While the open Thread is on a visible tab, what arrives in it is read as it arrives (§6.2): the
+    // local position moves now, so no count appears, and the server hears through the throttle.
+    if (readState && e.threadId === state.currentThreadId && visibility.visible() && e.seq > localPosition(e.threadId)) {
+      readState = { ...readState, positions: { ...readState.positions, [e.threadId]: e.seq } };
+      throttle.advance(e.threadId, e.seq);
+    }
+    set({ events, unread: unreadOf(events), ...deriveInvites(events, state.me?.participant.id, seenUpTo) });
     // thread.url_changed carries the new url in the event, but the url the UI renders lives on the
     // Thread record, so it needs the same refresh as any other thread change.
     // participant.capabilities_changed is here for the listener count: it is the one event that
@@ -627,6 +811,7 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
     // The profile cache retires with the reads it belongs to: the generation bump above has just
     // retired every one of them, and this load resolves its own identity from scratch.
     ownProfile = undefined;
+    dropReadState();
     const myGeneration = generation;
     // A load() that has been superseded (a newer load(), or dispose()) owns nothing any more: it
     // must not publish state and must clean up anything it managed to open. Checked after every
@@ -635,7 +820,7 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
     // `readOnlyReason` describes the read that is on screen, so it goes with the rest of the stale
     // state: the ready patch below sets it again, and a load that fails is not "read-only with a
     // secret", it is an error.
-    set({ status: "loading", error: undefined, refreshError: undefined, readOnlyReason: undefined });
+    set({ status: "loading", error: undefined, refreshError: undefined, readOnlyReason: undefined, unread: {}, newAfter: undefined });
     try {
       const picked = pickReader();
       if (!picked) { set({ status: "no-credential", readOnlyReason: undefined }); return; }
@@ -743,6 +928,9 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       // `Promise.all` and never calls `refreshInfo`, so a count wired only into the refresh would
       // never appear on a Lobby where nothing happens to be changing (spec §5.1).
       if (onLobby()) readLobbySides(myGeneration);
+      // A load that ends with an identity fetches that identity's read state (§6.1). The Thread this
+      // load landed on is opened for real when the answer arrives.
+      if (me) loadReadState();
       let sawOpen = false;
       const opened = reader.stream(weaveId!, {
         since: events.at(-1)?.seq ?? 0,
@@ -807,6 +995,7 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       // deliberately does not bump the generation, which is why the cache is keyed on the identity
       // it was read for rather than on the generation that read it.
       ownProfile = undefined;
+      dropReadState();
       // The join is already committed server-side: reflect it locally right away and let a failing
       // refresh retry in the background rather than surface as a rejection of an action that in fact
       // succeeded (which would make the caller retry join() and hit name_taken).
@@ -816,13 +1005,21 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       // Invites are "for me" only once there is a me: recompute now that this session has an identity.
       set({ me: { token: j.token, participant: withMyProfile(j.participant, j.token) }, needsName: false, participants,
         readOnlyReason: undefined,     // a join is the way out of the §2.6 read-only fallback
+        unread: {}, newAfter: undefined,
         ...deriveInvites(state.events, j.participant.id, seenUpTo) });
+      // `join()` installs the identity in place, without `load()` and without a new generation, so it
+      // starts the read-state fetch itself (§6.1). The stamp's identity is what fences the old one's.
+      loadReadState();
       scheduleRefresh();
     },
 
     selectThread: (id) => {
+      // Picking the Thread that is already open is not opening it: the divider stays where it is.
+      const opening = id !== state.currentThreadId;
+      if (opening) throttle.flush();   // leaving a Thread flushes it (§6.2)
       markThreadSeen(id);
       set({ currentThreadId: id, ...deriveInvites(state.events, state.me?.participant.id, seenUpTo) });
+      if (opening) openRead(id);
     },
     markSeen: (id) => {
       markThreadSeen(id);
@@ -839,8 +1036,10 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       const w = writer();
       if (!weaveId) throw new LoomClientError("validation", "Weave not loaded");
       const t = await w.createThread(weaveId, name, url);
+      throttle.flush();
       markThreadSeen(t.id);
       set({ threads: state.threads.some((x) => x.id === t.id) ? state.threads : [...state.threads, t], currentThreadId: t.id });
+      openRead(t.id);
     },
     async setThreadUrl(id, url) {
       const w = writer();
@@ -882,6 +1081,40 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
         set({ weave: { ...state.weave, guidelines: r.weave.guidelines } });
       }
       scheduleRefresh();
+    },
+    async markAllRead() {
+      const w = writer();
+      if (!weaveId || !state.me) throw new LoomClientError("validation", "Weave not loaded");
+      const owner: Owner = { id: state.me.participant.id, token: state.me.token, generation };
+      let answer: { seq: number; threads: number };
+      try { answer = await w.markAllRead(weaveId); }
+      catch (e) {
+        // A rejection for an identity or generation this session has left is dropped, unshown (§6.1).
+        if (!ownsRead(owner)) return;
+        if (isCredentialFailure(e)) {
+          const recovered = recoverFromCredentialFailure(e, "identity");
+          if (recovered?.reload) void doLoad();
+        }
+        throw e;                        // the Weave view's error path shows it
+      }
+      if (!ownsRead(owner)) return;
+      // max(current, answered): a position this tab advanced past the cutoff while the call was in
+      // flight is never lowered, and what is held beyond it is flushed as usual. Every Thread this
+      // tab knows of gets it: the listed ones, and those known so far only from their events, whose
+      // record the metadata refresh has not brought in yet (review 6 F1). The server marked them too.
+      const cut: Record<string, number> = {};
+      for (const id of new Set([...state.threads.map((t) => t.id), ...state.events.map((e) => e.threadId)])) cut[id] = answer.seq;
+      // No read state yet: keep the cutoff for the answer that is on its way, rather than lose it,
+      // max-merged into any cutoff already held for this identity and generation, so two overlapping
+      // calls whose replies land in reverse order keep the higher one (review round 2).
+      if (!readState) {
+        const held = markAllCut && isOwnedBy(markAllCut, nowForRead()) ? markAllCut : undefined;
+        markAllCut = { ...owner, positions: mergePositions(held?.positions ?? {}, cut), floor: Math.max(held?.floor ?? 0, answer.seq) };
+        return;
+      }
+      // The floor covers the Threads this tab knows nothing of yet (whole-branch review F1).
+      readState = { ...readState, positions: mergePositions(readState.positions, cut), floor: Math.max(readState.floor, answer.seq) };
+      set({ unread: unreadOf(state.events) });
     },
     // --- Lobby requests. Each mutation is already committed server-side when it answers, so the
     // snapshot it returns is applied straight away — through the same watermark the refresh uses,
@@ -946,6 +1179,11 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       && (state.me.participant.role === "keeper" || t.createdBy === state.me.participant.id),
     dismissNamePrompt: () => { if (state.needsName) set({ needsName: false }); },
     dispose: () => {
+      // Leaving the Weave flushes what was read while it was open (§6.2), under the identity in hand;
+      // the answers are dropped, because the session they would land in is gone.
+      throttle.flush();
+      throttle.reset();
+      offVisibility();
       disposed = true;
       // Bumping the generation retires any in-flight load() as well, so one that is still mid-fetch
       // cleans up whatever it opens instead of publishing state into a disposed session.

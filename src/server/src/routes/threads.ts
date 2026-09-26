@@ -19,6 +19,13 @@ export function threadRoutes(core: Core) {
     return c.json(await core.setThreadUrl(actor, c.req.param("id"), url));
   });
 
+  r.put("/:id/read", async (c) => {
+    const actor = await requireActor(c, core);
+    // A type only: core owns the integer, the lower bound and the cap at the Weave's newest event.
+    const { seq } = await body(c, z.object({ seq: z.number() }));
+    return c.json(await core.markRead(actor, c.req.param("id"), seq));
+  });
+
   r.post("/:id/invites", async (c) => {
     const actor = await requireActor(c, core);
     const { participantId } = await body(c, z.object({ participantId: z.string() }));

@@ -364,3 +364,14 @@ describe("Lobby wrappers", () => {
     });
   });
 });
+
+describe("read positions (spec 2026-09-26 §5)", () => {
+  it("markRead, markAllRead and readPositions round trip against the test server", async () => {
+    const r = await anon.createWeave(input);            // 1 thread.created, 2 participant.joined, 3 message
+    const me = anon.withToken(r.token);
+    expect(await me.markRead(r.generalThread.id, 2)).toEqual({ threadId: r.generalThread.id, seq: 2 });
+    expect(await me.readPositions(r.weave.id)).toEqual({ joinedSeq: 2, threads: { [r.generalThread.id]: 2 } });
+    expect(await me.markAllRead(r.weave.id)).toEqual({ seq: 3, threads: 1 });
+    expect((await me.readPositions(r.weave.id)).threads).toEqual({ [r.generalThread.id]: 3 });
+  });
+});

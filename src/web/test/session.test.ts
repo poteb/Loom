@@ -1,7 +1,8 @@
 import { describe, it, expect, afterEach, beforeAll, afterAll, vi } from "vitest";
 import { startTestServer, keeperToken, type TestServer } from "../../server/test/helpers.js";
-import { LoomClient } from "@loom/client";
+import { LoomClient, type ReadPositions } from "@loom/client";
 import { createSession, type Session, type SessionTarget } from "../src/session.js";
+import type { Visibility } from "../src/unread.js";
 import { browserStorage, memoryStorage, type KeyValueStorage, type WriteResult } from "../src/storage.js";
 import { invalidateIdentity, legacyKey, readWeaveEntry, saveWeaveEntry, setIdentity, weaveKey } from "../src/weaves-store.js";
 import { DEFAULT_INSTANCE_GUIDELINES } from "@loom/core";
@@ -452,6 +453,28 @@ function trackSockets() {
   } as unknown as typeof WebSocket;
   return {
     live: () => created.filter((w) => w.readyState === Real.CONNECTING || w.readyState === Real.OPEN).length,
+    restore: () => { globalThis.WebSocket = Real; },
+  };
+}
+
+/**
+ * Holds the stream's frames: every socket opened while this is installed hands its `message` frames
+ * to a buffer instead of its handler, until `release` delivers them in order. The socket opens and
+ * stays open, so the session sees a live stream that has simply not delivered yet.
+ */
+function holdFrames() {
+  const Real = globalThis.WebSocket;
+  const held: (() => void)[] = [];
+  let holding = true;
+  globalThis.WebSocket = class extends Real {
+    set onmessage(fn: ((this: WebSocket, m: MessageEvent) => unknown) | null) {
+      super.onmessage = fn && ((m: MessageEvent) => { if (holding) held.push(() => fn.call(this, m)); else fn.call(this, m); });
+    }
+    get onmessage() { return super.onmessage; }
+  } as unknown as typeof WebSocket;
+  return {
+    held: () => held.length,
+    release: () => { holding = false; for (const f of held.splice(0)) f(); },
     restore: () => { globalThis.WebSocket = Real; },
   };
 }
@@ -2742,6 +2765,806 @@ describe("the session's own Lobby profile (spec §3.3)", () => {
       const other = await anon.joinWeave(f.target.secret, { name: `Other-${++fixtureN}`, kind: "human" });
       await waitFor(() => session.getState().participants.some((p) => p.id === other.participant.id));
       expect(c.calls(MY_PROFILE)).toBe(0);
+    } finally { session.dispose(); }
+  });
+});
+
+// --- Read positions (spec 2026-09-26 §6) -------------------------------------------------------
+
+type Call = { method: string; path: string; token?: string; body?: unknown };
+type Park = {
+  match: (method: string, path: string) => boolean; gate: ReturnType<typeof makeGate>;
+  /** Hold the answer rather than the request: the server acts first, the session hears later. */
+  answerFirst?: boolean;
+  /** Told once the parked call's answer has been read, just before the session is handed it. */
+  onDone?: () => void;
+};
+
+/**
+ * A client that records every call (method, path, the bearer it carried, the JSON body), can park
+ * the first call `park.match` picks (with several parks, each parks the first call it picks that no
+ * earlier park took), and can fail the first call `failOnce` picks as a network error.
+ */
+function recordingClient(opts: { park?: Park | Park[]; failOnce?: (method: string, path: string) => boolean } = {}) {
+  const calls: Call[] = [];
+  const parkings = opts.park === undefined ? [] : Array.isArray(opts.park) ? opts.park : [opts.park];
+  const parked = new Set<Park>();
+  let failed = false;
+  const client = new LoomClient({
+    baseUrl: s.baseUrl, allowInsecure: true,
+    fetch: async (input, init) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      const path = new URL(url).pathname;
+      const auth = (init?.headers as Record<string, string> | undefined)?.authorization;
+      calls.push({ method, path, token: auth?.replace(/^Bearer /, ""),
+        body: typeof init?.body === "string" ? JSON.parse(init.body) as unknown : undefined });
+      if (opts.failOnce && !failed && opts.failOnce(method, path)) {
+        failed = true;
+        throw new Error("simulated network failure");
+      }
+      const p = parkings.find((q) => !parked.has(q) && q.match(method, path));
+      if (!p) return fetch(url, init);
+      parked.add(p);
+      if (!p.answerFirst) { p.gate.markEntered(); await p.gate.released; }
+      const res = await fetch(url, init);
+      const text = await res.text();
+      if (p.answerFirst) { p.gate.markEntered(); await p.gate.released; }
+      p.onDone?.();
+      return new Response(res.status === 204 ? null : text, { status: res.status, headers: res.headers });
+    },
+  });
+  return { client, calls };
+}
+
+const isRead = (method: string) => (c: Call) => c.method === method && /\/read$/.test(c.path);
+/** The bodies of every `PUT /api/threads/<id>/read` so far, in order. */
+const putsTo = (calls: Call[], threadId: string) =>
+  calls.filter((c) => c.method === "PUT" && c.path === `/api/threads/${threadId}/read`).map((c) => c.body);
+/** Lets a handler that is already queued run: long enough for a parsed answer to reach the session. */
+const turn = () => new Promise((r) => setTimeout(r, 50));
+
+/**
+ * Claude creates the Weave (1 to 3), Paw joins (4), Claude opens "PR 1" (5) and posts in it (6) and
+ * in General (7). Paw lands on General with one unread message in "PR 1".
+ */
+async function readFixture() {
+  const { r, j } = await joinedWeave("Paw");
+  const claude = await s.core.resolveCredential(r.token);
+  const pr = await s.core.createThread(claude, r.weave.id, "PR 1");
+  await s.core.postMessage(claude, pr.id, "one");
+  await s.core.postMessage(claude, r.generalThread.id, "two");
+  return { r, j, claude, pr, general: r.generalThread.id };
+}
+async function serverPositions(token: string, weaveId: string): Promise<ReadPositions> {
+  return s.core.readPositions(await s.core.resolveCredential(token), weaveId);
+}
+
+describe("read state (spec 2026-09-26 §6.1)", () => {
+  it("a browser with no identity loads no positions and shows no counts", async () => {
+    const f = await readFixture();
+    const rec = recordingClient();
+    const session = createSession({ client: rec.client, target: { kind: "secret", secret: f.r.secret }, storage: memoryStorage() });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().connection === "open");
+      await s.core.postMessage(f.claude, f.pr.id, "three");
+      await waitFor(() => session.getState().events.some((e) => e.payload.text === "three"));
+      session.selectThread(f.pr.id);
+      expect([session.getState().unread, session.getState().newAfter]).toEqual([{}, undefined]);
+      expect(rec.calls.filter((c) => /\/read$/.test(c.path))).toEqual([]);
+    } finally { session.dispose(); }
+  });
+
+  it("no counts, no divider and no markRead before read state has loaded", async () => {
+    const f = await readFixture();
+    const gate = makeGate();
+    const rec = recordingClient({ park: { match: (m, p) => m === "GET" && /\/read$/.test(p), gate } });
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: f.r.weave.id }, storage: storedIdentity(f.r.weave.id, f.j) });
+    try {
+      await session.load();
+      await gate.entered;
+      // Opening Threads while the read state is in flight captures nothing and marks nothing.
+      session.selectThread(f.pr.id);
+      session.selectThread(f.general);
+      expect([session.getState().unread, session.getState().newAfter]).toEqual([{}, undefined]);
+      expect(rec.calls.filter(isRead("PUT"))).toEqual([]);
+      gate.release();
+      await waitFor(() => session.getState().unread[f.pr.id] === 1);
+      // Then the Thread open at that moment is opened for real: the divider, then the mark.
+      expect(session.getState().newAfter).toEqual({ threadId: f.general, seq: 4, firstNew: 7 });
+      await waitFor(() => putsTo(rec.calls, f.general).length === 1);
+      expect(putsTo(rec.calls, f.general)).toEqual([{ seq: 7 }]);
+    } finally { session.dispose(); }
+  });
+
+  it("opening a Thread marks it read up to its newest event and records newAfter", async () => {
+    const f = await readFixture();
+    const rec = recordingClient();
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: f.r.weave.id }, storage: storedIdentity(f.r.weave.id, f.j) });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().unread[f.pr.id] === 1);
+      session.selectThread(f.pr.id);
+      expect(session.getState().newAfter).toEqual({ threadId: f.pr.id, seq: 4, firstNew: 6 });
+      expect(session.getState().unread[f.pr.id]).toBeUndefined();
+      expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 6 }]);
+      await vi.waitFor(async () => expect((await serverPositions(f.j.token, f.r.weave.id)).threads[f.pr.id]).toBe(6));
+    } finally { session.dispose(); }
+  });
+
+  it("joining on a visible secret-only page loads read positions, then counts and the divider follow", async () => {
+    const f = await readFixture();
+    const rec = recordingClient();
+    const session = createSession({ client: rec.client, target: { kind: "secret", secret: f.r.secret }, storage: memoryStorage() });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().connection === "open");
+      await session.join("Dana");                                           // participant.joined at 8
+      const dana = session.getState().me!;
+      await waitFor(() => rec.calls.some((c) => isRead("GET")(c) && c.token === dana.token));
+      await s.core.postMessage(f.claude, f.pr.id, "after the join");        // 9
+      await waitFor(() => session.getState().unread[f.pr.id] === 1);
+      session.selectThread(f.pr.id);
+      expect(session.getState().newAfter).toEqual({ threadId: f.pr.id, seq: 8, firstNew: 9 });
+      expect(session.getState().unread[f.pr.id]).toBeUndefined();
+      expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 9 }]);
+    } finally { session.dispose(); }
+  });
+
+  it("replacing the identity while a readPositions call is pending drops the stale reply", async () => {
+    const f = await readFixture();
+    await s.core.markRead(await s.core.resolveCredential(f.j.token), f.pr.id, 6);   // Paw has read PR 1
+    const paws = makeGate();
+    const danas = makeGate();
+    let staleDone = false;
+    const getRead = (m: string, p: string) => m === "GET" && /\/read$/.test(p);
+    // Both reads are held, and Paw's lands first, while Dana's is still out: no newer answer has
+    // been applied, so only the identity in the stamp can tell that Paw's is stale.
+    const rec = recordingClient({ park: [
+      { match: getRead, gate: paws, onDone: () => { staleDone = true; } },
+      { match: getRead, gate: danas },
+    ] });
+    const storage = storedIdentity(f.r.weave.id, f.j, { secret: f.r.secret });
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: f.r.weave.id }, storage });
+    try {
+      await session.load();
+      await paws.entered;                                    // Paw's read state is in flight
+      await session.join("Dana");                            // another participant: joined at 8
+      const dana = session.getState().me!;
+      await danas.entered;                                   // Dana's is in flight too
+      await s.core.postMessage(f.claude, f.pr.id, "for Dana");   // 9
+      await waitFor(() => session.getState().events.some((e) => e.payload.text === "for Dana"));
+      paws.release();
+      await waitFor(() => staleDone);
+      await turn();
+      // Paw's answer changed nothing: no counts, no divider, no mark.
+      expect([session.getState().unread, session.getState().newAfter]).toEqual([{}, undefined]);
+      expect(rec.calls.filter(isRead("PUT"))).toEqual([]);
+      danas.release();
+      await waitFor(() => session.getState().unread[f.pr.id] === 1);
+      // Then Dana's counts, Dana's divider, and every mark in Dana's name.
+      expect(session.getState().unread).toEqual({ [f.pr.id]: 1 });
+      expect(session.getState().newAfter).toEqual({ threadId: f.general, seq: 8, firstNew: null });
+      expect(rec.calls.filter(isRead("PUT")).every((c) => c.token === dana.token)).toBe(true);
+    } finally { session.dispose(); }
+  });
+
+  it("a readPositions the server refuses for the credential takes the invalid-identity flow", async () => {
+    const f = await readFixture();
+    const readPath = `/api/weaves/${f.r.weave.id}/read`;
+    const c = sideReadClient({ [readPath]: always(REVOKED) });
+    const storage = storedIdentity(f.r.weave.id, f.j, { secret: f.r.secret });
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.r.secret }, storage });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().readOnlyReason === "secret-fallback");
+      expect([readWeaveEntry(storage, f.r.weave.id)!.identity, session.getState().me, session.getState().unread])
+        .toEqual(["invalid", undefined, {}]);
+      // The dead token is not asked again: one read, and nothing afterwards.
+      session.selectThread(f.pr.id);
+      await turn();
+      expect([c.calls(readPath), c.calls(`/api/threads/${f.pr.id}/read`)]).toEqual([1, 0]);
+    } finally { session.dispose(); }
+  });
+
+  it("a markRead the server refuses for the credential takes the invalid-identity flow", async () => {
+    const f = await readFixture();
+    const markPath = `/api/threads/${f.pr.id}/read`;
+    const c = sideReadClient({ [markPath]: always(REVOKED) });
+    const storage = storedIdentity(f.r.weave.id, f.j, { secret: f.r.secret });
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.r.secret }, storage });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().unread[f.pr.id] === 1);
+      session.selectThread(f.pr.id);                                   // the opening's mark is refused
+      await waitFor(() => session.getState().readOnlyReason === "secret-fallback");
+      expect([readWeaveEntry(storage, f.r.weave.id)!.identity, session.getState().me,
+        session.getState().unread, session.getState().newAfter]).toEqual(["invalid", undefined, {}, undefined]);
+      expect(c.calls(markPath)).toBe(1);
+    } finally { session.dispose(); }
+  });
+});
+
+/** A tab whose visibility the test sets; `set` tells the session, as `visibilitychange` would. */
+function fakeVisibility(visible = true): Visibility & { set(next: boolean): void } {
+  const fns = new Set<() => void>();
+  let v = visible;
+  return {
+    visible: () => v,
+    onChange: (fn) => { fns.add(fn); return () => { fns.delete(fn); }; },
+    set(next) { v = next; for (const fn of [...fns]) fn(); },
+  };
+}
+
+describe("reading while the Thread is open (spec 2026-09-26 §6.2)", () => {
+  const byId = (f: Awaited<ReturnType<typeof readFixture>>, client: LoomClient, over: { visibility?: Visibility; readFlushMs?: number } = {}) =>
+    createSession({ client, target: { kind: "id", weaveId: f.r.weave.id }, storage: storedIdentity(f.r.weave.id, f.j), ...over });
+  const settled = async (session: Session, f: Awaited<ReturnType<typeof readFixture>>) => {
+    await session.load();
+    await waitFor(() => session.getState().unread[f.pr.id] === 1 && session.getState().connection === "open");
+  };
+
+  it("while visible, arrivals advance the position with at most one markRead per READ_FLUSH_MS, and leaving the Thread flushes the pending position", async () => {
+    const f = await readFixture();
+    const rec = recordingClient();
+    // An interval no test outlives, so every send below is the throttle's decision, not the clock's.
+    const session = byId(f, rec.client, { readFlushMs: 60_000 });
+    try {
+      await settled(session, f);
+      session.selectThread(f.pr.id);                                   // the opening's mark: 6
+      const divider = session.getState().newAfter;
+      await s.core.postMessage(f.claude, f.pr.id, "a");                // 8
+      await s.core.postMessage(f.claude, f.pr.id, "b");                // 9
+      await waitFor(() => session.getState().events.some((e) => e.payload.text === "b"));
+      expect(session.getState().unread[f.pr.id]).toBeUndefined();     // read as it arrived
+      expect(session.getState().newAfter).toEqual(divider);            // the divider did not move
+      expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 6 }]);        // held inside the interval
+      session.selectThread(f.general);                                 // leaving flushes the latest
+      expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 6 }, { seq: 9 }]);
+      await vi.waitFor(async () => expect((await serverPositions(f.j.token, f.r.weave.id)).threads[f.pr.id]).toBe(9));
+    } finally { session.dispose(); }
+  });
+
+  it("while hidden, arrivals count as unread; on visible, positions are reloaded and the Thread is marked read", async () => {
+    const f = await readFixture();
+    const vis = fakeVisibility();
+    const rec = recordingClient();
+    const session = byId(f, rec.client, { visibility: vis });
+    try {
+      await settled(session, f);
+      session.selectThread(f.pr.id);
+      const divider = session.getState().newAfter;
+      vis.set(false);
+      await s.core.postMessage(f.claude, f.pr.id, "while away");       // 8
+      await waitFor(() => session.getState().unread[f.pr.id] === 1);
+      expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 6 }]);
+      const reloads = rec.calls.filter(isRead("GET")).length;
+      vis.set(true);
+      expect(rec.calls.filter(isRead("GET")).length).toBe(reloads + 1);
+      await waitFor(() => session.getState().unread[f.pr.id] === undefined);
+      expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 6 }, { seq: 8 }]);
+      expect(session.getState().newAfter).toEqual(divider);            // newAfter is not moved
+    } finally { session.dispose(); }
+  });
+
+  it("a reload on becoming visible that fails still marks the open Thread read", async () => {
+    const f = await readFixture();
+    const vis = fakeVisibility();
+    let gets = 0;
+    // The load's read passes; the refresh the tab's return asks for fails on the network.
+    const rec = recordingClient({ failOnce: (m, p) => m === "GET" && /\/read$/.test(p) && ++gets === 2 });
+    const session = byId(f, rec.client, { visibility: vis, readFlushMs: 60_000 });
+    try {
+      await settled(session, f);
+      session.selectThread(f.pr.id);
+      const divider = session.getState().newAfter;
+      vis.set(false);
+      await s.core.postMessage(f.claude, f.pr.id, "while away");       // 8
+      await waitFor(() => session.getState().unread[f.pr.id] === 1);
+      vis.set(true);                                                   // the refresh fails
+      await waitFor(() => session.getState().unread[f.pr.id] === undefined);
+      expect(gets).toBe(2);
+      expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 6 }, { seq: 8 }]);
+      expect(session.getState().newAfter).toEqual(divider);
+      await vi.waitFor(async () => expect((await serverPositions(f.j.token, f.r.weave.id)).threads[f.pr.id]).toBe(8));
+    } finally { session.dispose(); }
+  });
+
+  it("a failed markRead shows nothing and the next flush sends the latest position", async () => {
+    const f = await readFixture();
+    let failedYet = false;
+    const rec = recordingClient({ failOnce: (m, p) => {
+      const hit = m === "PUT" && p === `/api/threads/${f.pr.id}/read`;
+      if (hit) failedYet = true;
+      return hit;
+    } });
+    const session = byId(f, rec.client, { readFlushMs: 60_000 });
+    try {
+      await settled(session, f);
+      session.selectThread(f.pr.id);                                   // the mark of 6 fails
+      await waitFor(() => failedYet);
+      await turn();
+      const st = session.getState();
+      expect([st.status, st.error, st.refreshError, st.unread[f.pr.id]]).toEqual(["ready", undefined, undefined, undefined]);
+      session.selectThread(f.general);                                 // the next flush carries it again
+      expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 6 }, { seq: 6 }]);
+      await vi.waitFor(async () => expect((await serverPositions(f.j.token, f.r.weave.id)).threads[f.pr.id]).toBe(6));
+    } finally { session.dispose(); }
+  });
+
+  it("a mark the server refuses for good is not sent again", async () => {
+    for (const refusal of [refuses("validation", "seq is past the Weave's newest event", 400),
+      refuses("thread_not_found", "Thread not found", 404)]) {
+      const f = await readFixture();
+      const markPath = `/api/threads/${f.pr.id}/read`;
+      const refused = delivering(refusal);
+      const c = sideReadClient({ [markPath]: onCall(1, refused.answer) });
+      const session = byId(f, c.client, { readFlushMs: 60_000 });
+      try {
+        await settled(session, f);
+        session.selectThread(f.pr.id);                                 // the opening's mark is refused
+        await afterDelivery(refused.delivered);
+        session.selectThread(f.general);                               // the flush has nothing of PR 1's
+        await turn();
+        expect(c.calls(markPath)).toBe(1);
+        expect(session.getState().me).toBeDefined();
+      } finally { session.dispose(); }
+    }
+  });
+
+  it("a mark that fails with a server error is sent again with the next flush", async () => {
+    const f = await readFixture();
+    const markPath = `/api/threads/${f.pr.id}/read`;
+    const broken = delivering(BROKEN);
+    const c = sideReadClient({ [markPath]: onCall(1, broken.answer) });
+    const session = byId(f, c.client, { readFlushMs: 60_000 });
+    try {
+      await settled(session, f);
+      session.selectThread(f.pr.id);
+      await afterDelivery(broken.delivered);
+      session.selectThread(f.general);
+      expect(c.calls(markPath)).toBe(2);
+      await vi.waitFor(async () => expect((await serverPositions(f.j.token, f.r.weave.id)).threads[f.pr.id]).toBe(6));
+    } finally { session.dispose(); }
+  });
+
+  /** Paw opens PR 1 (the mark of 6) and Claude posts in it (8): read on arrival, and held by the throttle. */
+  const heldArrival = async (session: Session, f: Awaited<ReturnType<typeof readFixture>>, rec: { calls: Call[] }) => {
+    await settled(session, f);
+    session.selectThread(f.pr.id);
+    await s.core.postMessage(f.claude, f.pr.id, "held");               // 8
+    await waitFor(() => session.getState().events.some((e) => e.payload.text === "held"));
+    expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 6 }]);
+  };
+
+  it("the tab becoming hidden flushes the held position", async () => {
+    const f = await readFixture();
+    const vis = fakeVisibility();
+    const rec = recordingClient();
+    const session = byId(f, rec.client, { visibility: vis, readFlushMs: 60_000 });
+    try {
+      await heldArrival(session, f, rec);
+      vis.set(false);
+      expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 6 }, { seq: 8 }]);
+    } finally { session.dispose(); }
+  });
+
+  it("disposing the session flushes the held position", async () => {
+    const f = await readFixture();
+    const rec = recordingClient();
+    const session = byId(f, rec.client, { readFlushMs: 60_000 });
+    try {
+      await heldArrival(session, f, rec);
+    } finally { session.dispose(); }
+    expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 6 }, { seq: 8 }]);
+    await vi.waitFor(async () => expect((await serverPositions(f.j.token, f.r.weave.id)).threads[f.pr.id]).toBe(8));
+  });
+
+  it("creating a Thread flushes the held position of the Thread it leaves", async () => {
+    const f = await readFixture();
+    const rec = recordingClient();
+    const session = byId(f, rec.client, { readFlushMs: 60_000 });
+    try {
+      await heldArrival(session, f, rec);
+      await session.createThread("Fresh");
+      expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 6 }, { seq: 8 }]);
+    } finally { session.dispose(); }
+  });
+
+  it("a position held for one identity is never sent under the next one", async () => {
+    const f = await readFixture();
+    const rec = recordingClient();
+    const storage = storedIdentity(f.r.weave.id, f.j, { secret: f.r.secret });
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: f.r.weave.id }, storage, readFlushMs: 60_000 });
+    try {
+      await heldArrival(session, f, rec);
+      await session.join("Dana");                                      // joined at 9
+      const dana = session.getState().me!;
+      await waitFor(() => rec.calls.some((c) => isRead("GET")(c) && c.token === dana.token));
+      await turn();                                                    // Dana's read state is in
+      session.selectThread(f.general);                                 // a flush, now in Dana's name
+      await turn();
+      // Paw's held 8 went with Paw: not flushed, not sent by a timer, not sent as Dana. Dana has read
+      // General up to Dana's own join, so Dana sends nothing either.
+      expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 6 }]);
+      expect(rec.calls.filter((c) => isRead("PUT")(c) && c.token === dana.token)).toEqual([]);
+    } finally { session.dispose(); }
+  });
+
+  it("a readPositions reply that arrives while the tab is hidden marks nothing; the hidden arrival stays unread until the tab is visible again", async () => {
+    const f = await readFixture();
+    const vis = fakeVisibility();
+    const gate = makeGate();
+    let gets = 0;
+    let parkedDone = false;
+    // The load's read passes; the first refresh a visibility change asks for is answered, then held.
+    const rec = recordingClient({ park: { match: (m, p) => m === "GET" && /\/read$/.test(p) && ++gets === 2,
+      gate, answerFirst: true, onDone: () => { parkedDone = true; } } });
+    const session = byId(f, rec.client, { visibility: vis });
+    try {
+      await settled(session, f);
+      session.selectThread(f.pr.id);
+      vis.set(false);
+      await s.core.postMessage(f.claude, f.pr.id, "away");             // 8
+      await waitFor(() => session.getState().unread[f.pr.id] === 1);
+      vis.set(true);                                                   // a refresh leaves
+      await gate.entered;
+      vis.set(false);                                                  // hidden again before it lands
+      gate.release();
+      await waitFor(() => parkedDone);
+      await turn();
+      expect(session.getState().unread[f.pr.id]).toBe(1);
+      expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 6 }]);
+      vis.set(true);
+      await waitFor(() => session.getState().unread[f.pr.id] === undefined);
+      expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 6 }, { seq: 8 }]);
+    } finally { session.dispose(); }
+  });
+});
+
+describe("Mark all read, and the Lobby page (spec 2026-09-26 §6.5, §6.6)", () => {
+  it("Mark all read calls markAllRead and clears every count up to the answered seq", async () => {
+    const f = await readFixture();
+    const pr2 = await s.core.createThread(f.claude, f.r.weave.id, "PR 2");   // 8
+    await s.core.postMessage(f.claude, pr2.id, "x");                         // 9
+    const rec = recordingClient();
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: f.r.weave.id }, storage: storedIdentity(f.r.weave.id, f.j) });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().unread[f.pr.id] === 1 && session.getState().unread[pr2.id] === 1);
+      await session.markAllRead();
+      expect(session.getState().unread).toEqual({});
+      expect(rec.calls.filter(isRead("POST"))).toHaveLength(1);
+      expect((await serverPositions(f.j.token, f.r.weave.id)).threads).toEqual({ [f.general]: 9, [f.pr.id]: 9, [pr2.id]: 9 });
+    } finally { session.dispose(); }
+  });
+
+  it("a Mark all read reply delayed past an arrival and a Thread switch never lowers a position", async () => {
+    const f = await readFixture();
+    const gate = makeGate();
+    // The server samples last_seq (7) and answers; the session hears the answer only on release.
+    const rec = recordingClient({ park: { match: (m, p) => m === "POST" && /\/read$/.test(p), gate, answerFirst: true } });
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: f.r.weave.id },
+      storage: storedIdentity(f.r.weave.id, f.j), readFlushMs: 60_000 });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().unread[f.pr.id] === 1 && session.getState().connection === "open");
+      session.selectThread(f.pr.id);
+      const pending = session.markAllRead();
+      await gate.entered;
+      await s.core.postMessage(f.claude, f.pr.id, "late");                    // 8, past the cutoff
+      await waitFor(() => session.getState().events.some((e) => e.payload.text === "late"));
+      session.selectThread(f.general);                                       // leaving PR 1 flushes 8
+      gate.release();
+      await pending;
+      // Merged as max(current, 7): PR 1 stays at 8, so the late message is not counted again.
+      expect(session.getState().unread[f.pr.id]).toBeUndefined();
+      await vi.waitFor(async () => expect((await serverPositions(f.j.token, f.r.weave.id)).threads[f.pr.id]).toBe(8));
+    } finally { session.dispose(); }
+  });
+
+  it("a Mark all read that succeeds while read state is loading survives the initial readPositions reply", async () => {
+    const f = await readFixture();
+    const gate = makeGate();
+    let snapshotDone = false;
+    // The server answers the load's read with the old positions (none, so PR 1 is unread); the
+    // session hears that answer only after Mark all read has succeeded.
+    const rec = recordingClient({ park: { match: (m, p) => m === "GET" && /\/read$/.test(p), gate, answerFirst: true,
+      onDone: () => { snapshotDone = true; } } });
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: f.r.weave.id }, storage: storedIdentity(f.r.weave.id, f.j) });
+    try {
+      await session.load();
+      await gate.entered;
+      await session.markAllRead();                                            // cutoff 7, every Thread
+      gate.release();
+      await waitFor(() => snapshotDone);
+      await waitFor(() => session.getState().newAfter !== undefined);
+      // PR 1 was never opened: the stale snapshot did not bring its count back.
+      expect(session.getState().unread).toEqual({});
+      expect(session.getState().newAfter).toEqual({ threadId: f.general, seq: 7, firstNew: null });
+    } finally { session.dispose(); }
+  });
+
+  it("two Mark all read replies arriving in reverse order while read state is loading keep the higher cutoff", async () => {
+    const f = await readFixture();
+    const snapshot = makeGate();
+    const first = makeGate();
+    let gets = 0;
+    let posts = 0;
+    let snapshotDone = false;
+    // The load's read and the first Mark all read are answered by the server at once and heard by
+    // the session only on release; the second Mark all read goes straight through.
+    const client = new LoomClient({
+      baseUrl: s.baseUrl, allowInsecure: true,
+      fetch: async (input, init) => {
+        const url = typeof input === "string" ? input : input.toString();
+        const method = init?.method ?? "GET";
+        const readPath = /\/read$/.test(new URL(url).pathname);
+        const hold = readPath && method === "GET" && ++gets === 1 ? snapshot
+          : readPath && method === "POST" && ++posts === 1 ? first : undefined;
+        const res = await fetch(url, init);
+        if (!hold) return res;
+        const text = await res.text();
+        hold.markEntered();
+        await hold.released;
+        if (hold === snapshot) snapshotDone = true;
+        return new Response(text, { status: res.status, headers: res.headers });
+      },
+    });
+    const session = createSession({ client, target: { kind: "id", weaveId: f.r.weave.id }, storage: storedIdentity(f.r.weave.id, f.j) });
+    try {
+      await session.load();
+      await snapshot.entered;                                         // the old positions, not heard yet
+      const a = session.markAllRead();                                // A: the server samples 7
+      await first.entered;
+      await s.core.postMessage(f.claude, f.pr.id, "between");         // 8
+      await session.markAllRead();                                    // B: the server samples 8, heard first
+      first.release();
+      await a;                                                        // A's lower cutoff, heard second
+      snapshot.release();
+      await waitFor(() => snapshotDone);
+      await waitFor(() => session.getState().newAfter !== undefined
+        && session.getState().events.some((e) => e.payload.text === "between"));
+      // Held as max(8, 7): message 8 in PR 1 stays read.
+      expect(session.getState().unread).toEqual({});
+    } finally { session.dispose(); }
+  });
+
+  it("Mark all read clears a Thread the stream has delivered before the refresh lists it", async () => {
+    const f = await readFixture();
+    const gate = makeGate();
+    let armed = false;
+    // The metadata refresh the new Thread schedules is held, so the Thread is known only from its events.
+    const rec = recordingClient({ park: { match: (m, p) => armed && m === "GET" && p === `/api/weaves/${f.r.weave.id}`, gate } });
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: f.r.weave.id }, storage: storedIdentity(f.r.weave.id, f.j) });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().unread[f.pr.id] === 1 && session.getState().connection === "open");
+      armed = true;
+      const pr2 = await s.core.createThread(f.claude, f.r.weave.id, "PR 2");   // 8, by Claude
+      await s.core.postMessage(f.claude, pr2.id, "x");                         // 9
+      await gate.entered;
+      await waitFor(() => session.getState().unread[pr2.id] === 1);
+      expect(session.getState().threads.some((t) => t.id === pr2.id)).toBe(false);
+      await session.markAllRead();                                            // the server marks PR 2 at 9 too
+      gate.release();
+      await waitFor(() => session.getState().threads.some((t) => t.id === pr2.id));
+      expect(session.getState().unread).toEqual({});
+    } finally { session.dispose(); }
+  });
+
+  it("Mark all read covers a Thread whose events the stream delivers only after the answer", async () => {
+    const f = await readFixture();
+    const frames = holdFrames();
+    const session = createSession({ client: recordingClient().client, target: { kind: "id", weaveId: f.r.weave.id },
+      storage: storedIdentity(f.r.weave.id, f.j) });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().unread[f.pr.id] === 1 && session.getState().connection === "open");
+      // The stream delivers nothing until released: the tab knows nothing of PR 2.
+      const pr2 = await s.core.createThread(f.claude, f.r.weave.id, "PR 2");   // 8, by Claude
+      await s.core.postMessage(f.claude, pr2.id, "x");                         // 9
+      await waitFor(() => frames.held() === 2);
+      await session.markAllRead();                                            // the server marks PR 2 at 9
+      frames.release();
+      await waitFor(() => session.getState().events.some((e) => e.threadId === pr2.id && e.type === "message"));
+      expect(session.getState().unread).toEqual({});
+    } finally { session.dispose(); frames.restore(); }
+  });
+
+  it("a Mark all read held for the loading read state covers a Thread the stream delivers after both answers", async () => {
+    const f = await readFixture();
+    const frames = holdFrames();
+    const gate = makeGate();
+    let snapshotDone = false;
+    // The server answers the load's read with the old positions; the session hears it only on release.
+    const rec = recordingClient({ park: { match: (m, p) => m === "GET" && /\/read$/.test(p), gate, answerFirst: true,
+      onDone: () => { snapshotDone = true; } } });
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: f.r.weave.id }, storage: storedIdentity(f.r.weave.id, f.j) });
+    try {
+      await session.load();
+      await gate.entered;
+      await waitFor(() => session.getState().connection === "open");
+      const pr2 = await s.core.createThread(f.claude, f.r.weave.id, "PR 2");   // 8, by Claude
+      await s.core.postMessage(f.claude, pr2.id, "x");                         // 9
+      await waitFor(() => frames.held() === 2);
+      await session.markAllRead();                                            // held cutoff, seq 9
+      gate.release();
+      await waitFor(() => snapshotDone && session.getState().newAfter !== undefined);
+      frames.release();
+      await waitFor(() => session.getState().events.some((e) => e.threadId === pr2.id && e.type === "message"));
+      expect(session.getState().unread).toEqual({});
+    } finally { session.dispose(); frames.restore(); }
+  });
+
+  it("a readPositions reply issued before a Mark all read does not undo it for a Thread heard of later", async () => {
+    const f = await readFixture();
+    const frames = holdFrames();
+    const vis = fakeVisibility();
+    const gate = makeGate();
+    let gets = 0;
+    let refreshDone = false;
+    // The load's read passes; the refresh a visibility change asks for is answered, then held.
+    const rec = recordingClient({ park: { match: (m, p) => m === "GET" && /\/read$/.test(p) && ++gets === 2,
+      gate, answerFirst: true, onDone: () => { refreshDone = true; } } });
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: f.r.weave.id },
+      storage: storedIdentity(f.r.weave.id, f.j), visibility: vis });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().unread[f.pr.id] === 1 && session.getState().connection === "open");
+      const pr2 = await s.core.createThread(f.claude, f.r.weave.id, "PR 2");   // 8, by Claude
+      await s.core.postMessage(f.claude, pr2.id, "x");                         // 9
+      await waitFor(() => frames.held() === 2);
+      vis.set(false);
+      vis.set(true);                                                          // a refresh: PR 2 not read yet
+      await gate.entered;
+      await session.markAllRead();                                            // the server marks PR 2 at 9
+      gate.release();
+      await waitFor(() => refreshDone);
+      await turn();
+      frames.release();
+      await waitFor(() => session.getState().events.some((e) => e.threadId === pr2.id && e.type === "message"));
+      expect(session.getState().unread).toEqual({});
+    } finally { session.dispose(); frames.restore(); }
+  });
+
+  it("a readPositions reply issued before a Mark all read cannot bring back an explicit position below its cutoff", async () => {
+    const f = await readFixture();
+    const frames = holdFrames();
+    const vis = fakeVisibility();
+    const gate = makeGate();
+    let gets = 0;
+    let refreshDone = false;
+    // The load's read passes; the refresh a visibility change asks for is answered, then held.
+    const rec = recordingClient({ park: { match: (m, p) => m === "GET" && /\/read$/.test(p) && ++gets === 2,
+      gate, answerFirst: true, onDone: () => { refreshDone = true; } } });
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: f.r.weave.id },
+      storage: storedIdentity(f.r.weave.id, f.j), visibility: vis });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().unread[f.pr.id] === 1 && session.getState().connection === "open");
+      const pr2 = await s.core.createThread(f.claude, f.r.weave.id, "PR 2");   // 8, by Claude
+      await s.core.postMessage(f.claude, pr2.id, "x");                         // 9
+      await waitFor(() => frames.held() === 2);
+      // Another tab of the same participant saved PR 2 at 8; this tab has not heard of PR 2.
+      await s.core.markRead(await s.core.resolveCredential(f.j.token), pr2.id, 8);
+      vis.set(false);
+      vis.set(true);                                                          // a refresh: PR 2 at 8
+      await gate.entered;
+      await session.markAllRead();                                            // the server marks PR 2 at 9
+      gate.release();
+      await waitFor(() => refreshDone);
+      await turn();
+      frames.release();
+      await waitFor(() => session.getState().events.some((e) => e.threadId === pr2.id && e.type === "message"));
+      expect(session.getState().unread).toEqual({});
+      session.selectThread(pr2.id);
+      expect(session.getState().newAfter).toEqual({ threadId: pr2.id, seq: 9, firstNew: null });
+    } finally { session.dispose(); frames.restore(); }
+  });
+
+  it("a Mark all read answer for an identity the session has left moves no position", async () => {
+    const f = await readFixture();
+    const gate = makeGate();
+    // Paw's call is held before it reaches the server, so the server marks at the seq it has on release.
+    const rec = recordingClient({ park: { match: (m, p) => m === "POST" && /\/read$/.test(p), gate } });
+    const storage = storedIdentity(f.r.weave.id, f.j, { secret: f.r.secret });
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: f.r.weave.id }, storage });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().unread[f.pr.id] === 1 && session.getState().connection === "open");
+      const pending = session.markAllRead();                                  // under Paw
+      await gate.entered;
+      await session.join("Dana");                                             // 8
+      await s.core.postMessage(f.claude, f.pr.id, "for Dana");                // 9
+      await waitFor(() => session.getState().unread[f.pr.id] === 1 && session.getState().me?.participant.id !== f.j.participant.id);
+      gate.release();
+      await expect(pending).resolves.toBeUndefined();                         // Paw's answer: seq 9
+      expect(session.getState().unread).toEqual({ [f.pr.id]: 1 });
+    } finally { session.dispose(); }
+  });
+
+  it("a Mark all read rejection for an identity the session has left is dropped, unshown", async () => {
+    const f = await readFixture();
+    const readPath = `/api/weaves/${f.r.weave.id}/read`;
+    const gate = makeGate();
+    // Call 1 is the load's readPositions; call 2 is Paw's Mark all read, refused only after Dana has joined.
+    const c = sideReadClient({ [readPath]: onCall(2, parksThen(gate, REVOKED)) });
+    const storage = storedIdentity(f.r.weave.id, f.j, { secret: f.r.secret });
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: f.r.weave.id }, storage });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().unread[f.pr.id] === 1);
+      const pending = session.markAllRead();                                  // under Paw
+      await gate.entered;
+      await session.join("Dana");                                             // 8
+      const dana = session.getState().me!;
+      await s.core.postMessage(f.claude, f.pr.id, "for Dana");                // 9
+      await waitFor(() => session.getState().unread[f.pr.id] === 1 && c.calls(readPath) === 3);
+      gate.release();
+      await expect(pending).resolves.toBeUndefined();
+      // Not the invalid-identity flow: Dana stays, with Dana's count.
+      const entry = readWeaveEntry(storage, f.r.weave.id)!;
+      expect([session.getState().me?.participant.id, entry.identity, entry.participantId,
+        session.getState().readOnlyReason, session.getState().unread])
+        .toEqual([dana.participant.id, undefined, dana.participant.id, undefined, { [f.pr.id]: 1 }]);
+    } finally { session.dispose(); }
+  });
+
+  it("a Mark all read the server refuses for the credential takes the invalid-identity flow and reaches the error bar", async () => {
+    const f = await readFixture();
+    const readPath = `/api/weaves/${f.r.weave.id}/read`;
+    // Call 1 is the load's readPositions; call 2 is the Mark all read.
+    const c = sideReadClient({ [readPath]: onCall(2, REVOKED) });
+    const storage = storedIdentity(f.r.weave.id, f.j, { secret: f.r.secret });
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.r.secret }, storage });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().unread[f.pr.id] === 1);
+      await expect(session.markAllRead()).rejects.toMatchObject({ code: "invalid_token" });
+      await waitFor(() => session.getState().readOnlyReason === "secret-fallback");
+      expect([readWeaveEntry(storage, f.r.weave.id)!.identity, session.getState().me, session.getState().unread])
+        .toEqual(["invalid", undefined, {}]);
+      expect(c.calls(readPath)).toBe(2);
+    } finally { session.dispose(); }
+  });
+
+  it("Mark all read sets every position to the answered seq, not to the newest event this tab holds", async () => {
+    const f = await readFixture();
+    const gate = makeGate();
+    // The server samples 7 and marks; the session hears the answer only on release.
+    const rec = recordingClient({ park: { match: (m, p) => m === "POST" && /\/read$/.test(p), gate, answerFirst: true } });
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: f.r.weave.id }, storage: storedIdentity(f.r.weave.id, f.j) });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().unread[f.pr.id] === 1 && session.getState().connection === "open");
+      const pending = session.markAllRead();
+      await gate.entered;
+      await s.core.postMessage(f.claude, f.pr.id, "after the cutoff");         // 8, PR 1 is not open
+      await waitFor(() => session.getState().unread[f.pr.id] === 2);
+      gate.release();
+      await pending;
+      // Cut at 7: message 6 is read, message 8 is still unread.
+      expect(session.getState().unread).toEqual({ [f.pr.id]: 1 });
+    } finally { session.dispose(); }
+  });
+
+  it("on the Lobby's own page the Lobby identity gets its divider and its marks", async () => {
+    const lobby = await anon.getLobby();
+    const n = ++fixtureN;
+    const me = await anon.joinLobby({ name: `Reader-${n}`, kind: "human" });
+    const other = await anon.joinLobby({ name: `Poster-${n}`, kind: "human" });
+    const said = await anon.withToken(other.token).postMessage(me.generalThreadId, "hello Lobby");
+    const { joinedSeq } = await serverPositions(me.token, lobby.weaveId);
+    const rec = recordingClient();
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: lobby.weaveId }, storage: storedIdentity(lobby.weaveId, me) });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().newAfter !== undefined);
+      expect(session.getState().newAfter).toEqual({ threadId: me.generalThreadId, seq: joinedSeq, firstNew: said.seq });
+      await waitFor(() => putsTo(rec.calls, me.generalThreadId).length === 1);
+      expect(rec.calls.filter(isRead("PUT")).every((c) => c.token === me.token)).toBe(true);
     } finally { session.dispose(); }
   });
 });

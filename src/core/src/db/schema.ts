@@ -155,3 +155,14 @@ export const weaveInvitations = pgTable("weave_invitations", {
   // redeemed.
   revokedAt: timestamp("revoked_at", { withTimezone: true }),
 });
+
+/**
+ * A participant's read position in one Thread (spec 2026-09-26 §3): the highest seq of the Weave's
+ * log it has read there. Written by `reads.ts` only, never lowered, and never an event.
+ */
+export const readPositions = pgTable("read_positions", {
+  participantId: uuid("participant_id").notNull().references(() => participants.id),
+  threadId: uuid("thread_id").notNull().references(() => threads.id),
+  seq: integer("seq").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.participantId, t.threadId] })]);
