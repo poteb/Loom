@@ -43,6 +43,13 @@
       "when": 1790179064865,
       "tag": "0005_yellow_marvel_boy",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1790451744064,
+      "tag": "0006_big_ricochet",
+      "breakpoints": true
     }
   ]
 }

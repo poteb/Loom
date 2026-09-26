@@ -11,6 +11,7 @@ import * as threads from "./threads.js";
 import { postMessage } from "./messages.js";
 import { inviteParticipant } from "./invites.js";
 import { removeParticipant } from "./removals.js";
+import * as reads from "./reads.js";
 import { inbox } from "./inbox.js";
 import { setRole } from "./participants.js";
 import { exportWeave } from "./export.js";
@@ -37,6 +38,9 @@ export function createCore(db: Db) {
   /** Thread-addressed operations: map an agent actor through the Thread's Weave. */
   const forThread = async (actor: Actor, threadId: string) =>
     actor.kind === "agent" ? resolveInWeave(db, actor, (await threads.getThread(db, threadId)).weaveId) : actor;
+  /** Weave-addressed read-position calls: `weave_not_found` first, then an agent key is mapped through the Weave, as `forThread` puts `thread_not_found` first. */
+  const forWeave = async (actor: Actor, weaveId: string) =>
+    actor.kind === "agent" ? resolveInWeave(db, actor, (await reads.weaveForRead(db, weaveId)).id) : actor;
   return {
     db, bus,
     resolveCredential: (credential: string) => resolveCredential(db, credential),
@@ -69,6 +73,10 @@ export function createCore(db: Db) {
     postMessage: async (actor: Actor, threadId: string, text: string) => postMessage(db, bus, await forThread(actor, threadId), threadId, text),
     inviteParticipant: async (actor: Actor, threadId: string, participantId: string) => inviteParticipant(db, bus, await forThread(actor, threadId), threadId, participantId),
     removeParticipant: async (actor: Actor, threadId: string, participantId: string) => removeParticipant(db, bus, await forThread(actor, threadId), threadId, participantId),
+    // Read positions (spec 2026-09-26 §4): an agent key acts as the participant it owns there.
+    markRead: async (actor: Actor, threadId: string, seq: number) => reads.markRead(db, await forThread(actor, threadId), threadId, seq),
+    markAllRead: async (actor: Actor, weaveId: string) => reads.markAllRead(db, await forWeave(actor, weaveId), weaveId),
+    readPositions: async (actor: Actor, weaveId: string) => reads.readPositions(db, await forWeave(actor, weaveId), weaveId),
     setRole: async (actor: Actor, weaveId: string, participantId: string, role: Role) => setRole(db, bus, await resolveInWeave(db, actor, weaveId), weaveId, participantId, role),
     exportWeave: async (actor: Actor, weaveId: string, format: "md" | "json") => exportWeave(db, await resolveInWeave(db, actor, weaveId), weaveId, format),
     // No unauthenticated getSettings on the facade: adapters go through readSettings, which
@@ -151,5 +159,6 @@ export { type Listener, type ListenersFacets, type ListenersPage, type Listeners
 export { type InvitationDraft } from "./lobby/invitations.js";
 export { GET_STARTED_NEEDS_AGENT, type OnboardingFacts } from "./lobby/onboarding.js";
 export { type RemovalResult } from "./removals.js";
+export { type MarkReadResult, type MarkAllReadResult, type ReadPositions } from "./reads.js";
 export { computedStatus, type PublicRequest, type PublicOffer, type PublicAcceptance, type OpenRequestInput, type RequestStatus, type CloseReason, type AcceptOptions, type AcceptInput } from "./lobby/requests.js";
 export type * from "./types.js";
