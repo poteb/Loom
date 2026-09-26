@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript 5.9 strict ESM (`.js` import suffixes), pnpm 10 workspace, Vitest 4 against a real Postgres (`fileParallelism: false`), drizzle-orm 0.45.2 with drizzle-kit 0.31.10, zod 4, Hono, Preact with happy-dom for the DOM tests. **No `package.json` gains a dependency anywhere in this plan.**
 
-Plan review round 1 (PR #38): F4 and F5 fixed in this revision.
+Plan review rounds 1 and 2 (PR #38): F4 and F5 fixed in this revision.
 
 **Spec:** `docs/superpowers/specs/2026-09-26-loom-unread-design.md`, approved by Paw on 2026-09-26 after three review rounds (PR #38). Read it whole before any task; it is the binding requirement text. Where this plan decides something the spec leaves open, the decision is listed under "Decisions this plan makes" at the end, with its reason. Conventions: `CONTRIBUTING.md`, `docs/TESTING.md`, `docs/ARCHITECTURE.md`; the dispatch loop is `docs/HANDBOOK.md` §3 step 9; the ledger is `.superpowers/sdd/2026-09-26-loom-unread/progress.md`.
 
@@ -1711,7 +1711,7 @@ git commit -m "feat(web): the unread count in the Thread list and the New divide
 
 ### Task 6: web: Mark all read, and read positions on the Lobby page
 
-Spec §6.5, §6.6. **This task carries spec §9.4: `Mark all read calls markAllRead and clears every count up to the answered seq`; `it is absent without an identity and in an archived Weave`; `a Mark all read reply delayed past an arrival and a Thread switch never lowers a position`.** It also adds `a Mark all read that succeeds while read state is loading survives the initial readPositions reply` (review round 1, F4: the same "never lowers" rule, for a cutoff that lands before the read state does) and one Lobby case for §6.6, which the spec lists no test for.
+Spec §6.5, §6.6. **This task carries spec §9.4: `Mark all read calls markAllRead and clears every count up to the answered seq`; `it is absent without an identity and in an archived Weave`; `a Mark all read reply delayed past an arrival and a Thread switch never lowers a position`.** It also adds `a Mark all read that succeeds while read state is loading survives the initial readPositions reply` (review round 1, F4: the same "never lowers" rule, for a cutoff that lands before the read state does), `two Mark all read replies arriving in reverse order while read state is loading keep the higher cutoff` (review round 2) and one Lobby case for §6.6, which the spec lists no test for.
 
 **Files:**
 - Modify: `src/web/src/session.ts` (`Session.markAllRead`, its implementation, the held cutoff `markAllCut` with its merge in `loadReadState` and its reset in `dropReadState`), `src/web/src/components/WeaveView.tsx` (the button)
@@ -1817,6 +1817,51 @@ describe("Mark all read, and the Lobby page (spec 2026-09-26 §6.5, §6.6)", () 
     } finally { session.dispose(); }
   });
 
+  it("two Mark all read replies arriving in reverse order while read state is loading keep the higher cutoff", async () => {
+    const f = await readFixture();
+    const snapshot = makeGate();
+    const first = makeGate();
+    let gets = 0;
+    let posts = 0;
+    let snapshotDone = false;
+    // The load's read and the first Mark all read are answered by the server at once and heard by
+    // the session only on release; the second Mark all read goes straight through.
+    const client = new LoomClient({
+      baseUrl: s.baseUrl, allowInsecure: true,
+      fetch: async (input, init) => {
+        const url = typeof input === "string" ? input : input.toString();
+        const method = init?.method ?? "GET";
+        const readPath = /\/read$/.test(new URL(url).pathname);
+        const hold = readPath && method === "GET" && ++gets === 1 ? snapshot
+          : readPath && method === "POST" && ++posts === 1 ? first : undefined;
+        const res = await fetch(url, init);
+        if (!hold) return res;
+        const text = await res.text();
+        hold.markEntered();
+        await hold.released;
+        if (hold === snapshot) snapshotDone = true;
+        return new Response(text, { status: res.status, headers: res.headers });
+      },
+    });
+    const session = createSession({ client, target: { kind: "id", weaveId: f.r.weave.id }, storage: storedIdentity(f.r.weave.id, f.j) });
+    try {
+      await session.load();
+      await snapshot.entered;                                         // the old positions, not heard yet
+      const a = session.markAllRead();                                // A: the server samples 7
+      await first.entered;
+      await s.core.postMessage(f.claude, f.pr.id, "between");         // 8
+      await session.markAllRead();                                    // B: the server samples 8, heard first
+      first.release();
+      await a;                                                        // A's lower cutoff, heard second
+      snapshot.release();
+      await waitFor(() => snapshotDone);
+      await waitFor(() => session.getState().newAfter !== undefined
+        && session.getState().events.some((e) => e.payload.text === "between"));
+      // Held as max(8, 7): message 8 in PR 1 stays read.
+      expect(session.getState().unread).toEqual({});
+    } finally { session.dispose(); }
+  });
+
   it("on the Lobby's own page the Lobby identity gets its divider and its marks", async () => {
     const lobby = await anon.getLobby();
     const n = ++fixtureN;
@@ -1840,7 +1885,7 @@ describe("Mark all read, and the Lobby page (spec 2026-09-26 §6.5, §6.6)", () 
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `cd src/web && npx vitest run test/components.test.tsx test/session.test.ts`
-Expected: FAIL. The three component cases find no "Mark all read" button (the fixture's `markAllRead` is an unknown key only to the type checker, which vitest does not run); the three Mark-all session cases fail with `session.markAllRead is not a function`. The Lobby case **passes already**: §6.6 needs no code of its own, because the Lobby page is `WeaveSession` with an id target like any other Weave. Say so in the report; it is a guard, not a RED.
+Expected: FAIL. The three component cases find no "Mark all read" button (the fixture's `markAllRead` is an unknown key only to the type checker, which vitest does not run); the four Mark-all session cases fail with `session.markAllRead is not a function`. The Lobby case **passes already**: §6.6 needs no code of its own, because the Lobby page is `WeaveSession` with an id target like any other Weave. Say so in the report; it is a guard, not a RED.
 
 - [ ] **Step 3: The session.** In `src/web/src/session.ts`:
 
@@ -1903,8 +1948,14 @@ Expected: FAIL. The three component cases find no "Mark all read" button (the fi
       // flight is never lowered, and what is held beyond it is flushed as usual.
       const cut: Record<string, number> = {};
       for (const t of state.threads) cut[t.id] = answer.seq;
-      // No read state yet: keep the cutoff for the answer that is on its way, rather than lose it.
-      if (!readState) { markAllCut = { ...owner, positions: cut }; return; }
+      // No read state yet: keep the cutoff for the answer that is on its way, rather than lose it,
+      // max-merged into any cutoff already held for this identity and generation, so two overlapping
+      // calls whose replies land in reverse order keep the higher one (review round 2).
+      if (!readState) {
+        const held = markAllCut && isOwnedBy(markAllCut, nowForRead()) ? markAllCut.positions : {};
+        markAllCut = { ...owner, positions: mergePositions(held, cut) };
+        return;
+      }
       readState = { ...readState, positions: mergePositions(readState.positions, cut) };
       set({ unread: unreadOf(state.events) });
     },
@@ -2056,7 +2107,7 @@ git commit -m "docs: read positions and unread counts; the manual check" -m "ARC
 5. **A failed mark is held for the next send and arms nothing.** If the Thread stays open and later sends fail too, the held position is retried at most once per interval, never faster.
 6. **On becoming visible, the mark waits for the reloaded positions** (§6.2 "reload positions, then mark"). If the reload fails, the Thread is marked on the next visibility change.
 7. **A `markRead` answer raises the local position** to the stored seq (which another tab may have moved further). Reason: it costs nothing and the server's answer is the stored position by definition (§4.1 step 7).
-8. **Mark all read merges over the Threads the session holds** (`state.threads`). An answer that lands before the identity's read state has loaded is held as a cutoff owned by that identity and generation, and max-merged into the read state when it arrives (review round 1, F4); an identity change drops it. A Thread created after the last refresh is corrected by the next `readPositions`. A stale rejection (another identity or generation) is dropped unshown; a current credential failure takes the invalid-identity flow and is still shown on the error bar.
+8. **Mark all read merges over the Threads the session holds** (`state.threads`). An answer that lands before the identity's read state has loaded is held as a cutoff owned by that identity and generation, max-merged into any cutoff already held (review round 2), and max-merged into the read state when it arrives (review round 1, F4); an identity change drops it. A Thread created after the last refresh is corrected by the next `readPositions`. A stale rejection (another identity or generation) is dropped unshown; a current credential failure takes the invalid-identity flow and is still shown on the error bar.
 9. **Leaving the Weave is `dispose()`,** which flushes what is held under the identity in hand and drops the answers.
 10. **Facade order:** an agent key on a well-formed but unknown Weave id is `weave_not_found` (the new `forWeave` checks the Weave before mapping the key), where `getWeave` and `readEvents` answer `forbidden` "Join the Weave first". Reason: spec §4.2 and §4.3 put `weave_not_found` first; `forThread` already does the same for Threads.
 11. **README.md is unchanged:** it lists no REST surface (spec §7 says "wherever the REST surface is listed"); the routes go into ARCHITECTURE §7.
@@ -2098,9 +2149,10 @@ git commit -m "docs: read positions and unread counts; the manual check" -m "ARC
 | §9.4 `no counts, no divider and no markRead before read state has loaded` | 3 |
 | §9.4 `a Mark all read reply delayed past an arrival and a Thread switch never lowers a position` | 6 |
 | beyond the list (review round 1, F4) `a Mark all read that succeeds while read state is loading survives the initial readPositions reply` | 6 |
+| beyond the list (review round 2) `two Mark all read replies arriving in reverse order while read state is loading keep the higher cutoff` | 6 |
 | beyond the list (review round 1, F5) `switching Threads just before the interval ends restarts the interval from the opening mark` | 4 |
 | §9.4 `a readPositions reply that arrives while the tab is hidden marks nothing; the hidden arrival stays unread until the tab is visible again` | 4 |
 | §9.5 no `mcp-tools`, `cli` or `claude-channel` test changes (checked by `git diff --stat`) | 7 |
 | §9.6 the manual check, written into TESTING.md as smoke test 8 (run by Paw after the deploy) | 7 |
 
-Cases this plan adds beyond the spec's list, each in the task named: the facade's agent mapping and `weave_not_found` order (1); `isOwnedBy` (3); `firstNewSeq`, `newestSeqIn`, `mergePositions` (3); the throttle's retry and reset, and `switching Threads just before the interval ends restarts the interval from the opening mark` (4, review round 1 F5); `a Mark all read that succeeds while read state is loading survives the initial readPositions reply` (6, review round 1 F4); the Mark-all failure on the error bar (6); the Lobby page (6).
+Cases this plan adds beyond the spec's list, each in the task named: the facade's agent mapping and `weave_not_found` order (1); `isOwnedBy` (3); `firstNewSeq`, `newestSeqIn`, `mergePositions` (3); the throttle's retry and reset, and `switching Threads just before the interval ends restarts the interval from the opening mark` (4, review round 1 F5); `a Mark all read that succeeds while read state is loading survives the initial readPositions reply` (6, review round 1 F4); `two Mark all read replies arriving in reverse order while read state is loading keep the higher cutoff` (6, review round 2); the Mark-all failure on the error bar (6); the Lobby page (6).
