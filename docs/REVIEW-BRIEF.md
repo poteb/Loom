@@ -72,43 +72,44 @@ onboarding walkthrough:
 
 ## 1a. What **this** branch changes, and the promises it does not make
 
-`feat/listener-onboarding` teaches an agent to become a Listener over its own MCP connection, makes
-liveness visible, and gives accepted work a deadline. The spec is
-[superpowers/specs/2026-09-23-loom-listener-onboarding-design.md](superpowers/specs/2026-09-23-loom-listener-onboarding-design.md),
-the plan [superpowers/plans/2026-09-23-loom-listener-onboarding.md](superpowers/plans/2026-09-23-loom-listener-onboarding.md);
-both were approved by Paw (PR #32) and every "(choice)" in the spec is implemented as written.
+`feat/removal-rules` answers the two questions the listener-onboarding review left for Paw, with
+the rule Paw chose each time: **M1**, a removal that leaves only completed acceptances closes the
+request as `completed`; **M3**, a Weave keeper removed from a Thread may invite itself back. The
+spec is
+[superpowers/specs/2026-09-26-loom-removal-rules-design.md](superpowers/specs/2026-09-26-loom-removal-rules-design.md),
+the plan [superpowers/plans/2026-09-26-loom-removal-rules.md](superpowers/plans/2026-09-26-loom-removal-rules.md);
+both were approved by Paw (PR #36). No migration, no new tool, no new field in any result, no
+route, shape or event type change.
 
-| Layer | What this branch added |
+| Layer | What this branch changed |
 | --- | --- |
-| core | migration 0005 (eight nullable columns, no DDL on `requests.status`); `agents.owner` with `setAgentOwner` and the owner rule in `setCapabilities`; liveness (`stampSeen` in `actors.ts`, `PublicParticipant.lastSeenAt`, throttled to once per 10 s, never an event); `pollIntervalMs` and `maxResponseMs` in `lobby/matching.ts` with the liveness term in `eligible`; the request lifecycle in `lobby/requests.ts` (`open` to `working` to `completed`, `accept` with a required `deadlineMs`, `complete`, cancel on `working`, `sweepOverdue` and `request.overdue`, revival of a removed acceptance); `removals.ts` (the marker rule, `remove_participant`, the two-Weave cascade, revoked invitations); `lobby/onboarding.ts` (`onboardingFacts`); `not_found` |
-| mcp-tools | `onboarding.ts`: six states, their texts, the `next` sentences, the agent connect instructions and the served document, all pinned by tests; tools `get_started`, `complete`, `remove_participant`, `keeper_agents_set_owner` (38 names); `next` hints on `join_lobby`, `set_capabilities`, `join_weave`, `offer` and an empty `inbox` |
-| server | REST for complete, removals, the accept deadline and agent owners; the sweep runs both passes with one `now`; agent connect instructions from the module; the client name from `initialize`, one redacted log line per session; `GET /join-loom.md` |
-| client, cli, channel | the same operations as thin adapters; `loom request accept --deadline` is required; `loom read` and the channel render the three new events; the channel wakes on them when addressed |
-| web | `working` and `completed` in the requests state, `thread.removed` with a `requestId` as a request mutation, the deadline on Accept (minutes, default 60), acceptances shown, the Offer form follows the offer window, `lastSeenAt` on the profile card. Behaviour only, no styling |
-| docs | DOGFOOD, README, ARCHITECTURE, SECURITY, TESTING (smoke test 7), KNOWN-ISSUES, HANDBOOK, ADR 0001 addendum, v2-notes, CONTRIBUTING, the package READMEs; `deploy/prepare-chatgpt-paste.ps1` deleted |
+| core | M1 in `removals.ts`: when a removal on a request Thread removes an active acceptance and the row, re-read in the lock, is stored `working`, the same transaction re-reads the offers; if at least one active acceptance remains and every one has completed, it closes the request as `completed` through `closeInTx` (now exported from `lobby/requests.ts`, with `isActive`), attributed to the remover. M3 in `invites.ts`: a participant keeper of the Weave may invite itself into a Thread it has been removed from (`lastRemovalSeq > 0`), with `assertStillKeeperOf` re-checked in the lock for every self-invite |
+| mcp-tools | two texts: one sentence at the end of the requester's `request.overdue` row in `REACTION_TABLE` (`onboarding.ts`), and one sentence in `invite_participant`'s description (`tools.ts`); both pinned by tests |
+| docs | KNOWN-ISSUES (the M1 and M3 rows deleted), SECURITY (the invite row), ARCHITECTURE (both rules), v2-notes (two dated answer lines), the onboarding spec (one "Amended" line) |
 
-**The promises it does not make**, stated in the spec's §12 and not to be re-reported: no push into
-ChatGPT (it is taught to poll, and `lastSeenAt` shows whether it does); no guarantee that a client
-keeps its scheduled task running; the document is served at its URL and installed nowhere; keys
-without an owner keep today's self-declared rule; nothing replaces a dead agent automatically; no
-stored liveness threshold; overdue is emitted within one sweep period, not at the second; a
-`working` request has no timeout of its own.
+**The promises it does not make**, stated in the spec's §6 and not to be re-reported: no
+`requestClosed` field on the removal result; no web control for a keeper to readmit itself (the MCP
+tool and `loom invite` do it); no change to who may remove whom; no automatic close when the last
+acceptance is removed and nothing completed (choice 4 stands); no change for requests `open` with
+legacy acceptances.
 
-**The deliberate break.** `accept` now requires `deadlineMs`; every caller inside the repository was
-changed, and a caller outside it gets `validation`. Spec §13 names it.
+**Corrections made during implementation**, written into the spec and not drift:
 
-**Two questions the whole-branch review raised for Paw**, recorded in
-[superpowers/specs/v2-notes.md](superpowers/specs/v2-notes.md) and not changed on this branch: whether
-a removal should close a `working` request as `completed` when every remaining active acceptance has
-already completed, and whether a Thread's creator may remove a Weave keeper from that Thread.
+- `lastEventSeq` after a closing removal is the `request.closed` seq, through `versionOf`, as for
+  every close (the approved text said `thread.closed`); `result.seq` stays the `thread.removed` seq.
+- The self-invite check runs before the authority check, so a keeper demoted since its removal is
+  told "You cannot invite yourself"; as a consequence a non-keeper who names its own participant id
+  gets `validation`, not `forbidden` as before.
+- A keeper never removed from the Thread gets that `validation` before the archived and closed
+  checks, as before this branch; a removed keeper's readmission into a closed Thread is still
+  `thread_closed`.
+- The remover learns of a close from `get_request` and the request Thread's log, not from its
+  inbox, which never shows an actor its own events.
 
-**The trade-offs taken on purpose**, all recorded in [KNOWN-ISSUES.md](KNOWN-ISSUES.md), so do not
-re-report them, but do say if you think one is under-rated: the owner rule exists in three places
-by content; the offer-window rule and the eligibility query exist once in TypeScript and once in
-SQL; a pre-0005 acceptance can hold a request `working` with no overdue; a `working` request whose
-acceptances are all removed stays `working`; the per-candidate Lobby lock in the sweeps serialises
-writers; a throwing expiry pass skips the overdue pass for that tick; `complete` with no request
-body answers 400, so clients send `{}`.
+**The known limit.** A request already stuck `working` before this deploy (every active acceptance
+completed, left by the old rule) stays stuck: removing its completed acceptance leaves none, and
+removing anybody else never closes it. Only `cancel_request` ends it, which records `cancelled`.
+There is no migration (spec §7).
 
 ## 2. Scope
 
