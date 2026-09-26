@@ -171,4 +171,15 @@ describe("read positions (spec 2026-09-26 §4)", () => {
     await expect(core.readPositions(agent, UNKNOWN)).rejects.toMatchObject({ code: "weave_not_found" });
     await expect(core.markAllRead(agent, "not-a-uuid")).rejects.toMatchObject({ code: "weave_not_found" });
   });
+
+  it("the facade refuses an agent key that has not joined the Weave, for all three", async () => {
+    const { r, t } = await setup();
+    const core = createCore(db);
+    const keeper = await resolveCredential(db, keeperToken("k1"));
+    const { key } = await addAgent(db, keeper, "Stranger");
+    const agent = await resolveCredential(db, key);
+    await expect(core.markRead(agent, t.id, 5)).rejects.toMatchObject({ code: "forbidden" });
+    await expect(core.markAllRead(agent, r.weave.id)).rejects.toMatchObject({ code: "forbidden" });
+    await expect(core.readPositions(agent, r.weave.id)).rejects.toMatchObject({ code: "forbidden" });
+  });
 });

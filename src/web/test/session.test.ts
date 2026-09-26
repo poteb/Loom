@@ -2760,11 +2760,13 @@ type Park = {
 
 /**
  * A client that records every call (method, path, the bearer it carried, the JSON body), can park
- * the first call `park.match` picks, and can fail the first call `failOnce` picks as a network error.
+ * the first call `park.match` picks (with several parks, each parks the first call it picks that no
+ * earlier park took), and can fail the first call `failOnce` picks as a network error.
  */
-function recordingClient(opts: { park?: Park; failOnce?: (method: string, path: string) => boolean } = {}) {
+function recordingClient(opts: { park?: Park | Park[]; failOnce?: (method: string, path: string) => boolean } = {}) {
   const calls: Call[] = [];
-  let parked = false;
+  const parkings = opts.park === undefined ? [] : Array.isArray(opts.park) ? opts.park : [opts.park];
+  const parked = new Set<Park>();
   let failed = false;
   const client = new LoomClient({
     baseUrl: s.baseUrl, allowInsecure: true,
@@ -2779,9 +2781,9 @@ function recordingClient(opts: { park?: Park; failOnce?: (method: string, path: 
         failed = true;
         throw new Error("simulated network failure");
       }
-      const p = opts.park;
-      if (!p || parked || !p.match(method, path)) return fetch(url, init);
-      parked = true;
+      const p = parkings.find((q) => !parked.has(q) && q.match(method, path));
+      if (!p) return fetch(url, init);
+      parked.add(p);
       if (!p.answerFirst) { p.gate.markEntered(); await p.gate.released; }
       const res = await fetch(url, init);
       const text = await res.text();
@@ -2891,25 +2893,73 @@ describe("read state (spec 2026-09-26 §6.1)", () => {
   it("replacing the identity while a readPositions call is pending drops the stale reply", async () => {
     const f = await readFixture();
     await s.core.markRead(await s.core.resolveCredential(f.j.token), f.pr.id, 6);   // Paw has read PR 1
-    const gate = makeGate();
+    const paws = makeGate();
+    const danas = makeGate();
     let staleDone = false;
-    const rec = recordingClient({ park: { match: (m, p) => m === "GET" && /\/read$/.test(p), gate, onDone: () => { staleDone = true; } } });
+    const getRead = (m: string, p: string) => m === "GET" && /\/read$/.test(p);
+    // Both reads are held, and Paw's lands first, while Dana's is still out: no newer answer has
+    // been applied, so only the identity in the stamp can tell that Paw's is stale.
+    const rec = recordingClient({ park: [
+      { match: getRead, gate: paws, onDone: () => { staleDone = true; } },
+      { match: getRead, gate: danas },
+    ] });
     const storage = storedIdentity(f.r.weave.id, f.j, { secret: f.r.secret });
     const session = createSession({ client: rec.client, target: { kind: "id", weaveId: f.r.weave.id }, storage });
     try {
       await session.load();
-      await gate.entered;                                    // Paw's read state is in flight
+      await paws.entered;                                    // Paw's read state is in flight
       await session.join("Dana");                            // another participant: joined at 8
       const dana = session.getState().me!;
+      await danas.entered;                                   // Dana's is in flight too
       await s.core.postMessage(f.claude, f.pr.id, "for Dana");   // 9
-      await waitFor(() => session.getState().unread[f.pr.id] === 1);
-      gate.release();
+      await waitFor(() => session.getState().events.some((e) => e.payload.text === "for Dana"));
+      paws.release();
       await waitFor(() => staleDone);
       await turn();
-      // Paw's answer changed nothing: Dana's counts, Dana's divider, and every mark in Dana's name.
+      // Paw's answer changed nothing: no counts, no divider, no mark.
+      expect([session.getState().unread, session.getState().newAfter]).toEqual([{}, undefined]);
+      expect(rec.calls.filter(isRead("PUT"))).toEqual([]);
+      danas.release();
+      await waitFor(() => session.getState().unread[f.pr.id] === 1);
+      // Then Dana's counts, Dana's divider, and every mark in Dana's name.
       expect(session.getState().unread).toEqual({ [f.pr.id]: 1 });
       expect(session.getState().newAfter).toEqual({ threadId: f.general, seq: 8, firstNew: null });
       expect(rec.calls.filter(isRead("PUT")).every((c) => c.token === dana.token)).toBe(true);
+    } finally { session.dispose(); }
+  });
+
+  it("a readPositions the server refuses for the credential takes the invalid-identity flow", async () => {
+    const f = await readFixture();
+    const readPath = `/api/weaves/${f.r.weave.id}/read`;
+    const c = sideReadClient({ [readPath]: always(REVOKED) });
+    const storage = storedIdentity(f.r.weave.id, f.j, { secret: f.r.secret });
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.r.secret }, storage });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().readOnlyReason === "secret-fallback");
+      expect([readWeaveEntry(storage, f.r.weave.id)!.identity, session.getState().me, session.getState().unread])
+        .toEqual(["invalid", undefined, {}]);
+      // The dead token is not asked again: one read, and nothing afterwards.
+      session.selectThread(f.pr.id);
+      await turn();
+      expect([c.calls(readPath), c.calls(`/api/threads/${f.pr.id}/read`)]).toEqual([1, 0]);
+    } finally { session.dispose(); }
+  });
+
+  it("a markRead the server refuses for the credential takes the invalid-identity flow", async () => {
+    const f = await readFixture();
+    const markPath = `/api/threads/${f.pr.id}/read`;
+    const c = sideReadClient({ [markPath]: always(REVOKED) });
+    const storage = storedIdentity(f.r.weave.id, f.j, { secret: f.r.secret });
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.r.secret }, storage });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().unread[f.pr.id] === 1);
+      session.selectThread(f.pr.id);                                   // the opening's mark is refused
+      await waitFor(() => session.getState().readOnlyReason === "secret-fallback");
+      expect([readWeaveEntry(storage, f.r.weave.id)!.identity, session.getState().me,
+        session.getState().unread, session.getState().newAfter]).toEqual(["invalid", undefined, {}, undefined]);
+      expect(c.calls(markPath)).toBe(1);
     } finally { session.dispose(); }
   });
 });
