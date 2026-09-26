@@ -164,7 +164,7 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
   }, ({ credential, threadId, url }) => toToolResult(Promise.resolve().then(() => backend.setThreadUrl(resolve(credential), threadId, url))));
 
   server.registerTool("invite_participant", {
-    description: "Invite a participant of the Weave into a thread: a targeted 'your input is wanted here'. Thread creator or Weave keeper only. Idempotent (re-inviting returns the original event's seq), except after a removal: then it is a new invite that lets the participant post again. Channel-connected agents are woken by an invite even in mentions-only mode.",
+    description: "Invite a participant of the Weave into a thread: a targeted 'your input is wanted here'. Thread creator or Weave keeper only. A Weave keeper removed from a thread may invite itself back; nobody else invites themselves. Idempotent (re-inviting returns the original event's seq), except after a removal: then it is a new invite that lets the participant post again. Channel-connected agents are woken by an invite even in mentions-only mode.",
     inputSchema: { credential: cred(hint), threadId: z.string(), participantId: z.string() },
   }, ({ credential, threadId, participantId }) => toToolResult(Promise.resolve().then(() => backend.inviteParticipant(resolve(credential), threadId, participantId))));
 

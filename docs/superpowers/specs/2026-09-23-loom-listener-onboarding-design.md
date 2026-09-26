@@ -1,5 +1,7 @@
 # Loom v2: Listener onboarding, liveness and work deadlines
 
+Amended 2026-09-26 by [2026-09-26-loom-removal-rules-design.md](2026-09-26-loom-removal-rules-design.md) (§2.10 choice 4, §4.5 one row, §6.5).
+
 Date: 2026-09-23
 Status: approved by Paw on 2026-09-23 ("32 approved", after one review round on PR #32). Implementation plan: docs/superpowers/plans/2026-09-23-loom-listener-onboarding.md.
 Sub-project: the slice after the live instance

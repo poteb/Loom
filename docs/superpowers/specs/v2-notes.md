@@ -487,11 +487,15 @@ neither was changed on the branch; each is also a row in [../../KNOWN-ISSUES.md]
   `completed` when at least one active acceptance remains and all of them have completed. (When
   every acceptance is removed the request stays `working`, which the spec's choice 4 allows; the
   proposal leaves that as it is.)
+  **Answered by Paw 2026-09-26: close as completed**, specified in
+  [2026-09-26-loom-removal-rules-design.md](2026-09-26-loom-removal-rules-design.md) §2.
 - **Question (2026-09-23): may a Thread creator remove a Weave keeper from that Thread?** Today a
   member who created a Thread may, and the keeper cannot readmit itself, because
   `inviteParticipant` refuses "yourself". In a Weave with one keeper only that member can let the
   keeper post there again, although the keeper can still close the Thread. The spec allows it. The
   two ways out: refuse a creator's removal of a keeper, or let a keeper invite itself back.
+  **Answered by Paw 2026-09-26: a keeper may re-add itself**, specified in
+  [2026-09-26-loom-removal-rules-design.md](2026-09-26-loom-removal-rules-design.md) §3.
 
 **Follow-ups the whole-branch review left open** (not defects):
 

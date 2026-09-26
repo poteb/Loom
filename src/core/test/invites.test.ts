@@ -4,6 +4,8 @@ import { EventBus } from "../src/bus.js";
 import { createWeave, joinWeave, archiveWeave } from "../src/weaves.js";
 import { createThread, closeThread } from "../src/threads.js";
 import { inviteParticipant } from "../src/invites.js";
+import { removeParticipant } from "../src/removals.js";
+import { postMessage } from "../src/messages.js";
 import { readEvents } from "../src/events.js";
 import { resolveCredential } from "../src/actors.js";
 import { setRole } from "../src/participants.js";
@@ -29,6 +31,7 @@ async function setup() {
   const t = await createThread(db, bus, creator, r.weave.id, "PR 1", "https://e.com/pr/1");
   return { r, owner, creator, member, guest, t, memberId: m.participant.id, guestId: g.participant.id };
 }
+const idOf = (a: Awaited<ReturnType<typeof resolveCredential>>) => (a.kind === "participant" ? a.participant.id : "");
 
 describe("inviteParticipant", () => {
   it("thread creator invites; event carries invitee and inviter; invite is idempotent", async () => {
@@ -73,5 +76,69 @@ describe("inviteParticipant", () => {
     await expect(inviteParticipant(db, bus, creator, t.id, guestId)).rejects.toMatchObject({ code: "thread_closed" });
     await archiveWeave(db, bus, owner, r.weave.id);
     await expect(inviteParticipant(db, bus, owner, r.generalThread.id, guestId)).rejects.toMatchObject({ code: "weave_archived" });
+  });
+  it("a keeper removed from a Thread by its creator may invite itself back", async () => {
+    const { owner, creator, t } = await setup();
+    const ownerId = idOf(owner);
+    await removeParticipant(db, bus, creator, t.id, ownerId);
+    const back = await inviteParticipant(db, bus, owner, t.id, ownerId);
+    expect(back.created).toBe(true);
+    const ev = (await readEvents(db, t.weaveId, {})).find((e) => e.seq === back.seq)!;
+    expect(ev).toMatchObject({ type: "thread.invited", threadId: t.id, actor: ownerId,
+      payload: { threadId: t.id, participantId: ownerId, invitedBy: ownerId } });
+    expect((await postMessage(db, bus, owner, t.id, "back")).type).toBe("message");
+  });
+  it("a keeper's second self-invite after readmission returns the first seq, created false", async () => {
+    const { owner, creator, t } = await setup();
+    const ownerId = idOf(owner);
+    await removeParticipant(db, bus, creator, t.id, ownerId);
+    const first = await inviteParticipant(db, bus, owner, t.id, ownerId);
+    const again = await inviteParticipant(db, bus, owner, t.id, ownerId);
+    expect(again).toEqual({ seq: first.seq, created: false });
+  });
+  it("a keeper never removed from the Thread cannot invite itself", async () => {
+    const { owner, t } = await setup();
+    await expect(inviteParticipant(db, bus, owner, t.id, idOf(owner)))
+      .rejects.toMatchObject({ code: "validation", message: "You cannot invite yourself" });
+  });
+  it("a removed Thread creator who is not a keeper cannot invite itself", async () => {
+    const { owner, creator, t } = await setup();
+    await removeParticipant(db, bus, owner, t.id, idOf(creator));
+    await expect(inviteParticipant(db, bus, creator, t.id, idOf(creator)))
+      .rejects.toMatchObject({ code: "validation", message: "You cannot invite yourself" });
+  });
+  it("a keeper demoted after its removal cannot readmit itself", async () => {
+    const { r, owner, creator, t } = await setup();
+    const ownerId = idOf(owner);
+    await removeParticipant(db, bus, creator, t.id, ownerId);
+    const instance = await resolveCredential(db, keeperToken("k1"));
+    await setRole(db, bus, instance, r.weave.id, ownerId, "member");
+    const demoted = await resolveCredential(db, r.token);   // loaded afresh, as every request does
+    await expect(inviteParticipant(db, bus, demoted, t.id, ownerId))
+      .rejects.toMatchObject({ code: "validation", message: "You cannot invite yourself" });
+  });
+  it("a keeper demoted between resolving and inviting cannot readmit itself", async () => {
+    const { r, owner, creator, t } = await setup();   // owner resolved while still a keeper
+    const ownerId = idOf(owner);
+    await removeParticipant(db, bus, creator, t.id, ownerId);
+    const instance = await resolveCredential(db, keeperToken("k1"));
+    await setRole(db, bus, instance, r.weave.id, ownerId, "member");
+    // The stale Actor still carries role keeper, so only the in-lock re-check can refuse it, and it
+    // answers as a freshly loaded Actor would: the self-invite rule.
+    await expect(inviteParticipant(db, bus, owner, t.id, ownerId))
+      .rejects.toMatchObject({ code: "validation", message: "You cannot invite yourself" });
+  });
+  it("a keeper's self-readmission into a closed Thread is thread_closed", async () => {
+    const { owner, creator, t } = await setup();
+    const ownerId = idOf(owner);
+    await removeParticipant(db, bus, creator, t.id, ownerId);
+    await closeThread(db, bus, owner, t.id);
+    await expect(inviteParticipant(db, bus, owner, t.id, ownerId)).rejects.toMatchObject({ code: "thread_closed" });
+  });
+  it("a keeper never removed from a closed Thread still gets validation for a self-invite", async () => {
+    const { owner, t } = await setup();
+    await closeThread(db, bus, owner, t.id);
+    await expect(inviteParticipant(db, bus, owner, t.id, idOf(owner)))
+      .rejects.toMatchObject({ code: "validation", message: "You cannot invite yourself" });
   });
 });

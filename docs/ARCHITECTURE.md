@@ -578,7 +578,10 @@ each acceptance past its due time, not completed and not removed, gets one `requ
 requester, and the request stays `working`. `remove_participant` on a request's Thread marks the
 acceptance removed, withdraws its unredeemed invitations, and, under the request's recorded target
 authority, removes the agent from the work Thread; a removed participant cannot post in a Thread
-until it is invited again.
+until it is invited again. When the removal leaves at least one active acceptance and every one of
+them has completed, the same transaction closes the request as `completed`, attributed to the
+remover; a removal that leaves none keeps it `working`. A Weave keeper removed from a Thread may
+invite itself back; nobody else invites themselves.
 
 **Status is computed, the sweep only persists it.** `computedStatus` reads a stored `open` row whose
 `expiresAt` has passed as `expired`, so no client ever sees a stale `open` and an unswept row counts

@@ -1,6 +1,7 @@
 # Loom: two removal rules (M1 and M3)
 
-Date: 2026-09-26. Status: draft for Paw's approval. Amends
+Date: 2026-09-26. Status: approved by Paw 2026-09-26 (PR #36); corrected during implementation in
+§2.2, §3.2 and §5.1 (see the implementation PR). Amends
 [2026-09-23-loom-listener-onboarding-design.md](2026-09-23-loom-listener-onboarding-design.md)
 (the listener onboarding spec, below "the onboarding spec") in its §2.10 choice 4, §4.5 (one row of
 the reaction table) and §6.5, and nothing else.
@@ -47,8 +48,8 @@ as it does for every close.
 
 **Event order in the Lobby log**, all in the one transaction: the request Thread's `thread.removed`
 (step 9), then `request.closed`, then `thread.closed`. The target half (step 8) is unchanged and
-runs before, in the target's log. The request's `lastEventSeq` advances to the last of the Lobby
-events, through `versionOf`, as today.
+runs before, in the target's log. The request's `lastEventSeq` advances through `versionOf`, as
+today: to the `request.closed` seq when the removal closes the request.
 
 **Unchanged:**
 
@@ -59,8 +60,10 @@ events, through `versionOf`, as today.
   removed, anybody on a request Thread) never closes the request.
 - A legacy acceptance on a request still `open` from before migration 0005 never closes it on
   removal: the rule applies only to stored status `working`, as `complete` refuses `open`.
-- `RemovalResult` keeps its four fields. The remover learns of the close from the `request.closed`
-  in its inbox and from `get_request`.
+- `RemovalResult` keeps its four fields. The remover learns of the close from `get_request` and
+  from the request Thread's log (`read`), not from its inbox: the inbox never shows an actor its own
+  events. The other addressees (the offerers not accepted, and the requester when a Lobby keeper
+  removed) see `request.closed` in their inbox.
 
 ### 2.3 Choice 4, as amended
 
@@ -114,6 +117,12 @@ Otherwise the self-invite stays `validation` "You cannot invite yourself", with 
 today, for a keeper never removed from the Thread and for any non-keeper, a removed Thread creator
 included.
 
+The self-invite rule is checked before the authority check, so a keeper demoted since its removal
+is told "You cannot invite yourself" (`validation`); as a consequence any actor who is not a
+participant keeper of the Weave and names its own participant id gets that `validation` rather than
+`forbidden`. The in-lock re-check of a self-invite answers the same `validation`, so a keeper
+demoted while its call waits for the lock gets the same answer.
+
 Everything else is `inviteParticipant` as it is: the Weave must not be archived (`weave_archived`),
 the Thread must be open (`thread_closed`), and it is idempotent while the latest marker is an invite
 (a second self-invite after the readmission returns the first one's seq with `created: false`). The
@@ -154,7 +163,8 @@ not concern it.
   `wanted: 2`, A and B accepted, A completes, the requester removes B. The request is `completed`
   with `closedAt` set, its Thread is closed, the Lobby log holds `thread.removed`, `request.closed
   { reason: "completed", accepted: [A, B] }` and `thread.closed` in that order, the
-  `request.closed` actor is the requester, and `lastEventSeq` equals the `thread.closed` seq.
+  `request.closed` actor is the requester, and `lastEventSeq` equals the `request.closed` seq
+  (through `versionOf`, as for every close).
 - `a Lobby keeper's removal that closes the request is attributed to the keeper`.
 - `a removal leaves the request working while a remaining acceptance has not completed`:
   `wanted: 3`, A completes, B and C working, C removed: still `working`, no `request.closed`.
