@@ -3,6 +3,8 @@
 Date: 2026-09-26. Status: draft for Paw's approval. Brainstorm: `.superpowers/unread-brainstorm.md`
 (git-ignored; Paw's answers Q1 to Q6 are restated in §2).
 
+Review round 1 (PR #38): F1 and F2 fixed in this revision.
+
 ## 1. Purpose and scope
 
 The web redesign of 2026-09-24 (PR #35) left out two parts of Paw's mockup because they need the
@@ -114,18 +116,50 @@ the 2026-09-24 artboards and are Paw's design session's.
 
 ### 6.1 State
 
-The session keeps, per loaded Weave and only when the browser has an identity there:
-`positions: Record<threadId, number>` and `joinedSeq`, loaded with `readPositions` on load and
-again whenever the tab becomes visible; the local position of a Thread is the greater of the loaded
-one and any this tab has marked. A pure function `unreadCounts(events, meId, positions, joinedSeq)`
-applies §4.4 and returns `Record<threadId, number>`; the session exposes its result as
-`state.unread`, recomputed whenever events or positions change. A browser with no identity in the
-Weave loads nothing and shows no counts.
+The session keeps, per loaded Weave and only when the browser has an identity there, the **read
+state** of that identity: `positions: Record<threadId, number>` and `joinedSeq`. The local position
+of a Thread is the greater of the loaded one and any this tab has marked. A pure function
+`unreadCounts(events, meId, positions, joinedSeq)` applies §4.4 and returns
+`Record<threadId, number>`; the session exposes its result as `state.unread`, recomputed whenever
+events or positions change. A browser with no identity in the Weave loads nothing and shows no
+counts.
+
+**When read state is loaded.** The read state belongs to one participant, so it is reset (positions
+emptied, `joinedSeq` unknown, any pending position of §6.2 discarded unsent) and `readPositions` is
+fetched with the new identity's token whenever an identity is established or changes:
+
+- a load that ends with an identity (`me` set);
+- `join()`, the first join on a secret-only page and a rejoin alike. `join()` installs the identity
+  in place, without `load()` and without bumping the generation, so it must start this fetch itself;
+- an identity replaced after invalidation (the existing invalid-identity flow): the invalidation
+  itself resets the read state to none, and whichever load or join installs the next identity
+  fetches it.
+
+It is fetched again, for the same identity, whenever the tab becomes visible (§6.2). A position that
+belonged to a previous participant is never shown, counted or sent under the new one.
+
+**Until the current identity's read state has loaded:** `state.unread` is empty (no counts are
+shown), no `newAfter` is captured and no `markRead` is sent, automatic or flushed. When it arrives,
+the open Thread gets its `newAfter` captured and is marked read, exactly as on opening (§6.2). A
+failed `readPositions` leaves the read state unloaded (no counts, no divider, no mark) and is
+retried on the next visibility change or identity change; it is not shown to the user, and a
+credential failure takes the existing invalid-identity flow.
+
+**Fencing.** Every `readPositions`, `markRead` and `markAllRead` call is stamped with the
+participant id, the token and the session generation it was issued under, and `readPositions`
+also with a request number, the way the session already fences the own-profile read (`isCurrent`
+in `side-reads.ts`). An answer or a rejection whose stamp no longer matches the session (another
+identity, another generation, or for `readPositions` an older request than one already applied) is
+dropped before any side effect: it changes no position, captures no `newAfter`, triggers no mark
+and invalidates no identity. A flush or retry always sends with the identity current at the moment
+it is sent, and only positions that identity produced.
 
 ### 6.2 Opening a Thread and staying in it
 
 - **On opening** Thread T (including the Thread a page lands on): record `newAfter = localPosition(T)`
-  for the divider, then mark T read up to the highest seq among T's loaded events.
+  for the divider, then mark T read up to the highest seq among T's loaded events. When the read
+  state has not loaded yet (§6.1), both wait for it and happen when it arrives, for the Thread open
+  at that moment.
 - **While T is open and `document.visibilityState === "visible"`**, every new event of T advances
   the local position to its seq at once (so no count appears for T), and the server call is
   throttled: at most one `markRead` per `READ_FLUSH_MS = 5000` ms, sending the latest position.
@@ -155,9 +189,12 @@ opened.
 ### 6.5 Mark all read
 
 A button with text "Mark all read" (class `mark-all-read`) in the Weave view, shown when the browser
-has an identity and the Weave is not archived. It calls `markAllRead`, then sets every Thread's local
-position to the answered `seq`; all counts become 0. A failure shows through the existing error
-path of the Weave view.
+has an identity and the Weave is not archived. It calls `markAllRead`; on the answer (fenced as in
+§6.1) it merges every Thread's local position as `max(current, answered seq)`, so a position this
+tab advanced past the cutoff while the call was in flight is never lowered. Pending progress beyond
+the cutoff stays pending and is flushed as usual (§6.2). Every message up to the answered `seq`
+counts as read; a message that arrived after the server sampled `last_seq` may remain unread. A
+failure shows through the existing error path of the Weave view.
 
 ### 6.6 The Lobby page
 
@@ -230,9 +267,13 @@ The same behaviour applies on the Lobby's own page, with the browser's Lobby ide
 - `while visible, arrivals advance the position with at most one markRead per READ_FLUSH_MS`
   (fake timers), `and leaving the Thread flushes the pending position`.
 - `while hidden, arrivals count as unread; on visible, positions are reloaded and the Thread is marked read`.
-- `Mark all read calls markAllRead and clears every count`; `it is absent without an identity and in an archived Weave`.
+- `Mark all read calls markAllRead and clears every count up to the answered seq`; `it is absent without an identity and in an archived Weave`.
 - `a browser with no identity loads no positions and shows no counts`.
 - `a failed markRead shows nothing and the next flush sends the latest position`.
+- `joining on a visible secret-only page loads read positions, then counts and the divider follow`.
+- `replacing the identity while a readPositions call is pending drops the stale reply`.
+- `no counts, no divider and no markRead before read state has loaded`.
+- `a Mark all read reply delayed past an arrival and a Thread switch never lowers a position`.
 
 ### 9.5 No `mcp-tools`, `cli` or `claude-channel` tests change.
 
