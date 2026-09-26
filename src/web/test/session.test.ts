@@ -3429,6 +3429,41 @@ describe("Mark all read, and the Lobby page (spec 2026-09-26 §6.5, §6.6)", () 
     } finally { session.dispose(); frames.restore(); }
   });
 
+  it("a readPositions reply issued before a Mark all read cannot bring back an explicit position below its cutoff", async () => {
+    const f = await readFixture();
+    const frames = holdFrames();
+    const vis = fakeVisibility();
+    const gate = makeGate();
+    let gets = 0;
+    let refreshDone = false;
+    // The load's read passes; the refresh a visibility change asks for is answered, then held.
+    const rec = recordingClient({ park: { match: (m, p) => m === "GET" && /\/read$/.test(p) && ++gets === 2,
+      gate, answerFirst: true, onDone: () => { refreshDone = true; } } });
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: f.r.weave.id },
+      storage: storedIdentity(f.r.weave.id, f.j), visibility: vis });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().unread[f.pr.id] === 1 && session.getState().connection === "open");
+      const pr2 = await s.core.createThread(f.claude, f.r.weave.id, "PR 2");   // 8, by Claude
+      await s.core.postMessage(f.claude, pr2.id, "x");                         // 9
+      await waitFor(() => frames.held() === 2);
+      // Another tab of the same participant saved PR 2 at 8; this tab has not heard of PR 2.
+      await s.core.markRead(await s.core.resolveCredential(f.j.token), pr2.id, 8);
+      vis.set(false);
+      vis.set(true);                                                          // a refresh: PR 2 at 8
+      await gate.entered;
+      await session.markAllRead();                                            // the server marks PR 2 at 9
+      gate.release();
+      await waitFor(() => refreshDone);
+      await turn();
+      frames.release();
+      await waitFor(() => session.getState().events.some((e) => e.threadId === pr2.id && e.type === "message"));
+      expect(session.getState().unread).toEqual({});
+      session.selectThread(pr2.id);
+      expect(session.getState().newAfter).toEqual({ threadId: pr2.id, seq: 9, firstNew: null });
+    } finally { session.dispose(); frames.restore(); }
+  });
+
   it("a Mark all read answer for an identity the session has left moves no position", async () => {
     const f = await readFixture();
     const gate = makeGate();

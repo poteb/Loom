@@ -225,6 +225,7 @@ Weave-wide floor, the default position of any Thread the tab holds no position f
 tab first hears of after the answer counts only its messages past the cutoff.
 Amended 2026-09-26 (whole-branch review F1): the Weave-wide floor, which a held cutoff carries and a
 later `readPositions` reply keeps; it goes with the rest of the read state on an identity change.
+PR #39 review round 1, F1: the floor is a lower bound for every Thread's position, explicit or not.
 
 ### 6.6 The Lobby page
 

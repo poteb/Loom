@@ -176,7 +176,8 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
    * highest seq a Mark all read has answered for this identity (0 before any): every Thread that
    * existed when the server sampled it was marked there, and a Thread created later has only events
    * past it, so `max(joinedSeq, floor)` is the position of a Thread this tab holds none for, even one
-   * it first hears of after the answer (whole-branch review F1). `undefined` until that answer lands,
+   * it first hears of after the answer (whole-branch review F1), and the floor is a lower bound for
+   * a held position too (PR #39 review round 1, F1). `undefined` until that answer lands,
    * and again whenever an identity is established, changes or is invalidated, so no position is ever
    * shown, counted or sent under a participant it did not belong to.
    */
@@ -436,12 +437,22 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
   const ownsRead = (owner: Owner) => !disposed && isOwnedBy(owner, nowForRead());
   /** Where a Thread with no position of its own stands: `joinedSeq`, raised by every Mark all read. Callers hold `readState`. */
   const defaultPosition = () => Math.max(readState!.joinedSeq, readState!.floor);
-  /** A Thread's local position: the loaded one, raised by this tab's marks, else the default. Callers hold `readState`. */
-  const localPosition = (threadId: string) => readState!.positions[threadId] ?? defaultPosition();
+  /**
+   * A Thread's local position: the loaded one, raised by this tab's marks, else the default; never
+   * below the floor, which bounds an explicit position too (PR #39 review round 1, F1): a reply issued
+   * before a Mark all read may carry one below its cutoff. Callers hold `readState`.
+   */
+  const localPosition = (threadId: string) => Math.max(readState!.floor, readState!.positions[threadId] ?? readState!.joinedSeq);
+  /** Every held position, raised to the floor: what the counts read. Callers hold `readState`. */
+  const effectivePositions = (): Record<string, number> => {
+    const out: Record<string, number> = {};
+    for (const id of Object.keys(readState!.positions)) out[id] = localPosition(id);
+    return out;
+  };
   /** `state.unread` for these events: empty until the identity in hand has its read state. */
   const unreadOf = (events: LoomEvent[]): Record<string, number> =>
     readState && readState.id === state.me?.participant.id
-      ? unreadCounts(events, readState.id, readState.positions, defaultPosition()) : {};
+      ? unreadCounts(events, readState.id, effectivePositions(), defaultPosition()) : {};
   /** Drops the read state of an identity that is being replaced, every position held for it (unsent) and its held cutoff. */
   const dropReadState = () => { readState = undefined; throttle.reset(); markAllCut = undefined; };
   /** Drops it together with what it showed. */
