@@ -1080,9 +1080,11 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       }
       if (!ownsRead(owner)) return;
       // max(current, answered): a position this tab advanced past the cutoff while the call was in
-      // flight is never lowered, and what is held beyond it is flushed as usual.
+      // flight is never lowered, and what is held beyond it is flushed as usual. Every Thread this
+      // tab knows of gets it: the listed ones, and those known so far only from their events, whose
+      // record the metadata refresh has not brought in yet (review 6 F1). The server marked them too.
       const cut: Record<string, number> = {};
-      for (const t of state.threads) cut[t.id] = answer.seq;
+      for (const id of new Set([...state.threads.map((t) => t.id), ...state.events.map((e) => e.threadId)])) cut[id] = answer.seq;
       // No read state yet: keep the cutoff for the answer that is on its way, rather than lose it,
       // max-merged into any cutoff already held for this identity and generation, so two overlapping
       // calls whose replies land in reverse order keep the higher one (review round 2).

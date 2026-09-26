@@ -3309,6 +3309,29 @@ describe("Mark all read, and the Lobby page (spec 2026-09-26 §6.5, §6.6)", () 
     } finally { session.dispose(); }
   });
 
+  it("Mark all read clears a Thread the stream has delivered before the refresh lists it", async () => {
+    const f = await readFixture();
+    const gate = makeGate();
+    let armed = false;
+    // The metadata refresh the new Thread schedules is held, so the Thread is known only from its events.
+    const rec = recordingClient({ park: { match: (m, p) => armed && m === "GET" && p === `/api/weaves/${f.r.weave.id}`, gate } });
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: f.r.weave.id }, storage: storedIdentity(f.r.weave.id, f.j) });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().unread[f.pr.id] === 1 && session.getState().connection === "open");
+      armed = true;
+      const pr2 = await s.core.createThread(f.claude, f.r.weave.id, "PR 2");   // 8, by Claude
+      await s.core.postMessage(f.claude, pr2.id, "x");                         // 9
+      await gate.entered;
+      await waitFor(() => session.getState().unread[pr2.id] === 1);
+      expect(session.getState().threads.some((t) => t.id === pr2.id)).toBe(false);
+      await session.markAllRead();                                            // the server marks PR 2 at 9 too
+      gate.release();
+      await waitFor(() => session.getState().threads.some((t) => t.id === pr2.id));
+      expect(session.getState().unread).toEqual({});
+    } finally { session.dispose(); }
+  });
+
   it("on the Lobby's own page the Lobby identity gets its divider and its marks", async () => {
     const lobby = await anon.getLobby();
     const n = ++fixtureN;
