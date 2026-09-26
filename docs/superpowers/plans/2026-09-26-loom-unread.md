@@ -8,6 +8,8 @@
 
 **Tech Stack:** TypeScript 5.9 strict ESM (`.js` import suffixes), pnpm 10 workspace, Vitest 4 against a real Postgres (`fileParallelism: false`), drizzle-orm 0.45.2 with drizzle-kit 0.31.10, zod 4, Hono, Preact with happy-dom for the DOM tests. **No `package.json` gains a dependency anywhere in this plan.**
 
+Plan review round 1 (PR #38): F4 and F5 fixed in this revision.
+
 **Spec:** `docs/superpowers/specs/2026-09-26-loom-unread-design.md`, approved by Paw on 2026-09-26 after three review rounds (PR #38). Read it whole before any task; it is the binding requirement text. Where this plan decides something the spec leaves open, the decision is listed under "Decisions this plan makes" at the end, with its reason. Conventions: `CONTRIBUTING.md`, `docs/TESTING.md`, `docs/ARCHITECTURE.md`; the dispatch loop is `docs/HANDBOOK.md` §3 step 9; the ledger is `.superpowers/sdd/2026-09-26-loom-unread/progress.md`.
 
 **Base:** branch `feat/unread` off `origin/main` **after the docs PR carrying the spec and this plan (PR #38) merges**, in the worktree `.claude/worktrees/unread`. From `main` this plan consumes, unchanged unless a task says otherwise: `getThread` (`src/core/src/threads.ts`); `assertParticipantOf`, `resolveInWeave` (`src/core/src/actors.ts`); `createCore` and its `forThread` (`src/core/src/index.ts`); `freshDb`, `closeTestDb`, `keeperToken` (`src/core/test/helpers.ts`); `startTestServer`, `api` (`src/server/test/helpers.ts`); `requireActor` (`src/server/src/auth.ts`), `body` (`src/server/src/validate.ts`); `LoomClient.call` (`src/client/src/client.ts`); in `src/web/src/session.ts` `createSession`, `recoverFromCredentialFailure`, `doLoad`, `join`, `onEvent`, `selectThread`, `createThread`, `dispose`; `isCurrent`, `createCounter`, `Stamp`, `Now` (`src/web/src/side-reads.ts`); `isCredentialFailure` (`src/web/src/weaves-store.ts`); in `src/web/test/session.test.ts` `anon`, `s`, `waitFor`, `makeGate`, `joinedWeave`, `storedIdentity`, `fixtureN`; in `src/web/test/components.test.tsx` the `state()` and `session()` fixtures.
@@ -1204,7 +1206,7 @@ Spec §6.2 whole, and the visibility clauses of §6.1. **This task carries spec 
 // src/web/src/unread.ts
 export const READ_FLUSH_MS = 5000;
 export type ReadThrottle = { advance(threadId: string, seq: number): void; flush(): void; retry(threadId: string, seq: number): void; reset(): void };
-export function createReadThrottle(send: (threadId: string, seq: number) => void, intervalMs?: number): ReadThrottle;
+export function createReadThrottle(send: (threadId: string, seq: number) => void, intervalMs?: number, now?: () => number): ReadThrottle;
 export type Visibility = { visible(): boolean; onChange(fn: () => void): () => void };
 export function documentVisibility(): Visibility;
 
@@ -1251,12 +1253,33 @@ describe("createReadThrottle (spec 2026-09-26 §6.2)", () => {
     expect(sent).toEqual([]);
     t.flush();
     expect(sent).toEqual([["T", 5]]);
-    t.advance("T", 6);
-    t.advance("T", 7);
+    vi.advanceTimersByTime(READ_FLUSH_MS);      // a full interval since that send
+    t.advance("T", 6);                          // at once
+    t.advance("T", 7);                          // held
     t.reset();
     vi.advanceTimersByTime(READ_FLUSH_MS * 2);
     t.flush();
     expect(sent).toEqual([["T", 5], ["T", 6]]);
+  });
+
+  it("switching Threads just before the interval ends restarts the interval from the opening mark", () => {
+    vi.useFakeTimers();
+    const sent: [string, number][] = [];
+    const t = createReadThrottle((id, seq) => { sent.push([id, seq]); });
+    t.advance("A", 5); t.flush();               // t=0: opening A, its mark at once
+    vi.advanceTimersByTime(100);
+    t.advance("A", 6);                          // t=100: an arrival in A, held
+    vi.advanceTimersByTime(READ_FLUSH_MS - 200);
+    t.flush();                                  // t=4900: leaving A flushes it
+    t.advance("B", 7); t.flush();               // t=4900: opening B, its mark at once
+    expect(sent).toEqual([["A", 5], ["A", 6], ["B", 7]]);
+    t.advance("B", 8);                          // t=4900: an arrival in B, held
+    vi.advanceTimersByTime(100);                // t=5000: A's old deadline passes, and nothing goes
+    expect(sent).toHaveLength(3);
+    vi.advanceTimersByTime(READ_FLUSH_MS - 101);
+    expect(sent).toHaveLength(3);               // t=9899
+    vi.advanceTimersByTime(1);                  // t=9900: a full interval after B's opening mark
+    expect(sent).toEqual([["A", 5], ["A", 6], ["B", 7], ["B", 8]]);
   });
 });
 ```
@@ -1393,9 +1416,9 @@ export const READ_FLUSH_MS = 5000;
 
 /** What the session hands positions to: it decides when each one reaches the server. */
 export type ReadThrottle = {
-  /** A position reached: sent now when nothing was sent in the last interval, else held for its end. */
+  /** A position reached: sent now when the latest send is a full interval old, else held until it is. */
   advance(threadId: string, seq: number): void;
-  /** Sends everything held, now: the Thread was left, or the tab hid. The interval runs on. */
+  /** Sends everything held, now: the Thread was left or opened, or the tab hid. It counts as the latest send. */
   flush(): void;
   /** Holds a position whose send failed, for the next send; arms nothing. */
   retry(threadId: string, seq: number): void;
@@ -1404,31 +1427,47 @@ export type ReadThrottle = {
 };
 
 /**
- * The §6.2 throttle: the latest position per Thread, at most one send per `intervalMs` on its own
- * clock, plus the immediate flushes the session asks for. A held position is only ever raised.
+ * The §6.2 throttle: the latest position per Thread, and an automatic send only when the latest
+ * **actual** send (automatic, or a flush) is at least `intervalMs` old, so a flush restarts the
+ * interval. Flushes themselves are never delayed. A held position is only ever raised. `now` is
+ * the clock; the fake timers of the tests fake `Date` as well.
  */
-export function createReadThrottle(send: (threadId: string, seq: number) => void, intervalMs: number = READ_FLUSH_MS): ReadThrottle {
+export function createReadThrottle(send: (threadId: string, seq: number) => void, intervalMs: number = READ_FLUSH_MS,
+  now: () => number = () => Date.now()): ReadThrottle {
   let held = new Map<string, number>();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let lastSent = Number.NEGATIVE_INFINITY;
   const hold = (threadId: string, seq: number) => { if (seq > (held.get(threadId) ?? -1)) held.set(threadId, seq); };
   const sendHeld = () => {
+    if (held.size === 0) return;
     const out = [...held];
     held = new Map();
+    lastSent = now();
     for (const [threadId, seq] of out) send(threadId, seq);
   };
-  const arm = () => {
+  /** One timer at most, due a full interval after the latest send; it re-checks, because a flush may have moved that. */
+  const schedule = () => {
+    if (timer !== undefined || held.size === 0) return;
     timer = setTimeout(() => {
       timer = undefined;
       if (held.size === 0) return;
+      if (now() - lastSent < intervalMs) { schedule(); return; }
       sendHeld();
-      arm();
-    }, intervalMs);
+    }, Math.max(0, lastSent + intervalMs - now()));
   };
   return {
-    advance(threadId, seq) { hold(threadId, seq); if (timer === undefined) { sendHeld(); arm(); } },
+    advance(threadId, seq) {
+      hold(threadId, seq);
+      if (now() - lastSent >= intervalMs) sendHeld(); else schedule();
+    },
     flush() { sendHeld(); },
     retry(threadId, seq) { hold(threadId, seq); },
-    reset() { if (timer !== undefined) clearTimeout(timer); timer = undefined; held = new Map(); },
+    reset() {
+      if (timer !== undefined) clearTimeout(timer);
+      timer = undefined;
+      held = new Map();
+      lastSent = Number.NEGATIVE_INFINITY;
+    },
   };
 }
 
@@ -1490,7 +1529,7 @@ and after `const closedPage = opts.closedRequestsPage ?? CLOSED_REQUESTS_PAGE;` 
 (e) `markNow` becomes, and the throttle and the visibility subscription follow it:
 
 ```ts
-  /** The mark of an opening: sent at once, and counted as the interval's one send. */
+  /** The mark of an opening: sent at once, and the interval restarts from it. */
   const markNow = (threadId: string, seq: number) => { throttle.advance(threadId, seq); throttle.flush(); };
   const throttle = createReadThrottle((threadId, seq) => sendMark(threadId, seq), opts.readFlushMs ?? READ_FLUSH_MS);
   /**
@@ -1672,14 +1711,14 @@ git commit -m "feat(web): the unread count in the Thread list and the New divide
 
 ### Task 6: web: Mark all read, and read positions on the Lobby page
 
-Spec §6.5, §6.6. **This task carries spec §9.4: `Mark all read calls markAllRead and clears every count up to the answered seq`; `it is absent without an identity and in an archived Weave`; `a Mark all read reply delayed past an arrival and a Thread switch never lowers a position`.** It also adds one Lobby case for §6.6, which the spec lists no test for.
+Spec §6.5, §6.6. **This task carries spec §9.4: `Mark all read calls markAllRead and clears every count up to the answered seq`; `it is absent without an identity and in an archived Weave`; `a Mark all read reply delayed past an arrival and a Thread switch never lowers a position`.** It also adds `a Mark all read that succeeds while read state is loading survives the initial readPositions reply` (review round 1, F4: the same "never lowers" rule, for a cutoff that lands before the read state does) and one Lobby case for §6.6, which the spec lists no test for.
 
 **Files:**
-- Modify: `src/web/src/session.ts` (`Session.markAllRead`, its implementation), `src/web/src/components/WeaveView.tsx` (the button)
+- Modify: `src/web/src/session.ts` (`Session.markAllRead`, its implementation, the held cutoff `markAllCut` with its merge in `loadReadState` and its reset in `dropReadState`), `src/web/src/components/WeaveView.tsx` (the button)
 - Test: `src/web/test/session.test.ts` (append a describe after Task 4's), `src/web/test/components.test.tsx` (the `session()` fixture gains `markAllRead`; a describe after `describe("WeaveView ...")`)
 
 **Interfaces:**
-- Consumes: `LoomClient.markAllRead` (Task 2); `readState`, `ownsRead`, `unreadOf`, `mergePositions`, `recoverFromCredentialFailure`, `writer` (Tasks 3 and 4).
+- Consumes: `LoomClient.markAllRead` (Task 2); `readState`, `ownsRead`, `nowForRead`, `isOwnedBy`, `unreadOf`, `mergePositions`, `loadReadState`, `dropReadState`, `recoverFromCredentialFailure`, `writer` (Tasks 3 and 4).
 - Produces: `Session.markAllRead(): Promise<void>`; the DOM hook `button.mark-all-read` with text "Mark all read".
 
 - [ ] **Step 1: Write the failing tests.** In `src/web/test/components.test.tsx`, the `session()` fixture gains `markAllRead: vi.fn(async () => {}),` directly before `...over`. After the `describe("WeaveView (spec §2.6, §2.7, §3.3)", ...)` block:
@@ -1756,6 +1795,28 @@ describe("Mark all read, and the Lobby page (spec 2026-09-26 §6.5, §6.6)", () 
     } finally { session.dispose(); }
   });
 
+  it("a Mark all read that succeeds while read state is loading survives the initial readPositions reply", async () => {
+    const f = await readFixture();
+    const gate = makeGate();
+    let snapshotDone = false;
+    // The server answers the load's read with the old positions (none, so PR 1 is unread); the
+    // session hears that answer only after Mark all read has succeeded.
+    const rec = recordingClient({ park: { match: (m, p) => m === "GET" && /\/read$/.test(p), gate, answerFirst: true,
+      onDone: () => { snapshotDone = true; } } });
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: f.r.weave.id }, storage: storedIdentity(f.r.weave.id, f.j) });
+    try {
+      await session.load();
+      await gate.entered;
+      await session.markAllRead();                                            // cutoff 7, every Thread
+      gate.release();
+      await waitFor(() => snapshotDone);
+      await waitFor(() => session.getState().newAfter !== undefined);
+      // PR 1 was never opened: the stale snapshot did not bring its count back.
+      expect(session.getState().unread).toEqual({});
+      expect(session.getState().newAfter).toEqual({ threadId: f.general, seq: 7, firstNew: null });
+    } finally { session.dispose(); }
+  });
+
   it("on the Lobby's own page the Lobby identity gets its divider and its marks", async () => {
     const lobby = await anon.getLobby();
     const n = ++fixtureN;
@@ -1779,9 +1840,39 @@ describe("Mark all read, and the Lobby page (spec 2026-09-26 §6.5, §6.6)", () 
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `cd src/web && npx vitest run test/components.test.tsx test/session.test.ts`
-Expected: FAIL. The three component cases find no "Mark all read" button (the fixture's `markAllRead` is an unknown key only to the type checker, which vitest does not run); the two Mark-all session cases fail with `session.markAllRead is not a function`. The Lobby case **passes already**: §6.6 needs no code of its own, because the Lobby page is `WeaveSession` with an id target like any other Weave. Say so in the report; it is a guard, not a RED.
+Expected: FAIL. The three component cases find no "Mark all read" button (the fixture's `markAllRead` is an unknown key only to the type checker, which vitest does not run); the three Mark-all session cases fail with `session.markAllRead is not a function`. The Lobby case **passes already**: §6.6 needs no code of its own, because the Lobby page is `WeaveSession` with an id target like any other Weave. Say so in the report; it is a guard, not a RED.
 
-- [ ] **Step 3: The session.** In `src/web/src/session.ts`, the `Session` type's line `  dismissNamePrompt(): void; dispose(): void;` becomes:
+- [ ] **Step 3: The session.** In `src/web/src/session.ts`:
+
+(a) Directly after `const readReads = createCounter();`:
+
+```ts
+  /**
+   * A Mark all read that answered while the identity's read state had not loaded yet (spec
+   * 2026-09-26 §6.5, review round 1 F4): the cutoff per Thread, owned by the identity and the
+   * generation it was issued under. `loadReadState` max-merges it into the answer it applies, so a
+   * snapshot the server took before the cutoff cannot bring a count back; an identity change drops it.
+   */
+  let markAllCut: (Owner & { positions: Record<string, number> }) | undefined;
+```
+
+(b) `dropReadState` becomes:
+
+```ts
+  /** Drops the read state of an identity that is being replaced, every position held for it (unsent) and its held cutoff. */
+  const dropReadState = () => { readState = undefined; throttle.reset(); markAllCut = undefined; };
+```
+
+(c) In `loadReadState`'s answer handler, directly after the `readState = { id: stamp.id, ... };` assignment and before `set({ unread: unreadOf(state.events) });`:
+
+```ts
+        if (markAllCut && isOwnedBy(markAllCut, nowForRead())) {
+          readState = { ...readState, positions: mergePositions(readState.positions, markAllCut.positions) };
+        }
+        markAllCut = undefined;
+```
+
+(d) The `Session` type's line `  dismissNamePrompt(): void; dispose(): void;` becomes:
 
 ```ts
   dismissNamePrompt(): void; dispose(): void;
@@ -1789,7 +1880,7 @@ Expected: FAIL. The three component cases find no "Mark all read" button (the fi
   markAllRead(): Promise<void>;
 ```
 
-In the returned object, after `setGuidelines`:
+(e) In the returned object, after `setGuidelines`:
 
 ```ts
     async markAllRead() {
@@ -1807,11 +1898,13 @@ In the returned object, after `setGuidelines`:
         }
         throw e;                        // the Weave view's error path shows it
       }
-      if (!ownsRead(owner) || !readState) return;
+      if (!ownsRead(owner)) return;
       // max(current, answered): a position this tab advanced past the cutoff while the call was in
       // flight is never lowered, and what is held beyond it is flushed as usual.
       const cut: Record<string, number> = {};
       for (const t of state.threads) cut[t.id] = answer.seq;
+      // No read state yet: keep the cutoff for the answer that is on its way, rather than lose it.
+      if (!readState) { markAllCut = { ...owner, positions: cut }; return; }
       readState = { ...readState, positions: mergePositions(readState.positions, cut) };
       set({ unread: unreadOf(state.events) });
     },
@@ -1959,11 +2052,11 @@ git commit -m "docs: read positions and unread counts; the manual check" -m "ARC
 1. **The divider is fixed at opening.** `newAfter` carries `firstNew`, the first message by others after the position, computed when the Thread is opened (or when read state first arrives for the Thread open then). A Thread opened with nothing new shows no divider, and a message that arrives later while it stays open does not get one. Reason: spec §6.4 "recomputed only when a Thread is opened" and "None when there is no such event"; a divider computed on every render would appear above the first arrival.
 2. **Picking the Thread that is already open is not opening it.** No new divider, no mark. Reason: the Thread list's click on the current row would otherwise move the divider, which §6.4 says stays while the Thread stays open.
 3. **"Open" is the session's selected Thread,** also while the Lobby page shows the listeners directory instead of it. Arrivals there are read while the tab is visible. Reason: the session does not know the view, and §6.2 defines "open" by selection; the alternative needs the view to tell the session.
-4. **The opening's mark counts as the interval's one send,** and a flush sends at once but does not restart the interval. So "at most one `markRead` per `READ_FLUSH_MS`" holds for arrivals and openings alike, with flushes on leave, hide and dispose on top.
+4. **The interval runs from the latest actual send** (review round 1, F5). The next automatic send comes at least `READ_FLUSH_MS` after the latest send of any kind: an automatic one, an opening's mark, or a flush. Flushes on leave, hide and dispose are never delayed, and each restarts the interval. So opening Thread B just before Thread A's interval ends does not let B's first arrival go out right after B's opening mark.
 5. **A failed mark is held for the next send and arms nothing.** If the Thread stays open and later sends fail too, the held position is retried at most once per interval, never faster.
 6. **On becoming visible, the mark waits for the reloaded positions** (§6.2 "reload positions, then mark"). If the reload fails, the Thread is marked on the next visibility change.
 7. **A `markRead` answer raises the local position** to the stored seq (which another tab may have moved further). Reason: it costs nothing and the server's answer is the stored position by definition (§4.1 step 7).
-8. **Mark all read merges over the Threads the session holds** (`state.threads`). A Thread created after the last refresh is corrected by the next `readPositions`. A stale rejection (another identity or generation) is dropped unshown; a current credential failure takes the invalid-identity flow and is still shown on the error bar.
+8. **Mark all read merges over the Threads the session holds** (`state.threads`). An answer that lands before the identity's read state has loaded is held as a cutoff owned by that identity and generation, and max-merged into the read state when it arrives (review round 1, F4); an identity change drops it. A Thread created after the last refresh is corrected by the next `readPositions`. A stale rejection (another identity or generation) is dropped unshown; a current credential failure takes the invalid-identity flow and is still shown on the error bar.
 9. **Leaving the Weave is `dispose()`,** which flushes what is held under the identity in hand and drops the answers.
 10. **Facade order:** an agent key on a well-formed but unknown Weave id is `weave_not_found` (the new `forWeave` checks the Weave before mapping the key), where `getWeave` and `readEvents` answer `forbidden` "Join the Weave first". Reason: spec §4.2 and §4.3 put `weave_not_found` first; `forThread` already does the same for Threads.
 11. **README.md is unchanged:** it lists no REST surface (spec §7 says "wherever the REST surface is listed"); the routes go into ARCHITECTURE §7.
@@ -2004,8 +2097,10 @@ git commit -m "docs: read positions and unread counts; the manual check" -m "ARC
 | §9.4 `replacing the identity while a readPositions call is pending drops the stale reply` | 3 |
 | §9.4 `no counts, no divider and no markRead before read state has loaded` | 3 |
 | §9.4 `a Mark all read reply delayed past an arrival and a Thread switch never lowers a position` | 6 |
+| beyond the list (review round 1, F4) `a Mark all read that succeeds while read state is loading survives the initial readPositions reply` | 6 |
+| beyond the list (review round 1, F5) `switching Threads just before the interval ends restarts the interval from the opening mark` | 4 |
 | §9.4 `a readPositions reply that arrives while the tab is hidden marks nothing; the hidden arrival stays unread until the tab is visible again` | 4 |
 | §9.5 no `mcp-tools`, `cli` or `claude-channel` test changes (checked by `git diff --stat`) | 7 |
 | §9.6 the manual check, written into TESTING.md as smoke test 8 (run by Paw after the deploy) | 7 |
 
-Cases this plan adds beyond the spec's list, each in the task named: the facade's agent mapping and `weave_not_found` order (1); `isOwnedBy` (3); `firstNewSeq`, `newestSeqIn`, `mergePositions` (3); the throttle's retry and reset (4); the Mark-all failure on the error bar (6); the Lobby page (6).
+Cases this plan adds beyond the spec's list, each in the task named: the facade's agent mapping and `weave_not_found` order (1); `isOwnedBy` (3); `firstNewSeq`, `newestSeqIn`, `mergePositions` (3); the throttle's retry and reset, and `switching Threads just before the interval ends restarts the interval from the opening mark` (4, review round 1 F5); `a Mark all read that succeeds while read state is loading survives the initial readPositions reply` (6, review round 1 F4); the Mark-all failure on the error bar (6); the Lobby page (6).
