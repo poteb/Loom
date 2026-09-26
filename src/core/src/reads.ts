@@ -20,15 +20,15 @@ export type MarkAllReadResult = { seq: number; threads: number };
 export type ReadPositions = { joinedSeq: number; threads: Record<string, number> };
 
 /** The Weave a read-position call names: `weave_not_found` for a malformed or unknown id, before any authority check. */
-export async function weaveForRead(q: Queryable, weaveId: string): Promise<{ id: string; lastSeq: number; archivedAt: Date | null }> {
+export async function weaveForRead(q: Queryable, weaveId: string): Promise<{ id: string; lastSeq: number }> {
   if (!isUuid(weaveId)) throw errors.weaveNotFound();
-  const [w] = await q.select({ id: weaves.id, lastSeq: weaves.lastSeq, archivedAt: weaves.archivedAt })
+  const [w] = await q.select({ id: weaves.id, lastSeq: weaves.lastSeq })
     .from(weaves).where(eq(weaves.id, weaveId)).limit(1);
   if (!w) throw errors.weaveNotFound();
   return w;
 }
 
-/** The one write rule (§4.1 step 6): insert, or raise the stored seq when the new one is greater. Never lower it. */
+/** The one write rule (§4.1 step 5): insert, or raise the stored seq when the new one is greater. Never lower it. */
 function upsertPositions(db: Db, rows: { participantId: string; threadId: string; seq: number }[]) {
   return db.insert(positions).values(rows).onConflictDoUpdate({
     target: [positions.participantId, positions.threadId],
@@ -37,13 +37,12 @@ function upsertPositions(db: Db, rows: { participantId: string; threadId: string
   });
 }
 
-/** §4.1. A closed Thread may be marked read. Answers the stored seq, which may be greater than `seq`. */
+/** §4.1. A closed Thread, and a Thread of an archived Weave, may be marked read. Answers the stored seq, which may be greater than `seq`. */
 export async function markRead(db: Db, actor: Actor, threadId: string, seq: number): Promise<MarkReadResult> {
   const t = await getThread(db, threadId);
   const me = assertParticipantOf(actor, t.weaveId);
   if (typeof seq !== "number" || !Number.isInteger(seq) || seq < 0) throw errors.validation("seq must be a non-negative integer");
   const w = await weaveForRead(db, t.weaveId);
-  if (w.archivedAt) throw errors.weaveArchived();
   if (seq > w.lastSeq) throw errors.validation("seq is past the Weave's newest event");
   const [raised] = await upsertPositions(db, [{ participantId: me.id, threadId, seq }]).returning({ seq: positions.seq });
   if (raised) return { threadId, seq: raised.seq };
@@ -53,11 +52,10 @@ export async function markRead(db: Db, actor: Actor, threadId: string, seq: numb
   return { threadId, seq: kept!.seq };
 }
 
-/** §4.2. `last_seq` is read once, and every Thread of the Weave, open and closed, is raised to it in one statement. */
+/** §4.2. Allowed on an archived Weave. `last_seq` is read once, and every Thread of the Weave, open and closed, is raised to it in one statement. */
 export async function markAllRead(db: Db, actor: Actor, weaveId: string): Promise<MarkAllReadResult> {
   const w = await weaveForRead(db, weaveId);
   const me = assertParticipantOf(actor, weaveId);
-  if (w.archivedAt) throw errors.weaveArchived();
   const ts = await db.select({ id: threads.id }).from(threads).where(eq(threads.weaveId, weaveId));
   if (ts.length > 0) await upsertPositions(db, ts.map((t) => ({ participantId: me.id, threadId: t.id, seq: w.lastSeq })));
   return { seq: w.lastSeq, threads: ts.length };

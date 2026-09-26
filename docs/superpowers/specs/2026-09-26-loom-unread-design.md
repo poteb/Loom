@@ -5,6 +5,8 @@ Date: 2026-09-26. Status: draft for Paw's approval. Brainstorm: `.superpowers/un
 
 Review rounds 1 and 2 (PR #38): F1, F2 and F3 fixed in this revision.
 
+Amended 2026-09-26 on Paw's word (review of Tasks 1 to 3, F4): marking read is allowed in an archived Weave; a read position is not a change to its content.
+
 ## 1. Purpose and scope
 
 The web redesign of 2026-09-24 (PR #35) left out two parts of Paw's mockup because they need the
@@ -63,20 +65,19 @@ publishes on the bus: a read is not news, and the row is independent of the log.
 2. The actor must be a participant of the Thread's Weave (`assertParticipantOf`, which answers
    `forbidden` for anyone else, the instance keeper and a raw agent key included).
 3. `seq` must be an integer, at least 0 (`validation` "seq must be a non-negative integer").
-4. The Weave must not be archived (`weave_archived`).
-5. `seq` must not exceed the Weave's `last_seq` (`validation` "seq is past the Weave's newest
+4. `seq` must not exceed the Weave's `last_seq` (`validation` "seq is past the Weave's newest
    event").
-6. Upsert: insert `(participant, thread, seq)`, or on conflict set `seq = GREATEST(stored, seq)`
+5. Upsert: insert `(participant, thread, seq)`, or on conflict set `seq = GREATEST(stored, seq)`
    and `updated_at = now()` only when the new `seq` is greater. The position never moves back.
-7. Return the stored `seq` after the upsert (the greater of the two).
+6. Return the stored `seq` after the upsert (the greater of the two).
 
-A closed Thread may be marked read.
+A closed Thread may be marked read, and so may a Thread of an archived Weave.
 
 ### 4.2 `markAllRead(db, actor, weaveId): Promise<{ seq: number; threads: number }>`
 
 An unknown or malformed id is `weave_not_found` (checked first); then the actor must be a
-participant of the Weave (`forbidden`); archived is `weave_archived`. Reads the Weave's `last_seq` once and applies the
-rule of §4.1 step 6 with that `seq` to every Thread of the Weave, open and closed, in one statement
+participant of the Weave (`forbidden`). Allowed on an archived Weave. Reads the Weave's `last_seq` once and applies the
+rule of §4.1 step 5 with that `seq` to every Thread of the Weave, open and closed, in one statement
 or one transaction. Returns that `seq` and the number of Threads.
 
 ### 4.3 `readPositions(db, actor, weaveId): Promise<ReadPositions>`
@@ -200,7 +201,7 @@ opened.
 ### 6.5 Mark all read
 
 A button with text "Mark all read" (class `mark-all-read`) in the Weave view, shown when the browser
-has an identity and the Weave is not archived. It calls `markAllRead`; on the answer (fenced as in
+has an identity. It calls `markAllRead`; on the answer (fenced as in
 §6.1) it merges every Thread's local position as `max(current, answered seq)`, so a position this
 tab advanced past the cutoff while the call was in flight is never lowered. Pending progress beyond
 the cutoff stays pending and is flushed as usual (§6.2). Every message up to the answered `seq`
@@ -216,7 +217,7 @@ The same behaviour applies on the Lobby's own page, with the browser's Lobby ide
 - `docs/ARCHITECTURE.md`: the `read_positions` table in the table list, `reads.ts` in the module map,
   the three routes; one sentence that reads are not events.
 - `docs/SECURITY.md`: one row: read positions are the actor's own, participant of the Weave only,
-  no event, archived Weave read-only.
+  no event, allowed in an archived Weave (a read position is not a change to its content).
 - `README.md`: the three routes wherever the REST surface is listed.
 - `docs/TESTING.md`: a short manual check (§9.6).
 - `docs/superpowers/specs/v2-notes.md`: in "Web redesign from the design session", mark "Unread counts
@@ -235,7 +236,6 @@ The same behaviour applies on the Lobby's own page, with the browser's Lobby ide
 | `markAllRead` or `readPositions` on an unknown Weave | `weave_not_found` |
 | `seq` negative or not an integer | `validation` |
 | `seq` past the Weave's `last_seq` | `validation` |
-| `markRead` or `markAllRead` in an archived Weave | `weave_archived` |
 
 ## 9. Tests
 
@@ -248,7 +248,7 @@ The same behaviour applies on the Lobby's own page, with the browser's Lobby ide
 - `markRead on an unknown Thread is thread_not_found`.
 - `a participant of another Weave, the instance keeper and a raw agent key are forbidden` (one case
   each, for all three functions).
-- `markRead and markAllRead are weave_archived in an archived Weave; readPositions still answers`.
+- `markRead, markAllRead and readPositions all work in an archived Weave`.
 - `markRead accepts a closed Thread`.
 - `markAllRead sets every Thread of the Weave, open and closed, to last_seq and never lowers one`.
 - `readPositions gives joinedSeq as the seq of the actor's own participant.joined`, and only the
@@ -278,7 +278,7 @@ The same behaviour applies on the Lobby's own page, with the browser's Lobby ide
 - `while visible, arrivals advance the position with at most one markRead per READ_FLUSH_MS`
   (fake timers), `and leaving the Thread flushes the pending position`.
 - `while hidden, arrivals count as unread; on visible, positions are reloaded and the Thread is marked read`.
-- `Mark all read calls markAllRead and clears every count up to the answered seq`; `it is absent without an identity and in an archived Weave`.
+- `Mark all read calls markAllRead and clears every count up to the answered seq`; `it is absent without an identity`.
 - `a browser with no identity loads no positions and shows no counts`.
 - `a failed markRead shows nothing and the next flush sends the latest position`.
 - `joining on a visible secret-only page loads read positions, then counts and the divider follow`.

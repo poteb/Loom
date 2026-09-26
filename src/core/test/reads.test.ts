@@ -91,13 +91,15 @@ describe("read positions (spec 2026-09-26 §4)", () => {
     }
   });
 
-  it("markRead and markAllRead are weave_archived in an archived Weave; readPositions still answers", async () => {
-    const { r, paw, t } = await setup();
+  it("markRead, markAllRead and readPositions all work in an archived Weave", async () => {
+    const { r, paw, t, general } = await setup();
     await markRead(db, paw, t.id, 6);
-    await archiveWeave(db, bus, paw, r.weave.id);
-    await expect(markRead(db, paw, t.id, 7)).rejects.toMatchObject({ code: "weave_archived" });
-    await expect(markAllRead(db, paw, r.weave.id)).rejects.toMatchObject({ code: "weave_archived" });
-    expect(await readPositions(db, paw, r.weave.id)).toEqual({ joinedSeq: 2, threads: { [t.id]: 6 } });
+    await archiveWeave(db, bus, paw, r.weave.id);                                         // 8
+    // A read position is not a change to the Weave's content (Paw, 2026-09-26).
+    expect(await markRead(db, paw, t.id, 7)).toEqual({ threadId: t.id, seq: 7 });
+    const newest = await lastSeq(r.weave.id);
+    expect(await markAllRead(db, paw, r.weave.id)).toEqual({ seq: newest, threads: 2 });
+    expect(await readPositions(db, paw, r.weave.id)).toEqual({ joinedSeq: 2, threads: { [t.id]: newest, [general]: newest } });
   });
 
   it("markRead accepts a closed Thread", async () => {
