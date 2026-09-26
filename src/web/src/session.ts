@@ -433,10 +433,17 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
   const forgetReadState = () => { dropReadState(); set({ unread: {}, newAfter: undefined }); };
 
   /**
+   * Whether a failed mark may succeed if sent again: the network, or the server's own failure (5xx).
+   * Any other refusal (validation, not found, forbidden) will be refused the same way next time.
+   */
+  const worthRetrying = (e: unknown) =>
+    !(e instanceof LoomClientError) || e.code === "network" || (e.status !== undefined && e.status >= 500);
+  /**
    * Sends one position under the identity current at this moment, stamped with it (§6.1). The answer
    * raises the local position to what the server holds. Either outcome is dropped before any side
    * effect once the session is another identity or generation. A refused credential takes the
-   * invalid-identity flow; any other failure is silent and the local position stands (§6.2).
+   * invalid-identity flow; any other failure is silent and the local position stands (§6.2), and is
+   * held for the next send only when sending it again could succeed.
    */
   const sendMark = (threadId: string, seq: number) => {
     const me = state.me;
@@ -450,8 +457,9 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       },
       (e: unknown) => {
         if (!ownsRead(owner)) return;
-        // Silent: the local position stands, and the next send carries this position again.
-        if (!isCredentialFailure(e)) { throttle.retry(threadId, seq); return; }
+        // Silent: the local position stands, and the next send carries this position again, unless
+        // the server has refused it for good.
+        if (!isCredentialFailure(e)) { if (worthRetrying(e)) throttle.retry(threadId, seq); return; }
         const recovered = recoverFromCredentialFailure(e, "identity");
         if (recovered?.reload) void doLoad();
       },

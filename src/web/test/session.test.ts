@@ -3071,6 +3071,42 @@ describe("reading while the Thread is open (spec 2026-09-26 §6.2)", () => {
     } finally { session.dispose(); }
   });
 
+  it("a mark the server refuses for good is not sent again", async () => {
+    for (const refusal of [refuses("validation", "seq is past the Weave's newest event", 400),
+      refuses("thread_not_found", "Thread not found", 404)]) {
+      const f = await readFixture();
+      const markPath = `/api/threads/${f.pr.id}/read`;
+      const refused = delivering(refusal);
+      const c = sideReadClient({ [markPath]: onCall(1, refused.answer) });
+      const session = byId(f, c.client, { readFlushMs: 60_000 });
+      try {
+        await settled(session, f);
+        session.selectThread(f.pr.id);                                 // the opening's mark is refused
+        await afterDelivery(refused.delivered);
+        session.selectThread(f.general);                               // the flush has nothing of PR 1's
+        await turn();
+        expect(c.calls(markPath)).toBe(1);
+        expect(session.getState().me).toBeDefined();
+      } finally { session.dispose(); }
+    }
+  });
+
+  it("a mark that fails with a server error is sent again with the next flush", async () => {
+    const f = await readFixture();
+    const markPath = `/api/threads/${f.pr.id}/read`;
+    const broken = delivering(BROKEN);
+    const c = sideReadClient({ [markPath]: onCall(1, broken.answer) });
+    const session = byId(f, c.client, { readFlushMs: 60_000 });
+    try {
+      await settled(session, f);
+      session.selectThread(f.pr.id);
+      await afterDelivery(broken.delivered);
+      session.selectThread(f.general);
+      expect(c.calls(markPath)).toBe(2);
+      await vi.waitFor(async () => expect((await serverPositions(f.j.token, f.r.weave.id)).threads[f.pr.id]).toBe(6));
+    } finally { session.dispose(); }
+  });
+
   it("a readPositions reply that arrives while the tab is hidden marks nothing; the hidden arrival stays unread until the tab is visible again", async () => {
     const f = await readFixture();
     const vis = fakeVisibility();
