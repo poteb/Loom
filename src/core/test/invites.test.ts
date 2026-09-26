@@ -124,4 +124,10 @@ describe("inviteParticipant", () => {
     await closeThread(db, bus, owner, t.id);
     await expect(inviteParticipant(db, bus, owner, t.id, ownerId)).rejects.toMatchObject({ code: "thread_closed" });
   });
+  it("a keeper never removed from a closed Thread still gets validation for a self-invite", async () => {
+    const { owner, t } = await setup();
+    await closeThread(db, bus, owner, t.id);
+    await expect(inviteParticipant(db, bus, owner, t.id, idOf(owner)))
+      .rejects.toMatchObject({ code: "validation", message: "You cannot invite yourself" });
+  });
 });

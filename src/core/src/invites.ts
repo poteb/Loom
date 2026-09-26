@@ -32,11 +32,12 @@ export async function inviteParticipant(db: Db, bus: EventBus, actor: Actor, thr
   // Explicit type argument: inference would otherwise narrow T to the first branch's `created: false`.
   return withWeaveLock<{ seq: number; created: boolean }>(db, bus, t.weaveId, async (tx, weave) => {
     if (!isCreator || self) await assertStillKeeperOf(tx, actor, t.weaveId);
+    // Spec 2026-09-26 §3.2 (M3): a keeper readmits itself only after a removal from this Thread,
+    // and a never-removed keeper is told so before any Thread state check.
+    if (self && await lastRemovalSeq(tx, threadId, me) === 0) throw errors.validation("You cannot invite yourself");
     if (weave.archivedAt) throw errors.weaveArchived();
     const [fresh] = await tx.select({ closedAt: threads.closedAt }).from(threads).where(eq(threads.id, threadId));
     if (fresh!.closedAt) throw errors.threadClosed();
-    // Spec 2026-09-26 §3.2 (M3): a keeper readmits itself only after a removal from this Thread.
-    if (self && await lastRemovalSeq(tx, threadId, me) === 0) throw errors.validation("You cannot invite yourself");
     const [invitee] = await tx.select({ id: participants.id }).from(participants)
       .where(and(eq(participants.id, participantId), eq(participants.weaveId, t.weaveId))).limit(1);
     if (!invitee) throw errors.validation("No such participant in this Weave");
