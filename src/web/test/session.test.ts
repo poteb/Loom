@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, beforeAll, afterAll, vi } from "vitest";
 import { startTestServer, keeperToken, type TestServer } from "../../server/test/helpers.js";
-import { LoomClient } from "@loom/client";
+import { LoomClient, type ReadPositions } from "@loom/client";
 import { createSession, type Session, type SessionTarget } from "../src/session.js";
 import { browserStorage, memoryStorage, type KeyValueStorage, type WriteResult } from "../src/storage.js";
 import { invalidateIdentity, legacyKey, readWeaveEntry, saveWeaveEntry, setIdentity, weaveKey } from "../src/weaves-store.js";
@@ -2742,6 +2742,173 @@ describe("the session's own Lobby profile (spec §3.3)", () => {
       const other = await anon.joinWeave(f.target.secret, { name: `Other-${++fixtureN}`, kind: "human" });
       await waitFor(() => session.getState().participants.some((p) => p.id === other.participant.id));
       expect(c.calls(MY_PROFILE)).toBe(0);
+    } finally { session.dispose(); }
+  });
+});
+
+// --- Read positions (spec 2026-09-26 §6) -------------------------------------------------------
+
+type Call = { method: string; path: string; token?: string; body?: unknown };
+type Park = {
+  match: (method: string, path: string) => boolean; gate: ReturnType<typeof makeGate>;
+  /** Hold the answer rather than the request: the server acts first, the session hears later. */
+  answerFirst?: boolean;
+  /** Told once the parked call's answer has been read, just before the session is handed it. */
+  onDone?: () => void;
+};
+
+/**
+ * A client that records every call (method, path, the bearer it carried, the JSON body), can park
+ * the first call `park.match` picks, and can fail the first call `failOnce` picks as a network error.
+ */
+function recordingClient(opts: { park?: Park; failOnce?: (method: string, path: string) => boolean } = {}) {
+  const calls: Call[] = [];
+  let parked = false;
+  let failed = false;
+  const client = new LoomClient({
+    baseUrl: s.baseUrl, allowInsecure: true,
+    fetch: async (input, init) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      const path = new URL(url).pathname;
+      const auth = (init?.headers as Record<string, string> | undefined)?.authorization;
+      calls.push({ method, path, token: auth?.replace(/^Bearer /, ""),
+        body: typeof init?.body === "string" ? JSON.parse(init.body) as unknown : undefined });
+      if (opts.failOnce && !failed && opts.failOnce(method, path)) {
+        failed = true;
+        throw new Error("simulated network failure");
+      }
+      const p = opts.park;
+      if (!p || parked || !p.match(method, path)) return fetch(url, init);
+      parked = true;
+      if (!p.answerFirst) { p.gate.markEntered(); await p.gate.released; }
+      const res = await fetch(url, init);
+      const text = await res.text();
+      if (p.answerFirst) { p.gate.markEntered(); await p.gate.released; }
+      p.onDone?.();
+      return new Response(res.status === 204 ? null : text, { status: res.status, headers: res.headers });
+    },
+  });
+  return { client, calls };
+}
+
+const isRead = (method: string) => (c: Call) => c.method === method && /\/read$/.test(c.path);
+/** The bodies of every `PUT /api/threads/<id>/read` so far, in order. */
+const putsTo = (calls: Call[], threadId: string) =>
+  calls.filter((c) => c.method === "PUT" && c.path === `/api/threads/${threadId}/read`).map((c) => c.body);
+/** Lets a handler that is already queued run: long enough for a parsed answer to reach the session. */
+const turn = () => new Promise((r) => setTimeout(r, 50));
+
+/**
+ * Claude creates the Weave (1 to 3), Paw joins (4), Claude opens "PR 1" (5) and posts in it (6) and
+ * in General (7). Paw lands on General with one unread message in "PR 1".
+ */
+async function readFixture() {
+  const { r, j } = await joinedWeave("Paw");
+  const claude = await s.core.resolveCredential(r.token);
+  const pr = await s.core.createThread(claude, r.weave.id, "PR 1");
+  await s.core.postMessage(claude, pr.id, "one");
+  await s.core.postMessage(claude, r.generalThread.id, "two");
+  return { r, j, claude, pr, general: r.generalThread.id };
+}
+async function serverPositions(token: string, weaveId: string): Promise<ReadPositions> {
+  return s.core.readPositions(await s.core.resolveCredential(token), weaveId);
+}
+
+describe("read state (spec 2026-09-26 §6.1)", () => {
+  it("a browser with no identity loads no positions and shows no counts", async () => {
+    const f = await readFixture();
+    const rec = recordingClient();
+    const session = createSession({ client: rec.client, target: { kind: "secret", secret: f.r.secret }, storage: memoryStorage() });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().connection === "open");
+      await s.core.postMessage(f.claude, f.pr.id, "three");
+      await waitFor(() => session.getState().events.some((e) => e.payload.text === "three"));
+      session.selectThread(f.pr.id);
+      expect([session.getState().unread, session.getState().newAfter]).toEqual([{}, undefined]);
+      expect(rec.calls.filter((c) => /\/read$/.test(c.path))).toEqual([]);
+    } finally { session.dispose(); }
+  });
+
+  it("no counts, no divider and no markRead before read state has loaded", async () => {
+    const f = await readFixture();
+    const gate = makeGate();
+    const rec = recordingClient({ park: { match: (m, p) => m === "GET" && /\/read$/.test(p), gate } });
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: f.r.weave.id }, storage: storedIdentity(f.r.weave.id, f.j) });
+    try {
+      await session.load();
+      await gate.entered;
+      // Opening Threads while the read state is in flight captures nothing and marks nothing.
+      session.selectThread(f.pr.id);
+      session.selectThread(f.general);
+      expect([session.getState().unread, session.getState().newAfter]).toEqual([{}, undefined]);
+      expect(rec.calls.filter(isRead("PUT"))).toEqual([]);
+      gate.release();
+      await waitFor(() => session.getState().unread[f.pr.id] === 1);
+      // Then the Thread open at that moment is opened for real: the divider, then the mark.
+      expect(session.getState().newAfter).toEqual({ threadId: f.general, seq: 4, firstNew: 7 });
+      await waitFor(() => putsTo(rec.calls, f.general).length === 1);
+      expect(putsTo(rec.calls, f.general)).toEqual([{ seq: 7 }]);
+    } finally { session.dispose(); }
+  });
+
+  it("opening a Thread marks it read up to its newest event and records newAfter", async () => {
+    const f = await readFixture();
+    const rec = recordingClient();
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: f.r.weave.id }, storage: storedIdentity(f.r.weave.id, f.j) });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().unread[f.pr.id] === 1);
+      session.selectThread(f.pr.id);
+      expect(session.getState().newAfter).toEqual({ threadId: f.pr.id, seq: 4, firstNew: 6 });
+      expect(session.getState().unread[f.pr.id]).toBeUndefined();
+      expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 6 }]);
+      await vi.waitFor(async () => expect((await serverPositions(f.j.token, f.r.weave.id)).threads[f.pr.id]).toBe(6));
+    } finally { session.dispose(); }
+  });
+
+  it("joining on a visible secret-only page loads read positions, then counts and the divider follow", async () => {
+    const f = await readFixture();
+    const rec = recordingClient();
+    const session = createSession({ client: rec.client, target: { kind: "secret", secret: f.r.secret }, storage: memoryStorage() });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().connection === "open");
+      await session.join("Dana");                                           // participant.joined at 8
+      const dana = session.getState().me!;
+      await waitFor(() => rec.calls.some((c) => isRead("GET")(c) && c.token === dana.token));
+      await s.core.postMessage(f.claude, f.pr.id, "after the join");        // 9
+      await waitFor(() => session.getState().unread[f.pr.id] === 1);
+      session.selectThread(f.pr.id);
+      expect(session.getState().newAfter).toEqual({ threadId: f.pr.id, seq: 8, firstNew: 9 });
+      expect(session.getState().unread[f.pr.id]).toBeUndefined();
+      expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 9 }]);
+    } finally { session.dispose(); }
+  });
+
+  it("replacing the identity while a readPositions call is pending drops the stale reply", async () => {
+    const f = await readFixture();
+    await s.core.markRead(await s.core.resolveCredential(f.j.token), f.pr.id, 6);   // Paw has read PR 1
+    const gate = makeGate();
+    let staleDone = false;
+    const rec = recordingClient({ park: { match: (m, p) => m === "GET" && /\/read$/.test(p), gate, onDone: () => { staleDone = true; } } });
+    const storage = storedIdentity(f.r.weave.id, f.j, { secret: f.r.secret });
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: f.r.weave.id }, storage });
+    try {
+      await session.load();
+      await gate.entered;                                    // Paw's read state is in flight
+      await session.join("Dana");                            // another participant: joined at 8
+      const dana = session.getState().me!;
+      await s.core.postMessage(f.claude, f.pr.id, "for Dana");   // 9
+      await waitFor(() => session.getState().unread[f.pr.id] === 1);
+      gate.release();
+      await waitFor(() => staleDone);
+      await turn();
+      // Paw's answer changed nothing: Dana's counts, Dana's divider, and every mark in Dana's name.
+      expect(session.getState().unread).toEqual({ [f.pr.id]: 1 });
+      expect(session.getState().newAfter).toEqual({ threadId: f.general, seq: 8, firstNew: null });
+      expect(rec.calls.filter(isRead("PUT")).every((c) => c.token === dana.token)).toBe(true);
     } finally { session.dispose(); }
   });
 });
