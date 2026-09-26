@@ -15,21 +15,28 @@ import type { Actor } from "./types.js";
  * not an access change, except that it readmits a participant removed from the Thread
  * (removals.ts); every participant can already read every Thread. Allowed for the Thread's creator
  * or a keeper of the Weave. Idempotent while the latest marker is an invite: a participant already
- * invited gets the first invite since its last removal back, with no new event.
+ * invited gets the first invite since its last removal back, with no new event. Nobody invites
+ * themselves, except a keeper of the Weave readmitting itself after a removal from the Thread.
  */
 export async function inviteParticipant(db: Db, bus: EventBus, actor: Actor, threadId: string, participantId: string): Promise<{ seq: number; created: boolean }> {
   const t = await getThread(db, threadId);
+  const me = actorId(actor);
+  const self = me === participantId;
+  // Checked before authority, so a keeper demoted since its removal is told the self-invite rule.
+  if (self && !(actor.kind === "participant" && actor.participant.weaveId === t.weaveId && actor.participant.role === "keeper")) {
+    throw errors.validation("You cannot invite yourself");
+  }
   const isCreator = actor.kind === "participant" && actor.participant.weaveId === t.weaveId && actor.participant.id === t.createdBy;
   if (!isCreator) assertIsKeeperOf(actor, t.weaveId);
   if (!isUuid(participantId)) throw errors.validation("No such participant in this Weave");
-  const me = actorId(actor);
-  if (me === participantId) throw errors.validation("You cannot invite yourself");
   // Explicit type argument: inference would otherwise narrow T to the first branch's `created: false`.
   return withWeaveLock<{ seq: number; created: boolean }>(db, bus, t.weaveId, async (tx, weave) => {
-    if (!isCreator) await assertStillKeeperOf(tx, actor, t.weaveId);
+    if (!isCreator || self) await assertStillKeeperOf(tx, actor, t.weaveId);
     if (weave.archivedAt) throw errors.weaveArchived();
     const [fresh] = await tx.select({ closedAt: threads.closedAt }).from(threads).where(eq(threads.id, threadId));
     if (fresh!.closedAt) throw errors.threadClosed();
+    // Spec 2026-09-26 §3.2 (M3): a keeper readmits itself only after a removal from this Thread.
+    if (self && await lastRemovalSeq(tx, threadId, me) === 0) throw errors.validation("You cannot invite yourself");
     const [invitee] = await tx.select({ id: participants.id }).from(participants)
       .where(and(eq(participants.id, participantId), eq(participants.weaveId, t.weaveId))).limit(1);
     if (!invitee) throw errors.validation("No such participant in this Weave");
