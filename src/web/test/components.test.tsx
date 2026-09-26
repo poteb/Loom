@@ -118,6 +118,11 @@ describe("ThreadList", () => {
     expect([pr12 === count(/^PR 12/), pr12.textContent]).toEqual([true, "2"]);
     expect([count(/^Design/), count(/^General/)]).toEqual([null, null]);
   });
+  it("the unread count sits beside the invited mark when a Thread has both", () => {
+    render(<ThreadList state={state({ invitesForMe: new Set(["t1"]), currentThreadId: "g1", unread: { t1: 3 } })} session={session()} onError={() => {}} />);
+    const button = screen.getByRole("button", { name: /^PR 12/ });
+    expect([!!button.querySelector(".badge-invited"), button.querySelector(".unread-count")?.textContent]).toEqual([true, "3"]);
+  });
 
   describe("the thread filter", () => {
     const closedA = { ...pr, id: "t2", name: "Old review", closedAt: "2026-09-20T10:00:00.000Z" };
@@ -593,6 +598,16 @@ describe("MessageList", () => {
       // A divider captured for another Thread is not this one's.
       const elsewhere = render(<MessageList state={state({ currentThreadId: "t1", events, newAfter: { threadId: "g1", seq: 3, firstNew: 6 } })} fold={false} />);
       expect(elsewhere.container.querySelector(".new-divider")).toBeNull();
+    });
+
+    it("with system events folded, the divider sits after the folded run and right before the first new message by others", () => {
+      const sysAt = (seq: number, type: "participant.joined" | "participant.capabilities_changed") =>
+        ({ weaveId: "w1", seq, threadId: "t1", type, actor: "p2", at, payload: { participantId: "p2", capabilities: {} } });
+      const events = [msg(3, "p2"), msg(4, "p1"), sysAt(5, "participant.joined"), sysAt(6, "participant.capabilities_changed"), msg(7, "p2"),
+        sysAt(8, "participant.capabilities_changed"), sysAt(9, "participant.capabilities_changed"), msg(10, "p2")];
+      const { container } = render(<MessageList state={state({ currentThreadId: "t1", events, newAfter: { threadId: "t1", seq: 3, firstNew: 7 } })} fold={true} />);
+      expect([order(container), screen.getAllByRole("button", { name: "Show 2 events" }).length])
+        .toEqual([["m3", "m4", "sys", "New", "m7", "sys", "m10"], 2]);
     });
 
     it("the divider does not move when messages arrive while the Thread is open", () => {
