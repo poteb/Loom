@@ -40,7 +40,7 @@ function session(over: Partial<Session> = {}): Session {
     openRequest: vi.fn(async () => request()), offer: vi.fn(async () => {}), accept: vi.fn(async () => {}), cancel: vi.fn(async () => {}),
     targets: vi.fn(async () => []),
     listListeners: vi.fn(() => ({ issue: { generation: 0 }, page: Promise.resolve({ total: 0, matched: 0, listeners: [] }) })),
-    reportCredentialFailure: vi.fn(), ...over };
+    reportCredentialFailure: vi.fn(), markAllRead: vi.fn(async () => {}), ...over };
 }
 
 // --- Lobby fixtures ---------------------------------------------------------
@@ -1125,6 +1125,34 @@ describe("WeaveView (spec §2.6, §2.7, §3.3)", () => {
     const { container } = render(<WeaveView session={session()} state={noCredentialState()}
       banner={<div class="bar">note</div>} noCredential={<p>Join the Lobby here</p>} />);
     expect([container.firstElementChild!.className, container.querySelectorAll(".bar").length]).toEqual(["bar", 1]);
+  });
+});
+
+describe("Mark all read (spec 2026-09-26 §6.5)", () => {
+  const button = () => screen.queryByRole("button", { name: "Mark all read" });
+
+  it("Mark all read calls markAllRead", () => {
+    const markAllRead = vi.fn(async () => {});
+    render(<WeaveView session={session({ markAllRead })} state={state()} />);
+    fireEvent.click(button()!);
+    expect(markAllRead).toHaveBeenCalledTimes(1);
+    expect(button()!.classList.contains("mark-all-read")).toBe(true);
+  });
+
+  it("it is absent without an identity", () => {
+    render(<WeaveView session={session()} state={state({ me: undefined })} />);
+    expect(button()).toBeNull();
+  });
+
+  it("it is shown in an archived Weave (spec amended 2026-09-26: marking read is allowed there)", () => {
+    render(<WeaveView session={session()} state={state({ weave: { ...state().weave!, archivedAt: "2026-09-26T10:00:00.000Z" } })} />);
+    expect(button()).not.toBeNull();
+  });
+
+  it("shows a failure through the Weave view's error bar", async () => {
+    render(<WeaveView session={session({ markAllRead: vi.fn(async () => { throw new Error("Could not reach Loom"); }) })} state={state()} />);
+    fireEvent.click(button()!);
+    expect((await screen.findByText("Could not reach Loom")).className).toContain("error-bar");
   });
 });
 

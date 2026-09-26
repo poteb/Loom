@@ -80,6 +80,8 @@ export type Session = {
   closeThread(id: string): Promise<void>; archive(): Promise<void>; setGuidelines(text: string): Promise<void>;
   canModerate(): boolean; canEditThread(t: Thread): boolean; markSeen(id: string): void;
   dismissNamePrompt(): void; dispose(): void;
+  /** Marks every Thread of the Weave read up to the newest event the server saw (spec 2026-09-26 §6.5). */
+  markAllRead(): Promise<void>;
   // --- Lobby requests. Thin wrappers: each applies the snapshot it gets back through the watermark.
   openRequest(input: OpenRequestInput): Promise<LoomRequest>;
   offer(requestId: string, input: { model?: string; effort?: string; note?: string }): Promise<void>;
@@ -176,6 +178,13 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
    */
   let readState: { id: string; token: string; positions: Record<string, number>; joinedSeq: number } | undefined;
   const readReads = createCounter();
+  /**
+   * A Mark all read that answered while the identity's read state had not loaded yet (spec
+   * 2026-09-26 §6.5, review round 1 F4): the cutoff per Thread, owned by the identity and the
+   * generation it was issued under. `loadReadState` max-merges it into the answer it applies, so a
+   * snapshot the server took before the cutoff cannot bring a count back; an identity change drops it.
+   */
+  let markAllCut: (Owner & { positions: Record<string, number> }) | undefined;
 
   const entry = (): WeaveEntry | undefined => (weaveId ? readWeaveEntry(storage, weaveId) : undefined);
 
@@ -427,8 +436,8 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
   const unreadOf = (events: LoomEvent[]): Record<string, number> =>
     readState && readState.id === state.me?.participant.id
       ? unreadCounts(events, readState.id, readState.positions, readState.joinedSeq) : {};
-  /** Drops the read state of an identity that is being replaced, and every position held for it, unsent. */
-  const dropReadState = () => { readState = undefined; throttle.reset(); };
+  /** Drops the read state of an identity that is being replaced, every position held for it (unsent) and its held cutoff. */
+  const dropReadState = () => { readState = undefined; throttle.reset(); markAllCut = undefined; };
   /** Drops it together with what it showed. */
   const forgetReadState = () => { dropReadState(); set({ unread: {}, newAfter: undefined }); };
 
@@ -517,6 +526,10 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
         readReads.markApplied(stamp.n);
         readState = { id: stamp.id, token: stamp.token, joinedSeq: r.joinedSeq,
           positions: readState ? mergePositions(readState.positions, r.threads) : { ...r.threads } };
+        if (markAllCut && isOwnedBy(markAllCut, nowForRead())) {
+          readState = { ...readState, positions: mergePositions(readState.positions, markAllCut.positions) };
+        }
+        markAllCut = undefined;
         set({ unread: unreadOf(state.events) });
         const open = state.currentThreadId;
         if (open && state.newAfter?.threadId !== open) openRead(open); else markOpenRead();
@@ -1049,6 +1062,37 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
         set({ weave: { ...state.weave, guidelines: r.weave.guidelines } });
       }
       scheduleRefresh();
+    },
+    async markAllRead() {
+      const w = writer();
+      if (!weaveId || !state.me) throw new LoomClientError("validation", "Weave not loaded");
+      const owner: Owner = { id: state.me.participant.id, token: state.me.token, generation };
+      let answer: { seq: number; threads: number };
+      try { answer = await w.markAllRead(weaveId); }
+      catch (e) {
+        // A rejection for an identity or generation this session has left is dropped, unshown (§6.1).
+        if (!ownsRead(owner)) return;
+        if (isCredentialFailure(e)) {
+          const recovered = recoverFromCredentialFailure(e, "identity");
+          if (recovered?.reload) void doLoad();
+        }
+        throw e;                        // the Weave view's error path shows it
+      }
+      if (!ownsRead(owner)) return;
+      // max(current, answered): a position this tab advanced past the cutoff while the call was in
+      // flight is never lowered, and what is held beyond it is flushed as usual.
+      const cut: Record<string, number> = {};
+      for (const t of state.threads) cut[t.id] = answer.seq;
+      // No read state yet: keep the cutoff for the answer that is on its way, rather than lose it,
+      // max-merged into any cutoff already held for this identity and generation, so two overlapping
+      // calls whose replies land in reverse order keep the higher one (review round 2).
+      if (!readState) {
+        const held = markAllCut && isOwnedBy(markAllCut, nowForRead()) ? markAllCut.positions : {};
+        markAllCut = { ...owner, positions: mergePositions(held, cut) };
+        return;
+      }
+      readState = { ...readState, positions: mergePositions(readState.positions, cut) };
+      set({ unread: unreadOf(state.events) });
     },
     // --- Lobby requests. Each mutation is already committed server-side when it answers, so the
     // snapshot it returns is applied straight away — through the same watermark the refresh uses,

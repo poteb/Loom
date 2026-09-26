@@ -3200,3 +3200,130 @@ describe("reading while the Thread is open (spec 2026-09-26 §6.2)", () => {
     } finally { session.dispose(); }
   });
 });
+
+describe("Mark all read, and the Lobby page (spec 2026-09-26 §6.5, §6.6)", () => {
+  it("Mark all read calls markAllRead and clears every count up to the answered seq", async () => {
+    const f = await readFixture();
+    const pr2 = await s.core.createThread(f.claude, f.r.weave.id, "PR 2");   // 8
+    await s.core.postMessage(f.claude, pr2.id, "x");                         // 9
+    const rec = recordingClient();
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: f.r.weave.id }, storage: storedIdentity(f.r.weave.id, f.j) });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().unread[f.pr.id] === 1 && session.getState().unread[pr2.id] === 1);
+      await session.markAllRead();
+      expect(session.getState().unread).toEqual({});
+      expect(rec.calls.filter(isRead("POST"))).toHaveLength(1);
+      expect((await serverPositions(f.j.token, f.r.weave.id)).threads).toEqual({ [f.general]: 9, [f.pr.id]: 9, [pr2.id]: 9 });
+    } finally { session.dispose(); }
+  });
+
+  it("a Mark all read reply delayed past an arrival and a Thread switch never lowers a position", async () => {
+    const f = await readFixture();
+    const gate = makeGate();
+    // The server samples last_seq (7) and answers; the session hears the answer only on release.
+    const rec = recordingClient({ park: { match: (m, p) => m === "POST" && /\/read$/.test(p), gate, answerFirst: true } });
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: f.r.weave.id },
+      storage: storedIdentity(f.r.weave.id, f.j), readFlushMs: 60_000 });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().unread[f.pr.id] === 1 && session.getState().connection === "open");
+      session.selectThread(f.pr.id);
+      const pending = session.markAllRead();
+      await gate.entered;
+      await s.core.postMessage(f.claude, f.pr.id, "late");                    // 8, past the cutoff
+      await waitFor(() => session.getState().events.some((e) => e.payload.text === "late"));
+      session.selectThread(f.general);                                       // leaving PR 1 flushes 8
+      gate.release();
+      await pending;
+      // Merged as max(current, 7): PR 1 stays at 8, so the late message is not counted again.
+      expect(session.getState().unread[f.pr.id]).toBeUndefined();
+      await vi.waitFor(async () => expect((await serverPositions(f.j.token, f.r.weave.id)).threads[f.pr.id]).toBe(8));
+    } finally { session.dispose(); }
+  });
+
+  it("a Mark all read that succeeds while read state is loading survives the initial readPositions reply", async () => {
+    const f = await readFixture();
+    const gate = makeGate();
+    let snapshotDone = false;
+    // The server answers the load's read with the old positions (none, so PR 1 is unread); the
+    // session hears that answer only after Mark all read has succeeded.
+    const rec = recordingClient({ park: { match: (m, p) => m === "GET" && /\/read$/.test(p), gate, answerFirst: true,
+      onDone: () => { snapshotDone = true; } } });
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: f.r.weave.id }, storage: storedIdentity(f.r.weave.id, f.j) });
+    try {
+      await session.load();
+      await gate.entered;
+      await session.markAllRead();                                            // cutoff 7, every Thread
+      gate.release();
+      await waitFor(() => snapshotDone);
+      await waitFor(() => session.getState().newAfter !== undefined);
+      // PR 1 was never opened: the stale snapshot did not bring its count back.
+      expect(session.getState().unread).toEqual({});
+      expect(session.getState().newAfter).toEqual({ threadId: f.general, seq: 7, firstNew: null });
+    } finally { session.dispose(); }
+  });
+
+  it("two Mark all read replies arriving in reverse order while read state is loading keep the higher cutoff", async () => {
+    const f = await readFixture();
+    const snapshot = makeGate();
+    const first = makeGate();
+    let gets = 0;
+    let posts = 0;
+    let snapshotDone = false;
+    // The load's read and the first Mark all read are answered by the server at once and heard by
+    // the session only on release; the second Mark all read goes straight through.
+    const client = new LoomClient({
+      baseUrl: s.baseUrl, allowInsecure: true,
+      fetch: async (input, init) => {
+        const url = typeof input === "string" ? input : input.toString();
+        const method = init?.method ?? "GET";
+        const readPath = /\/read$/.test(new URL(url).pathname);
+        const hold = readPath && method === "GET" && ++gets === 1 ? snapshot
+          : readPath && method === "POST" && ++posts === 1 ? first : undefined;
+        const res = await fetch(url, init);
+        if (!hold) return res;
+        const text = await res.text();
+        hold.markEntered();
+        await hold.released;
+        if (hold === snapshot) snapshotDone = true;
+        return new Response(text, { status: res.status, headers: res.headers });
+      },
+    });
+    const session = createSession({ client, target: { kind: "id", weaveId: f.r.weave.id }, storage: storedIdentity(f.r.weave.id, f.j) });
+    try {
+      await session.load();
+      await snapshot.entered;                                         // the old positions, not heard yet
+      const a = session.markAllRead();                                // A: the server samples 7
+      await first.entered;
+      await s.core.postMessage(f.claude, f.pr.id, "between");         // 8
+      await session.markAllRead();                                    // B: the server samples 8, heard first
+      first.release();
+      await a;                                                        // A's lower cutoff, heard second
+      snapshot.release();
+      await waitFor(() => snapshotDone);
+      await waitFor(() => session.getState().newAfter !== undefined
+        && session.getState().events.some((e) => e.payload.text === "between"));
+      // Held as max(8, 7): message 8 in PR 1 stays read.
+      expect(session.getState().unread).toEqual({});
+    } finally { session.dispose(); }
+  });
+
+  it("on the Lobby's own page the Lobby identity gets its divider and its marks", async () => {
+    const lobby = await anon.getLobby();
+    const n = ++fixtureN;
+    const me = await anon.joinLobby({ name: `Reader-${n}`, kind: "human" });
+    const other = await anon.joinLobby({ name: `Poster-${n}`, kind: "human" });
+    const said = await anon.withToken(other.token).postMessage(me.generalThreadId, "hello Lobby");
+    const { joinedSeq } = await serverPositions(me.token, lobby.weaveId);
+    const rec = recordingClient();
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: lobby.weaveId }, storage: storedIdentity(lobby.weaveId, me) });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().newAfter !== undefined);
+      expect(session.getState().newAfter).toEqual({ threadId: me.generalThreadId, seq: joinedSeq, firstNew: said.seq });
+      await waitFor(() => putsTo(rec.calls, me.generalThreadId).length === 1);
+      expect(rec.calls.filter(isRead("PUT")).every((c) => c.token === me.token)).toBe(true);
+    } finally { session.dispose(); }
+  });
+});
