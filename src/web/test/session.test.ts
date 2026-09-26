@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, beforeAll, afterAll, vi } from "vitest
 import { startTestServer, keeperToken, type TestServer } from "../../server/test/helpers.js";
 import { LoomClient, type ReadPositions } from "@loom/client";
 import { createSession, type Session, type SessionTarget } from "../src/session.js";
+import type { Visibility } from "../src/unread.js";
 import { browserStorage, memoryStorage, type KeyValueStorage, type WriteResult } from "../src/storage.js";
 import { invalidateIdentity, legacyKey, readWeaveEntry, saveWeaveEntry, setIdentity, weaveKey } from "../src/weaves-store.js";
 import { DEFAULT_INSTANCE_GUIDELINES } from "@loom/core";
@@ -2909,6 +2910,121 @@ describe("read state (spec 2026-09-26 §6.1)", () => {
       expect(session.getState().unread).toEqual({ [f.pr.id]: 1 });
       expect(session.getState().newAfter).toEqual({ threadId: f.general, seq: 8, firstNew: null });
       expect(rec.calls.filter(isRead("PUT")).every((c) => c.token === dana.token)).toBe(true);
+    } finally { session.dispose(); }
+  });
+});
+
+/** A tab whose visibility the test sets; `set` tells the session, as `visibilitychange` would. */
+function fakeVisibility(visible = true): Visibility & { set(next: boolean): void } {
+  const fns = new Set<() => void>();
+  let v = visible;
+  return {
+    visible: () => v,
+    onChange: (fn) => { fns.add(fn); return () => { fns.delete(fn); }; },
+    set(next) { v = next; for (const fn of [...fns]) fn(); },
+  };
+}
+
+describe("reading while the Thread is open (spec 2026-09-26 §6.2)", () => {
+  const byId = (f: Awaited<ReturnType<typeof readFixture>>, client: LoomClient, over: { visibility?: Visibility; readFlushMs?: number } = {}) =>
+    createSession({ client, target: { kind: "id", weaveId: f.r.weave.id }, storage: storedIdentity(f.r.weave.id, f.j), ...over });
+  const settled = async (session: Session, f: Awaited<ReturnType<typeof readFixture>>) => {
+    await session.load();
+    await waitFor(() => session.getState().unread[f.pr.id] === 1 && session.getState().connection === "open");
+  };
+
+  it("while visible, arrivals advance the position with at most one markRead per READ_FLUSH_MS, and leaving the Thread flushes the pending position", async () => {
+    const f = await readFixture();
+    const rec = recordingClient();
+    // An interval no test outlives, so every send below is the throttle's decision, not the clock's.
+    const session = byId(f, rec.client, { readFlushMs: 60_000 });
+    try {
+      await settled(session, f);
+      session.selectThread(f.pr.id);                                   // the opening's mark: 6
+      const divider = session.getState().newAfter;
+      await s.core.postMessage(f.claude, f.pr.id, "a");                // 8
+      await s.core.postMessage(f.claude, f.pr.id, "b");                // 9
+      await waitFor(() => session.getState().events.some((e) => e.payload.text === "b"));
+      expect(session.getState().unread[f.pr.id]).toBeUndefined();     // read as it arrived
+      expect(session.getState().newAfter).toEqual(divider);            // the divider did not move
+      expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 6 }]);        // held inside the interval
+      session.selectThread(f.general);                                 // leaving flushes the latest
+      expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 6 }, { seq: 9 }]);
+      await vi.waitFor(async () => expect((await serverPositions(f.j.token, f.r.weave.id)).threads[f.pr.id]).toBe(9));
+    } finally { session.dispose(); }
+  });
+
+  it("while hidden, arrivals count as unread; on visible, positions are reloaded and the Thread is marked read", async () => {
+    const f = await readFixture();
+    const vis = fakeVisibility();
+    const rec = recordingClient();
+    const session = byId(f, rec.client, { visibility: vis });
+    try {
+      await settled(session, f);
+      session.selectThread(f.pr.id);
+      const divider = session.getState().newAfter;
+      vis.set(false);
+      await s.core.postMessage(f.claude, f.pr.id, "while away");       // 8
+      await waitFor(() => session.getState().unread[f.pr.id] === 1);
+      expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 6 }]);
+      const reloads = rec.calls.filter(isRead("GET")).length;
+      vis.set(true);
+      expect(rec.calls.filter(isRead("GET")).length).toBe(reloads + 1);
+      await waitFor(() => session.getState().unread[f.pr.id] === undefined);
+      expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 6 }, { seq: 8 }]);
+      expect(session.getState().newAfter).toEqual(divider);            // newAfter is not moved
+    } finally { session.dispose(); }
+  });
+
+  it("a failed markRead shows nothing and the next flush sends the latest position", async () => {
+    const f = await readFixture();
+    let failedYet = false;
+    const rec = recordingClient({ failOnce: (m, p) => {
+      const hit = m === "PUT" && p === `/api/threads/${f.pr.id}/read`;
+      if (hit) failedYet = true;
+      return hit;
+    } });
+    const session = byId(f, rec.client, { readFlushMs: 60_000 });
+    try {
+      await settled(session, f);
+      session.selectThread(f.pr.id);                                   // the mark of 6 fails
+      await waitFor(() => failedYet);
+      await turn();
+      const st = session.getState();
+      expect([st.status, st.error, st.refreshError, st.unread[f.pr.id]]).toEqual(["ready", undefined, undefined, undefined]);
+      session.selectThread(f.general);                                 // the next flush carries it again
+      expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 6 }, { seq: 6 }]);
+      await vi.waitFor(async () => expect((await serverPositions(f.j.token, f.r.weave.id)).threads[f.pr.id]).toBe(6));
+    } finally { session.dispose(); }
+  });
+
+  it("a readPositions reply that arrives while the tab is hidden marks nothing; the hidden arrival stays unread until the tab is visible again", async () => {
+    const f = await readFixture();
+    const vis = fakeVisibility();
+    const gate = makeGate();
+    let gets = 0;
+    let parkedDone = false;
+    // The load's read passes; the first refresh a visibility change asks for is answered, then held.
+    const rec = recordingClient({ park: { match: (m, p) => m === "GET" && /\/read$/.test(p) && ++gets === 2,
+      gate, answerFirst: true, onDone: () => { parkedDone = true; } } });
+    const session = byId(f, rec.client, { visibility: vis });
+    try {
+      await settled(session, f);
+      session.selectThread(f.pr.id);
+      vis.set(false);
+      await s.core.postMessage(f.claude, f.pr.id, "away");             // 8
+      await waitFor(() => session.getState().unread[f.pr.id] === 1);
+      vis.set(true);                                                   // a refresh leaves
+      await gate.entered;
+      vis.set(false);                                                  // hidden again before it lands
+      gate.release();
+      await waitFor(() => parkedDone);
+      await turn();
+      expect(session.getState().unread[f.pr.id]).toBe(1);
+      expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 6 }]);
+      vis.set(true);
+      await waitFor(() => session.getState().unread[f.pr.id] === undefined);
+      expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 6 }, { seq: 8 }]);
     } finally { session.dispose(); }
   });
 });

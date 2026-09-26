@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import type { LoomEvent } from "@loom/client";
-import { firstNewSeq, mergePositions, newestSeqIn, unreadCounts } from "../src/unread.js";
+import { createReadThrottle, firstNewSeq, mergePositions, newestSeqIn, READ_FLUSH_MS, unreadCounts } from "../src/unread.js";
 
 const ev = (seq: number, threadId: string, type: LoomEvent["type"], actor: string): LoomEvent =>
   ({ weaveId: "w1", seq, threadId, type, actor, at: "2026-09-26T10:00:00.000Z", payload: type === "message" ? { text: `m${seq}` } : {} });
@@ -36,5 +36,67 @@ describe("the other pure read helpers", () => {
   });
   it("mergePositions keeps the greater position, Thread by Thread", () => {
     expect(mergePositions({ A: 4, B: 9 }, { A: 6, B: 3, C: 1 })).toEqual({ A: 6, B: 9, C: 1 });
+  });
+});
+
+describe("createReadThrottle (spec 2026-09-26 §6.2)", () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("while visible, arrivals advance the position with at most one markRead per READ_FLUSH_MS, and leaving the Thread flushes the pending position", () => {
+    vi.useFakeTimers();
+    const sent: [string, number][] = [];
+    const t = createReadThrottle((id, seq) => { sent.push([id, seq]); });
+    t.advance("T", 5);                          // nothing sent lately: at once
+    expect(sent).toEqual([["T", 5]]);
+    t.advance("T", 6);
+    t.advance("T", 7);
+    vi.advanceTimersByTime(READ_FLUSH_MS - 1);
+    expect(sent).toEqual([["T", 5]]);
+    vi.advanceTimersByTime(1);                  // the interval ends: the latest position, once
+    expect(sent).toEqual([["T", 5], ["T", 7]]);
+    t.advance("T", 8);                          // held again
+    expect(sent).toHaveLength(2);
+    t.flush();                                  // the Thread is left
+    expect(sent).toEqual([["T", 5], ["T", 7], ["T", 8]]);
+    vi.advanceTimersByTime(READ_FLUSH_MS * 3);
+    expect(sent).toHaveLength(3);
+  });
+
+  it("holds a failed position for the next send without arming anything, and reset drops what it holds", () => {
+    vi.useFakeTimers();
+    const sent: [string, number][] = [];
+    const t = createReadThrottle((id, seq) => { sent.push([id, seq]); });
+    t.retry("T", 5);
+    vi.advanceTimersByTime(READ_FLUSH_MS * 2);
+    expect(sent).toEqual([]);
+    t.flush();
+    expect(sent).toEqual([["T", 5]]);
+    vi.advanceTimersByTime(READ_FLUSH_MS);      // a full interval since that send
+    t.advance("T", 6);                          // at once
+    t.advance("T", 7);                          // held
+    t.reset();
+    vi.advanceTimersByTime(READ_FLUSH_MS * 2);
+    t.flush();
+    expect(sent).toEqual([["T", 5], ["T", 6]]);
+  });
+
+  it("switching Threads just before the interval ends restarts the interval from the opening mark", () => {
+    vi.useFakeTimers();
+    const sent: [string, number][] = [];
+    const t = createReadThrottle((id, seq) => { sent.push([id, seq]); });
+    t.advance("A", 5); t.flush();               // t=0: opening A, its mark at once
+    vi.advanceTimersByTime(100);
+    t.advance("A", 6);                          // t=100: an arrival in A, held
+    vi.advanceTimersByTime(READ_FLUSH_MS - 200);
+    t.flush();                                  // t=4900: leaving A flushes it
+    t.advance("B", 7); t.flush();               // t=4900: opening B, its mark at once
+    expect(sent).toEqual([["A", 5], ["A", 6], ["B", 7]]);
+    t.advance("B", 8);                          // t=4900: an arrival in B, held
+    vi.advanceTimersByTime(100);                // t=5000: A's old deadline passes, and nothing goes
+    expect(sent).toHaveLength(3);
+    vi.advanceTimersByTime(READ_FLUSH_MS - 101);
+    expect(sent).toHaveLength(3);               // t=9899
+    vi.advanceTimersByTime(1);                  // t=9900: a full interval after B's opening mark
+    expect(sent).toEqual([["A", 5], ["A", 6], ["B", 7], ["B", 8]]);
   });
 });

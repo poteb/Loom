@@ -8,7 +8,7 @@ import {
 } from "./weaves-store.js";
 import { applyEvent, applySnapshot, isRequestEvent, type Requests } from "./requests-state.js";
 import { cachedProfile, createCounter, isCurrent, isOwnedBy, type Now, type Owner, type OwnProfile, type Stamp } from "./side-reads.js";
-import { firstNewSeq, mergePositions, newestSeqIn, unreadCounts } from "./unread.js";
+import { createReadThrottle, documentVisibility, firstNewSeq, mergePositions, newestSeqIn, READ_FLUSH_MS, unreadCounts, type Visibility } from "./unread.js";
 
 /**
  * What a session is pointed at. A secret is the credential *and* the id the router has; an id is
@@ -123,13 +123,19 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
    *  "storage is not persisting" notice of §6 for a credential that only reached memory. */
   onWrite?: (r: WriteResult) => void;
   /** Override for `CLOSED_REQUESTS_PAGE`; a knob, and the seam a test uses to fill the page cheaply. */
-  closedRequestsPage?: number }): Session {
+  closedRequestsPage?: number;
+  /** Whether the tab is visible, and told when that changes (spec 2026-09-26 §6.2). The document's
+   *  own by default; the session tests, which run without a document, hand in their own. */
+  visibility?: Visibility;
+  /** Override for `READ_FLUSH_MS`: the knob a session test uses to keep the throttle's clock out of its way. */
+  readFlushMs?: number }): Session {
   const { client, target, storage } = opts;
   // Defaulted rather than optional-called: `onWrite?.(storage.set(…))` would skip the *argument*
   // when nobody is listening, and the write with it.
   const onWrite = opts.onWrite ?? (() => {});
   const retry = opts.retry ?? DEFAULT_RETRY;
   const closedPage = opts.closedRequestsPage ?? CLOSED_REQUESTS_PAGE;
+  const visibility = opts.visibility ?? documentVisibility();
   let weaveId: string | undefined = target.kind === "id" ? target.weaveId : undefined;
   let secret: string | undefined = target.kind === "secret" ? target.secret : undefined;
   let reader: LoomClient = client;                 // replaced by pickReader() on every load()
@@ -421,8 +427,8 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
   const unreadOf = (events: LoomEvent[]): Record<string, number> =>
     readState && readState.id === state.me?.participant.id
       ? unreadCounts(events, readState.id, readState.positions, readState.joinedSeq) : {};
-  /** Drops the read state of an identity that is being replaced; the caller clears what it showed. */
-  const dropReadState = () => { readState = undefined; };
+  /** Drops the read state of an identity that is being replaced, and every position held for it, unsent. */
+  const dropReadState = () => { readState = undefined; throttle.reset(); };
   /** Drops it together with what it showed. */
   const forgetReadState = () => { dropReadState(); set({ unread: {}, newAfter: undefined }); };
 
@@ -444,19 +450,31 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       },
       (e: unknown) => {
         if (!ownsRead(owner)) return;
-        // Silent: the local position stands.
-        if (!isCredentialFailure(e)) return;
+        // Silent: the local position stands, and the next send carries this position again.
+        if (!isCredentialFailure(e)) { throttle.retry(threadId, seq); return; }
         const recovered = recoverFromCredentialFailure(e, "identity");
         if (recovered?.reload) void doLoad();
       },
     );
   };
-  /** The mark of an opening: sent at once. */
-  const markNow = (threadId: string, seq: number) => { sendMark(threadId, seq); };
+  /** The mark of an opening: sent at once, and the interval restarts from it. */
+  const markNow = (threadId: string, seq: number) => { throttle.advance(threadId, seq); throttle.flush(); };
+  const throttle = createReadThrottle((threadId, seq) => sendMark(threadId, seq), opts.readFlushMs ?? READ_FLUSH_MS);
+  /**
+   * The visibility rule's two edges (§6.2): hiding flushes what was read while visible; showing
+   * reloads the positions, and their answer marks the open Thread (if the tab is still visible then).
+   */
+  const offVisibility = visibility.onChange(() => {
+    if (disposed) return;
+    if (!visibility.visible()) { throttle.flush(); return; }
+    loadReadState();
+  });
   /** Marks the open Thread read up to its newest loaded event, when that is past its local position. */
   const markOpenRead = () => {
     const id = state.currentThreadId;
     if (!readState || !id) return;
+    // Every automatic mark waits for a visible tab (§6.2); the next visibility change does it then.
+    if (!visibility.visible()) return;
     const top = newestSeqIn(state.events, id);
     if (top <= localPosition(id)) return;
     readState = { ...readState, positions: { ...readState.positions, [id]: top } };
@@ -698,6 +716,12 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
   const onEvent = (e: LoomEvent) => {
     if (state.events.some((x) => x.seq === e.seq)) return;
     const events = [...state.events, e].sort((a, b) => a.seq - b.seq);
+    // While the open Thread is on a visible tab, what arrives in it is read as it arrives (§6.2): the
+    // local position moves now, so no count appears, and the server hears through the throttle.
+    if (readState && e.threadId === state.currentThreadId && visibility.visible() && e.seq > localPosition(e.threadId)) {
+      readState = { ...readState, positions: { ...readState.positions, [e.threadId]: e.seq } };
+      throttle.advance(e.threadId, e.seq);
+    }
     set({ events, unread: unreadOf(events), ...deriveInvites(events, state.me?.participant.id, seenUpTo) });
     // thread.url_changed carries the new url in the event, but the url the UI renders lives on the
     // Thread record, so it needs the same refresh as any other thread change.
@@ -948,6 +972,7 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
     selectThread: (id) => {
       // Picking the Thread that is already open is not opening it: the divider stays where it is.
       const opening = id !== state.currentThreadId;
+      if (opening) throttle.flush();   // leaving a Thread flushes it (§6.2)
       markThreadSeen(id);
       set({ currentThreadId: id, ...deriveInvites(state.events, state.me?.participant.id, seenUpTo) });
       if (opening) openRead(id);
@@ -967,6 +992,7 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       const w = writer();
       if (!weaveId) throw new LoomClientError("validation", "Weave not loaded");
       const t = await w.createThread(weaveId, name, url);
+      throttle.flush();
       markThreadSeen(t.id);
       set({ threads: state.threads.some((x) => x.id === t.id) ? state.threads : [...state.threads, t], currentThreadId: t.id });
       openRead(t.id);
@@ -1075,6 +1101,11 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       && (state.me.participant.role === "keeper" || t.createdBy === state.me.participant.id),
     dismissNamePrompt: () => { if (state.needsName) set({ needsName: false }); },
     dispose: () => {
+      // Leaving the Weave flushes what was read while it was open (§6.2), under the identity in hand;
+      // the answers are dropped, because the session they would land in is gone.
+      throttle.flush();
+      throttle.reset();
+      offVisibility();
       disposed = true;
       // Bumping the generation retires any in-flight load() as well, so one that is still mid-fetch
       // cleans up whatever it opens instead of publishing state into a disposed session.
