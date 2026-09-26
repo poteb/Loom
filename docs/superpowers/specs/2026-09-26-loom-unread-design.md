@@ -180,9 +180,11 @@ already advanced while visible are unaffected (the hidden flush still sends them
 - **While the tab is hidden**, new events of T do not advance the position; they count as unread.
   When the tab becomes visible again: reload positions (§6.1), then mark T read up to its newest
   loaded seq. `newAfter` is not moved.
-- **A failed `markRead`** is not shown to the user; the local position stands and the next flush
-  sends the latest position again. An identity the server refuses is handled by the existing
-  invalid-identity flow.
+- **A failed `markRead`** is not shown to the user; the local position stands. Only a failure that
+  could succeed on a retry (the network, or a 5xx from the server) is held and re-sent: the next
+  flush sends the latest position again. Any other refusal is dropped, not re-sent; the local
+  position stands. An identity the server refuses is handled by the existing invalid-identity flow.
+  Amended 2026-09-26 (review of Task 4, F2): only retryable mark failures are re-sent.
 
 ### 6.3 The count
 
