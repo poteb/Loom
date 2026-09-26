@@ -4,7 +4,7 @@ For an external reviewer (ChatGPT, acting as two independent lenses — **Standa
 doing a review of a branch. Read this first; it says what to review, what to ignore, and what a
 finding must contain.
 
-**This branch is `feat/lobby-listeners`: the Lobby listeners page (v2 sub-project 5).** Everything
+**This branch is `feat/removal-rules`: two removal rules, M1 and M3 (2026-09-26).** Everything
 below §1 describes the codebase as a whole, because the review is against all of `src/`; §1a says
 what *this* branch changed and where to look first.
 
@@ -115,11 +115,18 @@ There is no migration (spec §7).
 
 - **All of `src/` as it stands on this branch** — the seven packages, their tests, their
   configuration. The diff against `main` is the new work; the rest is already-reviewed code you
-  should still judge where this branch changed it (`getWeave`, `loom lobby`, `LobbySummary`, the
-  channel's Lobby assertions, the static path list).
+  should still judge where this branch changed it (`removeParticipant` on a request Thread,
+  `inviteParticipant`, `closeInTx`).
 - **The specs are the binding requirements**, the last one first:
+  - [superpowers/specs/2026-09-26-loom-removal-rules-design.md](superpowers/specs/2026-09-26-loom-removal-rules-design.md)
+    **the spec for this branch**, with
+    [superpowers/plans/2026-09-26-loom-removal-rules.md](superpowers/plans/2026-09-26-loom-removal-rules.md)
+    beside it. It amends the listener onboarding spec, next.
+  - [superpowers/specs/2026-09-23-loom-listener-onboarding-design.md](superpowers/specs/2026-09-23-loom-listener-onboarding-design.md)
+    (listener onboarding, liveness and work deadlines), amended by the spec above in §2.10 choice 4,
+    §4.5 and §6.5.
   - [superpowers/specs/2026-09-19-loom-lobby-listeners-design.md](superpowers/specs/2026-09-19-loom-lobby-listeners-design.md)
-    — **the spec for this branch**, with
+    (the Lobby listeners page), with
     [superpowers/plans/2026-09-19-loom-lobby-listeners.md](superpowers/plans/2026-09-19-loom-lobby-listeners.md)
     beside it. Both carry dated **amendment** blocks written after implementation (spec §2.3, §5.1,
     §5.5; plan Tasks 6 and 7): those blocks are the requirement where they contradict the text above
