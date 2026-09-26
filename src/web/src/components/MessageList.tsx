@@ -152,6 +152,10 @@ export function MessageList({ state, fold }: {
   fold: boolean;
 }) {
   const bottom = useRef<HTMLDivElement>(null);
+  const divider = useRef<HTMLDivElement>(null);
+  // The divider this opening has landed on (spec 2026-09-26 §6.4, Paw 2026-09-26): once per Thread
+  // opened, then the stream sticks to the bottom as before. Cleared when another Thread is opened.
+  const landing = useRef<{ thread: string | undefined; at: number | null }>({ thread: undefined, at: null });
   // Which runs the human expanded, by the run's key (its first event's seq), so a run that grows
   // while it is open stays open. UI state only.
   const [expanded, setExpanded] = useState<ReadonlySet<number>>(() => new Set());
@@ -160,7 +164,16 @@ export function MessageList({ state, fold }: {
   const na = state.newAfter;
   const dividerAt = na && na.threadId === state.currentThreadId ? na.firstNew : null;
   const lost = state.connection === "reconnecting" || state.connection === "closed" ? state.connection : null;
-  useEffect(() => { bottom.current?.scrollIntoView({ block: "end" }); }, [events.length, state.currentThreadId, lost]);
+  useEffect(() => {
+    const l = landing.current;
+    if (l.thread !== state.currentThreadId) { l.thread = state.currentThreadId; l.at = null; }
+    if (dividerAt !== null && l.at !== dividerAt && divider.current) {
+      l.at = dividerAt;
+      divider.current.scrollIntoView({ block: "start" });
+      return;
+    }
+    bottom.current?.scrollIntoView({ block: "end" });
+  }, [events.length, state.currentThreadId, lost, dividerAt]);
   const toggle = (key: number) => setExpanded((prev) => {
     const next = new Set(prev);
     if (next.has(key)) next.delete(key); else next.add(key);
@@ -171,7 +184,7 @@ export function MessageList({ state, fold }: {
       {foldStream(events, fold).map((item) =>
         item.kind === "message" ? (
           <Fragment key={item.key}>
-            {item.event.seq === dividerAt && <div class="new-divider" role="separator">New</div>}
+            {item.event.seq === dividerAt && <div ref={divider} class="new-divider" role="separator">New</div>}
             <Message e={item.event} state={state} />
           </Fragment>
         )

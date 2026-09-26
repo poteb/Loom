@@ -198,6 +198,14 @@ the open Thread. The invited mark is unchanged and may appear beside it.
 Thread stays open (messages arriving below it do not move it) and is recomputed only when a Thread is
 opened.
 
+**Where the stream lands.** Opening a Thread that has a divider scrolls the message stream to the
+divider, so "New" sits at or near the top of the visible stream; opening a Thread with no divider
+scrolls to the bottom, as before. The landing happens once per opening, including when the divider
+first appears because read state arrived with the Thread already open. While the Thread stays open,
+arrivals follow the existing stick-to-bottom behaviour; the stream does not scroll back to the
+divider. Amended 2026-09-26 on Paw's word: an opened Thread lands at its "New" divider, not at the
+bottom.
+
 ### 6.5 Mark all read
 
 A button with text "Mark all read" (class `mark-all-read`) in the Weave view, shown when the browser
@@ -275,6 +283,7 @@ The same behaviour applies on the Lobby's own page, with the browser's Lobby ide
 - `opening a Thread marks it read up to its newest event and records newAfter`.
 - `the New divider sits before the first message by others after newAfter, and not at all without one`.
 - `the divider does not move when messages arrive while the Thread is open`.
+- `opening a Thread with a divider scrolls to the divider; without one, to the bottom`.
 - `while visible, arrivals advance the position with at most one markRead per READ_FLUSH_MS`
   (fake timers), `and leaving the Thread flushes the pending position`.
 - `while hidden, arrivals count as unread; on visible, positions are reloaded and the Thread is marked read`.

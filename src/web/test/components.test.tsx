@@ -599,6 +599,64 @@ describe("MessageList", () => {
       view.rerender(<MessageList state={state({ currentThreadId: "t1", events: [msg(3, "p2"), msg(6, "p2"), msg(8, "p2"), msg(9, "p2")], newAfter })} fold={false} />);
       expect(order(view.container)).toEqual(["m3", "New", "m6", "m8", "m9"]);
     });
+
+    // happy-dom has no layout, so the seam is the scroll call itself: which element the stream
+    // asked to bring into view, and how. The bottom is the empty sentinel after the last row.
+    /** Every scrollIntoView call from here on, as the element's role and the options it was given. */
+    const scrolls = () => {
+      const calls: [string, unknown][] = [];
+      const spy = vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (this: Element, opts?: unknown) {
+        calls.push([this.classList.contains("new-divider") ? "divider" : this === this.parentElement?.lastElementChild ? "bottom" : "other", opts]);
+      });
+      return { calls, restore: () => spy.mockRestore() };
+    };
+
+    it("opening a Thread with a divider scrolls to the divider; without one, to the bottom", () => {
+      const s = scrolls();
+      try {
+        const events = [msg(3, "p2"), msg(6, "p2"), msg(7, "p2")];
+        const withDivider = render(<MessageList state={state({ currentThreadId: "t1", events, newAfter: { threadId: "t1", seq: 3, firstNew: 6 } })} fold={false} />);
+        const landed = s.calls.at(-1);
+        withDivider.unmount();
+        render(<MessageList state={state({ currentThreadId: "t1", events, newAfter: { threadId: "t1", seq: 7, firstNew: null } })} fold={false} />);
+        expect([landed, s.calls.at(-1)]).toEqual([["divider", { block: "start" }], ["bottom", { block: "end" }]]);
+      } finally { s.restore(); }
+    });
+
+    it("after landing at the divider, arrivals stick to the bottom as before and do not scroll back to it", () => {
+      const s = scrolls();
+      try {
+        const newAfter = { threadId: "t1", seq: 3, firstNew: 6 };
+        const view = render(<MessageList state={state({ currentThreadId: "t1", events: [msg(3, "p2"), msg(6, "p2")], newAfter })} fold={false} />);
+        const landed = s.calls.at(-1);
+        view.rerender(<MessageList state={state({ currentThreadId: "t1", events: [msg(3, "p2"), msg(6, "p2"), msg(8, "p2")], newAfter })} fold={false} />);
+        expect([landed, s.calls.at(-1)]).toEqual([["divider", { block: "start" }], ["bottom", { block: "end" }]]);
+      } finally { s.restore(); }
+    });
+
+    it("a divider that appears once read state arrives, with the Thread already open, is landed on", () => {
+      const s = scrolls();
+      try {
+        const events = [msg(3, "p2"), msg(6, "p2")];
+        const view = render(<MessageList state={state({ currentThreadId: "t1", events })} fold={false} />);
+        const before = s.calls.at(-1);
+        view.rerender(<MessageList state={state({ currentThreadId: "t1", events, newAfter: { threadId: "t1", seq: 3, firstNew: 6 } })} fold={false} />);
+        expect([before, s.calls.at(-1)]).toEqual([["bottom", { block: "end" }], ["divider", { block: "start" }]]);
+      } finally { s.restore(); }
+    });
+
+    it("leaving a Thread and opening it again lands at its divider again", () => {
+      const s = scrolls();
+      try {
+        const events = [msg(3, "p2"), msg(6, "p2"), { ...msg(9, "p2"), threadId: "g1" }];
+        const newAfter = { threadId: "t1", seq: 3, firstNew: 6 };
+        const view = render(<MessageList state={state({ currentThreadId: "t1", events, newAfter })} fold={false} />);
+        view.rerender(<MessageList state={state({ currentThreadId: "g1", events, newAfter: { threadId: "g1", seq: 9, firstNew: null } })} fold={false} />);
+        const elsewhere = s.calls.at(-1);
+        view.rerender(<MessageList state={state({ currentThreadId: "t1", events, newAfter })} fold={false} />);
+        expect([elsewhere, s.calls.at(-1)]).toEqual([["bottom", { block: "end" }], ["divider", { block: "start" }]]);
+      } finally { s.restore(); }
+    });
   });
 });
 
