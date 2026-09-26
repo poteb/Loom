@@ -349,6 +349,20 @@ describe("remove_participant on a request Thread", () => {
     expect(await closesOf(f)).toEqual([]);
   });
 
+  it("a removal without an active acceptance does not close the request even when every active acceptance has completed", async () => {
+    const f = await requested();
+    // Written directly, so complete's own close never runs: the row stays working with its one active
+    // acceptance completed, the state a request left stuck before M1 is in.
+    await db.update(requestOffers).set({ completedAt: new Date() })
+      .where(and(eq(requestOffers.requestId, f.request.id), eq(requestOffers.participantId, f.pawbot.id)));
+    expect((await requestRowOf(f)).status).toBe("working");
+    expect(await removeFromRequest(f, f.shared.id)).toMatchObject({ created: true, acceptanceRemoved: false });
+    const row = await requestRowOf(f);
+    expect(row.status).toBe("working");
+    expect(row.closedAt).toBeNull();
+    expect(await closesOf(f)).toEqual([]);
+  });
+
   it("after a removal closed the request, accept is request_closed and complete stays idempotent", async () => {
     const f = await requested();
     await acceptShared(f);
