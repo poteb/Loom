@@ -3332,6 +3332,92 @@ describe("Mark all read, and the Lobby page (spec 2026-09-26 §6.5, §6.6)", () 
     } finally { session.dispose(); }
   });
 
+  it("a Mark all read answer for an identity the session has left moves no position", async () => {
+    const f = await readFixture();
+    const gate = makeGate();
+    // Paw's call is held before it reaches the server, so the server marks at the seq it has on release.
+    const rec = recordingClient({ park: { match: (m, p) => m === "POST" && /\/read$/.test(p), gate } });
+    const storage = storedIdentity(f.r.weave.id, f.j, { secret: f.r.secret });
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: f.r.weave.id }, storage });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().unread[f.pr.id] === 1 && session.getState().connection === "open");
+      const pending = session.markAllRead();                                  // under Paw
+      await gate.entered;
+      await session.join("Dana");                                             // 8
+      await s.core.postMessage(f.claude, f.pr.id, "for Dana");                // 9
+      await waitFor(() => session.getState().unread[f.pr.id] === 1 && session.getState().me?.participant.id !== f.j.participant.id);
+      gate.release();
+      await expect(pending).resolves.toBeUndefined();                         // Paw's answer: seq 9
+      expect(session.getState().unread).toEqual({ [f.pr.id]: 1 });
+    } finally { session.dispose(); }
+  });
+
+  it("a Mark all read rejection for an identity the session has left is dropped, unshown", async () => {
+    const f = await readFixture();
+    const readPath = `/api/weaves/${f.r.weave.id}/read`;
+    const gate = makeGate();
+    // Call 1 is the load's readPositions; call 2 is Paw's Mark all read, refused only after Dana has joined.
+    const c = sideReadClient({ [readPath]: onCall(2, parksThen(gate, REVOKED)) });
+    const storage = storedIdentity(f.r.weave.id, f.j, { secret: f.r.secret });
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: f.r.weave.id }, storage });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().unread[f.pr.id] === 1);
+      const pending = session.markAllRead();                                  // under Paw
+      await gate.entered;
+      await session.join("Dana");                                             // 8
+      const dana = session.getState().me!;
+      await s.core.postMessage(f.claude, f.pr.id, "for Dana");                // 9
+      await waitFor(() => session.getState().unread[f.pr.id] === 1 && c.calls(readPath) === 3);
+      gate.release();
+      await expect(pending).resolves.toBeUndefined();
+      // Not the invalid-identity flow: Dana stays, with Dana's count.
+      const entry = readWeaveEntry(storage, f.r.weave.id)!;
+      expect([session.getState().me?.participant.id, entry.identity, entry.participantId,
+        session.getState().readOnlyReason, session.getState().unread])
+        .toEqual([dana.participant.id, undefined, dana.participant.id, undefined, { [f.pr.id]: 1 }]);
+    } finally { session.dispose(); }
+  });
+
+  it("a Mark all read the server refuses for the credential takes the invalid-identity flow and reaches the error bar", async () => {
+    const f = await readFixture();
+    const readPath = `/api/weaves/${f.r.weave.id}/read`;
+    // Call 1 is the load's readPositions; call 2 is the Mark all read.
+    const c = sideReadClient({ [readPath]: onCall(2, REVOKED) });
+    const storage = storedIdentity(f.r.weave.id, f.j, { secret: f.r.secret });
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.r.secret }, storage });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().unread[f.pr.id] === 1);
+      await expect(session.markAllRead()).rejects.toMatchObject({ code: "invalid_token" });
+      await waitFor(() => session.getState().readOnlyReason === "secret-fallback");
+      expect([readWeaveEntry(storage, f.r.weave.id)!.identity, session.getState().me, session.getState().unread])
+        .toEqual(["invalid", undefined, {}]);
+      expect(c.calls(readPath)).toBe(2);
+    } finally { session.dispose(); }
+  });
+
+  it("Mark all read sets every position to the answered seq, not to the newest event this tab holds", async () => {
+    const f = await readFixture();
+    const gate = makeGate();
+    // The server samples 7 and marks; the session hears the answer only on release.
+    const rec = recordingClient({ park: { match: (m, p) => m === "POST" && /\/read$/.test(p), gate, answerFirst: true } });
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: f.r.weave.id }, storage: storedIdentity(f.r.weave.id, f.j) });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().unread[f.pr.id] === 1 && session.getState().connection === "open");
+      const pending = session.markAllRead();
+      await gate.entered;
+      await s.core.postMessage(f.claude, f.pr.id, "after the cutoff");         // 8, PR 1 is not open
+      await waitFor(() => session.getState().unread[f.pr.id] === 2);
+      gate.release();
+      await pending;
+      // Cut at 7: message 6 is read, message 8 is still unread.
+      expect(session.getState().unread).toEqual({ [f.pr.id]: 1 });
+    } finally { session.dispose(); }
+  });
+
   it("on the Lobby's own page the Lobby identity gets its divider and its marks", async () => {
     const lobby = await anon.getLobby();
     const n = ++fixtureN;
