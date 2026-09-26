@@ -3026,6 +3026,29 @@ describe("reading while the Thread is open (spec 2026-09-26 §6.2)", () => {
     } finally { session.dispose(); }
   });
 
+  it("a reload on becoming visible that fails still marks the open Thread read", async () => {
+    const f = await readFixture();
+    const vis = fakeVisibility();
+    let gets = 0;
+    // The load's read passes; the refresh the tab's return asks for fails on the network.
+    const rec = recordingClient({ failOnce: (m, p) => m === "GET" && /\/read$/.test(p) && ++gets === 2 });
+    const session = byId(f, rec.client, { visibility: vis, readFlushMs: 60_000 });
+    try {
+      await settled(session, f);
+      session.selectThread(f.pr.id);
+      const divider = session.getState().newAfter;
+      vis.set(false);
+      await s.core.postMessage(f.claude, f.pr.id, "while away");       // 8
+      await waitFor(() => session.getState().unread[f.pr.id] === 1);
+      vis.set(true);                                                   // the refresh fails
+      await waitFor(() => session.getState().unread[f.pr.id] === undefined);
+      expect(gets).toBe(2);
+      expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 6 }, { seq: 8 }]);
+      expect(session.getState().newAfter).toEqual(divider);
+      await vi.waitFor(async () => expect((await serverPositions(f.j.token, f.r.weave.id)).threads[f.pr.id]).toBe(8));
+    } finally { session.dispose(); }
+  });
+
   it("a failed markRead shows nothing and the next flush sends the latest position", async () => {
     const f = await readFixture();
     let failedYet = false;

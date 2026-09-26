@@ -494,7 +494,8 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
    * identity, the generation and a request number. The answer merges into what this tab has marked
    * since and recomputes the counts; then the open Thread is opened for real if its divider is not
    * down yet, and otherwise only marked, so a refresh never moves a divider. A failure leaves the
-   * state as it was and says nothing (the next visibility or identity change asks again); a refused
+   * state as it was and says nothing (the next visibility or identity change asks again), but still
+   * marks the open Thread from the positions already held, as the answer would have; a refused
    * credential takes the invalid-identity flow. Both outcomes are fenced before any side effect.
    */
   const loadReadState = () => {
@@ -514,7 +515,9 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       (e: unknown) => {
         if (disposed || !isCurrent(stamp, nowForRead())) return;
         readReads.markApplied(stamp.n);
-        if (!isCredentialFailure(e)) return;
+        // A failed refresh keeps the positions already loaded, and they are enough to mark the open
+        // Thread by (§6.2, on becoming visible); on a first load there are none, so nothing is marked.
+        if (!isCredentialFailure(e)) { markOpenRead(); return; }
         const recovered = recoverFromCredentialFailure(e, "identity");
         if (recovered?.reload) void doLoad();
       },
