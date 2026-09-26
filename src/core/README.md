@@ -16,6 +16,7 @@ Weave before any rule runs.
 - **Messages** — `postMessage` (a removed participant is refused until invited again), `readEvents` · **Inbox** — `inbox` · **Settings** — `readSettings`, `updateSettings`
 - **Guidelines** — `getInstanceGuidelines` (the one facade method that takes **no `Actor`**: the text is handed to a connection before it has a credential), `setWeaveGuidelines`
 - **Participants** — `setRole`, `resolveCredential`, `resolveInWeave`
+- **Read positions**: `markRead` (never lowers, capped at the Weave's `last_seq`), `markAllRead` (every Thread at one sampled seq, in one statement), `readPositions` (the actor's own positions and its `joinedSeq`); no event, no Weave lock, allowed in an archived Weave
 - **Keepers** — `seedKeepers`, `listKeepers`, `addKeeper`, `removeKeeper` · **Agents** — `addAgent` (with an optional owner), `setAgentOwner` (an unknown or revoked id is `not_found`), `listAgents`, `revokeAgent`
 - **Lobby** — `ensureLobby` (at boot, beside `seedKeepers`), `getLobby`, `joinLobby` (no secret), `setCapabilities`, `findAgents`, `getMyLobbyParticipant` (your own profile, the one read `getWeave` no longer answers), `listListeners` (the paged, faceted directory), `onboardingFacts` (what `get_started` renders: the agent's Lobby participant and profile, its waiting invitations and the requests whose offer window is open and that list it as eligible)
 - **Requests** — `openRequest` (two actors: the Lobby identity and the target authority), `offer`, `acceptRequest` (with `deadlineMs`, required: the request becomes `working`), `completeRequest` (the accepted agent's own act; the request closes as `completed` once every active acceptance has), `cancelRequest` (an `open` or a `working` request), `getRequest`, `listRequests`, `sweepRequests` and `sweepOverdue` (the server calls both every 60 s with one `now`) · **Invitations** — `inviteToWeave`; `joinWeave(…, { inviteId })` redeems one
@@ -40,7 +41,7 @@ the `Profile` / `Requirements` / `PublicRequest` / `PublicOffer` types), the lis
 - [src/agent-keys.ts](src/agent-keys.ts) — SHA-256 hashing of agent keys; public agent projection
 - [src/bus.ts](src/bus.ts) — in-process pub/sub keyed by weave id
 - [src/db/index.ts](src/db/index.ts) — `createDb`, `runMigrations`, `closeDb`
-- [src/db/schema.ts](src/db/schema.ts) — tables: weaves, threads, agents, participants, keepers, settings, events, requests, request_offers, weave_invitations
+- [src/db/schema.ts](src/db/schema.ts) — tables: weaves, threads, agents, participants, keepers, settings, events, requests, request_offers, weave_invitations, read_positions
 - [src/errors.ts](src/errors.ts) — `LoomError`, `ErrorCode`, the `errors` constructors
 - [src/events.ts](src/events.ts) — `withWeaveLock`, `appendInTx` (seq allocation), `readEvents`
 - [src/export.ts](src/export.ts) — transcript export as Markdown or JSON
@@ -63,6 +64,7 @@ the `Profile` / `Requirements` / `PublicRequest` / `PublicOffer` types), the lis
 - [src/messages.ts](src/messages.ts) — `postMessage`: length limit, mention resolution
 - [src/names.ts](src/names.ts) — participant name validation (`NAME_RE`)
 - [src/participants.ts](src/participants.ts) — `setRole`
+- [src/reads.ts](src/reads.ts): read positions (`read_positions`, migration 0006): `markRead`, `markAllRead`, `readPositions`, `weaveForRead`; the actor's own row only, never an event
 - [src/settings.ts](src/settings.ts) — instance settings read/patch
 - [src/threads.ts](src/threads.ts) — create/close threads, artefact URL validation, `generalThreadOf` (the Thread *flagged* General: the one place every Weave-level event is addressed from)
 - [src/types.ts](src/types.ts) — `Actor`, `LoomEvent`, `InboxItem`, public row shapes
@@ -78,7 +80,7 @@ Needs Postgres: the shared global setup ([test/global-setup.ts](test/global-setu
 ([test/db-guard.ts](test/db-guard.ts)). Coverage: `weaves`, `threads`, `messages`, `invites`,
 `inbox`, `participants`, `agents`, `authz`, `guards`, `events`, `export`, `guidelines`,
 `settings-keepers`, `db` and `core`, the Lobby in `lobby`, `lobby-matching`, `lobby-profile`,
-`lobby-requests`, `lobby-overdue`, `lobby-onboarding`, `lobby-invitations`, `thread-removal`,
+`lobby-requests`, `lobby-overdue`, `lobby-onboarding`, `lobby-invitations`, `thread-removal`, `reads`,
 `liveness`, `lobby-listeners-input` (the bounds, the normalisation rules
 and the cursor codec as pure units) and `lobby-listeners` (every `listListeners` rule against real
 Postgres, including a property test that the SQL agrees with `matches`/`admits` and an `EXPLAIN`

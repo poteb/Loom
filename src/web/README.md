@@ -269,6 +269,7 @@ re-reads storage.
 - [src/useSession.ts](src/useSession.ts) — the Preact hook owning one session's lifetime; constructs nothing
 - [src/session.ts](src/session.ts) — the session store (above)
 - [src/side-reads.ts](src/side-reads.ts) — `Stamp`, `Now`, `createCounter()`, `isCurrent(stamp, now)` and `cachedProfile`: the sequencing, generation and identity-ownership rules of the Lobby's two side reads, as pure units, so `session.ts` gains wiring rather than policy
+- [src/unread.ts](src/unread.ts): the pure units of the read state: `unreadCounts`, `newestSeqIn`, `mergePositions` (max per Thread), `firstNewSeq` (where the New divider goes), `createReadThrottle` and `READ_FLUSH_MS`, and `Visibility` / `documentVisibility`; `session.ts` holds the read state and wires them
 - [src/requests-state.ts](src/requests-state.ts) — the versioned request reducer: `applySnapshot`, `applyEvent`, `displayStatus`
 - [src/storage.ts](src/storage.ts) — `WriteResult`, `KeyValueStorage` (including `isPending`: is this key's value memory-only *now*), `browserStorage` (override/tombstone layer), `memoryStorage`
 - [src/weaves-store.ts](src/weaves-store.ts) — `WeaveEntry`/`StoredWeave`, the key helpers, `saveWeaveEntry`, `setIdentity`, `invalidateIdentity`, `forgetWeave`, `hasIdentity`, `storedWeaves`, `mergeLegacy`, `migrateLegacy[One]`, `readerFor`, `isCredentialFailure`
@@ -332,7 +333,7 @@ watermark, monotonic terminal states, derived expiry), `storage.test.ts` (the du
 and the override-and-tombstone precedence), `weaves-store.test.ts` (the entry rules, `mergeLegacy`,
 `readerFor`, migration), `refresh-queue.test.ts` (the limit across enqueues, FIFO order, a
 rejecting `run`, `dispose`), `side-reads.test.ts` (the counter, the monotonic watermark, `isCurrent`
-and the identity-owned profile cache) and `listeners-query.test.ts` (the codec both ways, one case
+and the identity-owned profile cache), `unread.test.ts` (the counts, the merge, the divider's seq and the throttle) and `listeners-query.test.ts` (the codec both ways, one case
 per validated value and one per class of silent drop) are pure units;
 `one-storage-instance.test.ts` holds the guard that
 `browserStorage(` is constructed only in `main.tsx`, beside the `PersistenceNotice` and `WeavesSignal`
