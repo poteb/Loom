@@ -80,7 +80,7 @@ export function ThreadList({ state, session, onError, onPick, markCurrent = true
                 {tag && <span class="mono thread-tag">{tag}</span>}
                 {t.closedAt && <span class="pill pill-closed thread-pill">closed</span>}
                 {invited && <span class="badge-invited">invited</span>}
-                {unread > 0 && <span class="unread-count" aria-label={`${unread} unread`}>{unread}</span>}
+                {unread > 0 && <span class="unread-count" role="img" aria-label={`${unread} unread`}>{unread}</span>}
               </button>
             </li>
           );

@@ -187,8 +187,12 @@ already advanced while visible are unaffected (the hidden flush still sends them
 ### 6.3 The count
 
 `ThreadList` shows, for each Thread with `state.unread[id] > 0`, an element with class
-`unread-count`, text the number, and `aria-label` "N unread" (N the number). None at zero, none for
-the open Thread. The invited mark is unchanged and may appear beside it.
+`unread-count`, `role="img"`, text the number, and `aria-label` "N unread" (N the number). None at
+zero, none for the open Thread. The invited mark is unchanged and may appear beside it.
+
+Amended 2026-09-26 (review of Task 5, F2): the count carries `role="img"`, because ARIA 1.2 does not
+allow naming a bare `span` (the generic role); with the role its "N unread" label is valid and is
+read as part of the Thread button's name.
 
 ### 6.4 The divider
 

@@ -113,7 +113,9 @@ describe("ThreadList", () => {
     render(<ThreadList state={state({ threads: [general, pr, design], currentThreadId: "g1", unread: { t1: 2, t3: 0, g1: 5 } })}
       session={session()} onError={() => {}} />);
     const count = (name: RegExp) => screen.getByRole("button", { name }).querySelector(".unread-count");
-    expect([count(/^PR 12/)?.textContent, count(/^PR 12/)?.getAttribute("aria-label")]).toEqual(["2", "2 unread"]);
+    // Named by role img, so its aria-label is one ARIA 1.2 allows (a bare span is generic and may not be named).
+    const pr12 = screen.getByRole("img", { name: "2 unread" });
+    expect([pr12 === count(/^PR 12/), pr12.textContent]).toEqual([true, "2"]);
     expect([count(/^Design/), count(/^General/)]).toEqual([null, null]);
   });
 
