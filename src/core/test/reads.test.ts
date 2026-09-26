@@ -120,6 +120,20 @@ describe("read positions (spec 2026-09-26 §4)", () => {
       .toEqual({ [general]: newest, [t.id]: newest + 5, [closed.id]: newest });
   });
 
+  it("markAllRead samples last_seq and the Threads together: a Thread it counts is raised to a seq that covers it", async () => {
+    const { r, paw, t, general } = await setup();
+    let late = "";
+    // A Thread created after the checks and before the sample: counted at a seq that covers its
+    // creation, or not counted at all, never counted at a seq taken before it existed.
+    const answer = await markAllRead(db, paw, r.weave.id, {
+      afterChecks: async () => { late = (await createThread(db, bus, paw, r.weave.id, "Late")).id; },   // 8
+    });
+    const newest = await lastSeq(r.weave.id);
+    expect(answer).toEqual({ seq: newest, threads: 3 });
+    expect((await readPositions(db, paw, r.weave.id)).threads)
+      .toEqual({ [general]: newest, [t.id]: newest, [late]: newest });
+  });
+
   it("readPositions gives joinedSeq as the seq of the actor's own participant.joined, and only the actor's own positions", async () => {
     const { r, paw, bot, t } = await setup();
     await markRead(db, paw, t.id, 6);

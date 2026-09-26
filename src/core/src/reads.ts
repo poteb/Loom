@@ -1,6 +1,6 @@
 import { and, asc, eq, sql } from "drizzle-orm";
 import type { Db, Queryable } from "./db/index.js";
-import { events, readPositions as positions, threads, weaves } from "./db/schema.js";
+import { events, readPositions as positions, weaves } from "./db/schema.js";
 import { errors } from "./errors.js";
 import { isUuid } from "./ids.js";
 import { assertParticipantOf } from "./actors.js";
@@ -52,13 +52,29 @@ export async function markRead(db: Db, actor: Actor, threadId: string, seq: numb
   return { threadId, seq: kept!.seq };
 }
 
-/** §4.2. Allowed on an archived Weave. `last_seq` is read once, and every Thread of the Weave, open and closed, is raised to it in one statement. */
-export async function markAllRead(db: Db, actor: Actor, weaveId: string): Promise<MarkAllReadResult> {
-  const w = await weaveForRead(db, weaveId);
+/**
+ * §4.2. Allowed on an archived Weave. One statement, so one snapshot and one implicit transaction:
+ * `last_seq` and the Weave's Threads, open and closed, are sampled together, and every one of those
+ * Threads is raised to that `last_seq` by the rule of `upsertPositions`. A Thread is therefore never
+ * counted at a seq taken before it existed. `afterChecks` is a test seam, run after the authority
+ * checks and before the sample.
+ */
+export async function markAllRead(db: Db, actor: Actor, weaveId: string,
+  opts: { afterChecks?: () => Promise<void> } = {}): Promise<MarkAllReadResult> {
+  await weaveForRead(db, weaveId);
   const me = assertParticipantOf(actor, weaveId);
-  const ts = await db.select({ id: threads.id }).from(threads).where(eq(threads.weaveId, weaveId));
-  if (ts.length > 0) await upsertPositions(db, ts.map((t) => ({ participantId: me.id, threadId: t.id, seq: w.lastSeq })));
-  return { seq: w.lastSeq, threads: ts.length };
+  if (opts.afterChecks) await opts.afterChecks();
+  const [row] = await db.execute<{ seq: number; threads: number }>(sql`
+    WITH w AS (SELECT last_seq FROM weaves WHERE id = ${weaveId}),
+    t AS (SELECT id FROM threads WHERE weave_id = ${weaveId}),
+    raised AS (
+      INSERT INTO read_positions (participant_id, thread_id, seq)
+      SELECT ${me.id}::uuid, t.id, w.last_seq FROM t, w
+      ON CONFLICT (participant_id, thread_id)
+      DO UPDATE SET seq = excluded.seq, updated_at = now() WHERE read_positions.seq < excluded.seq
+    )
+    SELECT w.last_seq AS seq, (SELECT count(*) FROM t)::int AS threads FROM w`);
+  return { seq: row!.seq, threads: row!.threads };
 }
 
 /** §4.3. Allowed on an archived Weave. A participant belongs to one Weave, so its rows are that Weave's. */
