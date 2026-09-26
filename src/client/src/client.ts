@@ -3,8 +3,9 @@ import { resolveBaseUrl } from "./url.js";
 import { openStream, type StreamHandle, type StreamOptions } from "./stream.js";
 import type {
   AcceptResult, Agent, AgentFilter, CreateWeaveInput, CreateWeaveResult, FoundAgent, InboxItem, InvitationResult, InviteResult,
-  JoinResult, Keeper, Kind, ListenersPage, ListenersQuery, Lobby, LoomEvent, LoomRequest, Offer, OpenRequestInput,
-  Participant, Profile, RemovalResult, RequestStatus, Role, Settings, Thread, Weave, WeaveInfo,
+  JoinResult, Keeper, Kind, ListenersPage, ListenersQuery, Lobby, LoomEvent, LoomRequest, MarkAllReadResult, MarkReadResult,
+  Offer, OpenRequestInput, Participant, Profile, ReadPositions, RemovalResult, RequestStatus, Role, Settings, Thread, Weave,
+  WeaveInfo,
 } from "./types.js";
 
 export type LoomClientOptions = { baseUrl: string; token?: string; allowInsecure?: boolean; fetch?: typeof fetch };
@@ -97,6 +98,22 @@ export class LoomClient {
   /** Weave keepers only. `seq` is null when the text already matched: nothing was appended. */
   setWeaveGuidelines(weaveId: string, guidelines: string): Promise<{ weave: Weave; seq: number | null }> {
     return this.call("PUT", `/api/weaves/${weaveId}/guidelines`, { guidelines });
+  }
+
+  // --- Read positions. The caller's own, in one Weave; no participant id is ever sent.
+
+  /** Marks a Thread read up to `seq`. A position never moves back, so the answer is the stored seq,
+   *  which may be greater than the one sent. */
+  markRead(threadId: string, seq: number): Promise<MarkReadResult> {
+    return this.call("PUT", `/api/threads/${threadId}/read`, { seq });
+  }
+  /** Marks every Thread of the Weave read up to the newest event the server saw when it answered. */
+  markAllRead(weaveId: string): Promise<MarkAllReadResult> {
+    return this.call("POST", `/api/weaves/${weaveId}/read`);
+  }
+  /** This client's positions in the Weave by Thread id, and the seq of its own join there. */
+  readPositions(weaveId: string): Promise<ReadPositions> {
+    return this.call("GET", `/api/weaves/${weaveId}/read`);
   }
   // --- Lobby -------------------------------------------------------------
   // The Lobby is one Weave per instance, so none of these name one.
