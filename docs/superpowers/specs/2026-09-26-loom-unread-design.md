@@ -3,7 +3,7 @@
 Date: 2026-09-26. Status: draft for Paw's approval. Brainstorm: `.superpowers/unread-brainstorm.md`
 (git-ignored; Paw's answers Q1 to Q6 are restated in §2).
 
-Review round 1 (PR #38): F1 and F2 fixed in this revision.
+Review rounds 1 and 2 (PR #38): F1, F2 and F3 fixed in this revision.
 
 ## 1. Purpose and scope
 
@@ -140,7 +140,9 @@ belonged to a previous participant is never shown, counted or sent under the new
 
 **Until the current identity's read state has loaded:** `state.unread` is empty (no counts are
 shown), no `newAfter` is captured and no `markRead` is sent, automatic or flushed. When it arrives,
-the open Thread gets its `newAfter` captured and is marked read, exactly as on opening (§6.2). A
+the open Thread gets its `newAfter` captured and is marked read, exactly as on opening (§6.2), subject
+to the visibility rule of §6.2: if the tab is hidden at that moment, the positions are merged and
+`newAfter` is captured, but nothing is marked until the tab is visible again. A
 failed `readPositions` leaves the read state unloaded (no counts, no divider, no mark) and is
 retried on the next visibility change or identity change; it is not shown to the user, and a
 credential failure takes the existing invalid-identity flow.
@@ -156,10 +158,19 @@ it is sent, and only positions that identity produced.
 
 ### 6.2 Opening a Thread and staying in it
 
+**Visibility rule.** An automatic `markRead` is issued only while `document.visibilityState ===
+"visible"`. This covers every automatic mark: on opening, on arrivals, on becoming visible, and any
+mark deferred until read state arrives (§6.1). When read state arrives, or a deferred mark would fire,
+while the tab is hidden, the positions are merged and `newAfter` is captured as specified, but no mark
+is issued and the local position is not advanced; the Thread is marked read on the next visibility
+change, by the on-visible rule below. The same guard applies when the tab hides again while a
+visibility-triggered `readPositions` refresh is pending: its reply marks nothing. Flushes of positions
+already advanced while visible are unaffected (the hidden flush still sends them).
+
 - **On opening** Thread T (including the Thread a page lands on): record `newAfter = localPosition(T)`
   for the divider, then mark T read up to the highest seq among T's loaded events. When the read
   state has not loaded yet (§6.1), both wait for it and happen when it arrives, for the Thread open
-  at that moment.
+  at that moment. Either way the mark follows the visibility rule above.
 - **While T is open and `document.visibilityState === "visible"`**, every new event of T advances
   the local position to its seq at once (so no count appears for T), and the server call is
   throttled: at most one `markRead` per `READ_FLUSH_MS = 5000` ms, sending the latest position.
@@ -274,6 +285,8 @@ The same behaviour applies on the Lobby's own page, with the browser's Lobby ide
 - `replacing the identity while a readPositions call is pending drops the stale reply`.
 - `no counts, no divider and no markRead before read state has loaded`.
 - `a Mark all read reply delayed past an arrival and a Thread switch never lowers a position`.
+- `a readPositions reply that arrives while the tab is hidden marks nothing; the hidden arrival stays
+  unread until the tab is visible again`.
 
 ### 9.5 No `mcp-tools`, `cli` or `claude-channel` tests change.
 
