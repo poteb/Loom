@@ -181,14 +181,14 @@ guarded by `typeof document !== "undefined"` because the package runs Vitest wit
 
 ## Current totals
 
-As of **unread counts and the New divider** on `feat/unread` (measured at `e50bc38`, the last code
-commit of the slice; the Task 7 commit changes only documents): **2157 tests in 76 files**: core 690
-in 30, web 890 in 16, server 231 in 10, claude-channel 145 in 9, cli 80 in 5, client 48 in 4,
+As of **unread counts and the New divider** on `feat/unread` (measured at `2eaf898`, the branch head
+after the final fix wave; this commit changes only this file): **2165 tests in 76 files**: core 690
+in 30, web 898 in 16, server 231 in 10, claude-channel 145 in 9, cli 80 in 5, client 48 in 4,
 mcp-tools 73 in 2, from `pnpm -r build`, `pnpm -r typecheck` (clean) and
 `pnpm --workspace-concurrency=1 -r test`, every suite passing with no stray output. The baseline
 recorded by the plan's Task 0 was `main` at `b9f7bd1`, 2093 in 74 (core 675/29, web 844/15, server
-229/10, claude-channel 145/9, cli 80/5, client 47/4, mcp-tools 73/2), so the slice added **64 tests
-and two files**: core +15, all in the new `src/core/test/reads.test.ts`; web +46, of which the new
+229/10, claude-channel 145/9, cli 80/5, client 47/4, mcp-tools 73/2), so the slice added **72 tests
+and two files**: core +15, all in the new `src/core/test/reads.test.ts`; web +54, of which the new
 `src/web/test/unread.test.ts` holds 9 and the rest are in `session.test.ts`, `components.test.tsx`
 and `side-reads.test.ts`; server +2 in `routes.test.ts`; client +1 in `client.test.ts`. mcp-tools,
 cli and claude-channel did not move, which is spec 2026-09-26 §9.5 (`git diff --stat` over their
