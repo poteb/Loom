@@ -1,6 +1,7 @@
 # Loom: two removal rules (M1 and M3)
 
-Date: 2026-09-26. Status: draft for Paw's approval. Amends
+Date: 2026-09-26. Status: approved by Paw 2026-09-26 (PR #36); corrected during implementation in
+§2.2, §3.2 and §5.1 (see the implementation PR). Amends
 [2026-09-23-loom-listener-onboarding-design.md](2026-09-23-loom-listener-onboarding-design.md)
 (the listener onboarding spec, below "the onboarding spec") in its §2.10 choice 4, §4.5 (one row of
 the reaction table) and §6.5, and nothing else.
@@ -59,8 +60,10 @@ today: to the `request.closed` seq when the removal closes the request.
   removed, anybody on a request Thread) never closes the request.
 - A legacy acceptance on a request still `open` from before migration 0005 never closes it on
   removal: the rule applies only to stored status `working`, as `complete` refuses `open`.
-- `RemovalResult` keeps its four fields. The remover learns of the close from the `request.closed`
-  in its inbox and from `get_request`.
+- `RemovalResult` keeps its four fields. The remover learns of the close from `get_request` and
+  from the request Thread's log (`read`), not from its inbox: the inbox never shows an actor its own
+  events. The other addressees (the offerers not accepted, and the requester when a Lobby keeper
+  removed) see `request.closed` in their inbox.
 
 ### 2.3 Choice 4, as amended
 
