@@ -510,6 +510,10 @@ describe("the tool descriptions are the spec's", () => {
     expect((await described()).get("invite_participant")).toContain("Idempotent (re-inviting returns the original event's seq), except after a removal: then it is a new invite that lets the participant post again.");
   });
 
+  it("invite_participant says a Weave keeper removed from a thread may invite itself back", async () => {
+    expect((await described()).get("invite_participant")).toContain("A Weave keeper removed from a thread may invite itself back; nobody else invites themselves.");
+  });
+
   it("post_message says a removed participant is refused", async () => {
     expect((await described()).get("post_message")).toContain("A participant removed from the thread is refused until it is invited again.");
   });

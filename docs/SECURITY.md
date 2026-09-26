@@ -263,7 +263,7 @@ below means a participant with `role = "keeper"` **or** any instance keeper (`as
 | Post message | Participant of the Weave; Weave not archived; Thread not closed; text non-empty and ≤ `maxMessageLength` | [`messages.ts`](../src/core/src/messages.ts) |
 | Create thread | Participant of the Weave; Weave not archived | [`createThread`](../src/core/src/threads.ts) |
 | Set / clear thread URL | The Thread's creator, or a Weave keeper; Thread not closed; Weave not archived | `assertCreatorOrKeeper` in [`threads.ts`](../src/core/src/threads.ts) |
-| Invite participant to Thread | The Thread's creator, or a Weave keeper; invitee must be a participant of the same Weave; cannot invite yourself; idempotent | [`invites.ts`](../src/core/src/invites.ts) |
+| Invite participant to Thread | The Thread's creator, or a Weave keeper; invitee must be a participant of the same Weave; cannot invite yourself, except a keeper readmitting itself after a removal; idempotent | [`invites.ts`](../src/core/src/invites.ts) |
 | Remove a participant from a Thread | The Thread's creator or a Weave keeper, re-checked inside the lock; not the General Thread, not oneself. On a request's Thread the work-Thread half acts only under the request's recorded target authority, re-checked, never the caller's own standing | [`removals.ts`](../src/core/src/removals.ts) |
 | Close thread | Weave keeper; the General thread cannot be closed | [`closeThread`](../src/core/src/threads.ts) |
 | Archive Weave | Weave keeper | [`archiveWeave`](../src/core/src/weaves.ts) |
@@ -287,7 +287,8 @@ below means a participant with `role = "keeper"` **or** any instance keeper (`as
 resolved, so every mutating keeper operation re-checks against fresh rows *inside* the Weave row
 lock (`SELECT … FOR UPDATE`, [`withWeaveLock`](../src/core/src/events.ts)) via
 [`assertStillKeeperOf`](../src/core/src/actors.ts) — used by `archiveWeave`, `closeThread`,
-`setRole`, `setThreadUrl` (non-creators) and `inviteParticipant` (non-creators). Instance
+`setRole`, `setThreadUrl` (non-creators) and `inviteParticipant` (non-creators, and a keeper
+readmitting itself). Instance
 administration re-reads the `keepers` row on every call with `assertInstanceKeeperFresh`, and the
 core facade deliberately exposes no unauthenticated settings read (`readSettings` in
 [`index.ts`](../src/core/src/index.ts)).
