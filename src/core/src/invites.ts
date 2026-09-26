@@ -2,7 +2,7 @@ import { and, asc, eq, gt, sql } from "drizzle-orm";
 import type { Db } from "./db/index.js";
 import { events, participants, threads } from "./db/schema.js";
 import type { EventBus } from "./bus.js";
-import { errors } from "./errors.js";
+import { errors, LoomError } from "./errors.js";
 import { isUuid } from "./ids.js";
 import { withWeaveLock } from "./events.js";
 import { actorId, assertIsKeeperOf, assertStillKeeperOf } from "./actors.js";
@@ -31,7 +31,17 @@ export async function inviteParticipant(db: Db, bus: EventBus, actor: Actor, thr
   if (!isUuid(participantId)) throw errors.validation("No such participant in this Weave");
   // Explicit type argument: inference would otherwise narrow T to the first branch's `created: false`.
   return withWeaveLock<{ seq: number; created: boolean }>(db, bus, t.weaveId, async (tx, weave) => {
-    if (!isCreator || self) await assertStillKeeperOf(tx, actor, t.weaveId);
+    if (self) {
+      // A keeper demoted while this call waited for the lock gets the answer a fresh Actor gets.
+      try {
+        await assertStillKeeperOf(tx, actor, t.weaveId);
+      } catch (e) {
+        if (e instanceof LoomError && e.code === "forbidden") throw errors.validation("You cannot invite yourself");
+        throw e;
+      }
+    } else if (!isCreator) {
+      await assertStillKeeperOf(tx, actor, t.weaveId);
+    }
     // Spec 2026-09-26 §3.2 (M3): a keeper readmits itself only after a removal from this Thread,
     // and a never-removed keeper is told so before any Thread state check.
     if (self && await lastRemovalSeq(tx, threadId, me) === 0) throw errors.validation("You cannot invite yourself");

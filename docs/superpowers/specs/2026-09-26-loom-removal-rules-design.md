@@ -120,7 +120,8 @@ included.
 The self-invite rule is checked before the authority check, so a keeper demoted since its removal
 is told "You cannot invite yourself" (`validation`); as a consequence any actor who is not a
 participant keeper of the Weave and names its own participant id gets that `validation` rather than
-`forbidden`.
+`forbidden`. The in-lock re-check of a self-invite answers the same `validation`, so a keeper
+demoted while its call waits for the lock gets the same answer.
 
 Everything else is `inviteParticipant` as it is: the Weave must not be archived (`weave_archived`),
 the Thread must be open (`thread_closed`), and it is idempotent while the latest marker is an invite
