@@ -467,7 +467,8 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
   };
   /** The mark of an opening: sent at once, and the interval restarts from it. */
   const markNow = (threadId: string, seq: number) => { throttle.advance(threadId, seq); throttle.flush(); };
-  const throttle = createReadThrottle((threadId, seq) => sendMark(threadId, seq), opts.readFlushMs ?? READ_FLUSH_MS);
+  const throttle = createReadThrottle((threadId, seq) => sendMark(threadId, seq), opts.readFlushMs ?? READ_FLUSH_MS,
+    undefined, () => visibility.visible());
   /**
    * The visibility rule's two edges (§6.2): hiding flushes what was read while visible; showing
    * reloads the positions, and their answer marks the open Thread (if the tab is still visible then).

@@ -80,6 +80,24 @@ describe("createReadThrottle (spec 2026-09-26 §6.2)", () => {
     expect(sent).toEqual([["T", 5], ["T", 6]]);
   });
 
+  it("sends nothing on its timer while the tab is hidden; a flush still sends, and the next visible send carries what it held", () => {
+    vi.useFakeTimers();
+    const sent: [string, number][] = [];
+    let visible = true;
+    const t = createReadThrottle((id, seq) => { sent.push([id, seq]); }, READ_FLUSH_MS, () => Date.now(), () => visible);
+    t.advance("T", 5);                          // at once
+    t.advance("T", 6);                          // held, the timer armed
+    visible = false;
+    t.flush();                                  // the tab hides: the flush sends
+    expect(sent).toEqual([["T", 5], ["T", 6]]);
+    t.retry("T", 6);                            // that send failed, and its rejection landed while hidden
+    vi.advanceTimersByTime(READ_FLUSH_MS * 3);
+    expect(sent).toEqual([["T", 5], ["T", 6]]);  // nothing automatic while hidden
+    visible = true;
+    t.advance("T", 7);                          // the next send, visible, carries the highest held
+    expect(sent).toEqual([["T", 5], ["T", 6], ["T", 7]]);
+  });
+
   it("switching Threads just before the interval ends restarts the interval from the opening mark", () => {
     vi.useFakeTimers();
     const sent: [string, number][] = [];

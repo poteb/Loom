@@ -60,10 +60,12 @@ export type ReadThrottle = {
  * The §6.2 throttle: the latest position per Thread, and an automatic send only when the latest
  * **actual** send (automatic, or a flush) is at least `intervalMs` old, so a flush restarts the
  * interval. Flushes themselves are never delayed. A held position is only ever raised. `now` is
- * the clock; the fake timers of the tests fake `Date` as well.
+ * the clock; the fake timers of the tests fake `Date` as well. `visible` is the visibility rule:
+ * while it answers false nothing is sent automatically (the timer that finds the tab hidden sends
+ * nothing and stops), and what is held waits for the next visible send or a flush.
  */
 export function createReadThrottle(send: (threadId: string, seq: number) => void, intervalMs: number = READ_FLUSH_MS,
-  now: () => number = () => Date.now()): ReadThrottle {
+  now: () => number = () => Date.now(), visible: () => boolean = () => true): ReadThrottle {
   let held = new Map<string, number>();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let lastSent = Number.NEGATIVE_INFINITY;
@@ -80,7 +82,7 @@ export function createReadThrottle(send: (threadId: string, seq: number) => void
     if (timer !== undefined || held.size === 0) return;
     timer = setTimeout(() => {
       timer = undefined;
-      if (held.size === 0) return;
+      if (held.size === 0 || !visible()) return;
       if (now() - lastSent < intervalMs) { schedule(); return; }
       sendHeld();
     }, Math.max(0, lastSent + intervalMs - now()));
@@ -88,7 +90,7 @@ export function createReadThrottle(send: (threadId: string, seq: number) => void
   return {
     advance(threadId, seq) {
       hold(threadId, seq);
-      if (now() - lastSent >= intervalMs) sendHeld(); else schedule();
+      if (visible() && now() - lastSent >= intervalMs) sendHeld(); else schedule();
     },
     flush() { sendHeld(); },
     retry(threadId, seq) { hold(threadId, seq); },
