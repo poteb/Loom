@@ -220,7 +220,11 @@ has an identity. It calls `markAllRead`; on the answer (fenced as in
 tab advanced past the cutoff while the call was in flight is never lowered. Pending progress beyond
 the cutoff stays pending and is flushed as usual (§6.2). Every message up to the answered `seq`
 counts as read; a message that arrived after the server sampled `last_seq` may remain unread. A
-failure shows through the existing error path of the Weave view.
+failure shows through the existing error path of the Weave view. The answered `seq` also raises a
+Weave-wide floor, the default position of any Thread the tab holds no position for, so a Thread the
+tab first hears of after the answer counts only its messages past the cutoff.
+Amended 2026-09-26 (whole-branch review F1): the Weave-wide floor, which a held cutoff carries and a
+later `readPositions` reply keeps; it goes with the rest of the read state on an identity change.
 
 ### 6.6 The Lobby page
 

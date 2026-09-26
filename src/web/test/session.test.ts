@@ -457,6 +457,28 @@ function trackSockets() {
   };
 }
 
+/**
+ * Holds the stream's frames: every socket opened while this is installed hands its `message` frames
+ * to a buffer instead of its handler, until `release` delivers them in order. The socket opens and
+ * stays open, so the session sees a live stream that has simply not delivered yet.
+ */
+function holdFrames() {
+  const Real = globalThis.WebSocket;
+  const held: (() => void)[] = [];
+  let holding = true;
+  globalThis.WebSocket = class extends Real {
+    set onmessage(fn: ((this: WebSocket, m: MessageEvent) => unknown) | null) {
+      super.onmessage = fn && ((m: MessageEvent) => { if (holding) held.push(() => fn.call(this, m)); else fn.call(this, m); });
+    }
+    get onmessage() { return super.onmessage; }
+  } as unknown as typeof WebSocket;
+  return {
+    held: () => held.length,
+    release: () => { holding = false; for (const f of held.splice(0)) f(); },
+    restore: () => { globalThis.WebSocket = Real; },
+  };
+}
+
 /** A client whose first events request parks on `gate` until the test releases it. */
 function gatedClient(baseUrl: string, gate: ReturnType<typeof makeGate>): LoomClient {
   let gated = false;
@@ -3330,6 +3352,81 @@ describe("Mark all read, and the Lobby page (spec 2026-09-26 §6.5, §6.6)", () 
       await waitFor(() => session.getState().threads.some((t) => t.id === pr2.id));
       expect(session.getState().unread).toEqual({});
     } finally { session.dispose(); }
+  });
+
+  it("Mark all read covers a Thread whose events the stream delivers only after the answer", async () => {
+    const f = await readFixture();
+    const frames = holdFrames();
+    const session = createSession({ client: recordingClient().client, target: { kind: "id", weaveId: f.r.weave.id },
+      storage: storedIdentity(f.r.weave.id, f.j) });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().unread[f.pr.id] === 1 && session.getState().connection === "open");
+      // The stream delivers nothing until released: the tab knows nothing of PR 2.
+      const pr2 = await s.core.createThread(f.claude, f.r.weave.id, "PR 2");   // 8, by Claude
+      await s.core.postMessage(f.claude, pr2.id, "x");                         // 9
+      await waitFor(() => frames.held() === 2);
+      await session.markAllRead();                                            // the server marks PR 2 at 9
+      frames.release();
+      await waitFor(() => session.getState().events.some((e) => e.threadId === pr2.id && e.type === "message"));
+      expect(session.getState().unread).toEqual({});
+    } finally { session.dispose(); frames.restore(); }
+  });
+
+  it("a Mark all read held for the loading read state covers a Thread the stream delivers after both answers", async () => {
+    const f = await readFixture();
+    const frames = holdFrames();
+    const gate = makeGate();
+    let snapshotDone = false;
+    // The server answers the load's read with the old positions; the session hears it only on release.
+    const rec = recordingClient({ park: { match: (m, p) => m === "GET" && /\/read$/.test(p), gate, answerFirst: true,
+      onDone: () => { snapshotDone = true; } } });
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: f.r.weave.id }, storage: storedIdentity(f.r.weave.id, f.j) });
+    try {
+      await session.load();
+      await gate.entered;
+      await waitFor(() => session.getState().connection === "open");
+      const pr2 = await s.core.createThread(f.claude, f.r.weave.id, "PR 2");   // 8, by Claude
+      await s.core.postMessage(f.claude, pr2.id, "x");                         // 9
+      await waitFor(() => frames.held() === 2);
+      await session.markAllRead();                                            // held cutoff, seq 9
+      gate.release();
+      await waitFor(() => snapshotDone && session.getState().newAfter !== undefined);
+      frames.release();
+      await waitFor(() => session.getState().events.some((e) => e.threadId === pr2.id && e.type === "message"));
+      expect(session.getState().unread).toEqual({});
+    } finally { session.dispose(); frames.restore(); }
+  });
+
+  it("a readPositions reply issued before a Mark all read does not undo it for a Thread heard of later", async () => {
+    const f = await readFixture();
+    const frames = holdFrames();
+    const vis = fakeVisibility();
+    const gate = makeGate();
+    let gets = 0;
+    let refreshDone = false;
+    // The load's read passes; the refresh a visibility change asks for is answered, then held.
+    const rec = recordingClient({ park: { match: (m, p) => m === "GET" && /\/read$/.test(p) && ++gets === 2,
+      gate, answerFirst: true, onDone: () => { refreshDone = true; } } });
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: f.r.weave.id },
+      storage: storedIdentity(f.r.weave.id, f.j), visibility: vis });
+    try {
+      await session.load();
+      await waitFor(() => session.getState().unread[f.pr.id] === 1 && session.getState().connection === "open");
+      const pr2 = await s.core.createThread(f.claude, f.r.weave.id, "PR 2");   // 8, by Claude
+      await s.core.postMessage(f.claude, pr2.id, "x");                         // 9
+      await waitFor(() => frames.held() === 2);
+      vis.set(false);
+      vis.set(true);                                                          // a refresh: PR 2 not read yet
+      await gate.entered;
+      await session.markAllRead();                                            // the server marks PR 2 at 9
+      gate.release();
+      await waitFor(() => refreshDone);
+      await turn();
+      frames.release();
+      await waitFor(() => session.getState().events.some((e) => e.threadId === pr2.id && e.type === "message"));
+      expect(session.getState().unread).toEqual({});
+    } finally { session.dispose(); frames.restore(); }
   });
 
   it("a Mark all read answer for an identity the session has left moves no position", async () => {

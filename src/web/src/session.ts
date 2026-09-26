@@ -172,11 +172,15 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
   const countReads = createCounter();
   /**
    * The read state of the identity in hand (spec 2026-09-26 §6.1): the positions its `readPositions`
-   * answered, raised by every mark this tab has made since, and its `joinedSeq`. `undefined` until
-   * that answer lands, and again whenever an identity is established, changes or is invalidated, so
-   * no position is ever shown, counted or sent under a participant it did not belong to.
+   * answered, raised by every mark this tab has made since, and its `joinedSeq`. `floor` is the
+   * highest seq a Mark all read has answered for this identity (0 before any): every Thread that
+   * existed when the server sampled it was marked there, and a Thread created later has only events
+   * past it, so `max(joinedSeq, floor)` is the position of a Thread this tab holds none for, even one
+   * it first hears of after the answer (whole-branch review F1). `undefined` until that answer lands,
+   * and again whenever an identity is established, changes or is invalidated, so no position is ever
+   * shown, counted or sent under a participant it did not belong to.
    */
-  let readState: { id: string; token: string; positions: Record<string, number>; joinedSeq: number } | undefined;
+  let readState: { id: string; token: string; positions: Record<string, number>; joinedSeq: number; floor: number } | undefined;
   const readReads = createCounter();
   /**
    * A Mark all read that answered while the identity's read state had not loaded yet (spec
@@ -184,7 +188,7 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
    * generation it was issued under. `loadReadState` max-merges it into the answer it applies, so a
    * snapshot the server took before the cutoff cannot bring a count back; an identity change drops it.
    */
-  let markAllCut: (Owner & { positions: Record<string, number> }) | undefined;
+  let markAllCut: (Owner & { positions: Record<string, number>; floor: number }) | undefined;
 
   const entry = (): WeaveEntry | undefined => (weaveId ? readWeaveEntry(storage, weaveId) : undefined);
 
@@ -430,12 +434,14 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
     ({ generation, meId: state.me?.participant.id, meToken: state.me?.token, applied: readReads.applied() });
   /** Whether a call issued under `owner` still belongs to this session (§6.1 fencing). */
   const ownsRead = (owner: Owner) => !disposed && isOwnedBy(owner, nowForRead());
-  /** A Thread's local position: the loaded one, raised by this tab's marks, else `joinedSeq`. Callers hold `readState`. */
-  const localPosition = (threadId: string) => readState!.positions[threadId] ?? readState!.joinedSeq;
+  /** Where a Thread with no position of its own stands: `joinedSeq`, raised by every Mark all read. Callers hold `readState`. */
+  const defaultPosition = () => Math.max(readState!.joinedSeq, readState!.floor);
+  /** A Thread's local position: the loaded one, raised by this tab's marks, else the default. Callers hold `readState`. */
+  const localPosition = (threadId: string) => readState!.positions[threadId] ?? defaultPosition();
   /** `state.unread` for these events: empty until the identity in hand has its read state. */
   const unreadOf = (events: LoomEvent[]): Record<string, number> =>
     readState && readState.id === state.me?.participant.id
-      ? unreadCounts(events, readState.id, readState.positions, readState.joinedSeq) : {};
+      ? unreadCounts(events, readState.id, readState.positions, defaultPosition()) : {};
   /** Drops the read state of an identity that is being replaced, every position held for it (unsent) and its held cutoff. */
   const dropReadState = () => { readState = undefined; throttle.reset(); markAllCut = undefined; };
   /** Drops it together with what it showed. */
@@ -524,10 +530,12 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       (r) => {
         if (disposed || !isCurrent(stamp, nowForRead())) return;
         readReads.markApplied(stamp.n);
-        readState = { id: stamp.id, token: stamp.token, joinedSeq: r.joinedSeq,
+        // The floor is this tab's, not the answer's: a reply issued before a Mark all read must not drop it.
+        readState = { id: stamp.id, token: stamp.token, joinedSeq: r.joinedSeq, floor: readState?.floor ?? 0,
           positions: readState ? mergePositions(readState.positions, r.threads) : { ...r.threads } };
         if (markAllCut && isOwnedBy(markAllCut, nowForRead())) {
-          readState = { ...readState, positions: mergePositions(readState.positions, markAllCut.positions) };
+          readState = { ...readState, positions: mergePositions(readState.positions, markAllCut.positions),
+            floor: Math.max(readState.floor, markAllCut.floor) };
         }
         markAllCut = undefined;
         set({ unread: unreadOf(state.events) });
@@ -1089,11 +1097,12 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       // max-merged into any cutoff already held for this identity and generation, so two overlapping
       // calls whose replies land in reverse order keep the higher one (review round 2).
       if (!readState) {
-        const held = markAllCut && isOwnedBy(markAllCut, nowForRead()) ? markAllCut.positions : {};
-        markAllCut = { ...owner, positions: mergePositions(held, cut) };
+        const held = markAllCut && isOwnedBy(markAllCut, nowForRead()) ? markAllCut : undefined;
+        markAllCut = { ...owner, positions: mergePositions(held?.positions ?? {}, cut), floor: Math.max(held?.floor ?? 0, answer.seq) };
         return;
       }
-      readState = { ...readState, positions: mergePositions(readState.positions, cut) };
+      // The floor covers the Threads this tab knows nothing of yet (whole-branch review F1).
+      readState = { ...readState, positions: mergePositions(readState.positions, cut), floor: Math.max(readState.floor, answer.seq) };
       set({ unread: unreadOf(state.events) });
     },
     // --- Lobby requests. Each mutation is already committed server-side when it answers, so the
