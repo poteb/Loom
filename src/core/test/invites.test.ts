@@ -117,6 +117,15 @@ describe("inviteParticipant", () => {
     await expect(inviteParticipant(db, bus, demoted, t.id, ownerId))
       .rejects.toMatchObject({ code: "validation", message: "You cannot invite yourself" });
   });
+  it("a keeper demoted between resolving and inviting cannot readmit itself", async () => {
+    const { r, owner, creator, t } = await setup();   // owner resolved while still a keeper
+    const ownerId = idOf(owner);
+    await removeParticipant(db, bus, creator, t.id, ownerId);
+    const instance = await resolveCredential(db, keeperToken("k1"));
+    await setRole(db, bus, instance, r.weave.id, ownerId, "member");
+    // The stale Actor still carries role keeper, so only the in-lock re-check can refuse it.
+    await expect(inviteParticipant(db, bus, owner, t.id, ownerId)).rejects.toMatchObject({ code: "forbidden" });
+  });
   it("a keeper's self-readmission into a closed Thread is thread_closed", async () => {
     const { owner, creator, t } = await setup();
     const ownerId = idOf(owner);
