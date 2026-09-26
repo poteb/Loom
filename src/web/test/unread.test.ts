@@ -98,6 +98,17 @@ describe("createReadThrottle (spec 2026-09-26 §6.2)", () => {
     expect(sent).toEqual([["T", 5], ["T", 6], ["T", 7]]);
   });
 
+  it("a held position is only ever raised: a failed lower one does not replace it", () => {
+    vi.useFakeTimers();
+    const sent: [string, number][] = [];
+    const t = createReadThrottle((id, seq) => { sent.push([id, seq]); });
+    t.advance("T", 5);                          // at once
+    t.advance("T", 9);                          // held
+    t.retry("T", 6);                            // the mark of an earlier 6 failed after 9 was held
+    t.flush();
+    expect(sent).toEqual([["T", 5], ["T", 9]]);
+  });
+
   it("switching Threads just before the interval ends restarts the interval from the opening mark", () => {
     vi.useFakeTimers();
     const sent: [string, number][] = [];

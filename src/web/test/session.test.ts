@@ -3107,6 +3107,69 @@ describe("reading while the Thread is open (spec 2026-09-26 §6.2)", () => {
     } finally { session.dispose(); }
   });
 
+  /** Paw opens PR 1 (the mark of 6) and Claude posts in it (8): read on arrival, and held by the throttle. */
+  const heldArrival = async (session: Session, f: Awaited<ReturnType<typeof readFixture>>, rec: { calls: Call[] }) => {
+    await settled(session, f);
+    session.selectThread(f.pr.id);
+    await s.core.postMessage(f.claude, f.pr.id, "held");               // 8
+    await waitFor(() => session.getState().events.some((e) => e.payload.text === "held"));
+    expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 6 }]);
+  };
+
+  it("the tab becoming hidden flushes the held position", async () => {
+    const f = await readFixture();
+    const vis = fakeVisibility();
+    const rec = recordingClient();
+    const session = byId(f, rec.client, { visibility: vis, readFlushMs: 60_000 });
+    try {
+      await heldArrival(session, f, rec);
+      vis.set(false);
+      expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 6 }, { seq: 8 }]);
+    } finally { session.dispose(); }
+  });
+
+  it("disposing the session flushes the held position", async () => {
+    const f = await readFixture();
+    const rec = recordingClient();
+    const session = byId(f, rec.client, { readFlushMs: 60_000 });
+    try {
+      await heldArrival(session, f, rec);
+    } finally { session.dispose(); }
+    expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 6 }, { seq: 8 }]);
+    await vi.waitFor(async () => expect((await serverPositions(f.j.token, f.r.weave.id)).threads[f.pr.id]).toBe(8));
+  });
+
+  it("creating a Thread flushes the held position of the Thread it leaves", async () => {
+    const f = await readFixture();
+    const rec = recordingClient();
+    const session = byId(f, rec.client, { readFlushMs: 60_000 });
+    try {
+      await heldArrival(session, f, rec);
+      await session.createThread("Fresh");
+      expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 6 }, { seq: 8 }]);
+    } finally { session.dispose(); }
+  });
+
+  it("a position held for one identity is never sent under the next one", async () => {
+    const f = await readFixture();
+    const rec = recordingClient();
+    const storage = storedIdentity(f.r.weave.id, f.j, { secret: f.r.secret });
+    const session = createSession({ client: rec.client, target: { kind: "id", weaveId: f.r.weave.id }, storage, readFlushMs: 60_000 });
+    try {
+      await heldArrival(session, f, rec);
+      await session.join("Dana");                                      // joined at 9
+      const dana = session.getState().me!;
+      await waitFor(() => rec.calls.some((c) => isRead("GET")(c) && c.token === dana.token));
+      await turn();                                                    // Dana's read state is in
+      session.selectThread(f.general);                                 // a flush, now in Dana's name
+      await turn();
+      // Paw's held 8 went with Paw: not flushed, not sent by a timer, not sent as Dana. Dana has read
+      // General up to Dana's own join, so Dana sends nothing either.
+      expect(putsTo(rec.calls, f.pr.id)).toEqual([{ seq: 6 }]);
+      expect(rec.calls.filter((c) => isRead("PUT")(c) && c.token === dana.token)).toEqual([]);
+    } finally { session.dispose(); }
+  });
+
   it("a readPositions reply that arrives while the tab is hidden marks nothing; the hidden arrival stays unread until the tab is visible again", async () => {
     const f = await readFixture();
     const vis = fakeVisibility();
