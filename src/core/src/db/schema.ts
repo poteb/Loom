@@ -55,8 +55,9 @@ export const participants = pgTable("participants", {
   // `stampSeen`, throttled to once per ten seconds, and never an event.
   lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
   // The last 20 check-ins, oldest first (spec 2026-09-27 §3): appended by `stampSeen` in the same
-  // statement that writes `last_seen_at`, so its last element always equals it. Never returned as
-  // such: only `cadenceOf`'s summary leaves core. Null until the first check-in after migration 0007.
+  // statement that writes `last_seen_at`, so after any check-in since migration 0007 its last
+  // element equals it. Null until that first check-in, even where `last_seen_at` is set from before
+  // 0007. Never returned as such: only `cadenceOf`'s summary leaves core.
   seenHistory: timestamp("seen_history", { withTimezone: true }).array(),
 }, (t) => [
   uniqueIndex("participants_weave_name_idx").on(t.weaveId, sql`lower(${t.name})`),

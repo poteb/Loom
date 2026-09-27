@@ -112,7 +112,8 @@ row reads from the participant's own `participant.joined`.
 Migration 0007 adds `participants.seen_history` (`timestamptz[]`, nullable) and nothing else;
 nothing is backfilled. A **check-in** is a stamp that writes: the throttled `stampSeen` update sets
 `last_seen_at` and appends the same moment to `seen_history`, cut to the last 20, in one statement,
-so the history's last element always equals `last_seen_at`. A Lobby listener's **status** (working,
+so after any check-in since 0007 the history's last element equals `last_seen_at` (a row last
+stamped before 0007 has `last_seen_at` and no history until its next check-in). A Lobby listener's **status** (working,
 idle or offline), its **current work** (the soonest due request it holds accepted work on) and its
 **cadence** (the median and longest gap of those 20) are computed at read time in
 `lobby/status.ts`, never stored and never an event: a status is true as of the read that computed

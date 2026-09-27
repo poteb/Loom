@@ -119,7 +119,7 @@ async function work(w: World, title: string, taking: L[], offeringOnly: L[] = []
   return r;
 }
 
-/** Sets the last check-in, and a history that agrees with it (spec §4.1: the two never disagree). */
+/** Sets the last check-in, and a history that agrees with it (spec §4.1: as they do after any check-in since 0007). */
 const seenAt = (l: { id: string }, at: Date | null) =>
   db.update(participants).set({ lastSeenAt: at, seenHistory: at === null ? null : [at] }).where(eq(participants.id, l.id));
 const setOffer = (requestId: string, l: { id: string }, change: Partial<typeof requestOffers.$inferInsert>) =>

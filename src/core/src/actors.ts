@@ -23,8 +23,9 @@ export const SEEN_THROTTLE_MS = 10_000;
  * on the participants `which` selects, unless one was written ten seconds or less before `now`
  * (exactly ten seconds still skips), and in the **same statement** appends `now` to `seen_history`,
  * cut to its last 20 entries, oldest first. The `WHERE` is unchanged (`which` and the throttle, no
- * condition on the history), so a skipped stamp appends nothing and the history's last element
- * always equals `last_seen_at`. It is not an event and takes no Weave lock, so a poll neither grows
+ * condition on the history), so a skipped stamp appends nothing, and after any check-in since
+ * migration 0007 the history's last element equals `last_seen_at`. A row last stamped before 0007
+ * has `last_seen_at` and no history until its next check-in. It is not an event and takes no Weave lock, so a poll neither grows
  * the log nor wakes anyone. A stamp that fails fails the call, which was about to use the same
  * database anyway.
  */
