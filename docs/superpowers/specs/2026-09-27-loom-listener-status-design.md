@@ -5,6 +5,14 @@ Date: 2026-09-27. Status: draft for Paw's approval. Brainstorm: `.superpowers/he
 parts ("ok" to each): part 1, server and data (§§3 to 5); part 2, web and what is not promised
 (§§6 and 11).
 
+Amended 2026-09-27 after smoke test 9 on Paw's word: `seen_history` records a new check-in only
+when its last entry is at least 60 s (`CHECKIN_SPACING_MS`) older than the stamp, exactly 60 s
+included, so one poll run counts once and the cadence measures the time between runs; `last_seen_at`
+is still stamped on every call, throttled to 10 s, so the history's last element can be up to a
+minute older than it (§4.1, §4.4, §9.1). Smoke test 9 had read ChatGPT's rate as "every ~11 s
+(declares 5 min), longest 11 s": one run's calls to the Lobby inbox and then a Weave's, seconds
+apart, were each a check-in.
+
 ## 1. Purpose and scope
 
 Two sources meet here. The v2-notes idea "A Listener heartbeat, and removing inactive Listeners
@@ -41,7 +49,8 @@ never called reads "offline" and "rate unknown".
   polling when doing work"). So the rate measured is the rate of check-ins, not strictly of polls.
 - **Q5: A.** The rate is the typical (median) gap over the last 20 check-ins, shown beside the
   declared interval, plus the longest gap in those 20. Twenty timestamps are stored per
-  participant; the 10 s stamp throttle is the floor of any gap.
+  participant; the 10 s stamp throttle is the floor of any gap (amended 2026-09-27: the floor is
+  now the 60 s check-in spacing, see the note at the top).
 - **Q6: A.** Fields on existing read shapes: the Listeners directory (Status column, tabs with
   counts, a server-side status filter, current thread, rate), the sidebar stat tiles, `find_agents`
   and `get_request`. MCP and CLI see them through those shapes; no new tools.
@@ -73,24 +82,31 @@ unchanged. Only the cadence summary of §4.4 leaves core.
 
 ### 4.1 The check-in
 
-A **check-in** is a stamp that writes: the throttled `stampSeen` update in `src/core/src/actors.ts`
-that sets `last_seen_at` (at most once per `SEEN_THROTTLE_MS = 10_000`; a stamp exactly 10 000 ms
-after the previous one still skips). That update now also appends to the history, in the **same
-statement**:
+A **stamp** is the throttled `stampSeen` update in `src/core/src/actors.ts` that sets
+`last_seen_at` (at most once per `SEEN_THROTTLE_MS = 10_000`; a stamp exactly 10 000 ms after the
+previous one still skips). A **check-in** (as amended 2026-09-27) is a stamp that also appends to
+the history, in the **same statement**, which it does only when the history is empty or its last
+entry is at least `CHECKIN_SPACING_MS = 60_000` before `$now` (**exactly 60 000 ms appends**; 59 999
+does not):
 
     SET last_seen_at = $now,
-        seen_history = (array_append(coalesce(seen_history, '{}'), $now))
-                       [greatest(coalesce(cardinality(seen_history), 0) - 18, 1):]
+        seen_history = CASE WHEN coalesce(seen_history[cardinality(seen_history)] <= $now - 60 s, true)
+                       THEN (array_append(coalesce(seen_history, '{}'), $now))
+                            [greatest(coalesce(cardinality(seen_history), 0) - 18, 1):]
+                       ELSE seen_history END
 
-so the stored array is the previous one plus `$now`, cut to its last 20 entries, oldest first. The
-`WHERE` is unchanged (`which` and the throttle), so a skipped stamp appends nothing, and the history
-and `last_seen_at` can never disagree: after any check-in, the last element of `seen_history` equals
-`last_seen_at`. `$now` is the same JavaScript `Date` both columns are written from, so every stored
-value holds whole milliseconds.
+so an appended array is the previous one plus `$now`, cut to its last 20 entries, oldest first, and
+the last element of a null or empty array is null, so an empty history always appends. The `WHERE`
+is unchanged (`which` and the throttle), so a skipped stamp appends nothing, even one 60 s after the
+last check-in; the next stamp that writes appends. The 60 s are counted from the history's last
+entry, not from `last_seen_at`: the several calls of one poll run, seconds apart, move
+`last_seen_at` and count once, and the history's last element is the last check-in, which can be up
+to a minute older than `last_seen_at`. `$now` is the same JavaScript `Date` both columns are written
+from, so every stored value holds whole milliseconds.
 
-**Every stamp writes the history (choice),** for every participant in every Weave, human or agent,
-exactly as `last_seen_at` is written today: one rule, one statement. Only the Lobby listings of §4.5
-read it.
+**Every stamp may write the history (choice),** for every participant in every Weave, human or
+agent, exactly as `last_seen_at` is written today: one rule, one statement. Only the Lobby listings
+of §4.5 read it.
 
 **Which calls check a Lobby participant in.** Unchanged, and already what Q7 asks:
 
@@ -220,7 +236,8 @@ check-ins, not gaps **(choice)**.
 
 The gaps are only those **between** stored check-ins: the time since the last check-in is not a gap
 and never enters `longestGapMs` **(choice)**; the status already says when that silence has grown too
-long. Because every check-in passed the 10 s throttle, every gap is more than 10 000 ms.
+long. Because a check-in appends only 60 s or more after the one before it (§4.1 as amended), every
+gap is at least 60 000 ms.
 
 Pure, in `status.ts`: `cadenceOf(history: Date[] | null): Cadence`. Computed in TypeScript only; no
 filter or sort reads it.
@@ -549,8 +566,19 @@ Nothing else is new. Every other refusal of the reads above is as today.
 `src/core/test/liveness.test.ts` (existing), new cases:
 
 - `a check-in appends to seen_history in the same write as last_seen_at, and a throttled stamp
-  appends nothing`.
-- `seen_history keeps the last 20, oldest first`: 25 check-ins, 10 001 ms apart, leave the last 20.
+  appends nothing`. (Amended 2026-09-27: the throttled stamps are followed by one at exactly
+  60 000 ms, which appends.)
+- `stamps less than 60 s after the last check-in move last_seen_at and append nothing: one poll run
+  counts once` (amended 2026-09-27).
+- `a stamp exactly 60 000 ms after the last check-in appends, and so does any later one` (amended
+  2026-09-27): a stamp between them does not move the 60 s, and 59 999 ms does not append.
+- `the throttle still comes first: a stamp it skips appends nothing, even 60 s after the last
+  check-in` (amended 2026-09-27).
+- `runs of two or three calls every five minutes give a cadence of about five minutes` (amended
+  2026-09-27): eight runs, 300 000 ms apart plus up to 4 s of jitter, give eight check-ins and a
+  typical gap of 302 000 ms.
+- `seen_history keeps the last 20, oldest first`: 25 check-ins, 60 000 ms apart (amended 2026-09-27;
+  was 10 001 ms), leave the last 20.
 - `an agent-key call in another Weave checks in the agent's Lobby participant`: a keyed agent that
   joined the Lobby and another Weave calls `readEvents` in the other Weave; its Lobby
   `last_seen_at` and `seen_history` move.
