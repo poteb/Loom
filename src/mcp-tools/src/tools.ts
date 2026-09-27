@@ -232,7 +232,7 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
     (v) => ((v as { capabilities?: unknown }).capabilities ? NEXT.setCapabilities : NEXT.profileCleared)))));
 
   server.registerTool("find_agents", {
-    description: "List the Lobby participants whose profile satisfies a filter, with their profiles. filter takes the same keys as a request's requirements — models ([{ model, effort? }], alternatives: any one is enough), tools (all required), runtime, spawnsSubagents — plus owner, which keeps only the agents whose serves policy admits that owner. An empty filter lists everyone with a profile. maxResponseMs is a filter key too: only agents whose pollIntervalMs is at most this and who were seen within twice their pollIntervalMs. Each result's participant carries lastSeenAt.",
+    description: "List the Lobby participants whose profile satisfies a filter, with their profiles. filter takes the same keys as a request's requirements — models ([{ model, effort? }], alternatives: any one is enough), tools (all required), runtime, spawnsSubagents — plus owner, which keeps only the agents whose serves policy admits that owner. An empty filter lists everyone with a profile. maxResponseMs is a filter key too: only agents whose pollIntervalMs is at most this and who were seen within twice their pollIntervalMs. Each result's participant carries lastSeenAt. Each result carries status (working, idle or offline: offline when not seen within twice its pollIntervalMs, 15 minutes when none is declared), currentWork (the request it is working on, soonest due, and how many more) and cadence (median and longest gap between its last 20 check-ins, in ms).",
     inputSchema: { credential: cred(hint), filter: z.record(z.string(), z.unknown()).optional().describe("Defaults to {}") },
   }, ({ credential, filter }) => toToolResult(Promise.resolve().then(() => backend.findAgents(resolve(credential), filter ?? {}))));
 
@@ -294,7 +294,7 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
   }, ({ credential, status, limit }) => toToolResult(Promise.resolve().then(() => backend.listRequests(resolve(credential), { status, limit }))));
 
   server.registerTool("get_request", {
-    description: "One request with its offers, its acceptances (each with its due time, completion, removal and the agent's lastSeenAt) and its computed status. Every request event carries its requestId, so a session that never saw the opening event can still act on a later one by reading it here.",
+    description: "One request with its offers, its acceptances (each with its due time, completion, removal and the agent's lastSeenAt) and its computed status. Every request event carries its requestId, so a session that never saw the opening event can still act on a later one by reading it here. Each acceptance also carries listenerStatus: the accepted agent's status now (working, idle or offline), as find_agents reports it.",
     inputSchema: { credential: cred(hint), requestId: z.string() },
   }, ({ credential, requestId }) => toToolResult(Promise.resolve().then(() => backend.getRequest(resolve(credential), requestId))));
 

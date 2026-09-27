@@ -860,6 +860,65 @@ describe("session requests", () => {
     } finally { session.dispose(); }
   });
 
+  // Spec 2026-09-27 §6.6: the panel's listener status is the one a request read carried, and the
+  // request is re-read on the request events the session follows. An acceptance folded from the event
+  // alone has none (it says nothing about liveness); the re-read that event causes supplies it.
+  it("a request event re-reads the request, so an acceptance made in another browser carries the listener's status", async () => {
+    const f = await lobbyFixture();
+    const r = await f.open();
+    await anon.withToken(f.helper.token).offer(r.id, { model: MODEL.model, effort: MODEL.effort });
+    const session = await makeSession({ kind: "secret", secret: f.secret }, f.storage);
+    try {
+      await waitFor(() => session.getState().connection === "open");
+      expect(session.getState().requests[r.id]?.acceptances).toEqual([]);
+      await anon.withToken(f.requester.token).acceptRequest(r.id, [f.helper.participant.id], 3_600_000);
+      await waitFor(() => session.getState().requests[r.id]?.acceptances[0]?.listenerStatus !== undefined);
+      expect(session.getState().requests[r.id]!.acceptances.map((a) => [a.participantId, a.listenerStatus]))
+        .toEqual([[f.helper.participant.id, "working"]]);
+    } finally { session.dispose(); }
+  });
+
+  // Two helpers, so the first one's completion leaves the request working: the request's close
+  // would carry a `thread.closed`, whose refresh would re-read the board for reasons of its own.
+  it("a request event re-reads the request, so a completed acceptance's listener status is not left stale", async () => {
+    const f = await lobbyFixture();
+    // Joined before the request opens: who is eligible is decided once, at the open.
+    const second = await anon.joinLobby({ name: `Second-${++fixtureN}`, kind: "agent" });
+    await anon.withToken(second.token).setCapabilities({ models: [MODEL], tools: [], serves: "anyone", owner: `second-${fixtureN}` });
+    const r = await f.open();
+    await anon.withToken(f.helper.token).offer(r.id, { model: MODEL.model, effort: MODEL.effort });
+    await anon.withToken(second.token).offer(r.id, { model: MODEL.model, effort: MODEL.effort });
+    await anon.withToken(f.requester.token).acceptRequest(r.id, [f.helper.participant.id, second.participant.id], 3_600_000);
+    const session = await makeSession({ kind: "secret", secret: f.secret }, f.storage);
+    const statusOf = () => session.getState().requests[r.id]?.acceptances.find((a) => a.participantId === f.helper.participant.id)?.listenerStatus;
+    try {
+      await waitFor(() => session.getState().connection === "open");
+      expect(statusOf()).toBe("working");
+      await anon.withToken(f.helper.token).completeRequest(r.id, "done");
+      await waitFor(() => statusOf() !== "working");
+      expect([statusOf(), session.getState().requests[r.id]!.status]).toEqual(["idle", "working"]);
+    } finally { session.dispose(); }
+  });
+
+  // Review 6 F2: an offer changes no acceptance and no listener's work, so on a request the session
+  // holds it re-reads nothing; one opened request in a Lobby of N listeners brings up to N offers.
+  it("a request.offered on a held request does not refresh the board", async () => {
+    const f = await lobbyFixture();
+    const r = await f.open();
+    const c = sideReadClient();
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.secret }, storage: f.storage });
+    await session.load();
+    try {
+      await waitFor(() => session.getState().connection === "open" && !!session.getState().requests[r.id]);
+      for (let i = 0; i < 5; i++) await new Promise((done) => setTimeout(done, 0));
+      const reads = c.weaveReads();
+      await anon.withToken(f.helper.token).offer(r.id, { model: MODEL.model, effort: MODEL.effort });
+      await waitFor(() => session.getState().requests[r.id]!.offers.length === 1);
+      for (let i = 0; i < 5; i++) await new Promise((done) => setTimeout(done, 0));
+      expect(c.weaveReads()).toBe(reads);
+    } finally { session.dispose(); }
+  });
+
   it("accept() applies the snapshot it gets back", async () => {
     const f = await lobbyFixture();
     const r = await f.open();
@@ -2165,6 +2224,115 @@ describe("the Lobby's listener count (spec §5.1)", () => {
     } finally { session.dispose(); }
   });
 
+  it("stores the count read's statusCounts for the tiles", async () => {
+    const f = await lobbyFixture();
+    const session = await makeSession({ kind: "secret", secret: f.secret }, f.storage);
+    try {
+      await waitFor(() => session.getState().listenerStatusCounts !== undefined);
+      expect(session.getState().listenerStatusCounts)
+        .toEqual((await anon.withToken(f.requester.token).listListeners({ limit: 0, facets: false })).statusCounts);
+    } finally { session.dispose(); }
+  });
+
+  it("a failed count read keeps the last tiles", async () => {
+    const f = await lobbyFixture();
+    const c = sideReadClient({ [LISTENERS]: onCall(2, UNREACHABLE) });
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.secret }, storage: f.storage });
+    await session.load();
+    try {
+      await waitFor(() => session.getState().listenerStatusCounts !== undefined);
+      const answered = session.getState().listenerStatusCounts;
+      await waitFor(() => session.getState().connection === "open");
+      await anon.joinLobby({ name: `Late-${++fixtureN}`, kind: "human" });
+      await waitFor(() => session.getState().listenerCountError === true);
+      expect(session.getState().listenerStatusCounts).toBe(answered);
+    } finally { session.dispose(); }
+  });
+
+  it("becoming visible re-reads the tiles, and they take the new answer", async () => {
+    const f = await lobbyFixture();
+    // From the flip on, the count read answers with numbers no real Lobby here has, so the tiles
+    // can only hold them if the read the flip made is the one they took.
+    const NEW = { working: 701, idle: 702, offline: 703 };
+    let rewrite = false;
+    const rewritten: Answer = async (pass) => {
+      const body = await (await pass()).json();
+      return new Response(JSON.stringify({ ...body, statusCounts: NEW }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    const c = sideReadClient({ [LISTENERS]: () => (rewrite ? rewritten : undefined) });
+    const vis = fakeVisibility();
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.secret }, storage: f.storage, visibility: vis });
+    await session.load();
+    try {
+      await waitFor(() => session.getState().listenerStatusCounts !== undefined);
+      const before = c.calls(LISTENERS);
+      vis.set(false);
+      expect(c.calls(LISTENERS)).toBe(before);                           // hiding reads nothing
+      rewrite = true;
+      vis.set(true);
+      await waitFor(() => c.calls(LISTENERS) > before);
+      await waitFor(() => session.getState().listenerStatusCounts?.working === NEW.working);
+      expect(session.getState().listenerStatusCounts).toEqual(NEW);
+    } finally { session.dispose(); }
+  });
+
+  // Spec 2026-09-27 §6.6: the directory re-runs through `onVisible`, so its fan-out is the
+  // mechanism, not a detail: once per show, never on a hide, and never after an unsubscribe.
+  it("onVisible calls a subscriber once per show, never on a hide, and not after it unsubscribes", async () => {
+    const f = await lobbyFixture();
+    const vis = fakeVisibility();
+    const session = createSession({ client: sideReadClient().client, target: { kind: "secret", secret: f.secret }, storage: f.storage, visibility: vis });
+    await session.load();
+    try {
+      let calls = 0;
+      const off = session.onVisible(() => { calls++; });
+      vis.set(false);
+      const onHide = calls;
+      vis.set(true);
+      const onShow = calls;
+      off();
+      vis.set(false);
+      vis.set(true);
+      expect([onHide, onShow, calls]).toEqual([0, 1, 1]);
+    } finally { session.dispose(); }
+  });
+
+  // Whole-branch review F2 (Paw, 2026-09-27): the open directory re-runs through `onWorkChanged`, on
+  // the work events that re-read the tiles' count, and an offer is not one.
+  it("onWorkChanged calls a subscriber on an accept made elsewhere, not on an offer, and not after it unsubscribes", async () => {
+    const f = await lobbyFixture();
+    const r = await f.open();
+    const session = await makeSession({ kind: "secret", secret: f.secret }, f.storage);
+    try {
+      await waitFor(() => session.getState().connection === "open" && !!session.getState().requests[r.id]);
+      let calls = 0;
+      const off = session.onWorkChanged(() => { calls++; });
+      await anon.withToken(f.helper.token).offer(r.id, { model: MODEL.model, effort: MODEL.effort });
+      await waitFor(() => session.getState().requests[r.id]!.offers.length === 1);
+      const onOffer = calls;
+      await anon.withToken(f.requester.token).acceptRequest(r.id, [f.helper.participant.id], 3_600_000);
+      await waitFor(() => session.getState().requests[r.id]!.status === "working");
+      const onAccept = calls;
+      off();
+      await anon.withToken(f.helper.token).completeRequest(r.id, "done");
+      await waitFor(() => session.getState().requests[r.id]!.acceptances[0]?.completedAt != null);
+      expect([onOffer, onAccept, calls]).toEqual([0, 1, 1]);
+    } finally { session.dispose(); }
+  });
+
+  it("after dispose, a show calls no subscriber and the session no longer listens to the tab", async () => {
+    const f = await lobbyFixture();
+    const vis = fakeVisibility();
+    const session = createSession({ client: sideReadClient().client, target: { kind: "secret", secret: f.secret }, storage: f.storage, visibility: vis });
+    await session.load();
+    let calls = 0;
+    session.onVisible(() => { calls++; });
+    session.dispose();
+    vis.set(false);
+    vis.set(true);
+    expect([calls, vis.listening()]).toEqual([0, 0]);
+  });
+
   // The ordering rule on the failure path. Without it, a stale rejection spends the page's
   // credential recovery — the most destructive act on this page — on a read nothing is waiting for.
   it("drops a count rejection that a newer answer has already overtaken", async () => {
@@ -2987,13 +3155,15 @@ describe("read state (spec 2026-09-26 §6.1)", () => {
 });
 
 /** A tab whose visibility the test sets; `set` tells the session, as `visibilitychange` would. */
-function fakeVisibility(visible = true): Visibility & { set(next: boolean): void } {
+function fakeVisibility(visible = true): Visibility & { set(next: boolean): void; listening(): number } {
   const fns = new Set<() => void>();
   let v = visible;
   return {
     visible: () => v,
     onChange: (fn) => { fns.add(fn); return () => { fns.delete(fn); }; },
     set(next) { v = next; for (const fn of [...fns]) fn(); },
+    /** How many handlers the tab would tell: a disposed session must have taken its own away. */
+    listening: () => fns.size,
   };
 }
 

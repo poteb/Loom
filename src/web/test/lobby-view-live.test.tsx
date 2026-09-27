@@ -70,7 +70,8 @@ async function lobbyFixture() {
   setIdentity(storage, weaveId, { token: me.token, participantId: me.participant.id, name: me.participant.name });
   // `createThread` asks only that the actor be a participant of the Weave (`core/src/threads.ts:58`),
   // so this ordinary Lobby member may make the event, and it is made on a connection of its own.
-  return { weaveId, storage, listener: `Helper-${n}`, thread: `Design-${n}`, other: anon.withToken(other.token) };
+  return { weaveId, storage, listener: `Helper-${n}`, thread: `Design-${n}`, other: anon.withToken(other.token),
+    listenerId: listener.participant.id, listenerToken: listener.token };
 }
 
 /** The page as a browser loads it, with the real session and its real stream underneath. */
@@ -155,6 +156,53 @@ describe("the directory over a live stream (spec §12.13)", () => {
     // makes the Lobby's two side reads, one of which shares this pathname. What must not move is the
     // directory's own query — the directory did not remount and did not re-ask.
     expect(v.asked()).toBe(before);
+    v.unmount();
+  });
+});
+
+/**
+ * A request the fixture's second participant opens and its listener offers on, ready for the accept
+ * that makes the listener working: the event this block is about. The target is a Weave of the
+ * requester's own, which is all `openRequest` asks of a target.
+ */
+async function offeredRequest(f: Awaited<ReturnType<typeof lobbyFixture>>, n: number) {
+  const anon = new LoomClient({ baseUrl: s.baseUrl, allowInsecure: true });
+  const target = await anon.createWeave({ title: `Target ${n}`, opener: "hello", creator: { name: "Paw", kind: "human" } });
+  const r = await f.other.openRequest({
+    title: `Review PR ${n}`, requirements: { models: [MODEL] }, wanted: 1, timeoutMs: 3_600_000,
+    targetWeaveId: target.weave.id, targetThreadId: target.generalThread.id, targetCredential: target.token,
+  });
+  await anon.withToken(f.listenerToken).offer(r.id, { model: MODEL.model, effort: MODEL.effort });
+  return { accept: () => f.other.acceptRequest(r.id, [f.listenerId], 3_600_000) };
+}
+
+describe("the directory when accepted work changes (spec 2026-09-27 §6.6, whole-branch review F2)", () => {
+  it("a second browser with the directory open sees the accepted listener's row and the Working tab move, without Reload", async () => {
+    const f = await lobbyFixture();
+    const req = await offeredRequest(f, fixtureN);
+    const v = await openDirectory(f);
+    const working = () => Number(v.container.querySelector(".status-tab-working .status-tab-count")?.textContent);
+    const statusOf = () => [...v.container.querySelectorAll(".listeners tbody tr.listener-row")]
+      .find((r) => r.querySelector(".listener-name")?.textContent === f.listener)?.querySelector(".listener-status")?.textContent;
+    const before = [statusOf(), working()];
+    await req.accept();
+    await waitFor(() => statusOf() === "working" && working() === (before[1] as number) + 1);
+    expect([before[0], statusOf(), working() - (before[1] as number)]).toEqual(["idle", "working", 1]);
+    v.unmount();
+  });
+
+  it("a closed directory makes no query of its own when accepted work changes", async () => {
+    const f = await lobbyFixture();
+    const req = await offeredRequest(f, fixtureN);
+    const v = mountLobby(f);
+    await waitFor(() => v.connection() === "open");
+    const tile = () => Number(v.container.querySelector(".listener-tile-working .listener-tile-count")?.textContent);
+    await waitFor(() => !Number.isNaN(tile()));
+    const before = tile();
+    await req.accept();
+    // The tiles moving is the proof the work event arrived and its refresh answered.
+    await waitFor(() => tile() === before + 1);
+    expect([v.directory(), v.asked()]).toEqual([false, 0]);
     v.unmount();
   });
 });

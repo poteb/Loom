@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { JSX } from "preact";
 import { LoomClientError } from "@loom/client";
-import type { Listener, ListenersFacets, ListenersSort, Profile, ServesKind } from "@loom/client";
+import type { Listener, ListenerStatus, ListenersFacets, ListenersSort, Profile, ServesKind, StatusCounts } from "@loom/client";
 import type { Session } from "../../session.js";
 import { viewOfPath } from "../../lobby-view.js";
 import { ProfileCard, agoText, modelSpecs } from "../ProfileCard.js";
 import { FacetChips, ModelChips } from "./FacetChips.js";
+import { rateText } from "./listener-status.js";
 import {
   EMPTY_VIEW, queryFromView, viewFromSearch, writeSearch, type ListenersView,
 } from "./listeners-query.js";
@@ -36,6 +37,8 @@ type PageState = {
   rows: Listener[];
   total?: number; matched?: number;
   facets?: ListenersFacets;
+  /** The newest answer's status counts: what the tabs show, once an answer has given them. */
+  statusCounts?: StatusCounts;
   nextCursor?: string;
   error?: string;
   moreError?: string;
@@ -48,8 +51,13 @@ const SORTS: { value: ListenersSort; label: string }[] = [
 /** The three stored words, said the way §5.3 says them. The URL still carries the words themselves. */
 const SERVES: Record<string, string> = { anyone: "anyone", owner: "its owner", list: "a named list" };
 
-/** The table's columns, in order; the details row spans all of them. */
-const COLUMNS = ["Listener", "Owner", "Models", "Tools", "Runtime", "Serves", "Last seen", "Joined", "Actions"];
+/** The table's columns, in order; the details row spans all of them. Status and Current work follow Owner (spec 2026-09-27 §6.2). */
+const COLUMNS = ["Listener", "Owner", "Status", "Current work", "Models", "Tools", "Runtime", "Serves", "Last seen", "Joined", "Actions"];
+
+/** The four status tabs, in order (spec 2026-09-27 §6.1): All is no status filter. */
+const STATUS_TABS: { key: "all" | ListenerStatus; label: string }[] = [
+  { key: "all", label: "All" }, { key: "working", label: "Working" }, { key: "idle", label: "Idle" }, { key: "offline", label: "Offline" },
+];
 
 /**
  * Where a row's Invite goes: the Thread this browser has open. `WeaveView` hands it down only when
@@ -65,7 +73,11 @@ export type InviteTarget = { threadId: string; invited?: ReadonlySet<string>; me
  * Invite. The only live thing on it is the quiet "the list has changed" line, because it has no
  * stream of its own (§5.5).
  */
-export function ListenersPage({ session, invite }: { session: Session; invite?: InviteTarget }) {
+export function ListenersPage({ session, invite, onOpenThread }: {
+  session: Session; invite?: InviteTarget;
+  /** Opens a Lobby Thread in the thread view, as a Thread list entry does: the Current work button's target. */
+  onOpenThread?: (threadId: string) => void;
+}) {
   // The link this page was opened with, read once. `partial` latches with it: it describes that
   // link, not the controls, which the human has been driving ever since.
   //
@@ -83,6 +95,13 @@ export function ListenersPage({ session, invite }: { session: Session; invite?: 
   const viewRef = useRef(view);
   const draftRef = useRef(draft);
   const [state, setState] = useState<PageState>({ status: "loading", rows: [] });
+  // For the re-run on becoming visible, whose failure is quiet (review 6 F4): the state as last
+  // rendered, the page as its last settled query left it (what a quiet failure puts back), and
+  // whether a query the user made is still waiting for its answer (then the failure is theirs).
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const settled = useRef<Pick<PageState, "status" | "error" | "moreError" | "nextCursor">>({ status: "loading" });
+  const userWaiting = useRef(false);
   const [changed, setChanged] = useState(false);
   // A row's failed Invite, on this page's own line: the error bar belongs to the header and the
   // sidebar panels, and an invite made from here is this page's to report.
@@ -100,8 +119,25 @@ export function ListenersPage({ session, invite }: { session: Session; invite?: 
     if (debounce.current) clearTimeout(debounce.current);
   }, []);
 
-  const run = (next: ListenersView, cursor?: string) => {
+  /**
+   * The re-run on a work event, coalesced (whole-branch review F2): at most one in flight, and a
+   * burst while it runs asks for one follow-up, not one each.
+   */
+  const workRun = useRef<"idle" | "running" | "again">("idle");
+
+  /**
+   * `background` is a re-run nobody asked for (on becoming visible, or on a work event), so its
+   * failure is quiet. Answers once the query has settled, either way.
+   */
+  const run = (next: ListenersView, cursor?: string, background = false): Promise<void> => {
     const n = ++gen.current;
+    if (!cursor) {
+      const s = stateRef.current;
+      if (s.status !== "loading") settled.current = { status: s.status, error: s.error, moreError: s.moreError, nextCursor: s.nextCursor };
+      // A re-run that supersedes a query of the user's inherits its waiting user.
+      userWaiting.current = !background || userWaiting.current;
+    }
+    const quiet = background && !userWaiting.current;
     setState((s) => cursor
       ? { ...s, appending: true, moreError: undefined }
       // A fresh query's first page is a different question, so the cursor the *old* one answered
@@ -120,17 +156,22 @@ export function ListenersPage({ session, invite }: { session: Session; invite?: 
     // reader this request went out with, so it cannot be captured a moment too late.
     const { issue, page: answer } = session.listListeners(
       queryFromView(next, { limit: PAGE, cursor, facets: cursor === undefined }));
-    answer.then(
+    return answer.then(
       (page) => {
         if (!live.current || n !== gen.current) return;
-        if (firstTotal.current === undefined) firstTotal.current = page.total;
+        if (!cursor) userWaiting.current = false;
+        // The re-run on becoming visible is "Reload the list", so its answer is the new baseline:
+        // its answer, never its start, so a quiet failure leaves the line and the baseline as they
+        // were (whole-branch review F3).
+        if (background && !cursor) { firstTotal.current = page.total; setChanged(false); }
+        else if (firstTotal.current === undefined) firstTotal.current = page.total;
         else if (page.total !== firstTotal.current) setChanged(true);
         setState((s) => ({
           status: "ready",
           // "Show more" is the one query that appends; it checks its generation before it does.
           rows: cursor ? [...s.rows, ...page.listeners] : page.listeners,
           total: page.total, matched: page.matched,
-          facets: page.facets ?? s.facets, nextCursor: page.nextCursor,
+          facets: page.facets ?? s.facets, nextCursor: page.nextCursor, statusCounts: page.statusCounts ?? s.statusCounts,
         }));
       },
       (e: unknown) => {
@@ -138,6 +179,7 @@ export function ListenersPage({ session, invite }: { session: Session; invite?: 
         // is waiting for any more must not paint an error over newer rows, and must certainly not
         // spend the page's one credential recovery. Only a LIVE query may authorise one (spec §6.1).
         if (!live.current || n !== gen.current) return;
+        if (!cursor) userWaiting.current = false;
         session.reportCredentialFailure(e, issue);
         // …and the failure is rendered either way: where it recovered, `doLoad` takes the page to
         // `loading` and this view unmounts under the error it has just painted (spec §6.1, §6.3).
@@ -148,6 +190,14 @@ export function ListenersPage({ session, invite }: { session: Session; invite?: 
         // sending the same refused value on every press. Every other failure keeps the cursor,
         // because a retry is exactly what it wants.
         const refused = cursor !== undefined && e instanceof LoomClientError && e.code === "validation";
+        // A background re-run that fails puts back what was on screen and says nothing, as the count
+        // read beside it keeps its last numbers (review 6 F4). Not when a query of the user's was in
+        // flight: this run superseded it, and its answer is now this one's to give.
+        if (quiet) {
+          const back = settled.current;
+          setState((s) => ({ ...s, ...back, appending: false }));
+          return;
+        }
         setState((s) => cursor
           ? { ...s, appending: false, moreError: message, nextCursor: refused ? undefined : s.nextCursor }
           : { ...s, status: "error", error: message, appending: false });
@@ -160,7 +210,31 @@ export function ListenersPage({ session, invite }: { session: Session; invite?: 
   // `useSession` memoises the session on `[key, client, storage]`, so it is the same object across a
   // view flip and across a `doLoad` — the re-query after a recovery comes from the `loading` →
   // `ready` remount (spec §6.3) and not from this dependency.
-  useEffect(() => { run(view); }, [view, session]);
+  useEffect(() => { void run(view); }, [view, session]);
+  // Spec 2026-09-27 §6.6: becoming visible re-runs the view on screen, the first page with facets as
+  // "Reload the list" asks, rows kept until the answer. Pages Show more appended are replaced by it.
+  // Like Reload, its answer is the new baseline: rows it has just re-read have not "changed". The
+  // answer resets it, not the start, so a failure leaves the old rows' "changed" line standing.
+  useEffect(() => session.onVisible(() => {
+    if (!live.current) return;
+    void run(viewRef.current, undefined, true);
+  }), [session]);
+  // Whole-branch review F2 (Paw, 2026-09-27): while the directory is open, the work events that move
+  // the sidebar's tiles re-run its view the same quiet way, so tiles, tabs and rows agree. Only an
+  // open directory is subscribed. A burst is coalesced: one re-run in flight, then one follow-up.
+  useEffect(() => session.onWorkChanged(() => {
+    if (!live.current) return;
+    if (workRun.current !== "idle") { workRun.current = "again"; return; }
+    const go = (): void => {
+      workRun.current = "running";
+      void run(viewRef.current, undefined, true).then(() => {
+        if (!live.current) return;
+        if (workRun.current === "again") go();
+        else workRun.current = "idle";
+      });
+    };
+    go();
+  }), [session]);
 
   /**
    * The one way a control changes the page: new state, new URL, and — through the effect — one
@@ -209,11 +283,16 @@ export function ListenersPage({ session, invite }: { session: Session; invite?: 
   const toggleRuntime = (runtime: string) => apply((v) => ({ ...v, runtime: v.runtime === runtime ? undefined : runtime }));
   const toggleServes = (serves: string) => apply((v) => ({ ...v,
     serves: v.serves === serves ? undefined : serves as ServesKind }));
+  /** One tab, single-select: the status the server filters by, or none for All. Pressing the selected tab does nothing. */
+  const pickStatus = (status?: ListenerStatus) => {
+    if (status === viewRef.current.status) return;
+    apply((v) => ({ ...v, status }));
+  };
 
   // The raw `draft`, not a trimmed one: anything at all in the box — a space included — must leave
   // the control live, because pressing it is also what cancels a pending debounce (spec §9).
   const atDefaults = draft === "" && view.q === "" && view.models.length === 0 && view.tools.length === 0
-    && view.runtime === undefined && view.serves === undefined && view.sort === "name" && view.dir === "asc";
+    && view.runtime === undefined && view.serves === undefined && view.status === undefined && view.sort === "name" && view.dir === "asc";
   const clear = () => {
     // The pending keystroke is cancelled *before* `apply`, not folded into it: Clear filters empties
     // the box too, so there is no text left for it to carry, and a timer left running would have
@@ -229,7 +308,7 @@ export function ListenersPage({ session, invite }: { session: Session; invite?: 
    *  baseline. Never `location.reload()` — a full page load is exactly what an in-place browser
    *  cannot survive. */
   const reload = () => { firstTotal.current = undefined; setChanged(false); apply((v) => ({ ...v })); };
-  const showMore = () => { if (state.nextCursor && !state.appending) run(view, state.nextCursor); };
+  const showMore = () => { if (state.nextCursor && !state.appending) void run(view, state.nextCursor); };
   /** One row's Invite, answering whether it landed. "no_identity" is not an error to display, as in
    *  `WeaveView`'s `reportError`: the session has already raised its name prompt. */
   const inviteOne = async (threadId: string, participantId: string): Promise<boolean> => {
@@ -315,7 +394,8 @@ export function ListenersPage({ session, invite }: { session: Session; invite?: 
         </p>
       )}
 
-      <Table state={state} invite={invite} onInvite={inviteOne} />
+      <StatusTabs selected={view.status} counts={state.statusCounts} onPick={pickStatus} />
+      <Table state={state} invite={invite} onInvite={inviteOne} onOpenThread={onOpenThread} />
 
       {(counts || updating || state.nextCursor || state.moreError) && (
         <div class="listeners-foot muted">
@@ -339,13 +419,39 @@ export function ListenersPage({ session, invite }: { session: Session; invite?: 
 }
 
 /**
+ * The four tabs above the table (spec 2026-09-27 §6.1): single-select, each with its count from the
+ * newest answer (All is the sum), shown only once an answer has given one. The filtering is the
+ * server's: a tab never filters rows here.
+ */
+function StatusTabs({ selected, counts, onPick }: {
+  selected?: ListenerStatus; counts?: StatusCounts; onPick: (status?: ListenerStatus) => void;
+}) {
+  return (
+    <div class="status-tabs">
+      {STATUS_TABS.map((t) => {
+        const count = counts === undefined ? undefined
+          : t.key === "all" ? counts.working + counts.idle + counts.offline : counts[t.key];
+        const pressed = t.key === "all" ? selected === undefined : selected === t.key;
+        return (
+          <button key={t.key} type="button" class={`status-tab status-tab-${t.key}`} aria-pressed={pressed ? "true" : "false"}
+            onClick={() => onPick(t.key === "all" ? undefined : t.key)}>
+            {t.label}{count !== undefined && <>{" "}<span class="status-tab-count">{count.toLocaleString()}</span></>}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
  * The rows, or the one sentence that stands in for them. "No listener matches these filters" is
  * reachable **only** from a successful read that returned nothing: a failed query still renders
  * whatever rows it has, and a first load renders "Loading…" (spec §5.3, §7).
  */
-function Table({ state, invite, onInvite }: {
+function Table({ state, invite, onInvite, onOpenThread }: {
   state: PageState; invite?: InviteTarget;
   onInvite: (threadId: string, participantId: string) => Promise<boolean>;
+  onOpenThread?: (threadId: string) => void;
 }) {
   if (state.rows.length === 0) {
     let line: JSX.Element | null = null;             // an error, whose message is already above
@@ -366,7 +472,7 @@ function Table({ state, invite, onInvite }: {
           <tr>{COLUMNS.map((c) => <th key={c} scope="col" class={c === "Actions" ? "listener-actions" : undefined}>{c}</th>)}</tr>
         </thead>
         <tbody>
-          {state.rows.map((l) => <Row key={l.participant.id} listener={l} now={now} invite={invite} onInvite={onInvite} />)}
+          {state.rows.map((l) => <Row key={l.participant.id} listener={l} now={now} invite={invite} onInvite={onInvite} onOpenThread={onOpenThread} />)}
         </tbody>
       </table>
     </div>
@@ -396,9 +502,10 @@ function joinedText(iso: string): string | null {
  * takes no click. The ref, not the state, is what refuses a second click before the first answers:
  * two clicks in one tick both run before the re-render that would disable the button.
  */
-function Row({ listener: l, now, invite, onInvite }: {
+function Row({ listener: l, now, invite, onInvite, onOpenThread }: {
   listener: Listener; now: number; invite?: InviteTarget;
   onInvite: (threadId: string, participantId: string) => Promise<boolean>;
+  onOpenThread?: (threadId: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -412,6 +519,7 @@ function Row({ listener: l, now, invite, onInvite }: {
   const canInvite = invite !== undefined && p.id !== invite.meId;
   const invited = canInvite && (!!invite.invited?.has(p.id) || doneFor === invite.threadId);
   const details = `listener-details-${p.id}`;
+  const work = l.currentWork;
 
   const doInvite = async () => {
     if (!invite || inFlight.current) return;
@@ -429,11 +537,18 @@ function Row({ listener: l, now, invite, onInvite }: {
       <tr class="listener-row">
         <td><span class="mono listener-name">{p.name}</span></td>
         <td>{profile.owner ? String(profile.owner) : ""}</td>
+        <td><span class={`listener-status listener-status-${l.status}`}>{l.status}</span></td>
+        {/* A button, not an anchor: it changes the view of the page it is on, as the sidebar's
+            Listeners control does. Shown for an offline listener too (Q3). */}
+        <td>{work && <>
+          <button type="button" class="link current-work" onClick={() => onOpenThread?.(work.threadId)}>{work.title}</button>
+          {work.more > 0 && <>{" "}<span class="current-work-more" role="img" aria-label={`${work.more} more`}>+{work.more}</span></>}
+        </>}</td>
         <td>{modelSpecs(profile).join(", ")}</td>
         <td>{tools.slice(0, 3).join(", ")}{tools.length > 3 && <span class="muted"> +{tools.length - 3}</span>}</td>
         <td>{profile.runtime ? String(profile.runtime) : ""}</td>
         <td>{servesWord(profile)}</td>
-        <td class="mono muted">{agoText(p.lastSeenAt, now)}</td>
+        <td class="mono muted">{agoText(p.lastSeenAt, now)}<div class="listener-rate">{rateText(l.cadence, profile)}</div></td>
         <td class="mono muted">{joined && <time dateTime={p.joinedAt}>{joined}</time>}</td>
         <td class="listener-actions">
           {canInvite && (invited
@@ -451,7 +566,7 @@ function Row({ listener: l, now, invite, onInvite }: {
       {open && (
         <tr class="listener-details" id={details}>
           <td colSpan={COLUMNS.length}>
-            <ProfileCard participant={{ ...p, capabilities: profile }} now={now} />
+            <ProfileCard participant={{ ...p, capabilities: profile }} now={now} status={l.status} />
           </td>
         </tr>
       )}

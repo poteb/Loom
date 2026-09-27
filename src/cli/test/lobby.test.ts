@@ -182,6 +182,30 @@ describe("loom lobby", () => {
     expect(entry.capabilities).toMatchObject({ owner: sc.owner, runtime: "node", serves: "owner" });
   });
 
+  // Spec 2026-09-27 §5: `--json` carries the listener's status, current work and cadence. They come
+  // from the same `find_agents` answer as the profile, so a participant with no profile has none.
+  it("lobby --json carries each listener's status, current work and cadence", async () => {
+    const sc = await scenario();
+    const r = await open(sc);
+    await run(["request", "offer", r.id, "--json"], { cfg: sc.bot });
+    await run(["request", "accept", r.id, sc.botId, "--deadline", "30m", "--json"], { cfg: sc.req });
+    const j = await run(["lobby", "--json"], { cfg: sc.req });
+    expect(j.code).toBe(0);
+    const entry = j.json().participants.find((p: { id: string }) => p.id === sc.botId);
+    expect(entry.status).toBe("working");
+    expect(entry.currentWork).toEqual({ requestId: r.id, title: expect.stringContaining("Review PR 14"), threadId: r.threadId, more: 0 });
+    expect(Object.keys(entry.cadence).sort()).toEqual(["longestGapMs", "samples", "typicalGapMs"]);
+    expect(entry.cadence.samples).toBeGreaterThan(0);
+  });
+
+  it("lobby --json gives a participant with no profile no status, current work or cadence", async () => {
+    const cfg = newCfg();
+    const name = uniq("Bare");
+    await run(["lobby", "join", "--name", name, "--json"], { cfg });
+    const entry = (await run(["lobby", "--json"], { cfg })).json().participants.find((p: { name: string }) => p.name === name);
+    expect(entry).toMatchObject({ capabilities: null, status: null, currentWork: null, cadence: null });
+  });
+
   it("lobby me --set stores the profile and --clear removes it", async () => {
     const cfg = newCfg();
     const name = uniq("Prof");

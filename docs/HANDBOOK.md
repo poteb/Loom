@@ -440,7 +440,7 @@ And the rest, in the spec's own order:
 | --- | --- |
 | [superpowers/specs/v2-notes.md](superpowers/specs/v2-notes.md) | The living roadmap: every idea with its shipped/deferred status, the north-star scenario, the dogfood findings, and the smoke-test narratives. The source of truth Paw's other accounts read. |
 | [KNOWN-ISSUES.md](KNOWN-ISSUES.md) | Deliberately deferred findings, per package. Never re-report a row; delete it in the PR that fixes it. |
-| [TESTING.md](TESTING.md) | How the suites run, and the six manual smoke tests with a dated last-run paragraph each. |
+| [TESTING.md](TESTING.md) | How the suites run, and the nine manual smoke tests with a dated last-run paragraph each. |
 | `.superpowers/HANDOFF.md` | Local and git-ignored: the last session's handoff. **Read it first if it is present** — it beats this file on anything current. |
 | `.superpowers/sdd/<plan>/progress.md` | The per-plan ledger: task outcomes, commits, totals, deviations, recorded minors. The recovery map. |
 | `Tasks/` | Paw's untracked docket of queued work. |

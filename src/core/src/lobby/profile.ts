@@ -8,6 +8,7 @@ import { withWeaveLock } from "../events.js";
 import { assertCanRead, assertParticipantOf, toPublicParticipant } from "../actors.js";
 import { getLobby, lobbyGeneralThreadId } from "./lobby.js";
 import { admits, isLive, matches, validateRequirements, MAX_INTERVAL_MS, MIN_INTERVAL_MS, type Profile, type Requirements } from "./matching.js";
+import { listenerFacts, workFor, type Cadence, type CurrentWork, type ListenerStatus } from "./status.js";
 import type { Actor, PublicParticipant } from "../types.js";
 
 /** The whole profile, serialised, may not exceed this. It is data an agent publishes, not a document. */
@@ -125,14 +126,18 @@ export async function getMyLobbyParticipant(db: Db, actor: Actor): Promise<Publi
 
 /** A `requirements` filter, plus the owner whose requests the agent would have to serve. */
 export type AgentFilter = Requirements & { owner?: string };
-export type FoundAgent = { participant: PublicParticipant; capabilities: Profile };
+/** The same fields, in the same order, as a directory `Listener` (spec 2026-09-27 §4.5). */
+export type FoundAgent = {
+  participant: PublicParticipant; capabilities: Profile;
+  status: ListenerStatus; currentWork: CurrentWork | null; cadence: Cadence;
+};
 
 /**
  * The Lobby participants whose profile satisfies `filter`. Matching happens in memory: a profile is
  * a small open-ended document, and the rules that read it are the same pure functions `eligible`
  * uses, so what `find_agents` lists and what a request wakes can never drift apart.
  */
-export async function findAgents(db: Db, actor: Actor, filter: AgentFilter): Promise<FoundAgent[]> {
+export async function findAgents(db: Db, actor: Actor, filter: AgentFilter, now: Date = new Date()): Promise<FoundAgent[]> {
   const { weaveId: lobbyId } = await getLobby(db);
   assertCanRead(actor, lobbyId);
   const { owner, ...rest } = filter ?? {};
@@ -143,13 +148,16 @@ export async function findAgents(db: Db, actor: Actor, filter: AgentFilter): Pro
   const rows = await db.select().from(participants)
     .where(and(eq(participants.weaveId, lobbyId), isNotNull(participants.capabilities)))
     .orderBy(asc(participants.joinedAt));
-  // One clock read for the whole list, and the same liveness rule a request's snapshot applies.
-  const now = new Date();
-  return rows
-    .filter((p) => {
-      const capabilities = p.capabilities as Profile;
-      return matches(capabilities, req) && (owner === undefined || admits(capabilities, owner.trim()))
-        && (req.maxResponseMs === undefined || isLive(capabilities, { lastSeenAt: p.lastSeenAt, now }));
-    })
-    .map((p) => ({ participant: toPublicParticipant(p), capabilities: p.capabilities as Profile }));
+  // One clock read for the whole list: the liveness term a request's snapshot applies, and every
+  // result's status (spec 2026-09-27 §4.7).
+  const found = rows.filter((p) => {
+    const capabilities = p.capabilities as Profile;
+    return matches(capabilities, req) && (owner === undefined || admits(capabilities, owner.trim()))
+      && (req.maxResponseMs === undefined || isLive(capabilities, { lastSeenAt: p.lastSeenAt, now }));
+  });
+  const work = await workFor(db, found.map((p) => p.id));
+  return found.map((p) => ({
+    participant: toPublicParticipant(p), capabilities: p.capabilities as Profile,
+    ...listenerFacts(p, work.get(p.id), now),
+  }));
 }

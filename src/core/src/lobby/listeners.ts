@@ -4,6 +4,7 @@ import { participants } from "../db/schema.js";
 import { assertCanRead, toPublicParticipant } from "../actors.js";
 import { getLobby } from "./lobby.js";
 import type { Profile } from "./matching.js";
+import { listenerFacts, statusSql, workFor, type StatusCounts } from "./status.js";
 import {
   encodeCursor, likePattern, validateListenersQuery,
   type CleanQuery, type FacetValue, type Listener, type ListenersFacets, type ListenersPage,
@@ -15,8 +16,11 @@ import type { Actor } from "../types.js";
 const TOP_VALUES = 20;
 const TOP_EFFORTS = 10;
 
-/** The filter a facet leaves out: every facet is computed over the others (spec §2.7). */
-type FacetKey = "models" | "tools" | "runtime" | "serves";
+/** The filter a facet or the status counts leave out: each is computed over the others (spec §2.7, 2026-09-27 §4.6). */
+type FacetKey = "models" | "tools" | "runtime" | "serves" | "status";
+
+/** The clean query plus the one clock this read uses for every row, count, facet and filter (spec 2026-09-27 §4.2). */
+type Scope = CleanQuery & { now: Date };
 
 /** Every listener of the Lobby and nobody else. The one predicate every query starts from. */
 const base = (lobbyId: string) => and(eq(participants.weaveId, lobbyId), isNotNull(participants.capabilities));
@@ -32,7 +36,7 @@ const base = (lobbyId: string) => and(eq(participants.weaveId, lobbyId), isNotNu
  * `@> '{"tools":[]}'`, which **excludes** every profile with no `tools` key — the opposite of "no
  * filter" — and `models: []` would render `sql.join([])` as `()`, a syntax error.
  */
-function filterSql(c: CleanQuery, omit?: FacetKey): SQL[] {
+function filterSql(c: Scope, omit?: FacetKey): SQL[] {
   const out: SQL[] = [];
   if (c.q !== undefined) {
     const p = likePattern(c.q);
@@ -55,11 +59,15 @@ function filterSql(c: CleanQuery, omit?: FacetKey): SQL[] {
       // `admits` reads an absent `serves` as "owner" (matching.ts:54), so the default is included.
       : sql`(NOT (${participants.capabilities} ? 'serves') OR ${participants.capabilities} @> '{"serves":"owner"}'::jsonb)`);
   }
+  if (c.status !== undefined && omit !== "status") {
+    // Any-of, one bind parameter; the words were checked against three fixed ones in core.
+    out.push(sql`${statusSql(c.now)} = ANY(${sql.param(c.status)}::text[])`);
+  }
   return out;
 }
 
 /** The base predicate plus the filters, shared by the page, the counts and every facet. */
-const whereFor = (lobbyId: string, c: CleanQuery, omit?: FacetKey): SQL =>
+const whereFor = (lobbyId: string, c: Scope, omit?: FacetKey): SQL =>
   and(base(lobbyId), ...filterSql(c, omit))!;
 
 const keySql = (sort: ListenersSort) => sort === "name" ? sql`lower(${participants.name})`
@@ -73,7 +81,7 @@ const cursorKeySql = (sort: ListenersSort) => sort === "joined"
   ? sql<string>`to_char(${participants.joinedAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`
   : (keySql(sort) as SQL<string>);
 
-const afterCursor = (c: CleanQuery): SQL | undefined => {
+const afterCursor = (c: Scope): SQL | undefined => {
   if (!c.cursor) return undefined;
   // `c.cursor` came through `decodeCursor`, which has already checked that `k` is exactly what
   // `cursorKeySql` emits for this `sort` — so `::timestamptz` here can only ever see a timestamp.
@@ -92,7 +100,7 @@ async function countRows(db: Db, where: SQL): Promise<number> {
 type PageRow = { row: typeof participants.$inferSelect; cursorKey: string };
 
 /** One row more than asked for: the extra decides whether there is a next page. */
-function pageRows(db: Db, lobbyId: string, c: CleanQuery): Promise<PageRow[]> {
+function pageRows(db: Db, lobbyId: string, c: Scope): Promise<PageRow[]> {
   const way = c.dir === "asc" ? asc : desc;
   return db.select({ row: participants, cursorKey: cursorKeySql(c.sort) })
     .from(participants)
@@ -103,7 +111,7 @@ function pageRows(db: Db, lobbyId: string, c: CleanQuery): Promise<PageRow[]> {
 }
 
 /** The population one facet is computed over: every filter but its own (spec §2.7). */
-const facetBase = (lobbyId: string, c: CleanQuery, omit: FacetKey): SQL =>
+const facetBase = (lobbyId: string, c: Scope, omit: FacetKey): SQL =>
   sql`SELECT ${participants.id} AS id, ${participants.capabilities} AS capabilities
       FROM ${participants} WHERE ${whereFor(lobbyId, c, omit)}`;
 
@@ -114,7 +122,7 @@ type CountRow = { value: string; n: number };
  * selection left-joined onto the aggregate. The join is what carries a selected value whose count
  * under the other filters is **zero** — it has no aggregate row, so no ranking can recover it.
  */
-function rankedFacet(db: Db, lobbyId: string, c: CleanQuery, kind: "tools" | "runtime"): Promise<CountRow[]> {
+function rankedFacet(db: Db, lobbyId: string, c: Scope, kind: "tools" | "runtime"): Promise<CountRow[]> {
   const selected = kind === "tools" ? (c.tools ?? []) : (c.runtime === undefined ? [] : [c.runtime]);
   const counts = kind === "tools"
     // `->` here is a projection, not a predicate: it is what `jsonb_array_elements_text` reads.
@@ -145,7 +153,7 @@ type ModelRow = { model: string; n: number; effort: string | null; effort_n: num
  * efforts of the models that survived. Ranking a grouping-set result ranks effort rows too, and one
  * model with fifty efforts then pushes twenty ordinary models past the cut (spec §2.8).
  */
-function modelsFacet(db: Db, lobbyId: string, c: CleanQuery): Promise<ModelRow[]> {
+function modelsFacet(db: Db, lobbyId: string, c: Scope): Promise<ModelRow[]> {
   const selected = c.models ?? [];
   const selModels = selected.map((m) => m.model);
   const withEffort = selected.filter((m) => m.effort !== undefined);
@@ -192,7 +200,7 @@ function modelsFacet(db: Db, lobbyId: string, c: CleanQuery): Promise<ModelRow[]
 type ServesRow = { anyone: number; owner: number; list: number };
 
 /** Three counts in one row, so the facet always has its three kinds, zeros included (spec §2.7). */
-async function servesFacet(db: Db, lobbyId: string, c: CleanQuery): Promise<ServesRow> {
+async function servesFacet(db: Db, lobbyId: string, c: Scope): Promise<ServesRow> {
   const rows = await db.execute<ServesRow>(sql`
     WITH base AS (${facetBase(lobbyId, c, "serves")})
     SELECT count(*) FILTER (WHERE capabilities @> '{"serves":"anyone"}'::jsonb)::int AS anyone,
@@ -227,7 +235,7 @@ function foldFacet(rows: CountRow[], top: number, selected: string[]): { values:
   return { values: kept.map((r) => ({ value: r.value, count: r.n })), more };
 }
 
-function foldModels(rows: ModelRow[], c: CleanQuery): { values: ModelFacet[]; more: boolean } {
+function foldModels(rows: ModelRow[], c: Scope): { values: ModelFacet[]; more: boolean } {
   const selected = c.models ?? [];
   const efforts = new Map<string, CountRow[]>();
   const counts = new Map<string, number>();
@@ -250,7 +258,7 @@ function foldModels(rows: ModelRow[], c: CleanQuery): { values: ModelFacet[]; mo
   };
 }
 
-async function readFacets(db: Db, lobbyId: string, c: CleanQuery): Promise<ListenersFacets> {
+async function readFacets(db: Db, lobbyId: string, c: Scope): Promise<ListenersFacets> {
   const [models, tools, runtimes, serves] = await Promise.all([
     modelsFacet(db, lobbyId, c),
     rankedFacet(db, lobbyId, c, "tools"),
@@ -272,41 +280,70 @@ async function readFacets(db: Db, lobbyId: string, c: CleanQuery): Promise<Liste
 }
 
 /**
+ * The three status counts over the base predicate, the search and every filter **except** status
+ * (spec 2026-09-27 §4.6), so they sum to what an "All" tab shows. One query, with the read's `now`.
+ *
+ * `MATERIALIZED` is load-bearing: a CTE referenced once is otherwise inlined, the status CASE is
+ * copied into each of the three `FILTER`s, and each copy's work EXISTS became a per-row scan of
+ * `request_offers` (about 1.1 s at 5,000 listeners and 15,000 offers, against 0.16 s materialised;
+ * spec §10 as amended). `status.test.ts` guards the plan's shape.
+ */
+async function readStatusCounts(db: Db, lobbyId: string, c: Scope): Promise<StatusCounts> {
+  const rows = await db.execute<StatusCounts>(sql`
+    WITH s AS MATERIALIZED (SELECT ${statusSql(c.now)} AS st FROM ${participants} WHERE ${whereFor(lobbyId, c, "status")})
+    SELECT count(*) FILTER (WHERE st = 'working')::int AS working,
+           count(*) FILTER (WHERE st = 'idle')::int AS idle,
+           count(*) FILTER (WHERE st = 'offline')::int AS offline
+    FROM s
+  `);
+  const r = rows[0]!;
+  return { working: r.working, idle: r.idle, offline: r.offline };
+}
+
+/**
  * The Lobby's listeners: searched, filtered, sorted, paged and faceted — all of it in SQL, because
  * this query also has to count and facet, which is what `find_agents`' in-memory matching cannot do.
  * `find_agents` stays the authority for anything a request depends on; the test suite runs both
  * over one fixture and asserts the same set (spec §2.4).
  */
-export async function listListeners(db: Db, actor: Actor, query: ListenersQuery = {}): Promise<ListenersPage> {
+export async function listListeners(db: Db, actor: Actor, query: ListenersQuery = {}, now: Date = new Date()): Promise<ListenersPage> {
   const { weaveId: lobbyId } = await getLobby(db);
   assertCanRead(actor, lobbyId);
-  const c = validateListenersQuery(query);
+  // One clock read for the whole answer (spec 2026-09-27 §4.2): the rows, the filter, the counts, the facets.
+  const c: Scope = { ...validateListenersQuery(query), now };
   // The cursor is a position, not a filter: it decides the page and never either count.
   const filtering = c.q !== undefined || c.models !== undefined || c.tools !== undefined
-    || c.runtime !== undefined || c.serves !== undefined;
+    || c.runtime !== undefined || c.serves !== undefined || c.status !== undefined;
   // Nothing here depends on anything else here. `limit: 0` skips the page, `facets: false` skips the
-  // four facet queries, and with nothing filtering the two counts are the same `count(*)`.
+  // four facet queries, and with nothing filtering the two counts are the same `count(*)`. The status
+  // counts are read on every answer, because the sidebar's tiles come from the `{ limit: 0, facets:
+  // false }` count read.
   //
   // These are independent reads on pooled connections, not one snapshot: there is no surrounding
-  // transaction, so a profile set or cleared while they run can land between two of them and leave
-  // a page disagreeing with its counts or its facets by one. That is the tolerance the page is
-  // built for — spec §5.5's "list changed — reload" hint — not an error, and a repeatable-read
-  // transaction here would buy consistency for a directory nobody reads twice in the same second.
-  const [total, matched, rows, facets] = await Promise.all([
+  // transaction, so a profile set or cleared, a check-in or an acceptance can land between two of
+  // them and leave a page disagreeing with its counts or its facets by one. That is the tolerance
+  // the page is built for (spec §5.5's "list changed, reload" hint), not an error.
+  const [total, matched, rows, facets, statusCounts] = await Promise.all([
     countRows(db, base(lobbyId)!),
     filtering ? countRows(db, whereFor(lobbyId, c)) : undefined,
     c.limit === 0 ? undefined : pageRows(db, lobbyId, c),
     c.facets ? readFacets(db, lobbyId, c) : undefined,
+    readStatusCounts(db, lobbyId, c),
   ]);
   const page = rows ?? [];
   const hasNext = page.length > c.limit;
   const shown = hasNext ? page.slice(0, c.limit) : page;
   const last = shown.at(-1);
-  const listeners: Listener[] = shown.map(({ row }) =>
-    ({ participant: toPublicParticipant(row), capabilities: row.capabilities as Profile }));
+  // One work lookup for every row on the page (spec 2026-09-27 §4.3).
+  const work = await workFor(db, shown.map(({ row }) => row.id));
+  const listeners: Listener[] = shown.map(({ row }) => ({
+    participant: toPublicParticipant(row), capabilities: row.capabilities as Profile,
+    ...listenerFacts(row, work.get(row.id), now),
+  }));
   return {
     total, matched: matched ?? total, listeners,
     ...(hasNext && last ? { nextCursor: encodeCursor({ s: c.sort, d: c.dir, k: last.cursorKey, i: last.row.id }) } : {}),
     ...(facets ? { facets } : {}),
+    statusCounts,
   };
 }

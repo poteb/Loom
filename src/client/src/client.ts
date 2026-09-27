@@ -142,9 +142,9 @@ export class LoomClient {
    *  sorted and paged, with facet counts for the four filters. `{ limit: 0, facets: false }` asks
    *  for the counts alone, which is how a page shows "Listeners (N)" without downloading a profile. */
   async listListeners(query: ListenersQuery = {}): Promise<ListenersPage> {
-    const { models, tools, runtime, serves, ...rest } = query;
+    const { models, tools, runtime, serves, status, ...rest } = query;
     const q = new URLSearchParams();
-    const filter = { models, tools, runtime, serves };
+    const filter = { models, tools, runtime, serves, status };
     // The structured half travels as one JSON parameter, the scalars as plain ones. An absent value
     // is left out entirely rather than sent empty: core reads absence and nothing else as "no value".
     if (Object.values(filter).some((v) => v !== undefined)) q.set("filter", JSON.stringify(filter));

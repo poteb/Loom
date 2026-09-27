@@ -54,6 +54,11 @@ export const participants = pgTable("participants", {
   // Liveness: when a credential standing for this participant last made a call. Written by
   // `stampSeen`, throttled to once per ten seconds, and never an event.
   lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+  // The last 20 check-ins, oldest first (spec 2026-09-27 §3): appended by `stampSeen` in the same
+  // statement that writes `last_seen_at`, so after any check-in since migration 0007 its last
+  // element equals it. Null until that first check-in, even where `last_seen_at` is set from before
+  // 0007. Never returned as such: only `cadenceOf`'s summary leaves core.
+  seenHistory: timestamp("seen_history", { withTimezone: true }).array(),
 }, (t) => [
   uniqueIndex("participants_weave_name_idx").on(t.weaveId, sql`lower(${t.name})`),
   uniqueIndex("participants_weave_agent_idx").on(t.weaveId, t.agentId),
@@ -137,7 +142,14 @@ export const requestOffers = pgTable("request_offers", {
   completionNote: text("completion_note"),
   removedAt: timestamp("removed_at", { withTimezone: true }),
   overdueAt: timestamp("overdue_at", { withTimezone: true }),
-}, (t) => [primaryKey({ columns: [t.requestId, t.participantId] })]);
+}, (t) => [
+  primaryKey({ columns: [t.requestId, t.participantId] }),
+  // The work lookup a listener's status reads (lobby/status.ts, spec 2026-09-27 §10 as amended): by
+  // participant, over the active acceptances only, so it stays the size of the work in hand while
+  // the table keeps every offer ever made. The primary key leads with `request_id` and cannot serve it.
+  index("request_offers_active_participant_idx").on(t.participantId)
+    .where(sql`${t.accepted} AND ${t.removedAt} IS NULL AND ${t.completedAt} IS NULL`),
+]);
 
 /** A single-use way into another Weave, handed to a Lobby participant. Never carries a secret. */
 export const weaveInvitations = pgTable("weave_invitations", {

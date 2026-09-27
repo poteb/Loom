@@ -13,11 +13,12 @@ import { GuidelinesPanel, GUIDELINES_MAX } from "../src/components/GuidelinesPan
 import { RequestsPanel } from "../src/components/RequestsPanel.js";
 import { ProfileCard } from "../src/components/ProfileCard.js";
 import { WeaveView } from "../src/components/WeaveView.js";
+import { ListenersPage } from "../src/components/listeners/ListenersPage.js";
 import { App, routeOf } from "../src/app.js";
 import { MAX_GUIDELINES_LENGTH } from "@loom/core";
-import { LoomClient, type Acceptance, type Offer, type Thread } from "@loom/client";
+import { LoomClient, type Acceptance, type Listener, type ListenersPage as DirectoryPage, type ListenersQuery, type LoomRequest, type Offer, type Thread } from "@loom/client";
 import { CLOSED_REQUESTS_PAGE, type Session, type SessionState } from "../src/session.js";
-import type { VersionedRequest } from "../src/requests-state.js";
+import { applyEvent, applySnapshot, type VersionedRequest } from "../src/requests-state.js";
 import { memoryStorage, type KeyValueStorage } from "../src/storage.js";
 import { createPersistenceNotice } from "../src/persistence.js";
 import { createWeavesSignal } from "../src/weaves-signal.js";
@@ -37,10 +38,13 @@ function session(over: Partial<Session> = {}): Session {
   return { getState: () => state(), subscribe: () => () => {}, load: async () => {}, join: async () => {}, selectThread: vi.fn(), post: async () => {},
     createThread: vi.fn(async () => {}), setThreadUrl: vi.fn(async () => {}), invite: vi.fn(async () => {}), closeThread: async () => {}, archive: async () => {}, setGuidelines: vi.fn(async () => {}),
     canModerate: () => false, canEditThread: (t) => t.createdBy === "p1", markSeen: () => {}, dismissNamePrompt: () => {}, dispose: () => {},
-    openRequest: vi.fn(async () => request()), offer: vi.fn(async () => {}), accept: vi.fn(async () => {}), cancel: vi.fn(async () => {}),
+    // The wire shape: a held request's acceptances may lack listenerStatus, a LoomRequest's may not.
+    openRequest: vi.fn(async () => ({ ...request(), acceptances: [] })), offer: vi.fn(async () => {}), accept: vi.fn(async () => {}), cancel: vi.fn(async () => {}),
     targets: vi.fn(async () => []),
-    listListeners: vi.fn(() => ({ issue: { generation: 0 }, page: Promise.resolve({ total: 0, matched: 0, listeners: [] }) })),
-    reportCredentialFailure: vi.fn(), markAllRead: vi.fn(async () => {}), ...over };
+    listListeners: vi.fn(() => ({ issue: { generation: 0 }, page: Promise.resolve({ total: 0, matched: 0, listeners: [], statusCounts: { working: 0, idle: 0, offline: 0 } }) })),
+    reportCredentialFailure: vi.fn(), markAllRead: vi.fn(async () => {}),
+    onVisible: () => () => {}, onWorkChanged: () => () => {},
+    ...over };
 }
 
 // --- Lobby fixtures ---------------------------------------------------------
@@ -832,7 +836,7 @@ describe("RequestsPanel", () => {
   it("the panel shows a working request's acceptances with due, completed, removed and overdue", () => {
     const acc = (participantId: string, over: Partial<Acceptance> = {}): Acceptance => ({
       participantId, dueAt: "2026-09-16T14:30:00.000Z", completedAt: null, note: null, removed: false, removedAt: null,
-      overdue: false, overdueNotifiedAt: null, lastSeenAt: null, ...over,
+      overdue: false, overdueNotifiedAt: null, lastSeenAt: null, listenerStatus: "idle", ...over,
     });
     const cast = [me, helper, { ...helper, id: "p3", name: "Other" }, { ...helper, id: "p4", name: "Fourth" }, { ...helper, id: "p5", name: "Fifth" }];
     const working = request({
@@ -846,12 +850,45 @@ describe("RequestsPanel", () => {
     });
     const { container } = render(<RequestsPanel state={lobbyState({ participants: cast, requests: { r1: working } })} session={session()} onError={() => {}} now={NOW} />);
     expect([...container.querySelectorAll(".acceptance")].map((li) => li.textContent)).toEqual([
-      "Helper due 2026-09-16T14:30:00.000Z completed",
-      "Other due 2026-09-16T14:30:00.000Z removed",
-      "Fourth due 2026-09-16T13:00:00.000Z overdue",
-      "Fifth due 2026-09-16T14:30:00.000Z working",
+      "Helper due 2026-09-16T14:30:00.000Z completed never seen idle",
+      "Other due 2026-09-16T14:30:00.000Z removed never seen idle",
+      "Fourth due 2026-09-16T13:00:00.000Z overdue never seen idle",
+      "Fifth due 2026-09-16T14:30:00.000Z working never seen idle",
     ]);
     expect(container.querySelectorAll(".request-list > li")).toHaveLength(1);    // working is live, not closed
+  });
+
+  it("the requests panel's acceptance shows seen and the listener status beside the acceptance badge", () => {
+    const working = request({ status: "working", offers: [anOffer("p2", { accepted: true })], acceptances: [{
+      participantId: "p2", dueAt: "2026-09-16T14:30:00.000Z", completedAt: null, note: null, removed: false, removedAt: null,
+      overdue: false, overdueNotifiedAt: null, lastSeenAt: "2026-09-16T13:25:00.000Z", listenerStatus: "offline" }] });
+    const { container } = render(<RequestsPanel state={lobbyState({ requests: { r1: working } })} session={session()} onError={() => {}} now={NOW} />);
+    const li = container.querySelector(".acceptance")!;
+    const status = li.querySelector(".listener-status")!;
+    expect([li.querySelector(".badge")!.textContent, li.querySelector(".acceptance-seen")!.textContent, status.className, status.textContent])
+      .toEqual(["working", "seen 5 min ago", "listener-status listener-status-offline", "offline"]);
+  });
+
+  // Review round 1, F1. The keeper accepts a listener that is offline; the session folds the
+  // `request.accepted` event, and the request read that event triggers is held or fails, so no
+  // snapshot follows. The panel must not call that listener working: it shows no status word, and
+  // no seen line either (review 6 F1), since "never seen" is a liveness claim the event cannot make.
+  it("an offline agent accepted by an event, its follow-up request read held or failing, shows no listener status and no seen line until a read supplies them", () => {
+    const accepted = applyEvent({ r1: request({ offers: [anOffer("p2")], version: 5 }) }, {
+      weaveId: "w1", seq: 6, threadId: "th1", type: "request.accepted", actor: "p1", at: "2026-09-16T13:20:00.000Z",
+      payload: { requestId: "r1", requesterId: "p1", participantIds: ["p2"], dueAt: "2026-09-16T14:30:00.000Z", targetWeaveTitle: "Loom session" },
+    });
+    const { container, rerender } = render(<RequestsPanel state={lobbyState({ requests: accepted })} session={session()} onError={() => {}} now={NOW} />);
+    const li = () => container.querySelector(".acceptance")!;
+    expect([li().querySelector(".listener-status"), li().querySelector(".acceptance-seen"), li().textContent])
+      .toEqual([null, null, "Helper due 2026-09-16T14:30:00.000Z working"]);
+    // The read, when it lands, is the authority: the server says offline, and the panel says so.
+    const read = applySnapshot(accepted, request({ status: "working", lastEventSeq: 6, offers: [anOffer("p2", { accepted: true })], acceptances: [{
+      participantId: "p2", dueAt: "2026-09-16T14:30:00.000Z", completedAt: null, note: null, removed: false, removedAt: null,
+      overdue: false, overdueNotifiedAt: null, lastSeenAt: "2026-09-16T12:00:00.000Z", listenerStatus: "offline" }] }) as unknown as LoomRequest);
+    rerender(<RequestsPanel state={lobbyState({ requests: read })} session={session()} onError={() => {}} now={NOW} />);
+    expect([li().querySelector(".acceptance-seen")?.textContent, li().querySelector(".listener-status-offline")?.textContent])
+      .toEqual(["seen 90 min ago", "offline"]);
   });
 
   it("shows Cancel to the requester and to nobody else", () => {
@@ -1016,6 +1053,16 @@ describe("ProfileCard", () => {
     expect(container.querySelector(".profile-seen")!.textContent).toBe("seen 5 min ago");
     rerender(<ProfileCard participant={{ ...helper, lastSeenAt: null }} now={now} />);
     expect(container.querySelector(".profile-seen")!.textContent).toBe("never seen");
+  });
+
+  it("the profile card shows the status word beside seen", () => {
+    const now = Date.parse("2026-09-23T12:00:00.000Z");
+    const { container, rerender } = render(<ProfileCard participant={{ ...helper, lastSeenAt: "2026-09-23T11:55:00.000Z" }} now={now} status="offline" />);
+    const word = container.querySelector(".listener-status")!;
+    expect([container.querySelector(".profile-seen")!.textContent, word.className, word.textContent, word.previousElementSibling?.className])
+      .toEqual(["seen 5 min ago", "listener-status listener-status-offline", "offline", "profile-seen"]);
+    rerender(<ProfileCard participant={{ ...helper, lastSeenAt: "2026-09-23T11:55:00.000Z" }} now={now} />);
+    expect(container.querySelector(".listener-status")).toBeNull();
   });
 });
 
@@ -1417,4 +1464,237 @@ describe("GuidelinesPanel", () => {
       expect(s.setGuidelines).not.toHaveBeenCalled();
     });
   }
+});
+
+describe("the directory on becoming visible (spec 2026-09-27 §6.6)", () => {
+  it("becoming visible re-runs the directory's view: the first page, with facets", async () => {
+    let visible: (() => void) | undefined;
+    const page = { total: 1, matched: 1, listeners: [], statusCounts: { working: 0, idle: 1, offline: 0 } };
+    const listListeners = vi.fn((_q: ListenersQuery) => ({ issue: { generation: 0 }, page: Promise.resolve(page) }));
+    render(<ListenersPage session={session({ listListeners, onVisible: (fn) => { visible = fn; return () => {}; } })} />);
+    await new Promise((r) => setTimeout(r, 0));
+    visible!();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(listListeners.mock.calls.map((c) => c[0])).toEqual([{ sort: "name", dir: "asc", limit: 50 }, { sort: "name", dir: "asc", limit: 50 }]);
+  });
+
+  /** A directory whose every query waits for the test to answer or fail it, in the order asked. */
+  function held() {
+    const out: { resolve: (p: DirectoryPage) => void; reject: (e: unknown) => void; query: ListenersQuery }[] = [];
+    const listListeners = vi.fn((query: ListenersQuery) => {
+      let resolve!: (p: DirectoryPage) => void; let reject!: (e: unknown) => void;
+      const page = new Promise<DirectoryPage>((ok, no) => { resolve = ok; reject = no; });
+      out.push({ resolve, reject, query });
+      return { issue: { generation: 0 }, page };
+    });
+    let visible: (() => void) | undefined;
+    let worked: (() => void) | undefined;
+    const off = vi.fn();
+    const offWork = vi.fn();
+    const view = render(<ListenersPage session={session({ listListeners,
+      onVisible: (fn) => { visible = fn; return off; }, onWorkChanged: (fn) => { worked = fn; return offWork; } })} />);
+    const turn = () => new Promise((r) => setTimeout(r, 0));
+    return {
+      ...view, asked: () => out, turn, off, offWork,
+      answer: async (n: number, page: DirectoryPage) => { out[n]!.resolve(page); await turn(); },
+      fail: async (n: number, e: unknown) => { out[n]!.reject(e); await turn(); },
+      visible: async () => { visible!(); await turn(); },
+      /** One work event, as the session hands it on; `times` of them in one tick is a burst. */
+      work: async (times = 1) => { for (let i = 0; i < times; i++) worked!(); await turn(); },
+    };
+  }
+  const aListener = (id: string): Listener => ({
+    participant: { ...helper, id, name: `Name ${id}` }, capabilities: PROFILE, status: "idle", currentWork: null,
+    cadence: { typicalGapMs: null, longestGapMs: null, samples: 0 },
+  });
+  const pageOf = (ids: string[], over: Partial<DirectoryPage> = {}): DirectoryPage => ({
+    total: ids.length, matched: ids.length, listeners: ids.map(aListener), statusCounts: { working: 0, idle: ids.length, offline: 0 }, ...over,
+  });
+  const names = (c: Element) => [...c.querySelectorAll(".listener-row")].map((r) => r.querySelector("td")!.textContent);
+  const changedLine = () => screen.queryByText("The list has changed since you loaded it.");
+
+  // Spec 2026-09-27 §6.6: the rows stay on screen, dimmed, until the re-run answers, and the pages
+  // Show more appended are then replaced by its first page.
+  it("a re-run on becoming visible keeps the rows until it answers, then replaces the Show more pages", async () => {
+    const d = held();
+    await d.turn();
+    await d.answer(0, pageOf(["a"], { total: 2, matched: 2, nextCursor: "c1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+    await d.turn();
+    await d.answer(1, pageOf(["b"], { total: 2, matched: 2 }));
+    const appended = names(d.container);
+    await d.visible();
+    const pending = [names(d.container), !!d.container.querySelector(".listeners-table-stale"), d.asked()[2]!.query.cursor];
+    await d.answer(2, pageOf(["a"], { total: 2, matched: 2, nextCursor: "c1" }));
+    expect([appended, pending, names(d.container)]).toEqual([["Name a", "Name b"], [["Name a", "Name b"], true, undefined], ["Name a"]]);
+  });
+
+  it("unmounting the directory unsubscribes it from becoming visible", async () => {
+    const d = held();
+    await d.turn();
+    const before = d.off.mock.calls.length;
+    d.unmount();
+    expect([before, d.off.mock.calls.length]).toEqual([0, 1]);
+  });
+
+  // Review 6 F3: the re-run is "Reload the list" (spec 2026-09-27 §6.6), so its answer is the new
+  // baseline and a listener that joined while the tab was hidden raises no "changed" line.
+  it("a re-run on becoming visible resets the list-changed baseline, as Reload does", async () => {
+    const d = held();
+    await d.turn();
+    await d.answer(0, pageOf(["a"]));
+    await d.visible();
+    await d.answer(1, pageOf(["a", "b"]));
+    expect([names(d.container).length, changedLine()]).toEqual([2, null]);
+  });
+
+  // Review 6 F4: nobody pressed anything, so a background re-run that fails says nothing, as the
+  // count read beside it keeps its last numbers; the rows and Show more stay. A control the user
+  // presses afterwards still reports its own failure.
+  it("a failed re-run on becoming visible keeps the rows and Show more, and shows no error", async () => {
+    const d = held();
+    await d.turn();
+    await d.answer(0, pageOf(["a"], { total: 2, matched: 2, nextCursor: "c1" }));
+    await d.visible();
+    await d.fail(1, new Error("offline"));
+    const more = () => screen.queryByRole("button", { name: "Show more" });
+    expect([names(d.container), screen.queryByRole("alert"), !!more(),
+      d.container.querySelector(".listeners-table-stale")]).toEqual([["Name a"], null, true, null]);
+    fireEvent.click(d.container.querySelector(".status-tab-idle")!);
+    await d.turn();
+    await d.fail(2, new Error("refused"));
+    expect(screen.getByRole("alert").textContent).toBe("refused");
+  });
+
+  // Whole-branch review F3: the rows a failed re-run leaves are the old ones, so the line that says
+  // they are out of date stays (spec 2026-09-27 §6.6: a quiet failure keeps what the last settled
+  // query left). Only an answer is a new baseline.
+  it("a failed re-run on becoming visible leaves the list-changed line on screen", async () => {
+    const d = held();
+    await d.turn();
+    await d.answer(0, pageOf(["a"], { total: 2 }));
+    fireEvent.click(d.container.querySelector(".status-tab-idle")!);
+    await d.turn();
+    await d.answer(1, pageOf(["a"], { total: 3 }));
+    const before = !!changedLine();
+    await d.visible();
+    await d.fail(2, new Error("offline"));
+    expect([before, !!changedLine()]).toEqual([true, true]);
+  });
+
+  it("a failed re-run on becoming visible keeps the list-changed baseline: the next answer is judged against it", async () => {
+    const d = held();
+    await d.turn();
+    await d.answer(0, pageOf(["a"], { total: 2 }));
+    await d.visible();
+    await d.fail(1, new Error("offline"));
+    fireEvent.click(d.container.querySelector(".status-tab-idle")!);
+    await d.turn();
+    await d.answer(2, pageOf(["a"], { total: 3 }));
+    expect(!!changedLine()).toBe(true);
+  });
+
+  // Shown, hidden and shown again before the network answers: the second re-run supersedes the
+  // first, and it still puts back the page as it was before either, not the first one's dimming.
+  it("two overlapping re-runs that fail keep the rows and Show more, and show no error", async () => {
+    const d = held();
+    await d.turn();
+    await d.answer(0, pageOf(["a"], { total: 2, matched: 2, nextCursor: "c1" }));
+    await d.visible();
+    await d.visible();
+    await d.fail(2, new Error("offline"));
+    expect([names(d.container), screen.queryByRole("alert"), !!screen.queryByRole("button", { name: "Show more" }),
+      d.container.querySelector(".listeners-table-stale")]).toEqual([["Name a"], null, true, null]);
+  });
+
+  // A re-run that takes over from a query the user is waiting on owes that user its answer, so its
+  // failure is reported as the user's query's would have been.
+  it("a failed re-run that superseded the user's own query reports the failure", async () => {
+    const d = held();
+    await d.turn();
+    await d.answer(0, pageOf(["a"]));
+    fireEvent.click(d.container.querySelector(".status-tab-idle")!);
+    await d.turn();
+    await d.visible();
+    await d.fail(2, new Error("offline"));
+    expect(screen.getByRole("alert").textContent).toBe("offline");
+  });
+
+  // Whole-branch review F2 (Paw, 2026-09-27): while the directory is open, the work events that move
+  // the sidebar's tiles also re-run its view, the same quiet re-run as becoming visible, so tiles,
+  // tabs and rows agree.
+  it("a work event re-runs the directory's view: the first page, with facets, rows kept until it answers", async () => {
+    const d = held();
+    await d.turn();
+    await d.answer(0, pageOf(["a"], { total: 2, matched: 2, nextCursor: "c1" }));
+    await d.work();
+    const pending = [d.asked().length, d.asked()[1]!.query, names(d.container), !!d.container.querySelector(".listeners-table-stale")];
+    await d.answer(1, pageOf(["a"], { statusCounts: { working: 1, idle: 0, offline: 0 } }));
+    expect([pending, d.container.querySelector(".status-tab-working .status-tab-count")!.textContent])
+      .toEqual([[2, { sort: "name", dir: "asc", limit: 50 }, ["Name a"], true], "1"]);
+  });
+
+  it("a burst of work events costs at most one re-run in flight and one follow-up", async () => {
+    const d = held();
+    await d.turn();
+    await d.answer(0, pageOf(["a"]));
+    await d.work(5);
+    const during = d.asked().length;
+    await d.answer(1, pageOf(["a"]));
+    const followed = d.asked().length;
+    await d.answer(2, pageOf(["a"]));
+    expect([during, followed, d.asked().length]).toEqual([2, 3, 3]);
+  });
+
+  it("a work event after the re-run has answered starts a new one", async () => {
+    const d = held();
+    await d.turn();
+    await d.answer(0, pageOf(["a"]));
+    await d.work();
+    await d.answer(1, pageOf(["a"]));
+    await d.work();
+    expect(d.asked().length).toBe(3);
+  });
+
+  it("a failed re-run on a work event keeps the rows and Show more, and shows no error", async () => {
+    const d = held();
+    await d.turn();
+    await d.answer(0, pageOf(["a"], { total: 2, matched: 2, nextCursor: "c1" }));
+    await d.work();
+    await d.fail(1, new Error("offline"));
+    expect([names(d.container), screen.queryByRole("alert"), !!screen.queryByRole("button", { name: "Show more" }),
+      d.container.querySelector(".listeners-table-stale")]).toEqual([["Name a"], null, true, null]);
+  });
+
+  it("a failed re-run on a work event still runs the follow-up a burst asked for", async () => {
+    const d = held();
+    await d.turn();
+    await d.answer(0, pageOf(["a"]));
+    await d.work(2);
+    await d.fail(1, new Error("offline"));
+    expect(d.asked().length).toBe(3);
+  });
+
+  it("a re-run on a work event resets the list-changed baseline only when it answers", async () => {
+    const d = held();
+    await d.turn();
+    await d.answer(0, pageOf(["a"], { total: 2 }));
+    fireEvent.click(d.container.querySelector(".status-tab-idle")!);
+    await d.turn();
+    await d.answer(1, pageOf(["a"], { total: 3 }));
+    await d.work();
+    await d.fail(2, new Error("offline"));
+    const afterFailure = !!changedLine();
+    await d.work();
+    await d.answer(3, pageOf(["a"], { total: 3 }));
+    expect([afterFailure, !!changedLine()]).toEqual([true, false]);
+  });
+
+  it("unmounting the directory unsubscribes it from work events", async () => {
+    const d = held();
+    await d.turn();
+    const before = d.offWork.mock.calls.length;
+    d.unmount();
+    expect([before, d.offWork.mock.calls.length]).toEqual([0, 1]);
+  });
 });

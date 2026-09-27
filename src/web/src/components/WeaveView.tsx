@@ -199,7 +199,8 @@ export function WeaveView({ session, state, banner, noCredential, openMainInPlac
                   </span>
                 )}
               </div>
-              <ListenersPage key={viewKey} session={session} invite={inviteTarget} />
+              <ListenersPage key={viewKey} session={session} invite={inviteTarget}
+                onOpenThread={(threadId) => { session.selectThread(threadId); onView?.("thread"); }} />
             </section>
           )}
           {/* In both views, because `reportError` is the failure channel of the header and of all

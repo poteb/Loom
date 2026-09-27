@@ -149,8 +149,38 @@ describe("deadlines, completion and removal", () => {
     r = applyEvent(r, ev(9, "thread.removed", { threadId: "th1", participantId: "p2", removedBy: "p1", requestId: "r1" }));
     const stale = req({
       status: "working", lastEventSeq: 6, offers: [offer("p2", { accepted: true }), offer("p3")],
-      acceptances: [{ participantId: "p2", dueAt: EXPIRES, completedAt: null, note: null, removed: false, removedAt: null, overdue: false, overdueNotifiedAt: null, lastSeenAt: null }],
+      acceptances: [{ participantId: "p2", dueAt: EXPIRES, completedAt: null, note: null, removed: false, removedAt: null, overdue: false, overdueNotifiedAt: null, lastSeenAt: null, listenerStatus: "idle" }],
     });
     expect(applySnapshot(r, stale).r1!.acceptances.find((a) => a.participantId === "p2")!.removed).toBe(true);
+  });
+
+  it("an acceptance folded from a request.accepted event has no listener status until a request read supplies one; a known one is kept", () => {
+    expect(accept(two(), 6, ["p2"]).r1!.acceptances.map((a) => [a.participantId, a.listenerStatus])).toEqual([["p2", undefined]]);
+    // Accepted before, removed, and read as offline: a re-accept keeps what the last read said.
+    const known = applySnapshot({}, req({ lastEventSeq: 5, offers: [offer("p2", { accepted: true })], acceptances: [{
+      participantId: "p2", dueAt: EXPIRES, completedAt: null, note: null, removed: true, removedAt: EXPIRES,
+      overdue: false, overdueNotifiedAt: null, lastSeenAt: null, listenerStatus: "offline" }] }));
+    expect(accept(known, 6, ["p2"]).r1!.acceptances.map((a) => [a.participantId, a.removed, a.listenerStatus])).toEqual([["p2", false, "offline"]]);
+  });
+
+  // The read the session makes after a request event (spec 2026-09-27 §6.6): its acceptances replace
+  // the held ones, so the server's status lands on an acceptance the event folded in without one.
+  it("a request read after the event fills in the status of an acceptance folded from it", () => {
+    const folded = accept(two(), 6, ["p2"]);
+    const read = applySnapshot(folded, req({
+      status: "working", lastEventSeq: 6, offers: [offer("p2", { accepted: true }), offer("p3")],
+      acceptances: [{ participantId: "p2", dueAt: null, completedAt: null, note: null, removed: false, removedAt: null, overdue: false, overdueNotifiedAt: null, lastSeenAt: null, listenerStatus: "idle" }],
+    }));
+    expect(read.r1!.acceptances.map((a) => [a.participantId, a.listenerStatus])).toEqual([["p2", "idle"]]);
+  });
+
+  it("a request read replaces a held acceptance's status with the server's newer one", () => {
+    const held = applySnapshot({}, req({ status: "working", lastEventSeq: 5, offers: [offer("p2", { accepted: true })], acceptances: [{
+      participantId: "p2", dueAt: EXPIRES, completedAt: null, note: null, removed: false, removedAt: null,
+      overdue: false, overdueNotifiedAt: null, lastSeenAt: null, listenerStatus: "working" }] }));
+    const read = applySnapshot(held, req({ status: "working", lastEventSeq: 5, offers: [offer("p2", { accepted: true })], acceptances: [{
+      participantId: "p2", dueAt: EXPIRES, completedAt: null, note: null, removed: false, removedAt: null,
+      overdue: false, overdueNotifiedAt: null, lastSeenAt: null, listenerStatus: "offline" }] }));
+    expect(read.r1!.acceptances.map((a) => a.listenerStatus)).toEqual(["offline"]);
   });
 });

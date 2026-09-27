@@ -59,10 +59,18 @@ export function registerLobbyCommands(program: Command, ctx: () => CliContext, i
     const c = ctx();
     const { lobby: where, client } = await lobbyContext(c);
     // `getWeave` no longer carries Lobby profiles (spec §3.1), so the summary column comes from
-    // `find_agents`, which does. Two bounded reads, one command, identical output.
+    // `find_agents`, which does. Two bounded reads, one command, identical output. The same answer
+    // carries each listener's status, current work and cadence (spec 2026-09-27 §5), which only the
+    // JSON prints; a participant with no profile is not in that answer, so all four are null.
     const [info, agents] = await Promise.all([client.getWeave(where.weaveId), client.findAgents({})]);
-    const profiles = new Map(agents.map((a) => [a.participant.id, a.capabilities]));
-    const participants = info.participants.map((p) => ({ ...p, capabilities: profiles.get(p.id) ?? null }));
+    const found = new Map(agents.map((a) => [a.participant.id, a]));
+    const participants = info.participants.map((p) => {
+      const a = found.get(p.id);
+      return {
+        ...p, capabilities: a?.capabilities ?? null,
+        status: a?.status ?? null, currentWork: a?.currentWork ?? null, cadence: a?.cadence ?? null,
+      };
+    });
     emit(c, { lobby: where, participants }, [
       `${where.title} (${where.weaveId})`,
       // Nobody created the Lobby, so nobody holds its secret: an instance keeper is the only caller

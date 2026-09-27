@@ -343,6 +343,11 @@ exported through the facade's type exports beside `Listener`. `actors.ts` (§4.1
   channel plugin passes both through unchanged.
 - **CLI.** No new command, and the human-readable lines of `loom lobby` and `loom request` are
   unchanged **(choice)**; `--json` output carries the new fields because it prints the shapes.
+  Amended 2026-09-27 during implementation (review of Task 4, F2): `loom lobby` builds its
+  participants from the Lobby's `getWeave` and the profiles, not from one printed shape, so its
+  `--json` is made to carry `status`, `currentWork` and `cadence` for each participant from the same
+  `find_agents` answer, and all three are null for a participant with no profile (it is no listener,
+  so that answer holds no row for it).
 
 ## 6. Web
 
@@ -427,6 +432,10 @@ guard, same "keep the last known numbers" on a failed read). No new request.
   The panel does not show last seen today **(choice: it is added, since the status word is to sit
   beside it)**. The existing acceptance badge (`acceptanceState`: completed, removed, overdue or
   working) is unchanged; the two describe different things, the acceptance and the listener.
+  Amended 2026-09-27 during implementation (plan decision 8; review of Task 6, F1): an acceptance
+  folded from a `request.accepted` event carries neither a status nor a last seen the server gave,
+  so the panel shows neither the seen line nor the status word for it until a request read supplies
+  its status; an earlier read's status is kept until a newer read replaces it.
 
 ### 6.6 Freshness
 
@@ -439,8 +448,29 @@ them:
 - **The directory page** re-runs its current view when the tab becomes visible: the first page, with
   facets, as "Reload the list" does, keeping the rows on screen until the answer. Pages appended by
   Show more are then replaced by the first page **(choice)**, as after any control change.
+  Amended 2026-09-27 during implementation (review of Task 6, F3 and F4): the re-run resets the
+  "list has changed" baseline, as "Reload the list" does. A failed background re-run keeps the rows
+  and Show more as the last settled query left them and shows no error, as the count read beside it
+  keeps its last numbers; a credential failure is still reported to the session. A re-run that took
+  over a query the user is waiting on still reports its failure, as that query would have.
+  Amended 2026-09-27 (whole-branch review, F3): the re-run's answer resets the baseline, not its
+  start, so a failed re-run also leaves the "list has changed" line and its baseline as they were.
+  Amended 2026-09-27 on Paw's word (whole-branch review F2): while the directory is open, it also
+  re-runs its current view on the work events that re-read the tiles' count (`changesWork`:
+  `request.accepted`, `request.completed`, `request.overdue`, `request.closed`, and a
+  `thread.removed` carrying a `requestId`, on a request the session holds or does not hold yet), so
+  the tiles, the tabs and the rows agree without a reload. It is the same quiet re-run as on becoming
+  visible (rows and Show more kept on a failure, stale answers fenced, the "list has changed" baseline
+  reset only by an answer). A burst of work events is coalesced into at most one re-run in flight and
+  one follow-up. A closed directory re-runs nothing.
 - **The requests panel** shows `listenerStatus` as of the request read that carried it; it is
   re-read on the request events it already follows.
+  Amended 2026-09-27 during implementation (review of Task 6, F2): the re-read of a request the
+  panel holds is limited to the events that change an acceptance or the request's lifecycle
+  (`request.accepted`, `request.completed`, `request.overdue`, `request.closed`, and a
+  `thread.removed` carrying a `requestId`), not offers: an offer changes no acceptance, and one
+  opened request can bring an offer from every listener. The re-read is the session's coalesced
+  Lobby refresh. An event for a request the panel does not hold yet still refreshes, to bring it in.
 
 Time alone moves a listener to offline, and no event says so. A tab left visible and untouched shows
 the statuses of its last read until something triggers another (KNOWN-ISSUES, §7).
@@ -598,6 +628,15 @@ on its five-minute poll).
   added)**: the table holds a few rows per request (at most one per listener and request), so at
   the scale this instance runs at the planner's hashed semi-join over the rows the conditions keep
   is cheap, once per read. A partial index is the remedy if it grows (KNOWN-ISSUES).
+  Amended 2026-09-27 during implementation (whole-branch review, F1): the premise did not hold for
+  the counts. Their CTE was inlined, so each of the three counts evaluated the status, and its work
+  lookup ran as a per-row scan of `request_offers`. Measured on 5,000 listeners (1,197 online) and
+  15,000 offers (3,000 requests, half working): about 1.15 s for one count read. The counts now
+  compute each status once (`WITH s AS MATERIALIZED`, guarded by a plan-shape test): about 0.16 s.
+  **Migration 0008 adds the partial index** `request_offers_active_participant_idx` on
+  `request_offers(participant_id)` over accepted, not removed, not completed rows: the counts then
+  take about 16 ms, and a directory read with the status filter about 38 ms instead of about
+  480 ms.
 - No new credential, no new route, no new event, no change to authorisation.
 
 ## 11. What this does not promise
@@ -615,5 +654,6 @@ on its five-minute poll).
 
 ## 12. Deploy
 
-Migration 0007 is applied by `deploy/live-update.cmd` as 0006 was, then both health checks. Then
+Migration 0007 is applied by `deploy/live-update.cmd` as 0006 was, then both health checks.
+Amended 2026-09-27 (whole-branch review, F1): the same deploy applies 0008, the partial index of §10. Then
 smoke test 9 (§9.6) with Paw, one step at a time.

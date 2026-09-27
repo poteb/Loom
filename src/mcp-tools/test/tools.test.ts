@@ -293,6 +293,20 @@ describe("lobby tools", () => {
     expect(calls.filter((x) => x[0] === "findAgents").at(-1)).toEqual(["findAgents", "c", {}]);
   });
 
+  it("find_agents and get_request return status, currentWork, cadence and listenerStatus as the backend answers them", async () => {
+    const found = [{ participant: { id: "p-1" }, capabilities: { owner: "paw" }, status: "working",
+      currentWork: { requestId: "r1", title: "Review PR 14", threadId: "th1", more: 1 },
+      cadence: { typicalGapMs: 300_000, longestGapMs: 540_000, samples: 20 } }];
+    const request = { id: "r9", offers: [], acceptances: [{ participantId: "p-1", listenerStatus: "offline" }] };
+    const saved = { findAgents: fake.findAgents, getRequest: fake.getRequest };
+    fake.findAgents = async () => found;
+    fake.getRequest = async () => request;
+    try {
+      expect(JSON.parse(text(await client.callTool({ name: "find_agents", arguments: { credential: "c" } })))).toEqual(found);
+      expect(JSON.parse(text(await client.callTool({ name: "get_request", arguments: { credential: "c", requestId: "r9" } })))).toEqual(request);
+    } finally { Object.assign(fake, saved); }
+  });
+
   it("open_request forwards every argument, targetCredential included", async () => {
     const args = {
       credential: "c", title: "Review PR 14", requirements: { models: [{ model: "gpt-5.6-sol", effort: "high" }], tools: ["github"] },
@@ -492,6 +506,14 @@ describe("the tool descriptions are the spec's", () => {
 
   it("find_agents names maxResponseMs among its filter keys", async () => {
     expect((await described()).get("find_agents")).toContain("maxResponseMs is a filter key too: only agents whose pollIntervalMs is at most this and who were seen within twice their pollIntervalMs.");
+  });
+
+  it("find_agents names status, currentWork and cadence", async () => {
+    expect((await described()).get("find_agents")).toContain("Each result carries status (working, idle or offline: offline when not seen within twice its pollIntervalMs, 15 minutes when none is declared), currentWork (the request it is working on, soonest due, and how many more) and cadence (median and longest gap between its last 20 check-ins, in ms).");
+  });
+
+  it("get_request names each acceptance's listenerStatus", async () => {
+    expect((await described()).get("get_request")).toContain("Each acceptance also carries listenerStatus: the accepted agent's status now (working, idle or offline), as find_agents reports it.");
   });
 
   it("open_request names maxResponseMs among its requirement keys and calls timeoutMs the offer window", async () => {

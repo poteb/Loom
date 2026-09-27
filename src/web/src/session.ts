@@ -1,12 +1,12 @@
 import { LoomClient, LoomClientError, type ListenersPage, type ListenersQuery, type Lobby, type LoomEvent,
   type LoomRequest, type OpenRequestInput,
-  type Participant, type StreamHandle, type Thread, type Weave } from "@loom/client";
+  type Participant, type StatusCounts, type StreamHandle, type Thread, type Weave } from "@loom/client";
 import type { KeyValueStorage, WriteResult } from "./storage.js";
 import {
   hasIdentity, invalidateIdentity, isCredentialFailure, migrateLegacyOne, readWeaveEntry, readerFor,
   saveWeaveEntry, setIdentity, storedWeaves, type ReaderChoice, type ReadOnlyReason, type WeaveEntry,
 } from "./weaves-store.js";
-import { applyEvent, applySnapshot, isRequestEvent, type Requests } from "./requests-state.js";
+import { applyEvent, applySnapshot, changesWork, isRequestEvent, type Requests } from "./requests-state.js";
 import { cachedProfile, createCounter, isCurrent, isOwnedBy, type Now, type Owner, type OwnProfile, type Stamp } from "./side-reads.js";
 import { createReadThrottle, documentVisibility, firstNewSeq, mergePositions, newestSeqIn, READ_FLUSH_MS, unreadCounts, type Visibility } from "./unread.js";
 
@@ -56,6 +56,9 @@ export type SessionState = {
    *  is what lets "asked and failed" be worded differently from "not answered yet", which an absent
    *  `listenerCount` cannot say on its own. */
   listenerCountError?: boolean;
+  /** The Lobby's listeners by status, from the same count read as `listenerCount` (spec 2026-09-27
+   *  §6.4): set, guarded and kept on failure exactly as it is. Absent means not known. */
+  listenerStatusCounts?: StatusCounts;
   /** Unread `message` counts by Thread for this browser's identity (spec 2026-09-26 §6.1). Empty
    *  until that identity's read state has loaded, and always empty without an identity. */
   unread: Record<string, number>;
@@ -95,6 +98,14 @@ export type Session = {
   listListeners(query: ListenersQuery): { issue: QueryIssue; page: Promise<ListenersPage> };
   /** Told of a rejection by a caller that has **already** established the query is still wanted. */
   reportCredentialFailure(e: unknown, issue: QueryIssue): void;
+  /** Called each time the tab becomes visible (spec 2026-09-27 §6.6); answers the unsubscribe. */
+  onVisible(fn: () => void): () => void;
+  /**
+   * Called on each work event that re-reads the Lobby's count, the one that moves the tiles (spec
+   * 2026-09-27 §6.6, whole-branch review F2): the open directory re-runs its view on it, so tiles,
+   * tabs and rows agree. Answers the unsubscribe.
+   */
+  onWorkChanged(fn: () => void): () => void;
 };
 
 /** The server's own page maximum (`MAX_PAGE_LIMIT`): what "everything" is asked for as. */
@@ -406,7 +417,7 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
         if (disposed || myGeneration !== generation || n <= countReads.applied()) return;
         countReads.markApplied(n);
         // A success clears the failure flag: the number on screen is answered, not stale.
-        set({ listenerCount: page.total, listenerCountError: false });
+        set({ listenerCount: page.total, listenerStatusCounts: page.statusCounts, listenerCountError: false });
       },
       (e: unknown) => {
         // The same two guards as the success path, and both before any side effect. One watermark
@@ -496,14 +507,21 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
   const markNow = (threadId: string, seq: number) => { throttle.advance(threadId, seq); throttle.flush(); };
   const throttle = createReadThrottle((threadId, seq) => sendMark(threadId, seq), opts.readFlushMs ?? READ_FLUSH_MS,
     undefined, () => visibility.visible());
+  /** Told when the tab becomes visible: the directory re-runs its view (spec 2026-09-27 §6.6). */
+  const visibleFns = new Set<() => void>();
+  /** Told of a work event: the open directory re-runs its view (whole-branch review F2). */
+  const workFns = new Set<() => void>();
   /**
    * The visibility rule's two edges (§6.2): hiding flushes what was read while visible; showing
    * reloads the positions, and their answer marks the open Thread (if the tab is still visible then).
+   * Showing also re-reads the Lobby's count, so the tiles are as fresh as the tab (spec 2026-09-27 §6.6).
    */
   const offVisibility = visibility.onChange(() => {
     if (disposed) return;
     if (!visibility.visible()) { throttle.flush(); return; }
     loadReadState();
+    if (onLobby()) readListenerCount(generation);
+    for (const fn of [...visibleFns]) fn();
   });
   /** Marks the open Thread read up to its newest loaded event, when that is past its local position. */
   const markOpenRead = () => {
@@ -792,11 +810,23 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       }
       scheduleRefresh();
     } else if (isRequestEvent(e)) {
+      const held = !!state.requests[String(e.payload.requestId ?? "")];
       const requests = applyEvent(state.requests, e);
-      if (requests !== state.requests) set({ requests });
-      // A request this session has never seen (opened while it was away, or a refresh that has not
-      // landed yet): the event alone is not a whole row, so the refresh is what brings it in.
-      else if (!state.requests[String(e.payload.requestId ?? "")]) scheduleRefresh();
+      const applied = requests !== state.requests;
+      if (applied) set({ requests });
+      // The event alone is never a whole row, so the refresh re-reads the board (coalesced, fenced
+      // and retried like every other). For a request this session has never seen (opened while it
+      // was away, or a refresh that has not landed yet) it is what brings the row in. For one it
+      // holds, it is what brings the listener's status (spec 2026-09-27 §6.6): an acceptance folded
+      // from the event has none, and a status the event leaves in place may no longer be true. It
+      // also re-reads the Lobby's count, whose tiles move when work starts or ends. Only an event
+      // that changes an acceptance or the request's lifecycle does this for a held row: an offer
+      // changes neither, and one opened request can bring an offer from every listener (review 6
+      // F2). A replay older than the row held changes nothing and reads nothing.
+      if ((applied && changesWork(e)) || !held) scheduleRefresh();
+      // The same work events tell the open directory, whose tabs and rows would otherwise disagree
+      // with the tiles until a reload (whole-branch review F2). An offer, or a replay, is not one.
+      if (changesWork(e) && (applied || !held)) for (const fn of [...workFns]) fn();
     } else if (e.type === "weave.archived") {
       if (state.weave) set({ weave: { ...state.weave, archivedAt: e.at } });
       // Also refresh: a refresh that started before the archive is still going to land with stale
@@ -1175,6 +1205,14 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       const recovered = recoverFromCredentialFailure(e);
       if (recovered?.reload) void doLoad();
     },
+    onVisible(fn) {
+      visibleFns.add(fn);
+      return () => { visibleFns.delete(fn); };
+    },
+    onWorkChanged(fn) {
+      workFns.add(fn);
+      return () => { workFns.delete(fn); };
+    },
     canModerate: () => state.me?.participant.role === "keeper" && !state.weave?.archivedAt,
     canEditThread: (t) => !!state.me && !state.weave?.archivedAt && !t.closedAt
       && (state.me.participant.role === "keeper" || t.createdBy === state.me.participant.id),
@@ -1185,6 +1223,8 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       throttle.flush();
       throttle.reset();
       offVisibility();
+      visibleFns.clear();
+      workFns.clear();
       disposed = true;
       // Bumping the generation retires any in-flight load() as well, so one that is still mid-fetch
       // cleans up whatever it opens instead of publishing state into a disposed session.

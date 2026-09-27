@@ -1,4 +1,4 @@
-import type { ListenersQuery, ListenersSort, ServesKind } from "@loom/client";
+import type { ListenerStatus, ListenersQuery, ListenersSort, ServesKind } from "@loom/client";
 
 /**
  * The part of the directory that lives in the query string (spec §5.4): the search, the four
@@ -8,6 +8,8 @@ import type { ListenersQuery, ListenersSort, ServesKind } from "@loom/client";
 export type ListenersView = {
   q: string; models: { model: string; effort?: string }[]; tools: string[];
   runtime?: string; serves?: ServesKind; sort: ListenersSort; dir: "asc" | "desc";
+  /** The selected status tab (spec 2026-09-27 §6.1); absent is All. */
+  status?: ListenerStatus;
 };
 
 /**
@@ -32,7 +34,9 @@ const NUL_RE = /\u0000/;
  * carrying `{"owner":"ada"}` is asking for something this page cannot do, and saying nothing would
  * let it look as though it had been honoured.
  */
-const FILTER_KEYS = ["models", "tools", "runtime", "serves"];
+const FILTER_KEYS = ["models", "tools", "runtime", "serves", "status"];
+/** The three status words a link may name, one at a time (spec 2026-09-27 §6.1). */
+const STATUS_WORDS = ["working", "idle", "offline"] as const;
 const MODEL_KEYS = ["model", "effort"];
 
 /** The untouched page: the defaults core would have applied anyway. Never mutated in place. */
@@ -114,13 +118,20 @@ export function viewFromSearch(search: string): { view: ListenersView; partial: 
   }) ?? [];
   const runtime = given(filter.runtime, (v) => str(v, 64));
   const serves = given(filter.serves, (v) => oneOf(v, ["anyone", "owner", "list"] as const));
+  // The tabs show one status, so a link names exactly one (spec 2026-09-27 §6.1). An empty array is
+  // no filter, as core reads it; two words, an unknown word or a non-array are dropped and reported.
+  const status = given(filter.status, (v) => {
+    if (Array.isArray(v) && v.length === 0) return undefined;
+    if (!Array.isArray(v) || v.length !== 1) return drop();
+    return oneOf(v[0], STATUS_WORDS);
+  });
   // The scalars are `string | null` out of `URLSearchParams`; `null` is "not there".
   const sort = given(p.get("sort") ?? undefined, (v) => oneOf(v, ["name", "owner", "joined"] as const)) ?? "name";
   const dir = given(p.get("dir") ?? undefined, (v) => oneOf(v, ["asc", "desc"] as const)) ?? "asc";
   // `?q=` (empty) is a cleared box, not a rejected value: absent, and not reported.
   const qRaw = p.get("q");
   const q = qRaw === null || qRaw.trim() === "" ? "" : (str(qRaw, 100) ?? "");
-  return { view: { q, models, tools, runtime, serves, sort, dir }, partial };
+  return { view: { q, models, tools, runtime, serves, status, sort, dir }, partial };
 }
 
 /**
@@ -136,6 +147,7 @@ export function searchFromView(view: ListenersView): string {
   if (view.tools.length > 0) filter.tools = view.tools;
   if (view.runtime !== undefined) filter.runtime = view.runtime;
   if (view.serves !== undefined) filter.serves = view.serves;
+  if (view.status !== undefined) filter.status = [view.status];
   if (Object.keys(filter).length > 0) p.set("filter", JSON.stringify(filter));
   if (view.sort !== "name") p.set("sort", view.sort);
   if (view.dir !== "asc") p.set("dir", view.dir);
@@ -186,6 +198,7 @@ export function queryFromView(
   if (view.tools.length > 0) query.tools = view.tools;
   if (view.runtime !== undefined) query.runtime = view.runtime;
   if (view.serves !== undefined) query.serves = view.serves;
+  if (view.status !== undefined) query.status = [view.status];
   if (extra.cursor !== undefined) query.cursor = extra.cursor;
   if (extra.facets === false) query.facets = false;
   return query;

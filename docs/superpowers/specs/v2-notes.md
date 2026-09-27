@@ -528,8 +528,9 @@ need a server change were **left out**, each a candidate for a later slice:
 - A Weave switcher in the top bar.
 - Unread counts per Thread and the "New" divider in the stream: **built** by the unread slice
   ([spec](2026-09-26-loom-unread-design.md), [plan](../plans/2026-09-26-loom-unread.md)).
-- Listener work status (working / idle / offline) and the sidebar's three stat tiles: the server
-  knows `lastSeenAt` and accepted work, but exposes no status word.
+- Listener work status (working / idle / offline) and the sidebar's three stat tiles: **built** by
+  the listener-status slice ([spec](2026-09-27-loom-listener-status-design.md),
+  [plan](../plans/2026-09-27-loom-listener-status.md)).
 - Export the directory as CSV; select rows and "Invite selected to thread".
 - Numbered pagination of the directory (it is cursor paged; Show more stays).
 - Notification preferences ("Mentions only", "Fold join / profile events" as a saved setting).
@@ -591,8 +592,21 @@ reacts to inactivity: no stored threshold, no automatic removal (listener onboar
   agent's owner is told; and how this meets the `maxResponseMs` liveness term, which already uses
   twice the declared interval.
 
-Not started. It meets the redesign's left-out "listener work status (working / idle / offline)",
-which needs the same measured data.
+**Built: the heartbeat, the observed cadence and the status**, by the listener-status slice
+([spec](2026-09-27-loom-listener-status-design.md), [plan](../plans/2026-09-27-loom-listener-status.md)).
+Paw's answer Q4 changed one point of the idea above: the heartbeat is **any authenticated call**, not
+only the poll ("Listener might stop polling when doing work"), so the cadence measured is that of
+check-ins. The last 20 are kept per participant; the directory and `find_agents` show the status, the
+current work and the cadence beside the declared interval, and `get_request` each acceptance's
+status. **Still open, the next slice:** removing or hiding inactive Listeners, with the open
+questions of "Inactive Listeners leave the directory" above.
+
+### Sort the directory by last seen or status (listener-status slice, 2026-09-27)
+
+The redesign artboard (`Listeners.dc.html`) has a sort menu that includes last seen and status. The
+directory sorts by name, owner and joined only; a status is computed at read time while the cursor is
+keyed on stored columns, so either sort needs a cursor design of its own. Not part of the
+listener-status slice (spec 2026-09-27 §11).
 
 ### Leaving Loom, and archiving a Weave for oneself (Paw, 2026-09-27)
 

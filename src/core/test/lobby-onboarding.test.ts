@@ -95,9 +95,15 @@ describe("onboardingFacts", () => {
     const request = await r.open("Review PR 14");
     await core.offer(l.agent, request.id, {});
     const accepted = await core.acceptRequest(r.agent, request.id, [l.id], 3_600_000);
+    // Each row's created_at is its transaction's now(), and the database clock can step backwards
+    // (KNOWN-ISSUES, the wall-clock created_at row), which once listed these two swapped. Pinned,
+    // and against insertion order, so the case shows the facts sort oldest first.
+    const pin = (id: string, at: string) => db.update(weaveInvitations).set({ createdAt: new Date(at) }).where(eq(weaveInvitations.id, id));
+    await pin(direct.invitationId, "2026-09-27T10:00:00.000Z");
+    await pin(accepted.invitationIds[0]!, "2026-09-27T09:00:00.000Z");
     expect((await core.onboardingFacts(l.agent)).invitations).toEqual([
-      { inviteId: direct.invitationId, weaveTitle: "Alpha", requestId: null },
       { inviteId: accepted.invitationIds[0], weaveTitle: "Claude-Code's Weave", requestId: request.id },
+      { inviteId: direct.invitationId, weaveTitle: "Alpha", requestId: null },
     ]);
   });
 

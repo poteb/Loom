@@ -1,15 +1,15 @@
 import { useEffect, useState } from "preact/hooks";
-import type { Acceptance, Offer, Participant, Requirements } from "@loom/client";
+import type { Offer, Participant, Requirements } from "@loom/client";
 import type { Session, SessionState, TargetWeave } from "../session.js";
-import { acceptedIds, activeAcceptedIds, displayStatus, type VersionedRequest } from "../requests-state.js";
-import { modelSpecs } from "./ProfileCard.js";
+import { acceptedIds, activeAcceptedIds, displayStatus, type HeldAcceptance, type VersionedRequest } from "../requests-state.js";
+import { modelSpecs, seenText } from "./ProfileCard.js";
 
 const DEFAULT_TIMEOUT_MINUTES = 60;
 /** The deadline an Accept gives by default: one hour, 3 600 000 ms (spec §5.11). Core's bounds decide what is accepted. */
 const DEFAULT_DEADLINE_MINUTES = 60;
 
 /** An acceptance as the panel reports it: completed, removed, overdue (the clock is enough), or working. */
-export function acceptanceState(a: Acceptance, nowMs: number): "completed" | "removed" | "overdue" | "working" {
+export function acceptanceState(a: HeldAcceptance, nowMs: number): "completed" | "removed" | "overdue" | "working" {
   if (a.completedAt) return "completed";
   if (a.removed) return "removed";
   if (a.overdue || (a.dueAt !== null && nowMs >= Date.parse(a.dueAt))) return "overdue";
@@ -170,6 +170,14 @@ function RequestRow({ request, title, state, session, onError, nowMs }: {
             <li key={a.participantId} class="acceptance">
               <span>{name(a.participantId)}</span> <span class="acceptance-due">due {a.dueAt ?? "-"}</span>{" "}
               <span class="badge">{acceptanceState(a, nowMs)}</span>
+              {/* The badge is the acceptance's state; these two are the listener's (spec 2026-09-27 §6.5).
+                  Neither shows until a request read has supplied the status (review round 1 F1, review 6
+                  F1): an acceptance folded from an event says nothing about liveness, and its null
+                  lastSeenAt would read as a false "never seen". */}
+              {a.listenerStatus && <>
+                {" "}<span class="acceptance-seen">{seenText(a.lastSeenAt, nowMs)}</span>
+                {" "}<span class={`listener-status listener-status-${a.listenerStatus}`}>{a.listenerStatus}</span>
+              </>}
             </li>
           ))}
         </ul>

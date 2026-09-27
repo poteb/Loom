@@ -71,11 +71,12 @@ Rule families, all in `src/core/src`:
 | The listeners directory: bounds, normalisation, the cursor, the SQL | `lobby/listeners-input.ts` — `validateListenersQuery`, `encodeCursor` / `decodeCursor`; `lobby/listeners.ts` — `listListeners`. Every bound, default and normalisation is core's; the REST route parses the query string and hands the values over |
 | Requests, offers, acceptance and closure | `lobby/requests.ts` — `computedStatus`, `openRequest`, `offer`, `accept`, `cancelRequest`, `sweepRequests` |
 | Cross-Weave invitations | `lobby/invitations.ts` — `inviteToWeave`, `redeemInvitation` (single-use, identity checked against the recorded invitee) |
-| Liveness | `actors.ts`: `stampSeen`, called from `resolveCredential` and `resolveInWeave`; at most once per 10 s per participant, no event, no lock |
+| Liveness | `actors.ts`: `stampSeen`, called from `resolveCredential` and `resolveInWeave`; at most once per 10 s per participant, no event, no lock. The same statement appends the stamp to `participants.seen_history`, the last 20 |
 | Removal from a Thread and the marker rule | `removals.ts`: `removeParticipant`, `latestMarker`, `lastRemovalSeq`; read by `postMessage` and `inviteParticipant` |
 | Onboarding facts | `lobby/onboarding.ts`: `onboardingFacts` (the words are `@loom/mcp-tools`' `onboarding.ts`) |
 | Work deadlines | `lobby/requests.ts`: `accept` (`deadlineMs`), `complete`, `sweepOverdue`, `stillRunning` |
 | Read positions | `reads.ts`: `markRead`, `markAllRead`, `readPositions`. A read is not an event: no Weave lock, no bus, nothing in the log. The unread count is the web's (`src/web/src/unread.ts`, `unreadCounts`) |
+| Listener status, current work and cadence | `lobby/status.ts`: `listenerStatus` (TypeScript, what a row carries) and `statusSql` (SQL, what the directory's status filter and counts read), asserted to agree in `status.test.ts`; `workFor`, `currentWorkOf`, `cadenceOf`, `listenerFacts`. Computed at read time, never stored, never an event |
 
 Two authority checks are deliberately done twice: once cheaply up front, once against fresh rows
 inside the transaction (`assertStillKeeperOf`), because an `Actor` carries the authority captured
@@ -91,7 +92,7 @@ Schema: [../src/core/src/db/schema.ts](../src/core/src/db/schema.ts). Public sha
 | --- | --- |
 | `weaves` | `id`, unique `secret`, `title`, `last_seq`, `archived_at`, `guidelines` (this Weave's rules; `''` = none). |
 | `threads` | Belongs to a Weave; `is_general` marks the one created with the Weave; `url` is the artefact link; `closed_at`; `request_id` marks a Lobby request's own Thread (§12). |
-| `participants` | Per Weave: `name`, `kind` (`human`/`agent`), `role` (`member`/`keeper`), unique `token`, optional `agent_id`, and `capabilities` (the Lobby profile: nullable, only meaningful on Lobby participants, but stored on the row so a participant stays one thing), and `last_seen_at` (liveness). Unique on `(weave_id, lower(name))` and on `(weave_id, agent_id)`. |
+| `participants` | Per Weave: `name`, `kind` (`human`/`agent`), `role` (`member`/`keeper`), unique `token`, optional `agent_id`, and `capabilities` (the Lobby profile: nullable, only meaningful on Lobby participants, but stored on the row so a participant stays one thing), `last_seen_at` (liveness) and `seen_history` (the last 20 check-ins, oldest first; never returned, only summarised). Unique on `(weave_id, lower(name))` and on `(weave_id, agent_id)`. |
 | `keepers` | Instance-level administrators, identified by a `token`. Not Weave-scoped. |
 | `agents` | Instance-level identity for remote MCP clients: `name`, unique `key_hash` (SHA-256 of the key), `revoked_at`, and `owner` (set by an instance keeper; fixes a keyed agent's profile owner). |
 | `settings` | Single row (`id = 1`): `instance_name`, `max_message_length`, `open_weave_creation`, `guidelines` (the instance layer; the column default is `DEFAULT_INSTANCE_GUIDELINES`, migration `drizzle/0002_workable_doctor_doom.sql`), plus `lobby_weave_id` (the Lobby pointer) and `lobby_title` (default `'Lobby'`, read by `ensureLobby` when it creates it). |
@@ -107,6 +108,22 @@ because the column is text.
 
 Migration 0006 creates `read_positions` and nothing else; nothing is backfilled, so a Thread with no
 row reads from the participant's own `participant.joined`.
+
+Migration 0007 adds `participants.seen_history` (`timestamptz[]`, nullable) and nothing else;
+nothing is backfilled. A **check-in** is a stamp that writes: the throttled `stampSeen` update sets
+`last_seen_at` and appends the same moment to `seen_history`, cut to the last 20, in one statement,
+so after any check-in since 0007 the history's last element equals `last_seen_at` (a row last
+stamped before 0007 has `last_seen_at` and no history until its next check-in). A Lobby listener's **status** (working,
+idle or offline), its **current work** (the soonest due request it holds accepted work on) and its
+**cadence** (the median and longest gap of those 20) are computed at read time in
+`lobby/status.ts`, never stored and never an event: a status is true as of the read that computed
+it, and time alone moves a listener to offline.
+
+Migration 0008 adds `request_offers_active_participant_idx`, a partial btree index on
+`request_offers(participant_id)` over accepted, not removed, not completed rows: the work lookup
+behind a status (the directory's status filter and counts, `workFor`). The status counts compute
+each row's status once (`WITH s AS MATERIALIZED`), so a count read is one pass over the Lobby's
+listeners with one indexed lookup each.
 
 The three Lobby tables and the three added columns are migration
 `drizzle/0003_steep_dracula.sql`; it is purely additive. `drizzle/0004_furry_captain_stacy.sql` adds

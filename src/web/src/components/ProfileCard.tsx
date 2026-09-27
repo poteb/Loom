@@ -1,4 +1,4 @@
-import type { Participant, Profile } from "@loom/client";
+import type { ListenerStatus, Participant, Profile } from "@loom/client";
 
 /** `serves` is either a policy word or the list of owners the listener will work for. */
 function serves(profile: Profile): string {
@@ -28,7 +28,7 @@ export function seenText(lastSeenAt: string | null, nowMs: number): string {
  * beside the participant (spec §2.1), and which opens this card under a row when its Profile toggle
  * is pressed. `getWeave` carries none at all, in the Lobby or out of it.
  */
-export function ProfileCard({ participant, now }: { participant: Participant; now?: number }) {
+export function ProfileCard({ participant, now, status }: { participant: Participant; now?: number; status?: ListenerStatus }) {
   const profile = participant.capabilities;
   if (!profile) return null;
   const tools = profile.tools ?? [];
@@ -43,6 +43,8 @@ export function ProfileCard({ participant, now }: { participant: Participant; no
         <dt>serves</dt><dd class="profile-serves">{serves(profile)}</dd>
       </dl>
       <div class="profile-seen">{seenText(participant.lastSeenAt, now ?? Date.now())}</div>
+      {/* The directory row hands its status down (spec 2026-09-27 §6.5); without it, as before. */}
+      {status && <span class={`listener-status listener-status-${status}`}>{status}</span>}
     </div>
   );
 }

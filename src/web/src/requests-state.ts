@@ -1,11 +1,20 @@
-import type { Acceptance, LoomEvent, LoomRequest, Offer, RequestStatus } from "@loom/client";
+import type { Acceptance, ListenerStatus, LoomEvent, LoomRequest, Offer, RequestStatus } from "@loom/client";
 
+/**
+ * An acceptance as this session holds it. `listenerStatus` is optional here, and only here: one
+ * folded from a `request.accepted` event keeps the status it already had, or has none, until a
+ * request read (a snapshot) supplies the server's (spec 2026-09-27 §6.6). An accept establishes
+ * work, not liveness: the listener accepted may be offline.
+ */
+export type HeldAcceptance = Omit<Acceptance, "listenerStatus"> & { listenerStatus?: ListenerStatus };
+/** A request as this session holds it: the wire shape, with held acceptances. */
+export type HeldRequest = Omit<LoomRequest, "acceptances"> & { acceptances: HeldAcceptance[] };
 /**
  * A request plus the **version** the session holds for it: the `lastEventSeq` of the newest mutation
  * this browser has applied. Every snapshot and every event is judged against it, so a refresh that
  * answers from before a mutation, or a replayed event from before one, cannot drag the panel backwards.
  */
-export type VersionedRequest = LoomRequest & { version: number };
+export type VersionedRequest = HeldRequest & { version: number };
 export type Requests = Record<string, VersionedRequest>;
 
 const REQUEST_EVENTS = ["request.opened", "request.offered", "request.accepted", "request.closed", "request.completed", "request.overdue"] as const;
@@ -19,15 +28,27 @@ export function isRequestEvent(e: LoomEvent): boolean {
     || (e.type === "thread.removed" && typeof e.payload.requestId === "string");
 }
 
+const WORK_EVENTS = ["request.accepted", "request.completed", "request.overdue", "request.closed", "thread.removed"] as const;
+
+/**
+ * The request events that change an acceptance or the request's lifecycle, and so may move a
+ * listener's status and the Lobby's tiles: the ones worth a re-read on a request this session holds
+ * (spec 2026-09-27 §6.6). `request.opened` and `request.offered` change neither. Only meaningful for
+ * an event `isRequestEvent` admits, so a `thread.removed` here is one carrying a `requestId`.
+ */
+export function changesWork(e: LoomEvent): boolean {
+  return isRequestEvent(e) && (WORK_EVENTS as readonly string[]).includes(e.type);
+}
+
 /** open, then working, then a terminal state: a request only ever moves forward along this. */
 const RANK: Record<RequestStatus, number> = { open: 0, working: 1, completed: 2, cancelled: 2, expired: 2, filled: 2 };
 /** Terminal states are one-way: nothing may reopen a request that has closed. */
 const isClosed = (status: RequestStatus): boolean => RANK[status] === 2;
 
-export const acceptedIds = (r: LoomRequest): string[] => r.offers.filter((o) => o.accepted).map((o) => o.participantId);
+export const acceptedIds = (r: HeldRequest): string[] => r.offers.filter((o) => o.accepted).map((o) => o.participantId);
 
 /** The accepted offers still counting toward `wanted`: an acceptance that was removed does not. */
-export const activeAcceptedIds = (r: LoomRequest): string[] =>
+export const activeAcceptedIds = (r: HeldRequest): string[] =>
   acceptedIds(r).filter((id) => !r.acceptances.some((a) => a.participantId === id && a.removed));
 
 /**
@@ -35,7 +56,7 @@ export const activeAcceptedIds = (r: LoomRequest): string[] =>
  * clock, before the sweeper has persisted anything. A `working` request never expires. This is
  * display state and never a version step.
  */
-export function displayStatus(r: LoomRequest, nowMs: number): RequestStatus {
+export function displayStatus(r: HeldRequest, nowMs: number): RequestStatus {
   if (r.status !== "open") return r.status;
   // The deadline itself is past: core counts a request open only while `expiresAt > now`, and the
   // panel's countdown says "expired" at exactly zero, so all three agree on the same instant.
@@ -59,8 +80,9 @@ function mergeOffers(held: Offer[], incoming: Offer[]): Offer[] {
 
 /**
  * Applies a snapshot when its `lastEventSeq` is at least the version held. A status further along
- * than the snapshot's is kept, as is every acceptance, so an older-but-admissible answer cannot
- * reopen, un-work or un-accept anything.
+ * than the snapshot's is kept, as is every accepted offer, so an older-but-admissible answer cannot
+ * reopen, un-work or un-accept anything. The acceptances are the snapshot's own, replacing the held
+ * ones: they carry the server's `listenerStatus`, which only a read can supply.
  */
 export function applySnapshot(reqs: Requests, snap: LoomRequest): Requests {
   const held = reqs[snap.id];
@@ -82,16 +104,20 @@ export function applySnapshot(reqs: Requests, snap: LoomRequest): Requests {
 }
 
 /** The acceptances after an accept: each named id gets a fresh entry with the new due time. */
-function accepting(held: Acceptance[], ids: string[], dueAt: string | null): Acceptance[] {
-  const fresh = ids.map((participantId): Acceptance => ({
+function accepting(held: HeldAcceptance[], ids: string[], dueAt: string | null): HeldAcceptance[] {
+  const fresh = ids.map((participantId): HeldAcceptance => ({
     participantId, dueAt, completedAt: null, note: null, removed: false, removedAt: null,
     overdue: false, overdueNotifiedAt: null,
     lastSeenAt: held.find((a) => a.participantId === participantId)?.lastSeenAt ?? null,
+    // A status known from an earlier read is kept, and may no longer be true; otherwise there is
+    // none, and the panel shows no word. Nothing here reads: the session re-reads the request on
+    // every request event it applies (session.ts, `onEvent`), and that snapshot brings the server's.
+    listenerStatus: held.find((a) => a.participantId === participantId)?.listenerStatus,
   }));
   return [...held.filter((a) => !ids.includes(a.participantId)), ...fresh];
 }
 
-const patch = (held: Acceptance[], participantId: string, change: Partial<Acceptance>): Acceptance[] =>
+const patch = (held: HeldAcceptance[], participantId: string, change: Partial<HeldAcceptance>): HeldAcceptance[] =>
   held.map((a) => (a.participantId === participantId ? { ...a, ...change } : a));
 
 /**
