@@ -198,6 +198,11 @@ cli +2 in `lobby.test.ts` (`loom lobby --json`, spec 2026-09-27 §5 as amended);
 `src/claude-channel` and `src/server/src` prints nothing (spec §5: no new route, the channel passes
 the fields through).
 
+After the Lobby link fix on `fix/lobby-link` (2026-09-27): **2264 in 78**, web 960 in 17 (+4:
+`listeners-page.test.tsx` +2, four new cases for the replaced `/weave/<lobby id>` less the two
+`/weave/<lobby id>` cases that asserted no history call; `main-page.test.tsx` +2), every other
+package unchanged.
+
 The shell contract tests are **not** in that figure and are their own run: `pnpm test:deploy` was
 **28 cases, 27 passed, 0 failed, 1 skipped** on Windows at the live instance (`65e684d`), exit 0,
 and neither listener onboarding (one comment line in `deploy/test/run.sh`) nor the unread and
@@ -746,3 +751,5 @@ polled at least twice after the deploy (about ten minutes on its five-minute pol
    the tabs and the tiles agree.
 
 *Last run:* not yet run.
+
+*Finding (2026-09-27):* entered from the My Weaves row, the Lobby rendered under `/weave/<id>`, so the Listeners view never wrote the address and F5 lost the tab; fixed on `fix/lobby-link` (the Lobby row links to `/lobby`, and `/weave/<lobby id>` is replaced with `/lobby`).
