@@ -1561,6 +1561,34 @@ describe("the directory on becoming visible (spec 2026-09-27 §6.6)", () => {
     expect(screen.getByRole("alert").textContent).toBe("refused");
   });
 
+  // Whole-branch review F3: the rows a failed re-run leaves are the old ones, so the line that says
+  // they are out of date stays (spec 2026-09-27 §6.6: a quiet failure keeps what the last settled
+  // query left). Only an answer is a new baseline.
+  it("a failed re-run on becoming visible leaves the list-changed line on screen", async () => {
+    const d = held();
+    await d.turn();
+    await d.answer(0, pageOf(["a"], { total: 2 }));
+    fireEvent.click(d.container.querySelector(".status-tab-idle")!);
+    await d.turn();
+    await d.answer(1, pageOf(["a"], { total: 3 }));
+    const before = !!changedLine();
+    await d.visible();
+    await d.fail(2, new Error("offline"));
+    expect([before, !!changedLine()]).toEqual([true, true]);
+  });
+
+  it("a failed re-run on becoming visible keeps the list-changed baseline: the next answer is judged against it", async () => {
+    const d = held();
+    await d.turn();
+    await d.answer(0, pageOf(["a"], { total: 2 }));
+    await d.visible();
+    await d.fail(1, new Error("offline"));
+    fireEvent.click(d.container.querySelector(".status-tab-idle")!);
+    await d.turn();
+    await d.answer(2, pageOf(["a"], { total: 3 }));
+    expect(!!changedLine()).toBe(true);
+  });
+
   // Shown, hidden and shown again before the network answers: the second re-run supersedes the
   // first, and it still puts back the page as it was before either, not the first one's dimming.
   it("two overlapping re-runs that fail keep the rows and Show more, and show no error", async () => {

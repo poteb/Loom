@@ -453,6 +453,8 @@ them:
   and Show more as the last settled query left them and shows no error, as the count read beside it
   keeps its last numbers; a credential failure is still reported to the session. A re-run that took
   over a query the user is waiting on still reports its failure, as that query would have.
+  Amended 2026-09-27 (whole-branch review, F3): the re-run's answer resets the baseline, not its
+  start, so a failed re-run also leaves the "list has changed" line and its baseline as they were.
 - **The requests panel** shows `listenerStatus` as of the request read that carried it; it is
   re-read on the request events it already follows.
   Amended 2026-09-27 during implementation (review of Task 6, F2): the re-read of a request the

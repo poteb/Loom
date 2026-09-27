@@ -151,7 +151,11 @@ export function ListenersPage({ session, invite, onOpenThread }: {
       (page) => {
         if (!live.current || n !== gen.current) return;
         if (!cursor) userWaiting.current = false;
-        if (firstTotal.current === undefined) firstTotal.current = page.total;
+        // The re-run on becoming visible is "Reload the list", so its answer is the new baseline:
+        // its answer, never its start, so a quiet failure leaves the line and the baseline as they
+        // were (whole-branch review F3).
+        if (background && !cursor) { firstTotal.current = page.total; setChanged(false); }
+        else if (firstTotal.current === undefined) firstTotal.current = page.total;
         else if (page.total !== firstTotal.current) setChanged(true);
         setState((s) => ({
           status: "ready",
@@ -200,11 +204,10 @@ export function ListenersPage({ session, invite, onOpenThread }: {
   useEffect(() => { run(view); }, [view, session]);
   // Spec 2026-09-27 §6.6: becoming visible re-runs the view on screen, the first page with facets as
   // "Reload the list" asks, rows kept until the answer. Pages Show more appended are replaced by it.
-  // Like Reload, its answer is the new baseline: rows it has just re-read have not "changed".
+  // Like Reload, its answer is the new baseline: rows it has just re-read have not "changed". The
+  // answer resets it, not the start, so a failure leaves the old rows' "changed" line standing.
   useEffect(() => session.onVisible(() => {
     if (!live.current) return;
-    firstTotal.current = undefined;
-    setChanged(false);
     run(viewRef.current, undefined, true);
   }), [session]);
 
