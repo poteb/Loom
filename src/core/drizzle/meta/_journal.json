@@ -50,6 +50,13 @@
       "when": 1790451744064,
       "tag": "0006_big_ricochet",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1790516859630,
+      "tag": "0007_broken_wild_child",
+      "breakpoints": true
     }
   ]
 }

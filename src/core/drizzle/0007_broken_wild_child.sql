@@ -1,0 +1,1 @@
+ALTER TABLE "participants" ADD COLUMN "seen_history" timestamp with time zone[];

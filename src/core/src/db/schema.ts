@@ -54,6 +54,10 @@ export const participants = pgTable("participants", {
   // Liveness: when a credential standing for this participant last made a call. Written by
   // `stampSeen`, throttled to once per ten seconds, and never an event.
   lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+  // The last 20 check-ins, oldest first (spec 2026-09-27 §3): appended by `stampSeen` in the same
+  // statement that writes `last_seen_at`, so its last element always equals it. Never returned as
+  // such: only `cadenceOf`'s summary leaves core. Null until the first check-in after migration 0007.
+  seenHistory: timestamp("seen_history", { withTimezone: true }).array(),
 }, (t) => [
   uniqueIndex("participants_weave_name_idx").on(t.weaveId, sql`lower(${t.name})`),
   uniqueIndex("participants_weave_agent_idx").on(t.weaveId, t.agentId),
