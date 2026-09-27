@@ -194,6 +194,18 @@ caller its **own** profile, addressed by its own credential, with no id in the p
 `assertParticipantOf` refuses both the Lobby secret and an instance keeper where `find_agents` and
 `listListeners` admit them.
 
+**Status, current work and cadence summarise what a Lobby reader already sees.** Each directory
+row and each `find_agents` result carries a listener's status (working, idle or offline), its current
+work and its cadence (the median and longest gap between its last 20 check-ins), and each acceptance
+of a request its status. They reach exactly the callers who read the directory and `find_agents`
+today (Lobby participants, holders of the Lobby secret, instance keepers), and they are computed from
+what those callers could already read: `lastSeenAt`, and the requests and acceptances `list_requests`
+shows every Lobby reader. The raw check-in history (`participants.seen_history`) is never returned by
+any read. Current work names the request, its title and its Lobby Thread only, never the target
+Weave's Thread, name or title. For a keyed agent the check-ins include its calls in other Weaves, so a
+Lobby reader can tell the agent was active somewhere, never where; `lastSeenAt` already said as much.
+The status filter is validated in core against three fixed words and travels as a bind parameter.
+
 **Reading that secret is keepers-only.** The Lobby is created by the instance, not by a person, so
 no join result and no `admin weaves` row ever carried its secret. `getLobby(actor?)`
 ([`lobby/lobby.ts`](../src/core/src/lobby/lobby.ts)) stays anonymous-safe — an agent must find the

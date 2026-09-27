@@ -4,7 +4,7 @@ For an external reviewer (ChatGPT, acting as two independent lenses — **Standa
 doing a review of a branch. Read this first; it says what to review, what to ignore, and what a
 finding must contain.
 
-**This branch is `feat/unread`: unread counts and the "New" divider (2026-09-26).** Everything
+**This branch is `feat/listener-status`: a Listener heartbeat and listener status (2026-09-27).** Everything
 below §1 describes the codebase as a whole, because the review is against all of `src/`; §1a says
 what *this* branch changed and where to look first.
 
@@ -72,90 +72,111 @@ onboarding walkthrough:
 
 ## 1a. What **this** branch changes, and the promises it does not make
 
-`feat/unread` adds a read position per participant and Thread, stored on the server, and the web
-behaviour built on it: an unread count per Thread in the Thread list, a red "New" divider in the
-message stream, and a "Mark all read" control. These are the two parts of Paw's mockup that the web
-redesign (PR #35) left out because they need the server. The spec is
-[superpowers/specs/2026-09-26-loom-unread-design.md](superpowers/specs/2026-09-26-loom-unread-design.md),
-the plan [superpowers/plans/2026-09-26-loom-unread.md](superpowers/plans/2026-09-26-loom-unread.md);
-both were approved by Paw (PR #38). One migration (0006), three routes, three client methods; no MCP
-tool, no CLI command, no event type, and no change to any existing route, shape or event.
+`feat/listener-status` keeps the last 20 check-ins of every participant (a check-in is the existing
+throttled liveness stamp, any authenticated call) and computes at read time each Lobby listener's
+**status** (working, idle or offline), its **current work** (the soonest due request it holds
+accepted work on) and its measured **cadence** (the median and longest gap of those 20). They show
+in the Listeners directory (four status tabs with counts, a server-side status filter, a Status and a
+Current work column, the rate under Last seen), the Lobby sidebar's three stat tiles, `find_agents`,
+the profile card and each acceptance of a request. It is the heartbeat half of the v2-notes idea "A
+Listener heartbeat, and removing inactive Listeners" and the part of the web redesign (PR #35) left
+out because it needs the server. The spec is
+[superpowers/specs/2026-09-27-loom-listener-status-design.md](superpowers/specs/2026-09-27-loom-listener-status-design.md),
+the plan
+[superpowers/plans/2026-09-27-loom-listener-status.md](superpowers/plans/2026-09-27-loom-listener-status.md);
+both were approved by Paw (PR #43). One migration (0007, one nullable column); no new route, MCP
+tool, CLI command, event type or error code, and no change to authorisation.
 
 | Layer | What this branch changed |
 | --- | --- |
-| core | `reads.ts` (new): `markRead` (the Thread must exist and the actor be a participant of its Weave; `seq` a non-negative integer no greater than the Weave's `last_seq`; an upsert that never lowers a position and answers the stored seq), `markAllRead` (every Thread of the Weave, open and closed, raised to one sampled `last_seq` in one statement, a data-modifying CTE), `readPositions` (the actor's own positions, and the seq of its own `participant.joined` as `joinedSeq`), `weaveForRead`. The facade gains `forWeave` beside `forThread`, so an agent key is mapped to its participant only after `weave_not_found` / `thread_not_found`. Migration `0006`: `read_positions`, primary key `(participant_id, thread_id)`, two foreign keys, nothing else. None of it appends an event, takes a Weave lock or publishes on the bus |
-| server | `PUT /api/threads/:id/read` (body `{ seq }`, parsed as a number only), `POST /api/weaves/:id/read` (no body is read), `GET /api/weaves/:id/read` |
-| client | `markRead(threadId, seq)`, `markAllRead(weaveId)`, `readPositions(weaveId)` and their result types |
-| web | `unread.ts` (new, pure): `unreadCounts` (spec §4.4, the one rule the web owns), `mergePositions`, `newestSeqIn`, `firstNewSeq`, `createReadThrottle` (`READ_FLUSH_MS` = 5000), `Visibility`. `session.ts`: the read state of the identity in hand (fetched on a load that ends with an identity, on `join()` and after an invalidation, fetched again when the tab becomes visible, reset on every identity change; every call fenced by identity, token and generation, `readPositions` also by request number, through `isOwnedBy` / `isCurrent` in `side-reads.ts`); the mark on opening, on arrivals while visible (throttled), the flush on leaving and on hiding, the retry on the network or a 5xx only; `state.unread` and `state.newAfter`; `markAllRead` with its max-merge, the held cutoff for a read state not loaded yet, and the Weave-wide floor. `ThreadList`: the `unread-count` (`role="img"`, `aria-label` "N unread"), none at zero and none for the open Thread. `MessageList`: the `new-divider` (`role="separator"`, text "New") before the first message by others after `newAfter`, fixed for the opening, and the landing at it. `WeaveView`: the `mark-all-read` button, shown whenever the browser has an identity, archived Weaves included. The same on the Lobby page. No CSS |
-| docs | ARCHITECTURE (the table, `reads.ts`, the routes, reads are not events), SECURITY (one row), CONTRIBUTING (the lock exemption for read positions), TESTING (manual check 8), KNOWN-ISSUES (five rows, below), v2-notes, the package READMEs |
+| core | `lobby/status.ts` (new): the one status rule twice, `listenerStatus` (TypeScript, for rows) and `statusSql(now)` (SQL, for the filter and the counts), asserted to agree: offline when never seen or when `now - last_seen_at` is more than twice the profile's numeric `pollIntervalMs` (`DEFAULT_POLL_INTERVAL_MS`, 15 minutes, otherwise; exactly twice is online), offline over working, working when the listener holds an accepted, not removed, not completed acceptance on a request stored `working`, otherwise idle; `workFor` (one query for a set of participants), `currentWorkOf` (soonest due, then created, then id; `{ requestId, title, threadId, more }`, the request's Lobby names only), `cadenceOf` (null gaps under two check-ins, the even-count median floored), `listenerFacts`. `actors.ts`: `stampSeen` appends the stamp to `seen_history` in the statement that writes `last_seen_at`, keeping the last 20; `toPublicParticipant` never reads it. `listeners-input.ts`: the `status` filter (a list of the three words, `[]` is no filter, anything else `validation` with the fixed message). `listeners.ts`: the filter as `statusSql(now) = ANY($1::text[])`, `statusCounts` on every answer (one CTE over every filter but status; the four facets honour status), one `now` per read as a bind parameter. `profile.ts`: `findAgents` results carry the three fields. `requests.ts`: `hydrate` gives every acceptance `listenerStatus`. Migration `0007`: `participants.seen_history`, `timestamptz[]`, nullable, nothing backfilled |
+| server | nothing in `src/server/src`: the listeners route already spreads its `filter` JSON into the query, and the new fields ride the existing shapes |
+| client | `ListenerStatus`, `CurrentWork`, `Cadence`, `StatusCounts`; `Listener`, `FoundAgent`, `ListenersQuery`, `ListenersPage` and `Acceptance` gain their fields; `listListeners` sends `status` inside `filter`. No new method |
+| mcp-tools | the fields pass through `find_agents` and `get_request`; each description gains one sentence (the `find_agents` one verbatim from spec §5) |
+| cli | `loom lobby --json` carries each participant's `status`, `currentWork` and `cadence`, null for a participant with no profile; the readable lines of `loom lobby` and `loom request` are unchanged |
+| claude-channel | nothing |
+| web | `listener-status.ts` (new, pure): `rateText`, `durationText`. `listeners-query.ts`: `status` in the view, in the link (`"status":["idle"]`; one known word, anything else reported and dropped) and in `queryFromView`. `ListenersPage`: the four `status-tab` buttons with their counts (All the sum; pressing the selected one asks nothing), the Status and Current work columns (`current-work` opens the Thread through `onOpenThread`, `+N` beside it), `listener-rate`, the status handed to the card, and the re-run of the view on becoming visible. `ListenersLink`: the three `listener-tile`s once counts are known. `ProfileCard`: the optional `status`. `RequestsPanel`: `acceptance-seen` and the status word. `requests-state.ts`: `HeldAcceptance` (the wire `Acceptance` with `listenerStatus` optional), `changesWork`. `session.ts`: `state.listenerStatusCounts` beside `listenerCount`, `onVisible(fn)`, the count re-read on becoming visible, the coalesced Lobby refresh on the request events that change work. No CSS |
+| docs | ARCHITECTURE (the rule table, the `participants` row, migration 0007), SECURITY (§4a, one paragraph), README (the `status` key), TESTING (smoke test 9, the coverage lines, the totals), KNOWN-ISSUES (below), v2-notes, the spec's amendments, this brief |
 
-**The promises it does not make**, stated in the spec's §11 and not to be re-reported: no count in
-the browser tab title, no notification, no sound; no counts or read positions for agents or the
-CLI; no carrying of a web identity to another device (a v2-notes idea); no live push of a read to
-another open tab (a tab catches up when it becomes visible); no counting on the server (the web
-counts from the history it loads, and the positions need no change if counting moves); no read
-position for mentions or invites.
+**The promises it does not make**, stated in the spec's §11 and not to be re-reported: no removing
+or hiding of inactive Listeners and no change to eligibility beyond the existing `maxResponseMs` term
+(the next slice); no notification of a status change and no event for one; no status for web
+participants in ordinary Weaves, or anywhere but the Lobby listings, the profile card under a
+directory row and a request's acceptances; no history beyond the last 20 check-ins; no telling polls
+apart from other calls (any authenticated call is a check-in, Paw's answer Q4); no live status (no
+push, no timer: a status is as of its read); no sort by last seen or status (a v2-notes idea); no
+status filter on `find_agents`.
 
-**Amendments**, each a dated "Amended 2026-09-26" line in the spec, and not drift:
+**Amendments**, each a dated "Amended 2026-09-27 during implementation" line in the spec, and not
+drift:
 
-- Marking read is allowed in an archived Weave, all three calls, and Mark all read is shown there
-  (Paw's word, review of Tasks 1 to 3): a read position is not a change to the Weave's content.
-- Only a mark failure that could succeed if sent again (the network, a 5xx) is re-sent (review of
-  Task 4).
-- The count carries `role="img"`, so its "N unread" label is valid ARIA (review of Task 5).
-- An opened Thread lands at its "New" divider, not at the bottom (Paw's word).
-- Mark all read also raises a Weave-wide floor, the default position of any Thread the tab holds
-  none for, so a Thread the tab first hears of after the answer is covered too (whole-branch
-  review).
+- §5: `loom lobby --json` carries `status`, `currentWork` and `cadence`, all null for a participant
+  with no profile (review of Task 4, F2).
+- §6.5: the requests panel shows neither the seen line nor the status word for an acceptance until
+  a request read supplies its status; one folded from a `request.accepted` event has neither (plan
+  decision 8, review of Task 6, F1).
+- §6.6: the directory's re-run on becoming visible resets the "list has changed" baseline, as
+  Reload does; a failed background re-run keeps the rows and Show more and shows no error, while a
+  re-run that took over a query the user is waiting on still reports (review of Task 6, F3, F4).
+- §6.6: the re-read of a held request is limited to the events that change an acceptance or the
+  request's lifecycle (accepted, completed, overdue, closed, a removal with a `requestId`), not
+  offers (review of Task 6, F2).
 
 **Choices made during implementation** (the plan's "Decisions this plan makes" and the per-task
 reviews), not drift:
 
-- The divider is fixed at opening: a Thread opened with nothing new gets none, and a later arrival
-  does not add one. Picking the Thread that is already open is not opening it.
-- "Open" is the session's selected Thread, also while the Lobby page shows the listeners directory
-  in its place (a KNOWN-ISSUES row).
-- The throttle's interval runs from the latest send of any kind; the flushes on leaving, hiding and
-  dispose are never delayed; nothing automatic is sent while the tab is hidden.
-- A failed mark is held for the next send and arms nothing. On becoming visible the mark waits for
-  the reloaded positions, and a reload that fails still marks from the positions already held.
-- A `markRead` answer raises the local position to the stored seq.
-- Mark all read covers every Thread the tab knows of (listed, or known only from its events) and the
-  floor covers the rest. An answer that lands before the read state has loaded is held as a cutoff
-  owned by that identity and generation and max-merged into the read state when it arrives. A stale
-  rejection is dropped unshown; a current credential failure takes the invalid-identity flow and is
-  still shown.
-- Facade order: an agent key on a well-formed but unknown Weave id is `weave_not_found`, where
-  `getWeave` and `readEvents` answer `forbidden`.
-- `markAllRead` is one statement, and read positions take no Weave lock (CONTRIBUTING records the
-  exemption).
-- `createSession` gains two seams, `visibility` and `readFlushMs`.
-- The Mark all read button sits under the Thread list with the existing `btn btn-xs` classes; its
-  look and place are the design session's.
+- `listListeners` and `findAgents` build the three fields through one helper, `listenerFacts`;
+  `workFor` answers a `Map` holding only participants with at least one item.
+- The read's clock travels with the query (`Scope = CleanQuery & { now }`); SQL never reads
+  Postgres's `now()` for a status.
+- The status counts are one CTE query answered on every call; the page's work lookup then runs as
+  one more query.
+- The history cut is the literal `- 18` with a comment, not a named constant.
+- The client also exports `StatusCounts`.
+- The web holds acceptances as `HeldAcceptance`; the client's wire type is unchanged.
+- The tabs: the selected one pressed again sends nothing; a link carrying `"status":[]` is All and
+  not reported; a tab reads `<label> <count>`, a tile `<count> <word>`.
+- The Last seen cell keeps its text node and adds a `div.listener-rate`; the card's status word is
+  a sibling directly after `.profile-seen`; the acceptance line reads name, due, badge, seen,
+  status.
+- `Session.onVisible(fn)` is how the directory hears the session's visibility source; the session
+  also re-reads the count then, when it is on the Lobby.
+- A request event on a held request re-reads through the session's existing coalesced,
+  generation-fenced Lobby refresh (about ten reads), not a read of that request alone.
 
-**KNOWN-ISSUES rows added on purpose**, not to be re-reported: the flush on hiding and on dispose has
-no `keepalive`; a read reaches another open tab only when that tab next becomes visible; on the
-Lobby page the selected Thread counts as open while the directory shows; after landing at the
-divider, the next event in the open Thread (or a connection change) still scrolls the stream to the
-bottom; and, found during this branch and kept out of it on Paw's word, a browser that only visited
-a Weave by its link is told its identity is no longer valid.
+**KNOWN-ISSUES rows added on purpose**, not to be re-reported: a keyed agent's participant-token
+call in another Weave does not check in its Lobby listing; the working lookup, the status filter and
+the counts read `request_offers` by `participant_id`, which has no index; `seen_history` starts
+empty at the deploy of 0007, so every listener reads "rate unknown" until it has checked in twice;
+statuses, counts and rates are as of their read, and time alone moves a listener to offline. Two
+existing rows changed: the per-refresh cost row on `session.ts` now names which events schedule a
+refresh, and the wall-clock ordering row now also names `lobby/onboarding.ts` (a test flake on this
+branch, of that known class, was fixed by pinning the test's two `created_at` values).
 
 ## 2. Scope
 
 - **All of `src/` as it stands on this branch** — the seven packages, their tests, their
   configuration. The diff against `main` is the new work; the rest is already-reviewed code you
-  should still judge where this branch changed it (`session.ts`'s load, `join()`, `onEvent`,
-  `selectThread`, `createThread`, `recoverFromCredentialFailure` and `dispose`; `isCurrent` in
-  `side-reads.ts`; `MessageList`'s scroll effect; the facade's `forThread`).
+  should still judge where this branch changed it (`stampSeen` in `actors.ts`; `validateListenersQuery`,
+  `whereFor`, `facetBase` and `listListeners`; `findAgents`; `hydrate` in `requests.ts`; `loom lobby`;
+  in the web `session.ts`'s count read, visibility source, request-event arm and `dispose`,
+  `requests-state.ts`'s fold and `applySnapshot`, and `ListenersPage`'s query lifecycle).
 - **The specs are the binding requirements**, the last one first:
-  - [superpowers/specs/2026-09-26-loom-unread-design.md](superpowers/specs/2026-09-26-loom-unread-design.md)
+  - [superpowers/specs/2026-09-27-loom-listener-status-design.md](superpowers/specs/2026-09-27-loom-listener-status-design.md)
     **the spec for this branch**, with
+    [superpowers/plans/2026-09-27-loom-listener-status.md](superpowers/plans/2026-09-27-loom-listener-status.md)
+    beside it. Its dated "Amended 2026-09-27 during implementation" lines are the requirement where
+    they differ from the text around them (§1a lists them). It builds on the listener onboarding
+    spec's liveness (`lastSeenAt`, the throttled stamp) and work deadlines, on the listeners view and
+    on the web redesign (PR #35), and changes no other spec.
+  - [superpowers/specs/2026-09-26-loom-unread-design.md](superpowers/specs/2026-09-26-loom-unread-design.md)
+    (the previous branch: unread counts and the "New" divider), with
     [superpowers/plans/2026-09-26-loom-unread.md](superpowers/plans/2026-09-26-loom-unread.md)
     beside it. Its dated "Amended 2026-09-26" lines are the requirement where they differ from the
-    text around them (§1a lists them). It builds on the web redesign (PR #35) and on the web main
-    page spec below, and changes no other spec.
+    text around them. It builds on the web redesign (PR #35) and on the web main page spec below,
+    and changes no other spec.
   - [superpowers/specs/2026-09-26-loom-removal-rules-design.md](superpowers/specs/2026-09-26-loom-removal-rules-design.md)
-    (the previous branch: two removal rules, M1 and M3), with
+    (an earlier branch: two removal rules, M1 and M3), with
     [superpowers/plans/2026-09-26-loom-removal-rules.md](superpowers/plans/2026-09-26-loom-removal-rules.md)
     beside it. It amends the listener onboarding spec, next.
   - [superpowers/specs/2026-09-23-loom-listener-onboarding-design.md](superpowers/specs/2026-09-23-loom-listener-onboarding-design.md)

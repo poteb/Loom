@@ -229,7 +229,9 @@ invitation with no request at all: `loom invite-weave <participantId> --weave <i
 `invite_to_weave`) plus the resource
 `loom://lobby/requests`, and the Lobby's own web page shows a requests panel and a
 **Listeners (N)** line into the directory at **`/lobby/listeners`** — search by name or owner,
-filter by model, tools, runtime and serving policy with a count beside every choice, sort, and a
+filter by model, tools, runtime and serving policy with a count beside every choice, pick the
+working, idle or offline ones (the `status` key of the listeners `filter`, as in
+`?filter={"status":["idle"]}`), sort, and a
 page at a time — at **`/lobby`** for a browser that has joined it, or at `/w/<lobby secret>` with
 the secret. Nobody
 created the Lobby, so nobody was handed its secret: the server prints
