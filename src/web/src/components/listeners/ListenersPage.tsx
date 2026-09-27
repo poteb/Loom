@@ -119,8 +119,17 @@ export function ListenersPage({ session, invite, onOpenThread }: {
     if (debounce.current) clearTimeout(debounce.current);
   }, []);
 
-  /** `background` is the re-run on becoming visible: nobody asked for it, so its failure is quiet. */
-  const run = (next: ListenersView, cursor?: string, background = false) => {
+  /**
+   * The re-run on a work event, coalesced (whole-branch review F2): at most one in flight, and a
+   * burst while it runs asks for one follow-up, not one each.
+   */
+  const workRun = useRef<"idle" | "running" | "again">("idle");
+
+  /**
+   * `background` is a re-run nobody asked for (on becoming visible, or on a work event), so its
+   * failure is quiet. Answers once the query has settled, either way.
+   */
+  const run = (next: ListenersView, cursor?: string, background = false): Promise<void> => {
     const n = ++gen.current;
     if (!cursor) {
       const s = stateRef.current;
@@ -147,7 +156,7 @@ export function ListenersPage({ session, invite, onOpenThread }: {
     // reader this request went out with, so it cannot be captured a moment too late.
     const { issue, page: answer } = session.listListeners(
       queryFromView(next, { limit: PAGE, cursor, facets: cursor === undefined }));
-    answer.then(
+    return answer.then(
       (page) => {
         if (!live.current || n !== gen.current) return;
         if (!cursor) userWaiting.current = false;
@@ -201,14 +210,30 @@ export function ListenersPage({ session, invite, onOpenThread }: {
   // `useSession` memoises the session on `[key, client, storage]`, so it is the same object across a
   // view flip and across a `doLoad` — the re-query after a recovery comes from the `loading` →
   // `ready` remount (spec §6.3) and not from this dependency.
-  useEffect(() => { run(view); }, [view, session]);
+  useEffect(() => { void run(view); }, [view, session]);
   // Spec 2026-09-27 §6.6: becoming visible re-runs the view on screen, the first page with facets as
   // "Reload the list" asks, rows kept until the answer. Pages Show more appended are replaced by it.
   // Like Reload, its answer is the new baseline: rows it has just re-read have not "changed". The
   // answer resets it, not the start, so a failure leaves the old rows' "changed" line standing.
   useEffect(() => session.onVisible(() => {
     if (!live.current) return;
-    run(viewRef.current, undefined, true);
+    void run(viewRef.current, undefined, true);
+  }), [session]);
+  // Whole-branch review F2 (Paw, 2026-09-27): while the directory is open, the work events that move
+  // the sidebar's tiles re-run its view the same quiet way, so tiles, tabs and rows agree. Only an
+  // open directory is subscribed. A burst is coalesced: one re-run in flight, then one follow-up.
+  useEffect(() => session.onWorkChanged(() => {
+    if (!live.current) return;
+    if (workRun.current !== "idle") { workRun.current = "again"; return; }
+    const go = (): void => {
+      workRun.current = "running";
+      void run(viewRef.current, undefined, true).then(() => {
+        if (!live.current) return;
+        if (workRun.current === "again") go();
+        else workRun.current = "idle";
+      });
+    };
+    go();
   }), [session]);
 
   /**
@@ -283,7 +308,7 @@ export function ListenersPage({ session, invite, onOpenThread }: {
    *  baseline. Never `location.reload()` — a full page load is exactly what an in-place browser
    *  cannot survive. */
   const reload = () => { firstTotal.current = undefined; setChanged(false); apply((v) => ({ ...v })); };
-  const showMore = () => { if (state.nextCursor && !state.appending) run(view, state.nextCursor); };
+  const showMore = () => { if (state.nextCursor && !state.appending) void run(view, state.nextCursor); };
   /** One row's Invite, answering whether it landed. "no_identity" is not an error to display, as in
    *  `WeaveView`'s `reportError`: the session has already raised its name prompt. */
   const inviteOne = async (threadId: string, participantId: string): Promise<boolean> => {

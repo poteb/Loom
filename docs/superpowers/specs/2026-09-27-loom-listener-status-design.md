@@ -455,6 +455,14 @@ them:
   over a query the user is waiting on still reports its failure, as that query would have.
   Amended 2026-09-27 (whole-branch review, F3): the re-run's answer resets the baseline, not its
   start, so a failed re-run also leaves the "list has changed" line and its baseline as they were.
+  Amended 2026-09-27 on Paw's word (whole-branch review F2): while the directory is open, it also
+  re-runs its current view on the work events that re-read the tiles' count (`changesWork`:
+  `request.accepted`, `request.completed`, `request.overdue`, `request.closed`, and a
+  `thread.removed` carrying a `requestId`, on a request the session holds or does not hold yet), so
+  the tiles, the tabs and the rows agree without a reload. It is the same quiet re-run as on becoming
+  visible (rows and Show more kept on a failure, stale answers fenced, the "list has changed" baseline
+  reset only by an answer). A burst of work events is coalesced into at most one re-run in flight and
+  one follow-up. A closed directory re-runs nothing.
 - **The requests panel** shows `listenerStatus` as of the request read that carried it; it is
   re-read on the request events it already follows.
   Amended 2026-09-27 during implementation (review of Task 6, F2): the re-read of a request the

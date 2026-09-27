@@ -2297,6 +2297,29 @@ describe("the Lobby's listener count (spec §5.1)", () => {
     } finally { session.dispose(); }
   });
 
+  // Whole-branch review F2 (Paw, 2026-09-27): the open directory re-runs through `onWorkChanged`, on
+  // the work events that re-read the tiles' count, and an offer is not one.
+  it("onWorkChanged calls a subscriber on an accept made elsewhere, not on an offer, and not after it unsubscribes", async () => {
+    const f = await lobbyFixture();
+    const r = await f.open();
+    const session = await makeSession({ kind: "secret", secret: f.secret }, f.storage);
+    try {
+      await waitFor(() => session.getState().connection === "open" && !!session.getState().requests[r.id]);
+      let calls = 0;
+      const off = session.onWorkChanged(() => { calls++; });
+      await anon.withToken(f.helper.token).offer(r.id, { model: MODEL.model, effort: MODEL.effort });
+      await waitFor(() => session.getState().requests[r.id]!.offers.length === 1);
+      const onOffer = calls;
+      await anon.withToken(f.requester.token).acceptRequest(r.id, [f.helper.participant.id], 3_600_000);
+      await waitFor(() => session.getState().requests[r.id]!.status === "working");
+      const onAccept = calls;
+      off();
+      await anon.withToken(f.helper.token).completeRequest(r.id, "done");
+      await waitFor(() => session.getState().requests[r.id]!.acceptances[0]?.completedAt != null);
+      expect([onOffer, onAccept, calls]).toEqual([0, 1, 1]);
+    } finally { session.dispose(); }
+  });
+
   it("after dispose, a show calls no subscriber and the session no longer listens to the tab", async () => {
     const f = await lobbyFixture();
     const vis = fakeVisibility();

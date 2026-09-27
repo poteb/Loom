@@ -43,7 +43,7 @@ function session(over: Partial<Session> = {}): Session {
     targets: vi.fn(async () => []),
     listListeners: vi.fn(() => ({ issue: { generation: 0 }, page: Promise.resolve({ total: 0, matched: 0, listeners: [], statusCounts: { working: 0, idle: 0, offline: 0 } }) })),
     reportCredentialFailure: vi.fn(), markAllRead: vi.fn(async () => {}),
-    onVisible: () => () => {},
+    onVisible: () => () => {}, onWorkChanged: () => () => {},
     ...over };
 }
 
@@ -1488,14 +1488,19 @@ describe("the directory on becoming visible (spec 2026-09-27 §6.6)", () => {
       return { issue: { generation: 0 }, page };
     });
     let visible: (() => void) | undefined;
+    let worked: (() => void) | undefined;
     const off = vi.fn();
-    const view = render(<ListenersPage session={session({ listListeners, onVisible: (fn) => { visible = fn; return off; } })} />);
+    const offWork = vi.fn();
+    const view = render(<ListenersPage session={session({ listListeners,
+      onVisible: (fn) => { visible = fn; return off; }, onWorkChanged: (fn) => { worked = fn; return offWork; } })} />);
     const turn = () => new Promise((r) => setTimeout(r, 0));
     return {
-      ...view, asked: () => out, turn, off,
+      ...view, asked: () => out, turn, off, offWork,
       answer: async (n: number, page: DirectoryPage) => { out[n]!.resolve(page); await turn(); },
       fail: async (n: number, e: unknown) => { out[n]!.reject(e); await turn(); },
       visible: async () => { visible!(); await turn(); },
+      /** One work event, as the session hands it on; `times` of them in one tick is a burst. */
+      work: async (times = 1) => { for (let i = 0; i < times; i++) worked!(); await turn(); },
     };
   }
   const aListener = (id: string): Listener => ({
@@ -1613,5 +1618,83 @@ describe("the directory on becoming visible (spec 2026-09-27 §6.6)", () => {
     await d.visible();
     await d.fail(2, new Error("offline"));
     expect(screen.getByRole("alert").textContent).toBe("offline");
+  });
+
+  // Whole-branch review F2 (Paw, 2026-09-27): while the directory is open, the work events that move
+  // the sidebar's tiles also re-run its view, the same quiet re-run as becoming visible, so tiles,
+  // tabs and rows agree.
+  it("a work event re-runs the directory's view: the first page, with facets, rows kept until it answers", async () => {
+    const d = held();
+    await d.turn();
+    await d.answer(0, pageOf(["a"], { total: 2, matched: 2, nextCursor: "c1" }));
+    await d.work();
+    const pending = [d.asked().length, d.asked()[1]!.query, names(d.container), !!d.container.querySelector(".listeners-table-stale")];
+    await d.answer(1, pageOf(["a"], { statusCounts: { working: 1, idle: 0, offline: 0 } }));
+    expect([pending, d.container.querySelector(".status-tab-working .status-tab-count")!.textContent])
+      .toEqual([[2, { sort: "name", dir: "asc", limit: 50 }, ["Name a"], true], "1"]);
+  });
+
+  it("a burst of work events costs at most one re-run in flight and one follow-up", async () => {
+    const d = held();
+    await d.turn();
+    await d.answer(0, pageOf(["a"]));
+    await d.work(5);
+    const during = d.asked().length;
+    await d.answer(1, pageOf(["a"]));
+    const followed = d.asked().length;
+    await d.answer(2, pageOf(["a"]));
+    expect([during, followed, d.asked().length]).toEqual([2, 3, 3]);
+  });
+
+  it("a work event after the re-run has answered starts a new one", async () => {
+    const d = held();
+    await d.turn();
+    await d.answer(0, pageOf(["a"]));
+    await d.work();
+    await d.answer(1, pageOf(["a"]));
+    await d.work();
+    expect(d.asked().length).toBe(3);
+  });
+
+  it("a failed re-run on a work event keeps the rows and Show more, and shows no error", async () => {
+    const d = held();
+    await d.turn();
+    await d.answer(0, pageOf(["a"], { total: 2, matched: 2, nextCursor: "c1" }));
+    await d.work();
+    await d.fail(1, new Error("offline"));
+    expect([names(d.container), screen.queryByRole("alert"), !!screen.queryByRole("button", { name: "Show more" }),
+      d.container.querySelector(".listeners-table-stale")]).toEqual([["Name a"], null, true, null]);
+  });
+
+  it("a failed re-run on a work event still runs the follow-up a burst asked for", async () => {
+    const d = held();
+    await d.turn();
+    await d.answer(0, pageOf(["a"]));
+    await d.work(2);
+    await d.fail(1, new Error("offline"));
+    expect(d.asked().length).toBe(3);
+  });
+
+  it("a re-run on a work event resets the list-changed baseline only when it answers", async () => {
+    const d = held();
+    await d.turn();
+    await d.answer(0, pageOf(["a"], { total: 2 }));
+    fireEvent.click(d.container.querySelector(".status-tab-idle")!);
+    await d.turn();
+    await d.answer(1, pageOf(["a"], { total: 3 }));
+    await d.work();
+    await d.fail(2, new Error("offline"));
+    const afterFailure = !!changedLine();
+    await d.work();
+    await d.answer(3, pageOf(["a"], { total: 3 }));
+    expect([afterFailure, !!changedLine()]).toEqual([true, false]);
+  });
+
+  it("unmounting the directory unsubscribes it from work events", async () => {
+    const d = held();
+    await d.turn();
+    const before = d.offWork.mock.calls.length;
+    d.unmount();
+    expect([before, d.offWork.mock.calls.length]).toEqual([0, 1]);
   });
 });

@@ -738,9 +738,11 @@ polled at least twice after the deploy (about ten minutes on its five-minute pol
 2. ChatGPT's row: "idle", a Last seen of a few minutes, and a rate text close to "every ~5 min
    (declares 5 min)". A seeded listener that never called reads "offline" and "rate unknown".
 3. Paw presses Offline: only offline rows, and the URL carries the tab; a reload keeps it.
-4. Claude Code opens a request ChatGPT is eligible for; ChatGPT offers; Claude Code accepts. After
-   the next refresh (or switching tabs away and back), ChatGPT reads "working" with the request's
-   title in Current work; pressing it opens the request's Thread.
-5. ChatGPT completes: its row reads "idle" again after the next refresh.
+4. Claude Code opens a request ChatGPT is eligible for; ChatGPT offers; Claude Code accepts. With
+   the Listeners view left open and no reload, ChatGPT's row reads "working" with the request's
+   title in Current work, and the Working tab and the Working tile each count one more; pressing the
+   title opens the request's Thread.
+5. ChatGPT completes: with the Listeners view open and no reload, its row reads "idle" again, and
+   the tabs and the tiles agree.
 
 *Last run:* not yet run.

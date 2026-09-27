@@ -100,6 +100,12 @@ export type Session = {
   reportCredentialFailure(e: unknown, issue: QueryIssue): void;
   /** Called each time the tab becomes visible (spec 2026-09-27 §6.6); answers the unsubscribe. */
   onVisible(fn: () => void): () => void;
+  /**
+   * Called on each work event that re-reads the Lobby's count, the one that moves the tiles (spec
+   * 2026-09-27 §6.6, whole-branch review F2): the open directory re-runs its view on it, so tiles,
+   * tabs and rows agree. Answers the unsubscribe.
+   */
+  onWorkChanged(fn: () => void): () => void;
 };
 
 /** The server's own page maximum (`MAX_PAGE_LIMIT`): what "everything" is asked for as. */
@@ -503,6 +509,8 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
     undefined, () => visibility.visible());
   /** Told when the tab becomes visible: the directory re-runs its view (spec 2026-09-27 §6.6). */
   const visibleFns = new Set<() => void>();
+  /** Told of a work event: the open directory re-runs its view (whole-branch review F2). */
+  const workFns = new Set<() => void>();
   /**
    * The visibility rule's two edges (§6.2): hiding flushes what was read while visible; showing
    * reloads the positions, and their answer marks the open Thread (if the tab is still visible then).
@@ -816,6 +824,9 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       // changes neither, and one opened request can bring an offer from every listener (review 6
       // F2). A replay older than the row held changes nothing and reads nothing.
       if ((applied && changesWork(e)) || !held) scheduleRefresh();
+      // The same work events tell the open directory, whose tabs and rows would otherwise disagree
+      // with the tiles until a reload (whole-branch review F2). An offer, or a replay, is not one.
+      if (changesWork(e) && (applied || !held)) for (const fn of [...workFns]) fn();
     } else if (e.type === "weave.archived") {
       if (state.weave) set({ weave: { ...state.weave, archivedAt: e.at } });
       // Also refresh: a refresh that started before the archive is still going to land with stale
@@ -1198,6 +1209,10 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       visibleFns.add(fn);
       return () => { visibleFns.delete(fn); };
     },
+    onWorkChanged(fn) {
+      workFns.add(fn);
+      return () => { workFns.delete(fn); };
+    },
     canModerate: () => state.me?.participant.role === "keeper" && !state.weave?.archivedAt,
     canEditThread: (t) => !!state.me && !state.weave?.archivedAt && !t.closedAt
       && (state.me.participant.role === "keeper" || t.createdBy === state.me.participant.id),
@@ -1209,6 +1224,7 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       throttle.reset();
       offVisibility();
       visibleFns.clear();
+      workFns.clear();
       disposed = true;
       // Bumping the generation retires any in-flight load() as well, so one that is still mid-fetch
       // cleans up whatever it opens instead of publishing state into a disposed session.
