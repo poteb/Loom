@@ -1,11 +1,6 @@
 import type { Acceptance, ListenerStatus, LoomEvent, LoomRequest, Offer, RequestStatus } from "@loom/client";
 
 /**
- * A request plus the **version** the session holds for it: the `lastEventSeq` of the newest mutation
- * this browser has applied. Every snapshot and every event is judged against it, so a refresh that
- * answers from before a mutation, or a replayed event from before one, cannot drag the panel backwards.
- */
-/**
  * An acceptance as this session holds it. `listenerStatus` is optional here, and only here: one
  * folded from a `request.accepted` event keeps the status it already had, or has none, until a
  * request read (a snapshot) supplies the server's (spec 2026-09-27 §6.6). An accept establishes
@@ -14,6 +9,11 @@ import type { Acceptance, ListenerStatus, LoomEvent, LoomRequest, Offer, Request
 export type HeldAcceptance = Omit<Acceptance, "listenerStatus"> & { listenerStatus?: ListenerStatus };
 /** A request as this session holds it: the wire shape, with held acceptances. */
 export type HeldRequest = Omit<LoomRequest, "acceptances"> & { acceptances: HeldAcceptance[] };
+/**
+ * A request plus the **version** the session holds for it: the `lastEventSeq` of the newest mutation
+ * this browser has applied. Every snapshot and every event is judged against it, so a refresh that
+ * answers from before a mutation, or a replayed event from before one, cannot drag the panel backwards.
+ */
 export type VersionedRequest = HeldRequest & { version: number };
 export type Requests = Record<string, VersionedRequest>;
 
