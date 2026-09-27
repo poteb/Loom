@@ -337,14 +337,17 @@ describe("a request's acceptances (spec 2026-09-27 §4.5)", () => {
   it("getRequest acceptances carry listenerStatus, including an offline one and one that completed this request while working on another", async () => {
     const w = await world();
     const gone = await listener("gone"), doubled = await listener("doubled"), fresh = await listener("fresh");
-    const r = await work(w, "Review PR 14", [gone, doubled, fresh]);
+    const finished = await listener("finished");
+    const r = await work(w, "Review PR 14", [gone, doubled, fresh, finished]);
     await work(w, "Review PR 15", [doubled]);
     await setOffer(r.id, doubled, { completedAt: NOW });              // done here, still working on PR 15
+    await setOffer(r.id, finished, { completedAt: NOW });             // done here, and holds no other work
     await seenAt(gone, ago(2 * DEFAULT_POLL_INTERVAL_MS + 1));
     await seenAt(doubled, ago(60_000));
     await seenAt(fresh, ago(60_000));
+    await seenAt(finished, ago(60_000));
     const req = await getRequest(db, w.reader, r.id, NOW);
     expect(req.acceptances.map((a) => [a.participantId, a.listenerStatus]))
-      .toEqual([[gone.id, "offline"], [doubled.id, "working"], [fresh.id, "working"]]);
+      .toEqual([[gone.id, "offline"], [doubled.id, "working"], [fresh.id, "working"], [finished.id, "idle"]]);
   });
 });
