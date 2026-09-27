@@ -1089,23 +1089,34 @@ describe("WeaveView (spec §2.6, §2.7, §3.3)", () => {
       .toEqual(["P", null]);
   });
 
-  it("says why a page read with the Weave link is read-only, and offers a Join", () => {
+  it("says an identity that stopped working is no longer valid, and offers a Join", () => {
     const { container } = render(<WeaveView session={session()} state={readOnly()} />);
     expect(container.querySelector(".banner")!.textContent).toContain(
       "Your identity in this Weave is no longer valid — you are reading with the Weave link.");
     expect(screen.getByRole("button", { name: "Join" })).toBeTruthy();
   });
 
-  it("offers no composer on that page until the join", () => {
-    const { container } = render(<WeaveView session={session()} state={readOnly()} />);
-    expect(container.querySelector(".composer")).toBeNull();
+  // A browser that only visited the link never had an identity, so nothing can have stopped working
+  // (spec §2.6, row "Entry has no identity but holds a secret").
+  it("tells a browser that never joined only that it reads with the Weave link, and offers a Join", () => {
+    const { container } = render(<WeaveView session={session()} state={readOnly({ readOnlyReason: "not-joined" })} />);
+    const text = container.querySelector(".banner")!.textContent!;
+    expect([text.includes("You are reading with the Weave link."), text.includes("no longer valid")]).toEqual([true, false]);
+    expect(screen.getByRole("button", { name: "Join" })).toBeTruthy();
   });
 
-  it("opens the name prompt from that Join button", () => {
-    render(<WeaveView session={session()} state={readOnly()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Join" }));
-    expect(screen.getByText("Choose a name")).toBeTruthy();
-  });
+  for (const reason of ["secret-fallback", "not-joined"] as const) {
+    it(`offers no composer on a ${reason} page until the join`, () => {
+      const { container } = render(<WeaveView session={session()} state={readOnly({ readOnlyReason: reason })} />);
+      expect(container.querySelector(".composer")).toBeNull();
+    });
+
+    it(`opens the name prompt from the Join button on a ${reason} page`, () => {
+      render(<WeaveView session={session()} state={readOnly({ readOnlyReason: reason })} />);
+      fireEvent.click(screen.getByRole("button", { name: "Join" }));
+      expect(screen.getByText("Choose a name")).toBeTruthy();
+    });
+  }
 
   // The §6 bar is the caller's banner, and every state this view can return is a state the bar may
   // have to be seen in — a no-credential page whose invalidation only reached memory most of all.

@@ -4,7 +4,7 @@ import { LoomClient, LoomClientError, type ListenersPage, type ListenersQuery, t
 import type { KeyValueStorage, WriteResult } from "./storage.js";
 import {
   hasIdentity, invalidateIdentity, isCredentialFailure, migrateLegacyOne, readWeaveEntry, readerFor,
-  saveWeaveEntry, setIdentity, storedWeaves, type ReaderChoice, type WeaveEntry,
+  saveWeaveEntry, setIdentity, storedWeaves, type ReaderChoice, type ReadOnlyReason, type WeaveEntry,
 } from "./weaves-store.js";
 import { applyEvent, applySnapshot, isRequestEvent, type Requests } from "./requests-state.js";
 import { cachedProfile, createCounter, isCurrent, isOwnedBy, type Now, type Owner, type OwnProfile, type Stamp } from "./side-reads.js";
@@ -23,8 +23,9 @@ export type SessionState = {
   /** `no-credential`: this browser holds nothing usable for the Weave, which the page renders as a
    *  way in rather than as a failure (spec §2.6). */
   status: "loading" | "ready" | "error" | "no-credential"; error?: string;
-  /** Set when the page is reading with a stored secret because the identity is gone (spec §2.6). */
-  readOnlyReason?: "secret-fallback";
+  /** Set when the page is reading with a stored secret, read-only until a join (spec §2.6):
+   *  `"secret-fallback"` because the identity is gone, `"not-joined"` because there never was one. */
+  readOnlyReason?: ReadOnlyReason;
   weave?: Weave; threads: Thread[]; participants: Participant[];
   events: LoomEvent[];
   me?: { participant: Participant; token: string };
@@ -912,9 +913,9 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       for (const snap of requests) held = applySnapshot(held, snap);
       set({ status: "ready", weave: info.weave, threads: info.threads, participants: info.participants, events, me,
         instanceGuidelines: instance, currentThreadId: first, lobby: discovery.lobby, requests: held,
-        // The same reason either way: what `WeaveView` renders for it — "your identity in this
-        // Weave is no longer valid, you are reading with the Weave link", read-only, with a Join —
-        // is exactly the sentence §2.6 gives this row, so it needs no reason of its own.
+        // An identity found dead on this load is the "no longer valid" row of §2.6, whatever the
+        // reader said; otherwise the reader's own reason stands, and that one tells an identity
+        // that stopped working from a browser that never joined.
         readOnlyReason: identityGone ? "secret-fallback" : picked.readOnlyReason,
         // An unsettled pointer is not an empty board: until it is known whether this page even has
         // one, the panel has nothing to render and nothing may claim the requests are loaded.

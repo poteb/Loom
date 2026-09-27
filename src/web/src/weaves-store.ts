@@ -192,15 +192,26 @@ export async function migrateLegacy(
 }
 
 /**
+ * Why a page reads with the stored secret and is read-only until a join (spec §2.6):
+ * `"secret-fallback"` when an identity this browser had stopped working, `"not-joined"` when it
+ * never had one (it only visited the link). The two are worded differently on screen, as in My Weaves.
+ */
+export type ReadOnlyReason = "secret-fallback" | "not-joined";
+
+/**
  * Which credential to read a Weave with, given what this browser holds for it (spec §2.3/§2.6).
  * The session and My Weaves both call it, so a row is never refreshed with a credential the page
  * itself would not have used. `undefined` means this browser holds nothing for that Weave.
  */
-export type ReaderChoice = { reader: LoomClient; withToken: boolean; readOnlyReason?: "secret-fallback" };
+export type ReaderChoice = { reader: LoomClient; withToken: boolean; readOnlyReason?: ReadOnlyReason };
 
 export function readerFor(client: LoomClient, entry: WeaveEntry | undefined): ReaderChoice | undefined {
   if (hasIdentity(entry)) return { reader: client.withToken(entry.token), withToken: true };
-  if (entry?.secret) return { reader: client.withToken(entry.secret), withToken: false, readOnlyReason: "secret-fallback" };
+  if (entry?.secret) {
+    // Only an entry marked invalid ever had an identity; without the mark this browser never joined.
+    const readOnlyReason = entry.identity === "invalid" ? "secret-fallback" : "not-joined";
+    return { reader: client.withToken(entry.secret), withToken: false, readOnlyReason };
+  }
   return undefined;
 }
 
