@@ -149,21 +149,26 @@ describe("status and current work against Postgres (spec 2026-09-27 §4.2, §4.3
     const w = await world();
     const busy = await listener("busy");
     const later = await work(w, "Later", [busy]);
-    const first = await work(w, "First", [busy]);
-    const tie = await work(w, "Tie", [busy]);
+    const tieA = await work(w, "Tie A", [busy]);
+    const tieB = await work(w, "Tie B", [busy]);
+    const tieC = await work(w, "Tie C", [busy]);
     const done = await work(w, "Done", [busy]);
     const due = new Date("2026-09-27T13:00:00.000Z");
     await setOffer(later.id, busy, { dueAt: new Date("2026-09-27T14:00:00.000Z") });
-    await setOffer(first.id, busy, { dueAt: due });
-    await setOffer(tie.id, busy, { dueAt: due });
-    // The tie is broken by the request's created_at; pinned so it does not rest on two now() calls.
-    await setRequest(first.id, { createdAt: new Date("2026-09-27T09:00:00.000Z") });
-    await setRequest(tie.id, { createdAt: new Date("2026-09-27T10:00:00.000Z") });
+    for (const r of [tieA, tieB, tieC]) await setOffer(r.id, busy, { dueAt: due });
+    // The three-way tie on due_at is broken by the request's created_at, pinned so the winner is
+    // neither the first inserted (heap order) nor the smallest id (the last key): of B and C, the
+    // one with the larger id. Postgres compares uuids bytewise, as JavaScript compares the
+    // lowercase hex. Without the created_at key the answer is tieA or the smallest id, never this.
+    const [winner, other] = tieB.id > tieC.id ? [tieB, tieC] : [tieC, tieB];
+    await setRequest(winner.id, { createdAt: new Date("2026-09-27T08:00:00.000Z") });
+    await setRequest(tieA.id, { createdAt: new Date("2026-09-27T09:00:00.000Z") });
+    await setRequest(other.id, { createdAt: new Date("2026-09-27T10:00:00.000Z") });
     // Due soonest of all, but completed: not an active item, so neither current nor counted.
     await setOffer(done.id, busy, { dueAt: new Date("2026-09-27T12:30:00.000Z"), completedAt: NOW });
     await seenAt(busy, ago(60_000));
     const [row] = (await listListeners(db, w.reader, {}, NOW)).listeners;
-    expect(row!.currentWork).toEqual({ requestId: first.id, title: "First", threadId: first.threadId, more: 2 });
+    expect(row!.currentWork).toEqual({ requestId: winner.id, title: winner === tieB ? "Tie B" : "Tie C", threadId: winner.threadId, more: 3 });
   });
 
   it("currentWork carries the request's title and its Lobby Thread, and nothing of the target Weave", async () => {
@@ -243,6 +248,30 @@ describe("the status filter and the counts (spec 2026-09-27 §4.6)", () => {
             statuses: expected.map(want), matched: expected.length, counts });
       }
     }
+  });
+
+  it("a stored non-numeric pollIntervalMs (string, object, null) reads as the default in SQL too", async () => {
+    const w = await world();
+    const values: [string, unknown][] = [["string", "5 min"], ["object", { ms: 300_000 }], ["null", null]];
+    const made: { name: string; value: unknown; seen: Date }[] = [];
+    for (const [kind, value] of values) {
+      for (const [side, seen] of [["at", ago(2 * DEFAULT_POLL_INTERVAL_MS)], ["past", ago(2 * DEFAULT_POLL_INTERVAL_MS + 1)]] as const) {
+        const name = `${kind}-${side}`;
+        const l = await listener(name);
+        // Written past validateProfile, which refuses these: a legacy row or a direct write.
+        const [row] = await db.select({ c: participants.capabilities }).from(participants).where(eq(participants.id, l.id));
+        await db.update(participants).set({ capabilities: { ...(row!.c as object), pollIntervalMs: value } }).where(eq(participants.id, l.id));
+        await seenAt(l, seen);
+        made.push({ name, value, seen });
+      }
+    }
+    const rule = Object.fromEntries(made.map(({ name, value, seen }) => [name, listenerStatus(P({ pollIntervalMs: value }), seen, false, NOW)]));
+    expect(rule).toEqual({ "string-at": "idle", "string-past": "offline", "object-at": "idle", "object-past": "offline", "null-at": "idle", "null-past": "offline" });
+    const page = await listListeners(db, w.reader, { limit: 1000 }, NOW);
+    expect([Object.fromEntries(page.listeners.map((l) => [l.participant.name, l.status])), page.statusCounts])
+      .toEqual([rule, { working: 0, idle: 3, offline: 3 }]);
+    const idle = await listListeners(db, w.reader, { status: ["idle"], limit: 1000 }, NOW);
+    expect(idle.listeners.map((l) => l.participant.name).sort()).toEqual(["null-at", "object-at", "string-at"]);
   });
 
   it("statusCounts ignores the status filter and honours every other; the four facets honour it", async () => {
