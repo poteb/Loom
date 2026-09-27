@@ -205,9 +205,10 @@ describe("readerFor", () => {
     expect(choice?.reader.token).toBe("s");
   });
 
-  it("reads with the secret when there is no identity at all", () => {
+  // Never joined is not "the identity stopped working": only an entry marked invalid had one (spec §2.6).
+  it("reads with the secret, as not joined, when there is no identity at all", () => {
     const choice = readerFor(client, { secret: "s" });
-    expect(choice).toMatchObject({ withToken: false, readOnlyReason: "secret-fallback" });
+    expect(choice).toMatchObject({ withToken: false, readOnlyReason: "not-joined" });
     expect(choice?.reader.token).toBe("s");
   });
 

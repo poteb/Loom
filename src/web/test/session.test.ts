@@ -1471,9 +1471,9 @@ describe("session by weave id", () => {
     const session = await makeSession({ kind: "id", weaveId: r.weave.id }, storage);
     try {
       expect(session.getState().status).toBe("ready");
-      expect(session.getState().readOnlyReason).toBe("secret-fallback");
+      // Never joined is not a dead identity: its own reason, and nothing is marked invalid (spec §2.6).
+      expect(session.getState().readOnlyReason).toBe("not-joined");
       expect(session.getState().me).toBeUndefined();
-      // Never joined is not a dead identity: nothing is marked invalid.
       expect(readWeaveEntry(storage, r.weave.id)?.identity).toBeUndefined();
 
       await session.join("Dana");

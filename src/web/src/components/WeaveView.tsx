@@ -124,9 +124,10 @@ export function WeaveView({ session, state, banner, noCredential, openMainInPlac
   };
   const dismissPrompt = () => { setPending(null); setAskName(false); session.dismissNamePrompt(); };
   const archived = !!state.weave?.archivedAt;
-  // Reading with the Weave link, because the identity that used to work no longer does (§2.6). A
-  // join is the way out, and `session.join()` clears the reason.
-  const readOnly = state.readOnlyReason === "secret-fallback";
+  // Reading with the Weave link, either because the identity that used to work no longer does or
+  // because this browser never joined (§2.6). A join is the way out, and `session.join()` clears
+  // the reason.
+  const readOnly = state.readOnlyReason !== undefined;
   // §5's gate, which is the sidebar line's own, id-based and unchanged by this spec (ListenersLink.tsx:23).
   const lobbyGate = state.status === "ready" && !!state.lobby && state.lobby.weaveId === state.weave?.id;
   // The one predicate every rendering branch below reads. `view` on its own renders nothing: a site
@@ -174,7 +175,10 @@ export function WeaveView({ session, state, banner, noCredential, openMainInPlac
           {archived && <div class="banner">This Weave is archived and read-only.</div>}
           {readOnly && (
             <div class="banner">
+              {state.readOnlyReason === "secret-fallback" && <>
               Your identity in this Weave is no longer valid — you are reading with the Weave link.{" "}
+              </>}
+              {state.readOnlyReason === "not-joined" && <>You are reading with the Weave link.{" "}</>}
               <button onClick={() => setAskName(true)}>Join</button>
             </div>
           )}

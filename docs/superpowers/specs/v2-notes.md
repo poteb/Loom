@@ -534,9 +534,12 @@ Follow-ups found while building the unread slice (2026-09-26), each its own smal
   event of the open Thread, wherever the reader is, so a Thread opened at its "New" divider jumps to
   the bottom at the next event there (KNOWN-ISSUES, web). Idea: stick to the bottom only when the
   stream is already at the bottom.
-- **A readable "not joined" notice.** A browser that only visited a Weave's link and never joined
-  is told its identity in the Weave is no longer valid; web main page spec §2.6 wants only "you are
-  reading with the Weave link" and Join there (KNOWN-ISSUES, web).
+- **A readable "not joined" notice: built** (branch `fix/never-joined-notice`, 2026-09-27). A
+  browser that only visited a Weave's link and never joined was told its identity in the Weave is no
+  longer valid; web main page spec §2.6 wants only "you are reading with the Weave link" and Join
+  there. Such a read now has its own reason, `readOnlyReason: "not-joined"`, and says "You are
+  reading with the Weave link." with Join; an identity that stopped working keeps
+  `"secret-fallback"` and its "no longer valid" sentence. The KNOWN-ISSUES row is gone.
 
 ### Carry a web identity to another device (Paw, 2026-09-26)
 
