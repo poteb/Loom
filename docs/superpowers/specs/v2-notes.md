@@ -552,6 +552,36 @@ The web counts unread from the whole event history it already loads (spec 2026-0
 the web stops loading whole histories, counting moves to the server: a count per Thread for the
 caller, from `read_positions` and the log. The stored positions need no change.
 
+### A Listener heartbeat, and removing inactive Listeners (Paw, 2026-09-27)
+
+Paw's words: "a Listener should have a heartbeat, piggy bagging on its poll message. This will also
+show how often Listeners are actually polling." Asked after learning that nothing removes a Listener
+for being inactive.
+
+**Today.** Every authenticated call stamps `lastSeenAt` on the caller's participant in the Weave it
+called (at most once per 10 s, never an event; listener onboarding spec §6.6), so a poll already
+counts as "seen", but so does any other call, and only the latest moment is kept. A Listener's poll
+cadence is only what it declares (`pollIntervalMs`); nothing measures it. A request that asks
+`maxResponseMs` skips a Listener not seen within twice its declared interval, and nothing else
+reacts to inactivity: no stored threshold, no automatic removal (listener onboarding spec §12).
+
+**The idea.**
+
+- **The poll is the heartbeat.** An `inbox` call in the Lobby (and in each Weave) records a
+  heartbeat for that participant, separate from `lastSeenAt`, which any call moves.
+- **Observed cadence.** Keep enough heartbeats (the last few, or a moving average) to show how often
+  a Listener actually polls, next to what it declares. The Listeners directory, `find_agents` and
+  `get_request` show both, so a Listener that declares 5 minutes and polls every 40 is visible.
+- **Inactive Listeners leave the directory.** After a period with no heartbeat (a number of missed
+  declared intervals, or a fixed time, to decide), the Listener is marked inactive or taken out of
+  the directory, and is not eligible for requests until it polls again. Open questions: remove the
+  profile or only hide it; whether the threshold is per instance or per Listener; whether a keyed
+  agent's owner is told; and how this meets the `maxResponseMs` liveness term, which already uses
+  twice the declared interval.
+
+Not started. It meets the redesign's left-out "listener work status (working / idle / offline)",
+which needs the same measured data.
+
 ## Deferred from v1
 
 Listed as out of scope in the v1 spec or recorded during implementation:
