@@ -119,6 +119,15 @@ describe("the check-in history (spec 2026-09-27 §4.1)", () => {
     expect([history, history!.at(-1)]).toEqual([[T0, at(10_001)], await seenOf(r.participant.id)]);
   });
 
+  it("a row checked in before the history existed starts it with the next check-in, nothing backfilled", async () => {
+    const r = await newWeave();
+    // The post-deploy state: last_seen_at from before migration 0007, seen_history still null.
+    await db.update(participants).set({ lastSeenAt: T0 }).where(eq(participants.id, r.participant.id));
+    expect(await historyOf(r.participant.id)).toBeNull();
+    await resolveCredential(db, r.token, at(20_000));
+    expect([await seenOf(r.participant.id), await historyOf(r.participant.id)]).toEqual([at(20_000), [at(20_000)]]);
+  });
+
   it("seen_history keeps the last 20, oldest first", async () => {
     const r = await newWeave();
     for (let i = 0; i < 25; i++) await resolveCredential(db, r.token, at(i * 10_001));
@@ -133,10 +142,12 @@ describe("the check-in history (spec 2026-09-27 §4.1)", () => {
     const agent = await resolveCredential(db, key);
     const inLobby = await joinLobby(db, bus, { kind: "agent" }, agent);
     const elsewhere = await newWeave();
-    await joinWeave(db, bus, elsewhere.secret, { kind: "agent" }, agent);
+    const inWeave = await joinWeave(db, bus, elsewhere.secret, { kind: "agent" }, agent);
     const calling = await resolveCredential(db, key, T0);
     await createCore(db).readEvents(calling, elsewhere.weave.id, {});
     expect([await seenOf(inLobby.participant.id), await historyOf(inLobby.participant.id)]).toEqual([T0, [T0]]);
+    // The call really reached the other Weave: resolveInWeave stamped the participant there too.
+    expect(await historyOf(inWeave.participant.id)).toHaveLength(1);
   });
 
   it("a participant token of another Weave does not check in the Lobby participant", async () => {
