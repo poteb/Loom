@@ -79,7 +79,7 @@ export type Requirements = {
 };
 
 /**
- * A listener's status now (spec 2026-09-27 Â§4.2): offline when not seen within twice its
+ * A listener's status now (spec 2026-09-27 §4.2): offline when not seen within twice its
  * `pollIntervalMs` (15 minutes when none is declared), working when it holds accepted work on a
  * working request, otherwise idle. True as of the read that carried it.
  */

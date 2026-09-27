@@ -8,7 +8,7 @@ import type { Acceptance, ListenerStatus, LoomEvent, LoomRequest, Offer, Request
 /**
  * An acceptance as this session holds it. `listenerStatus` is optional here, and only here: one
  * folded from a `request.accepted` event keeps the status it already had, or has none, until a
- * request read (a snapshot) supplies the server's (spec 2026-09-27 Â§6.6). An accept establishes
+ * request read (a snapshot) supplies the server's (spec 2026-09-27 §6.6). An accept establishes
  * work, not liveness: the listener accepted may be offline.
  */
 export type HeldAcceptance = Omit<Acceptance, "listenerStatus"> & { listenerStatus?: ListenerStatus };
