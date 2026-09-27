@@ -1517,4 +1517,48 @@ describe("the directory on becoming visible (spec 2026-09-27 §6.6)", () => {
     await d.answer(1, pageOf(["a", "b"]));
     expect([names(d.container).length, changedLine()]).toEqual([2, null]);
   });
+
+  // Review 6 F4: nobody pressed anything, so a background re-run that fails says nothing, as the
+  // count read beside it keeps its last numbers; the rows and Show more stay. A control the user
+  // presses afterwards still reports its own failure.
+  it("a failed re-run on becoming visible keeps the rows and Show more, and shows no error", async () => {
+    const d = held();
+    await d.turn();
+    await d.answer(0, pageOf(["a"], { total: 2, matched: 2, nextCursor: "c1" }));
+    await d.visible();
+    await d.fail(1, new Error("offline"));
+    const more = () => screen.queryByRole("button", { name: "Show more" });
+    expect([names(d.container), screen.queryByRole("alert"), !!more(),
+      d.container.querySelector(".listeners-table-stale")]).toEqual([["Name a"], null, true, null]);
+    fireEvent.click(d.container.querySelector(".status-tab-idle")!);
+    await d.turn();
+    await d.fail(2, new Error("refused"));
+    expect(screen.getByRole("alert").textContent).toBe("refused");
+  });
+
+  // Shown, hidden and shown again before the network answers: the second re-run supersedes the
+  // first, and it still puts back the page as it was before either, not the first one's dimming.
+  it("two overlapping re-runs that fail keep the rows and Show more, and show no error", async () => {
+    const d = held();
+    await d.turn();
+    await d.answer(0, pageOf(["a"], { total: 2, matched: 2, nextCursor: "c1" }));
+    await d.visible();
+    await d.visible();
+    await d.fail(2, new Error("offline"));
+    expect([names(d.container), screen.queryByRole("alert"), !!screen.queryByRole("button", { name: "Show more" }),
+      d.container.querySelector(".listeners-table-stale")]).toEqual([["Name a"], null, true, null]);
+  });
+
+  // A re-run that takes over from a query the user is waiting on owes that user its answer, so its
+  // failure is reported as the user's query's would have been.
+  it("a failed re-run that superseded the user's own query reports the failure", async () => {
+    const d = held();
+    await d.turn();
+    await d.answer(0, pageOf(["a"]));
+    fireEvent.click(d.container.querySelector(".status-tab-idle")!);
+    await d.turn();
+    await d.visible();
+    await d.fail(2, new Error("offline"));
+    expect(screen.getByRole("alert").textContent).toBe("offline");
+  });
 });

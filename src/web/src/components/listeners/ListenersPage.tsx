@@ -95,6 +95,13 @@ export function ListenersPage({ session, invite, onOpenThread }: {
   const viewRef = useRef(view);
   const draftRef = useRef(draft);
   const [state, setState] = useState<PageState>({ status: "loading", rows: [] });
+  // For the re-run on becoming visible, whose failure is quiet (review 6 F4): the state as last
+  // rendered, the page as its last settled query left it (what a quiet failure puts back), and
+  // whether a query the user made is still waiting for its answer (then the failure is theirs).
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const settled = useRef<Pick<PageState, "status" | "error" | "moreError" | "nextCursor">>({ status: "loading" });
+  const userWaiting = useRef(false);
   const [changed, setChanged] = useState(false);
   // A row's failed Invite, on this page's own line: the error bar belongs to the header and the
   // sidebar panels, and an invite made from here is this page's to report.
@@ -112,8 +119,16 @@ export function ListenersPage({ session, invite, onOpenThread }: {
     if (debounce.current) clearTimeout(debounce.current);
   }, []);
 
-  const run = (next: ListenersView, cursor?: string) => {
+  /** `background` is the re-run on becoming visible: nobody asked for it, so its failure is quiet. */
+  const run = (next: ListenersView, cursor?: string, background = false) => {
     const n = ++gen.current;
+    if (!cursor) {
+      const s = stateRef.current;
+      if (s.status !== "loading") settled.current = { status: s.status, error: s.error, moreError: s.moreError, nextCursor: s.nextCursor };
+      // A re-run that supersedes a query of the user's inherits its waiting user.
+      userWaiting.current = !background || userWaiting.current;
+    }
+    const quiet = background && !userWaiting.current;
     setState((s) => cursor
       ? { ...s, appending: true, moreError: undefined }
       // A fresh query's first page is a different question, so the cursor the *old* one answered
@@ -135,6 +150,7 @@ export function ListenersPage({ session, invite, onOpenThread }: {
     answer.then(
       (page) => {
         if (!live.current || n !== gen.current) return;
+        if (!cursor) userWaiting.current = false;
         if (firstTotal.current === undefined) firstTotal.current = page.total;
         else if (page.total !== firstTotal.current) setChanged(true);
         setState((s) => ({
@@ -150,6 +166,7 @@ export function ListenersPage({ session, invite, onOpenThread }: {
         // is waiting for any more must not paint an error over newer rows, and must certainly not
         // spend the page's one credential recovery. Only a LIVE query may authorise one (spec §6.1).
         if (!live.current || n !== gen.current) return;
+        if (!cursor) userWaiting.current = false;
         session.reportCredentialFailure(e, issue);
         // …and the failure is rendered either way: where it recovered, `doLoad` takes the page to
         // `loading` and this view unmounts under the error it has just painted (spec §6.1, §6.3).
@@ -160,6 +177,14 @@ export function ListenersPage({ session, invite, onOpenThread }: {
         // sending the same refused value on every press. Every other failure keeps the cursor,
         // because a retry is exactly what it wants.
         const refused = cursor !== undefined && e instanceof LoomClientError && e.code === "validation";
+        // A background re-run that fails puts back what was on screen and says nothing, as the count
+        // read beside it keeps its last numbers (review 6 F4). Not when a query of the user's was in
+        // flight: this run superseded it, and its answer is now this one's to give.
+        if (quiet) {
+          const back = settled.current;
+          setState((s) => ({ ...s, ...back, appending: false }));
+          return;
+        }
         setState((s) => cursor
           ? { ...s, appending: false, moreError: message, nextCursor: refused ? undefined : s.nextCursor }
           : { ...s, status: "error", error: message, appending: false });
@@ -180,7 +205,7 @@ export function ListenersPage({ session, invite, onOpenThread }: {
     if (!live.current) return;
     firstTotal.current = undefined;
     setChanged(false);
-    run(viewRef.current);
+    run(viewRef.current, undefined, true);
   }), [session]);
 
   /**
