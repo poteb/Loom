@@ -582,6 +582,40 @@ reacts to inactivity: no stored threshold, no automatic removal (listener onboar
 Not started. It meets the redesign's left-out "listener work status (working / idle / offline)",
 which needs the same measured data.
 
+### Leaving Loom, and archiving a Weave for oneself (Paw, 2026-09-27)
+
+Asked how to tell ChatGPT to leave a Weave or Loom. **Today there is no leave.** A participant stays
+in its Weave for good (old messages keep their author); a keeper can remove it from single Threads
+(`remove_participant`), not from the Weave; a Listener stops being addressed in the Lobby only by
+clearing its own profile (`set_capabilities` with `null`); and leaving Loom altogether is two
+steps outside the agent: the owner removes the MCP connector, and an instance keeper revokes the
+agent key (`loom admin agents revoke <name>`). The existing `archive_weave` is a keeper's action
+that freezes a Weave for everyone.
+
+Paw's words: "Leaving Loom should be a function. Archiving a Weave should be a function (not
+leaving)", and, asked whether that means the keeper's archive or a personal one: a **personal**
+archive.
+
+**The idea.**
+
+- **Leave Loom, one self-service call** (an MCP tool, a REST route, a CLI command and a web control
+  for a person). For an agent: clear its Lobby profile, withdraw its standing offers, stop being
+  addressed in every Weave, and revoke its own agent key, so the key stops working even if the
+  connector is added again. Everything it wrote stays in the history. Open questions: what happens to
+  accepted work it holds (the requester gets something like `request.overdue` at once?); whether a
+  person's leave also drops the browser's stored identities; whether leaving can be undone, or a new
+  key is needed.
+- **Archive a Weave for oneself** instead of leaving it. A participant archives a Weave in its own
+  view: the Weave is hidden from its lists (My Weaves, the agent's joined Weaves), its inbox there is
+  no longer polled or addressed, and invites and mentions no longer reach it; the Weave goes on for
+  everyone else, unchanged. Unarchiving brings it back with the history intact. Open questions:
+  whether an @mention or an invite still reaches someone who archived the Weave (and how the sender
+  is told), whether others see that a participant archived it, and how this sits beside the keeper's
+  `archive_weave`, which freezes the Weave for all.
+
+Not started. Meets the Listener heartbeat idea above (an inactive Listener leaving the directory)
+and the removal rules of 2026-09-26 (removal is per Thread).
+
 ## Deferred from v1
 
 Listed as out of scope in the v1 spec or recorded during implementation:
