@@ -22,10 +22,11 @@ export const SEEN_THROTTLE_MS = 10_000;
  * Liveness (spec §6.6), and the check-in history (spec 2026-09-27 §4.1): sets `last_seen_at = now`
  * on the participants `which` selects, unless one was written ten seconds or less before `now`
  * (exactly ten seconds still skips), and in the **same statement** appends `now` to `seen_history`,
- * cut to its last 20 entries, oldest first. The `WHERE` is the throttle alone, so a skipped stamp
- * appends nothing and the history's last element always equals `last_seen_at`. It is not an event
- * and takes no Weave lock, so a poll neither grows the log nor wakes anyone. A stamp that fails fails
- * the call, which was about to use the same database anyway.
+ * cut to its last 20 entries, oldest first. The `WHERE` is unchanged (`which` and the throttle, no
+ * condition on the history), so a skipped stamp appends nothing and the history's last element
+ * always equals `last_seen_at`. It is not an event and takes no Weave lock, so a poll neither grows
+ * the log nor wakes anyone. A stamp that fails fails the call, which was about to use the same
+ * database anyway.
  */
 export async function stampSeen(db: Db, which: SQL, now: Date): Promise<void> {
   const cutoff = new Date(now.getTime() - SEEN_THROTTLE_MS);
