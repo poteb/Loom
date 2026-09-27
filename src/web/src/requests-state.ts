@@ -68,8 +68,9 @@ function mergeOffers(held: Offer[], incoming: Offer[]): Offer[] {
 
 /**
  * Applies a snapshot when its `lastEventSeq` is at least the version held. A status further along
- * than the snapshot's is kept, as is every acceptance, so an older-but-admissible answer cannot
- * reopen, un-work or un-accept anything.
+ * than the snapshot's is kept, as is every accepted offer, so an older-but-admissible answer cannot
+ * reopen, un-work or un-accept anything. The acceptances are the snapshot's own, replacing the held
+ * ones: they carry the server's `listenerStatus`, which only a read can supply.
  */
 export function applySnapshot(reqs: Requests, snap: LoomRequest): Requests {
   const held = reqs[snap.id];
@@ -96,8 +97,9 @@ function accepting(held: HeldAcceptance[], ids: string[], dueAt: string | null):
     participantId, dueAt, completedAt: null, note: null, removed: false, removedAt: null,
     overdue: false, overdueNotifiedAt: null,
     lastSeenAt: held.find((a) => a.participantId === participantId)?.lastSeenAt ?? null,
-    // A status known from an earlier read is kept; otherwise there is none, and the panel shows no
-    // word, until the request read this event triggers brings the server's.
+    // A status known from an earlier read is kept, and may no longer be true; otherwise there is
+    // none, and the panel shows no word. Nothing here reads: the session re-reads the request on
+    // every request event it applies (session.ts, `onEvent`), and that snapshot brings the server's.
     listenerStatus: held.find((a) => a.participantId === participantId)?.listenerStatus,
   }));
   return [...held.filter((a) => !ids.includes(a.participantId)), ...fresh];

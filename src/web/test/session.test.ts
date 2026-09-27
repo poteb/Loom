@@ -860,6 +860,46 @@ describe("session requests", () => {
     } finally { session.dispose(); }
   });
 
+  // Spec 2026-09-27 §6.6: the panel's listener status is the one a request read carried, and the
+  // request is re-read on the request events the session follows. An acceptance folded from the event
+  // alone has none (it says nothing about liveness); the re-read that event causes supplies it.
+  it("a request event re-reads the request, so an acceptance made in another browser carries the listener's status", async () => {
+    const f = await lobbyFixture();
+    const r = await f.open();
+    await anon.withToken(f.helper.token).offer(r.id, { model: MODEL.model, effort: MODEL.effort });
+    const session = await makeSession({ kind: "secret", secret: f.secret }, f.storage);
+    try {
+      await waitFor(() => session.getState().connection === "open");
+      expect(session.getState().requests[r.id]?.acceptances).toEqual([]);
+      await anon.withToken(f.requester.token).acceptRequest(r.id, [f.helper.participant.id], 3_600_000);
+      await waitFor(() => session.getState().requests[r.id]?.acceptances[0]?.listenerStatus !== undefined);
+      expect(session.getState().requests[r.id]!.acceptances.map((a) => [a.participantId, a.listenerStatus]))
+        .toEqual([[f.helper.participant.id, "working"]]);
+    } finally { session.dispose(); }
+  });
+
+  // Two helpers, so the first one's completion leaves the request working: the request's close
+  // would carry a `thread.closed`, whose refresh would re-read the board for reasons of its own.
+  it("a request event re-reads the request, so a completed acceptance's listener status is not left stale", async () => {
+    const f = await lobbyFixture();
+    // Joined before the request opens: who is eligible is decided once, at the open.
+    const second = await anon.joinLobby({ name: `Second-${++fixtureN}`, kind: "agent" });
+    await anon.withToken(second.token).setCapabilities({ models: [MODEL], tools: [], serves: "anyone", owner: `second-${fixtureN}` });
+    const r = await f.open();
+    await anon.withToken(f.helper.token).offer(r.id, { model: MODEL.model, effort: MODEL.effort });
+    await anon.withToken(second.token).offer(r.id, { model: MODEL.model, effort: MODEL.effort });
+    await anon.withToken(f.requester.token).acceptRequest(r.id, [f.helper.participant.id, second.participant.id], 3_600_000);
+    const session = await makeSession({ kind: "secret", secret: f.secret }, f.storage);
+    const statusOf = () => session.getState().requests[r.id]?.acceptances.find((a) => a.participantId === f.helper.participant.id)?.listenerStatus;
+    try {
+      await waitFor(() => session.getState().connection === "open");
+      expect(statusOf()).toBe("working");
+      await anon.withToken(f.helper.token).completeRequest(r.id, "done");
+      await waitFor(() => statusOf() !== "working");
+      expect([statusOf(), session.getState().requests[r.id]!.status]).toEqual(["idle", "working"]);
+    } finally { session.dispose(); }
+  });
+
   it("accept() applies the snapshot it gets back", async () => {
     const f = await lobbyFixture();
     const r = await f.open();

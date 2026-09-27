@@ -802,11 +802,18 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       }
       scheduleRefresh();
     } else if (isRequestEvent(e)) {
+      const held = !!state.requests[String(e.payload.requestId ?? "")];
       const requests = applyEvent(state.requests, e);
-      if (requests !== state.requests) set({ requests });
-      // A request this session has never seen (opened while it was away, or a refresh that has not
-      // landed yet): the event alone is not a whole row, so the refresh is what brings it in.
-      else if (!state.requests[String(e.payload.requestId ?? "")]) scheduleRefresh();
+      const applied = requests !== state.requests;
+      if (applied) set({ requests });
+      // The event alone is never a whole row, so the refresh re-reads the board (coalesced, fenced
+      // and retried like every other). For a request this session has never seen (opened while it
+      // was away, or a refresh that has not landed yet) it is what brings the row in. For one it
+      // holds, it is what brings the listener's status (spec 2026-09-27 §6.6): an acceptance folded
+      // from the event has none, and a status the event leaves in place may no longer be true. It
+      // also re-reads the Lobby's count, whose tiles move when work starts or ends. A replay older
+      // than the row held changes nothing and reads nothing.
+      if (applied || !held) scheduleRefresh();
     } else if (e.type === "weave.archived") {
       if (state.weave) set({ weave: { ...state.weave, archivedAt: e.at } });
       // Also refresh: a refresh that started before the archive is still going to land with stale
