@@ -28,6 +28,18 @@ export function isRequestEvent(e: LoomEvent): boolean {
     || (e.type === "thread.removed" && typeof e.payload.requestId === "string");
 }
 
+const WORK_EVENTS = ["request.accepted", "request.completed", "request.overdue", "request.closed", "thread.removed"] as const;
+
+/**
+ * The request events that change an acceptance or the request's lifecycle, and so may move a
+ * listener's status and the Lobby's tiles: the ones worth a re-read on a request this session holds
+ * (spec 2026-09-27 §6.6). `request.opened` and `request.offered` change neither. Only meaningful for
+ * an event `isRequestEvent` admits, so a `thread.removed` here is one carrying a `requestId`.
+ */
+export function changesWork(e: LoomEvent): boolean {
+  return isRequestEvent(e) && (WORK_EVENTS as readonly string[]).includes(e.type);
+}
+
 /** open, then working, then a terminal state: a request only ever moves forward along this. */
 const RANK: Record<RequestStatus, number> = { open: 0, working: 1, completed: 2, cancelled: 2, expired: 2, filled: 2 };
 /** Terminal states are one-way: nothing may reopen a request that has closed. */

@@ -6,7 +6,7 @@ import {
   hasIdentity, invalidateIdentity, isCredentialFailure, migrateLegacyOne, readWeaveEntry, readerFor,
   saveWeaveEntry, setIdentity, storedWeaves, type ReaderChoice, type ReadOnlyReason, type WeaveEntry,
 } from "./weaves-store.js";
-import { applyEvent, applySnapshot, isRequestEvent, type Requests } from "./requests-state.js";
+import { applyEvent, applySnapshot, changesWork, isRequestEvent, type Requests } from "./requests-state.js";
 import { cachedProfile, createCounter, isCurrent, isOwnedBy, type Now, type Owner, type OwnProfile, type Stamp } from "./side-reads.js";
 import { createReadThrottle, documentVisibility, firstNewSeq, mergePositions, newestSeqIn, READ_FLUSH_MS, unreadCounts, type Visibility } from "./unread.js";
 
@@ -811,9 +811,11 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       // was away, or a refresh that has not landed yet) it is what brings the row in. For one it
       // holds, it is what brings the listener's status (spec 2026-09-27 §6.6): an acceptance folded
       // from the event has none, and a status the event leaves in place may no longer be true. It
-      // also re-reads the Lobby's count, whose tiles move when work starts or ends. A replay older
-      // than the row held changes nothing and reads nothing.
-      if (applied || !held) scheduleRefresh();
+      // also re-reads the Lobby's count, whose tiles move when work starts or ends. Only an event
+      // that changes an acceptance or the request's lifecycle does this for a held row: an offer
+      // changes neither, and one opened request can bring an offer from every listener (review 6
+      // F2). A replay older than the row held changes nothing and reads nothing.
+      if ((applied && changesWork(e)) || !held) scheduleRefresh();
     } else if (e.type === "weave.archived") {
       if (state.weave) set({ weave: { ...state.weave, archivedAt: e.at } });
       // Also refresh: a refresh that started before the archive is still going to land with stale

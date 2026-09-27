@@ -900,6 +900,25 @@ describe("session requests", () => {
     } finally { session.dispose(); }
   });
 
+  // Review 6 F2: an offer changes no acceptance and no listener's work, so on a request the session
+  // holds it re-reads nothing; one opened request in a Lobby of N listeners brings up to N offers.
+  it("a request.offered on a held request does not refresh the board", async () => {
+    const f = await lobbyFixture();
+    const r = await f.open();
+    const c = sideReadClient();
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.secret }, storage: f.storage });
+    await session.load();
+    try {
+      await waitFor(() => session.getState().connection === "open" && !!session.getState().requests[r.id]);
+      for (let i = 0; i < 5; i++) await new Promise((done) => setTimeout(done, 0));
+      const reads = c.weaveReads();
+      await anon.withToken(f.helper.token).offer(r.id, { model: MODEL.model, effort: MODEL.effort });
+      await waitFor(() => session.getState().requests[r.id]!.offers.length === 1);
+      for (let i = 0; i < 5; i++) await new Promise((done) => setTimeout(done, 0));
+      expect(c.weaveReads()).toBe(reads);
+    } finally { session.dispose(); }
+  });
+
   it("accept() applies the snapshot it gets back", async () => {
     const f = await lobbyFixture();
     const r = await f.open();
