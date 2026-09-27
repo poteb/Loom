@@ -11,7 +11,8 @@ import { ensureLobby, joinLobby } from "../src/lobby/lobby.js";
 import { setCapabilities, findAgents } from "../src/lobby/profile.js";
 import { accept, getRequest, offer, openRequest } from "../src/lobby/requests.js";
 import { listListeners } from "../src/lobby/listeners.js";
-import { cadenceOf, listenerStatus, DEFAULT_POLL_INTERVAL_MS, type ListenerStatus } from "../src/lobby/status.js";
+import { cadenceOf, listenerStatus, workFor, DEFAULT_POLL_INTERVAL_MS, type ListenerStatus } from "../src/lobby/status.js";
+import { randomUUID } from "node:crypto";
 import type { Listener, ListenersPage, ListenersQuery } from "../src/lobby/listeners-input.js";
 import type { Profile } from "../src/lobby/matching.js";
 import type { Db, Queryable } from "../src/db/index.js";
@@ -213,6 +214,17 @@ describe("status and current work against Postgres (spec 2026-09-27 §4.2, §4.3
     await seenAt(busy, ago(2 * DEFAULT_POLL_INTERVAL_MS + 1));
     const [row] = (await listListeners(db, w.reader, {}, NOW)).listeners;
     expect([row!.status, row!.currentWork?.requestId]).toEqual(["offline", r.id]);
+  });
+
+  // Whole-branch review F4: `findAgents` hands `workFor` every matching listener, unbounded. One
+  // bind parameter per id fails past the protocol's 65,535; one array parameter does not.
+  it("workFor takes 70,000 ids in one query and finds the one that holds work", async () => {
+    const w = await world();
+    const busy = await listener("busy");
+    const r = await work(w, "Review PR 14", [busy]);
+    const ids = [...Array.from({ length: 70_000 }, () => randomUUID()), busy.id];
+    const found = await workFor(db, ids);
+    expect([[...found.keys()], found.get(busy.id)?.map((i) => i.requestId)]).toEqual([[busy.id], [r.id]]);
   });
 });
 

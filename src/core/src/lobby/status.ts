@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, isNull, sql, type SQL } from "drizzle-orm";
 import type { Queryable } from "../db/index.js";
 import { participants, requestOffers, requests, threads } from "../db/schema.js";
 import { isLive, type Profile } from "./matching.js";
@@ -95,7 +95,10 @@ export async function workFor(db: Queryable, participantIds: string[]): Promise<
   }).from(requestOffers)
     .innerJoin(requests, eq(requests.id, requestOffers.requestId))
     .innerJoin(threads, eq(threads.id, requests.threadId))
-    .where(and(inArray(requestOffers.participantId, participantIds), eq(requestOffers.accepted, true),
+    // One array bind parameter, not one per id: `findAgents` passes every matching listener, and a
+    // parameter per id fails past the protocol's 65,535 (whole-branch review F4).
+    .where(and(sql`${requestOffers.participantId} = ANY(${sql.param(participantIds)}::uuid[])`,
+      eq(requestOffers.accepted, true),
       isNull(requestOffers.removedAt), isNull(requestOffers.completedAt), eq(requests.status, "working")))
     .orderBy(sql`${requestOffers.dueAt} ASC NULLS LAST`, asc(requests.createdAt), asc(requests.id));
   for (const { participantId, ...item } of rows) {
