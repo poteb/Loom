@@ -169,12 +169,15 @@ function RequestRow({ request, title, state, session, onError, nowMs }: {
           {request.acceptances.map((a) => (
             <li key={a.participantId} class="acceptance">
               <span>{name(a.participantId)}</span> <span class="acceptance-due">due {a.dueAt ?? "-"}</span>{" "}
-              <span class="badge">{acceptanceState(a, nowMs)}</span>{" "}
-              {/* The badge is the acceptance's state; these two are the listener's (spec 2026-09-27 §6.5). */}
-              <span class="acceptance-seen">{seenText(a.lastSeenAt, nowMs)}</span>
-              {/* No word until a request read has supplied one (review round 1, F1): an acceptance
-                  folded from an event says nothing about liveness. */}
-              {a.listenerStatus && <>{" "}<span class={`listener-status listener-status-${a.listenerStatus}`}>{a.listenerStatus}</span></>}
+              <span class="badge">{acceptanceState(a, nowMs)}</span>
+              {/* The badge is the acceptance's state; these two are the listener's (spec 2026-09-27 §6.5).
+                  Neither shows until a request read has supplied the status (review round 1 F1, review 6
+                  F1): an acceptance folded from an event says nothing about liveness, and its null
+                  lastSeenAt would read as a false "never seen". */}
+              {a.listenerStatus && <>
+                {" "}<span class="acceptance-seen">{seenText(a.lastSeenAt, nowMs)}</span>
+                {" "}<span class={`listener-status listener-status-${a.listenerStatus}`}>{a.listenerStatus}</span>
+              </>}
             </li>
           ))}
         </ul>

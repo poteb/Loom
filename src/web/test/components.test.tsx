@@ -871,22 +871,24 @@ describe("RequestsPanel", () => {
 
   // Review round 1, F1. The keeper accepts a listener that is offline; the session folds the
   // `request.accepted` event, and the request read that event triggers is held or fails, so no
-  // snapshot follows. The panel must not call that listener working: it shows no status word.
-  it("an offline agent accepted by an event, its follow-up request read held or failing, shows no listener status until a read supplies it", () => {
+  // snapshot follows. The panel must not call that listener working: it shows no status word, and
+  // no seen line either (review 6 F1), since "never seen" is a liveness claim the event cannot make.
+  it("an offline agent accepted by an event, its follow-up request read held or failing, shows no listener status and no seen line until a read supplies them", () => {
     const accepted = applyEvent({ r1: request({ offers: [anOffer("p2")], version: 5 }) }, {
       weaveId: "w1", seq: 6, threadId: "th1", type: "request.accepted", actor: "p1", at: "2026-09-16T13:20:00.000Z",
       payload: { requestId: "r1", requesterId: "p1", participantIds: ["p2"], dueAt: "2026-09-16T14:30:00.000Z", targetWeaveTitle: "Loom session" },
     });
     const { container, rerender } = render(<RequestsPanel state={lobbyState({ requests: accepted })} session={session()} onError={() => {}} now={NOW} />);
     const li = () => container.querySelector(".acceptance")!;
-    expect([li().querySelector(".listener-status"), li().querySelector(".acceptance-seen")!.textContent, li().textContent])
-      .toEqual([null, "never seen", "Helper due 2026-09-16T14:30:00.000Z working never seen"]);
+    expect([li().querySelector(".listener-status"), li().querySelector(".acceptance-seen"), li().textContent])
+      .toEqual([null, null, "Helper due 2026-09-16T14:30:00.000Z working"]);
     // The read, when it lands, is the authority: the server says offline, and the panel says so.
     const read = applySnapshot(accepted, request({ status: "working", lastEventSeq: 6, offers: [anOffer("p2", { accepted: true })], acceptances: [{
       participantId: "p2", dueAt: "2026-09-16T14:30:00.000Z", completedAt: null, note: null, removed: false, removedAt: null,
       overdue: false, overdueNotifiedAt: null, lastSeenAt: "2026-09-16T12:00:00.000Z", listenerStatus: "offline" }] }) as unknown as LoomRequest);
     rerender(<RequestsPanel state={lobbyState({ requests: read })} session={session()} onError={() => {}} now={NOW} />);
-    expect(li().querySelector(".listener-status-offline")?.textContent).toBe("offline");
+    expect([li().querySelector(".acceptance-seen")?.textContent, li().querySelector(".listener-status-offline")?.textContent])
+      .toEqual(["seen 90 min ago", "offline"]);
   });
 
   it("shows Cancel to the requester and to nobody else", () => {
