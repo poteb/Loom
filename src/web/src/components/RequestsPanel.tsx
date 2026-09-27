@@ -1,7 +1,7 @@
 import { useEffect, useState } from "preact/hooks";
-import type { Acceptance, Offer, Participant, Requirements } from "@loom/client";
+import type { Offer, Participant, Requirements } from "@loom/client";
 import type { Session, SessionState, TargetWeave } from "../session.js";
-import { acceptedIds, activeAcceptedIds, displayStatus, type VersionedRequest } from "../requests-state.js";
+import { acceptedIds, activeAcceptedIds, displayStatus, type HeldAcceptance, type VersionedRequest } from "../requests-state.js";
 import { modelSpecs } from "./ProfileCard.js";
 
 const DEFAULT_TIMEOUT_MINUTES = 60;
@@ -9,7 +9,7 @@ const DEFAULT_TIMEOUT_MINUTES = 60;
 const DEFAULT_DEADLINE_MINUTES = 60;
 
 /** An acceptance as the panel reports it: completed, removed, overdue (the clock is enough), or working. */
-export function acceptanceState(a: Acceptance, nowMs: number): "completed" | "removed" | "overdue" | "working" {
+export function acceptanceState(a: HeldAcceptance, nowMs: number): "completed" | "removed" | "overdue" | "working" {
   if (a.completedAt) return "completed";
   if (a.removed) return "removed";
   if (a.overdue || (a.dueAt !== null && nowMs >= Date.parse(a.dueAt))) return "overdue";

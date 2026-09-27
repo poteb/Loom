@@ -37,9 +37,10 @@ function session(over: Partial<Session> = {}): Session {
   return { getState: () => state(), subscribe: () => () => {}, load: async () => {}, join: async () => {}, selectThread: vi.fn(), post: async () => {},
     createThread: vi.fn(async () => {}), setThreadUrl: vi.fn(async () => {}), invite: vi.fn(async () => {}), closeThread: async () => {}, archive: async () => {}, setGuidelines: vi.fn(async () => {}),
     canModerate: () => false, canEditThread: (t) => t.createdBy === "p1", markSeen: () => {}, dismissNamePrompt: () => {}, dispose: () => {},
-    openRequest: vi.fn(async () => request()), offer: vi.fn(async () => {}), accept: vi.fn(async () => {}), cancel: vi.fn(async () => {}),
+    // The wire shape: a held request's acceptances may lack listenerStatus, a LoomRequest's may not.
+    openRequest: vi.fn(async () => ({ ...request(), acceptances: [] })), offer: vi.fn(async () => {}), accept: vi.fn(async () => {}), cancel: vi.fn(async () => {}),
     targets: vi.fn(async () => []),
-    listListeners: vi.fn(() => ({ issue: { generation: 0 }, page: Promise.resolve({ total: 0, matched: 0, listeners: [] }) })),
+    listListeners: vi.fn(() => ({ issue: { generation: 0 }, page: Promise.resolve({ total: 0, matched: 0, listeners: [], statusCounts: { working: 0, idle: 0, offline: 0 } }) })),
     reportCredentialFailure: vi.fn(), markAllRead: vi.fn(async () => {}), ...over };
 }
 
@@ -832,7 +833,7 @@ describe("RequestsPanel", () => {
   it("the panel shows a working request's acceptances with due, completed, removed and overdue", () => {
     const acc = (participantId: string, over: Partial<Acceptance> = {}): Acceptance => ({
       participantId, dueAt: "2026-09-16T14:30:00.000Z", completedAt: null, note: null, removed: false, removedAt: null,
-      overdue: false, overdueNotifiedAt: null, lastSeenAt: null, ...over,
+      overdue: false, overdueNotifiedAt: null, lastSeenAt: null, listenerStatus: "idle", ...over,
     });
     const cast = [me, helper, { ...helper, id: "p3", name: "Other" }, { ...helper, id: "p4", name: "Fourth" }, { ...helper, id: "p5", name: "Fifth" }];
     const working = request({

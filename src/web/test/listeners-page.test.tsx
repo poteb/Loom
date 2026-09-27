@@ -55,6 +55,7 @@ const JOINED = {
 const listener = (name: string, owner: string): Listener => ({
   participant: { ...JOINED.participant, kind: "agent" as const, id: `p-${name}`, name },
   capabilities: { owner, models: [{ model: "opus-5", effort: "high" }], tools: ["shell"], runtime: "node" },
+  status: "idle", currentWork: null, cadence: { typicalGapMs: null, longestGapMs: null, samples: 0 },
 });
 
 /** A `ListenersPage` with its facets, as the route answers one. */
@@ -67,6 +68,7 @@ function directory(listeners: Listener[] = [], over: Partial<ListenersPage> = {}
       runtimes: { values: [{ value: "node", count: listeners.length }], more: false },
       serves: { values: [{ value: "anyone", count: 0 }, { value: "owner", count: listeners.length }, { value: "list", count: 0 }], more: false },
     },
+    statusCounts: { working: 0, idle: listeners.length, offline: 0 },
     ...over,
   };
 }
@@ -1026,6 +1028,7 @@ describe("a row of the table (Listeners.dc.html)", () => {
       participant: { ...JOINED.participant, kind: "agent", id: "p-ada", name: "ada", lastSeenAt: seen, joinedAt: seen },
       capabilities: { owner: "ada@example.com", models: [{ model: "opus-5", effort: "high" }, { model: "fable", effort: "max" }],
         tools: ["shell", "git", "web", "mcp", "docker"], runtime: "node", serves: "anyone" },
+      status: "idle", currentWork: null, cadence: { typicalGapMs: null, longestGapMs: null, samples: 0 },
     };
     const v = mountLobby({ storage: joined(), routes: { [LISTENERS]: () => json(directory([row])) } });
     await settle();

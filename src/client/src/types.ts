@@ -78,12 +78,31 @@ export type Requirements = {
   maxResponseMs?: number;
 };
 
+/**
+ * A listener's status now (spec 2026-09-27 Â§4.2): offline when not seen within twice its
+ * `pollIntervalMs` (15 minutes when none is declared), working when it holds accepted work on a
+ * working request, otherwise idle. True as of the read that carried it.
+ */
+export type ListenerStatus = "working" | "idle" | "offline";
+/** The request a listener is working on, the soonest due, and how many more. Names the request and its Lobby Thread only. */
+export type CurrentWork = { requestId: string; title: string; threadId: string; more: number };
+/** The median and longest gap between a listener's last 20 check-ins, in ms; both null with fewer than two. */
+export type Cadence = { typicalGapMs: number | null; longestGapMs: number | null; samples: number };
+/** The directory's per-status counts: all three words, zeros included. */
+export type StatusCounts = { working: number; idle: number; offline: number };
+
 /** A `requirements` filter, plus the owner whose requests the agent would have to serve. */
 export type AgentFilter = Requirements & { owner?: string };
-export type FoundAgent = { participant: Participant; capabilities: Profile };
+export type FoundAgent = {
+  participant: Participant; capabilities: Profile;
+  status: ListenerStatus; currentWork: CurrentWork | null; cadence: Cadence;
+};
 
-/** One directory entry. Shaped like `FoundAgent` on purpose: the same pair, the same order. */
-export type Listener = { participant: Participant; capabilities: Profile };
+/** One directory entry. Shaped like `FoundAgent` on purpose: the same fields, the same order. */
+export type Listener = {
+  participant: Participant; capabilities: Profile;
+  status: ListenerStatus; currentWork: CurrentWork | null; cadence: Cadence;
+};
 
 export type ListenersSort = "name" | "owner" | "joined";
 export type ServesKind = "anyone" | "owner" | "list";
@@ -111,6 +130,8 @@ export type ListenersQuery = {
   /** Equality. */
   runtime?: string;
   serves?: ServesKind;
+  /** Any-of: working, idle, offline. An empty array is no filter. */
+  status?: ListenerStatus[];
   sort?: ListenersSort;          // default "name"
   dir?: "asc" | "desc";          // default "asc"
   limit?: number;                // default 50, 0..1000
@@ -129,6 +150,8 @@ export type ListenersPage = {
   nextCursor?: string;
   /** Absent only when the caller asked for `facets: false`. */
   facets?: ListenersFacets;
+  /** Per-status counts over the search and every filter except `status`. Always present. */
+  statusCounts: StatusCounts;
 };
 
 export type Lobby = {
@@ -151,6 +174,8 @@ export type Acceptance = {
   participantId: string; dueAt: string | null; completedAt: string | null; note: string | null;
   removed: boolean; removedAt: string | null; overdue: boolean; overdueNotifiedAt: string | null;
   lastSeenAt: string | null;
+  /** The accepted listener's status now: not the acceptance's own state (that is `completedAt`, `removed`, `overdue`). */
+  listenerStatus: ListenerStatus;
 };
 
 /** Named `LoomRequest` rather than `Request`, which is the DOM's. */

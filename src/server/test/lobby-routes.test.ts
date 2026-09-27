@@ -864,3 +864,34 @@ describe("the request sweep", () => {
     expect(w.acceptances[0].overdueNotifiedAt).toEqual(expect.any(String));
   });
 });
+
+describe("listener status over REST (spec 2026-09-27 §5)", () => {
+  it("GET /api/lobby/listeners?filter={\"status\":[\"offline\"]} answers only offline rows, with statusCounts; a bad status is 400", async () => {
+    const d = await directory();
+    // Never seen: the history agrees with last_seen_at, as the stamp keeps them.
+    await sqlUnsafe("update participants set last_seen_at = null, seen_history = null where id = $1", [d.bo.id]);
+    const r = await api(s.baseUrl, "GET", listenersUrl({ q: d.tag, filter: JSON.stringify({ status: ["offline"] }) }), undefined, d.ada.token);
+    expect(r.status).toBe(200);
+    expect(listenerIds(r.json.listeners)).toEqual([d.bo.id]);
+    expect(r.json.listeners[0]).toMatchObject({ status: "offline", currentWork: null,
+      cadence: { typicalGapMs: null, longestGapMs: null, samples: 0 } });
+    // Over the search, the status filter left out: Ada and Cy checked in when they set their profiles.
+    expect(r.json.statusCounts).toEqual({ working: 0, idle: 2, offline: 1 });
+    const bad = await api(s.baseUrl, "GET", listenersUrl({ filter: JSON.stringify({ status: ["busy"] }) }), undefined, d.ada.token);
+    expect([bad.status, bad.json.code, bad.json.message]).toEqual([400, "validation", "status must be a list of working, idle or offline"]);
+  });
+
+  it("GET /api/lobby/agents results and GET of one request carry the new fields", async () => {
+    const f = await scenario();
+    const req = await acceptedRequest(f);
+    const filter = encodeURIComponent(JSON.stringify({ ...REQUIREMENTS, owner: f.owner }));
+    const agents = await api(s.baseUrl, "GET", `/api/lobby/agents?filter=${filter}`, undefined, f.claude.token);
+    expect(agents.json.agents).toEqual([expect.objectContaining({
+      status: "working",
+      currentWork: { requestId: req.id, title: "Review PR 14", threadId: req.threadId, more: 0 },
+      cadence: expect.objectContaining({ samples: expect.any(Number) }),
+    })]);
+    const one = await api(s.baseUrl, "GET", `/api/requests/${req.id}`, undefined, f.claude.token);
+    expect(one.json.acceptances[0]).toMatchObject({ participantId: f.pawbot.id, listenerStatus: "working" });
+  });
+});

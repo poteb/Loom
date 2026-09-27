@@ -203,6 +203,24 @@ describe("Lobby wrappers", () => {
     expect(accepted.request.offers[0]!.accepted).toBe(true);
   });
 
+  it("round trips listener status: listListeners with a status filter, findAgents and getRequest", async () => {
+    const f = await lobby();
+    const req = await f.claude.openRequest(f.input);
+    await f.bot.offer(req.id, {});
+    await f.claude.acceptRequest(req.id, [f.botId], 3_600_000);
+    // `q` isolates this scenario's listener in the Lobby every test in this file shares. The idle
+    // query is what proves the wrapper sends `status`: without it, the working listener comes back.
+    const q = `Pawbot-${f.t}`;
+    const idle = await f.claude.listListeners({ q, status: ["idle"] });
+    expect([idle.listeners, idle.matched, idle.statusCounts]).toEqual([[], 0, { working: 1, idle: 0, offline: 0 }]);
+    const page = await f.claude.listListeners({ q, status: ["working"] });
+    expect(page.listeners.map((l) => [l.participant.id, l.status, l.currentWork?.requestId])).toEqual([[f.botId, "working", req.id]]);
+    const [found] = await f.claude.findAgents({ models: [MODEL], owner: f.owner });
+    expect(found).toMatchObject({ status: "working", currentWork: { requestId: req.id, title: "Review PR 14", threadId: req.threadId, more: 0 } });
+    expect(found!.cadence.samples).toBeGreaterThanOrEqual(1);
+    expect((await f.claude.getRequest(req.id)).acceptances[0]!.listenerStatus).toBe("working");
+  });
+
   it("cancels its own request, after which an offer is refused as request_closed", async () => {
     const f = await lobby();
     const req = await f.claude.openRequest(f.input);

@@ -66,7 +66,7 @@ export type LoomToolBackend = {
   joinLobby(who: { name?: string; kind: Kind }, credential?: string): Promise<unknown>;                  // JoinResult shape
   /** The caller's own Lobby profile; `null` clears it. */
   setCapabilities(credential: string, profile: unknown): Promise<unknown>;                               // Participant shape
-  findAgents(credential: string, filter: Record<string, unknown>): Promise<unknown[]>;                   // [{ participant, capabilities }]
+  findAgents(credential: string, filter: Record<string, unknown>): Promise<unknown[]>;                   // [{ participant, capabilities, status, currentWork, cadence }]
   openRequest(credential: string, input: OpenRequestInput): Promise<unknown>;                            // Request shape
   listRequests(credential: string, opts: { status?: string; limit?: number }): Promise<unknown[]>;
   getRequest(credential: string, requestId: string): Promise<unknown>;
