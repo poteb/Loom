@@ -1078,6 +1078,29 @@ describe("the status tabs (spec 2026-09-27 §6.1)", () => {
     expect([v.queries().at(-1)!.has("filter"), tab(v, "all").getAttribute("aria-pressed"), v.asked()]).toEqual([false, "true", 3]);
   });
 
+  // Pressing the tab already selected must not re-ask: an identical first-page query would dim the
+  // rows and throw away every page Show more has appended.
+  it("pressing the tab already selected asks the server nothing", async () => {
+    const v = mountLobby({ storage: joined(), routes: { [LISTENERS]: counted } });
+    await settle();
+    fireEvent.click(tab(v, "all"));
+    await settle();
+    const atAll = v.asked();
+    fireEvent.click(tab(v, "idle"));
+    await settle();
+    const atIdle = v.asked();
+    fireEvent.click(tab(v, "idle"));
+    await settle();
+    expect([atAll, atIdle, v.asked(), tab(v, "idle").getAttribute("aria-pressed")]).toEqual([1, 2, 2, "true"]);
+  });
+
+  it("shows no count on any tab before the first answer", async () => {
+    const v = mountLobby({ storage: joined(), routes: { [LISTENERS]: () => new Promise<Response>(() => {}) } });
+    await settle();
+    expect([tabs(v), v.container.querySelectorAll(".status-tab-count").length])
+      .toEqual([[["All", "true"], ["Working", "false"], ["Idle", "false"], ["Offline", "false"]], 0]);
+  });
+
   it("a tab's status is carried in the URL; a link with two statuses or an unknown one is reported and dropped", async () => {
     const v = mountLobby({ storage: joined() });
     await settle();
@@ -1134,6 +1157,14 @@ describe("the Status and Current work columns, and the rate (spec 2026-09-27 §6
     fireEvent.click(row(v).querySelector("button.current-work")!);
     await settle();
     expect([v.directory(), v.container.querySelector(".thread-header h2")!.textContent]).toEqual([false, "# Review PR 14"]);
+  });
+
+  it("a lone work item shows its title and no +0", async () => {
+    const lone = busy({ currentWork: { requestId: "r1", title: "Review PR 14", threadId: "th-req", more: 0 } });
+    const v = mountLobby({ storage: joined(), routes: { [LISTENERS]: () => json(directory([lone])) } });
+    await settle();
+    expect([row(v).querySelector("button.current-work")?.textContent, row(v).querySelector(".current-work-more")])
+      .toEqual(["Review PR 14", null]);
   });
 
   it("an offline row with work shows both", async () => {

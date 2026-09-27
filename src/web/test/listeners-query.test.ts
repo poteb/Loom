@@ -14,6 +14,7 @@ const FULL: ListenersView = {
   tools: ["shell", "github"],
   runtime: "node",
   serves: "anyone",
+  status: "idle",
   sort: "owner",
   dir: "desc",
 };
@@ -164,6 +165,26 @@ describe("a link the listeners page cannot read whole (spec §5.4)", () => {
     expect([view.serves, partial]).toEqual([undefined, true]);
   });
 
+  // Core reads an empty status list as no filter, as it reads an empty tools list: nothing to report.
+  it("reads an empty status list as All and reports nothing", () => {
+    expect(viewFromSearch(filterSearch({ status: [] }))).toEqual({ view: EMPTY_VIEW, partial: false });
+  });
+
+  it("drops a status list of two words, since the tabs show one", () => {
+    const { view, partial } = viewFromSearch(filterSearch({ status: ["idle", "offline"] }));
+    expect([view.status, partial]).toEqual([undefined, true]);
+  });
+
+  it("drops a status word core does not have", () => {
+    const { view, partial } = viewFromSearch(filterSearch({ status: ["busy"] }));
+    expect([view.status, partial]).toEqual([undefined, true]);
+  });
+
+  it("drops a status that is not a list", () => {
+    const { view, partial } = viewFromSearch(filterSearch({ status: "idle" }));
+    expect([view.status, partial]).toEqual([undefined, true]);
+  });
+
   it("drops a serving policy that is not a string", () => {
     const { view, partial } = viewFromSearch(filterSearch({ serves: 5 }));
     expect([view.serves, partial]).toEqual([undefined, true]);
@@ -278,9 +299,18 @@ describe("the query a view asks core for (spec §5.3)", () => {
 
   it("leaves out the filters that are not set, and carries the ones that are", () => {
     expect(queryFromView(FULL, {})).toEqual({
-      q: "fable", models: FULL.models, tools: FULL.tools, runtime: "node", serves: "anyone",
+      q: "fable", models: FULL.models, tools: FULL.tools, runtime: "node", serves: "anyone", status: ["idle"],
       sort: "owner", dir: "desc", limit: 50,
     });
+  });
+
+  // Core takes a list of words (spec 2026-09-27 §4.6); the tab names one, so the list holds one.
+  it("sends the selected tab as a status list of one word", () => {
+    expect(queryFromView({ ...EMPTY_VIEW, status: "offline" }, {}).status).toEqual(["offline"]);
+  });
+
+  it("sends no status for All", () => {
+    expect("status" in queryFromView(EMPTY_VIEW, {})).toBe(false);
   });
 
   it("leaves out an empty chip row: no chips is no filter, not a filter matching nothing", () => {
