@@ -16,7 +16,7 @@ import { WeaveView } from "../src/components/WeaveView.js";
 import { ListenersPage } from "../src/components/listeners/ListenersPage.js";
 import { App, routeOf } from "../src/app.js";
 import { MAX_GUIDELINES_LENGTH } from "@loom/core";
-import { LoomClient, type Acceptance, type ListenersQuery, type LoomRequest, type Offer, type Thread } from "@loom/client";
+import { LoomClient, type Acceptance, type Listener, type ListenersPage as DirectoryPage, type ListenersQuery, type LoomRequest, type Offer, type Thread } from "@loom/client";
 import { CLOSED_REQUESTS_PAGE, type Session, type SessionState } from "../src/session.js";
 import { applyEvent, applySnapshot, type VersionedRequest } from "../src/requests-state.js";
 import { memoryStorage, type KeyValueStorage } from "../src/storage.js";
@@ -1476,5 +1476,45 @@ describe("the directory on becoming visible (spec 2026-09-27 §6.6)", () => {
     visible!();
     await new Promise((r) => setTimeout(r, 0));
     expect(listListeners.mock.calls.map((c) => c[0])).toEqual([{ sort: "name", dir: "asc", limit: 50 }, { sort: "name", dir: "asc", limit: 50 }]);
+  });
+
+  /** A directory whose every query waits for the test to answer or fail it, in the order asked. */
+  function held() {
+    const out: { resolve: (p: DirectoryPage) => void; reject: (e: unknown) => void; query: ListenersQuery }[] = [];
+    const listListeners = vi.fn((query: ListenersQuery) => {
+      let resolve!: (p: DirectoryPage) => void; let reject!: (e: unknown) => void;
+      const page = new Promise<DirectoryPage>((ok, no) => { resolve = ok; reject = no; });
+      out.push({ resolve, reject, query });
+      return { issue: { generation: 0 }, page };
+    });
+    let visible: (() => void) | undefined;
+    const view = render(<ListenersPage session={session({ listListeners, onVisible: (fn) => { visible = fn; return () => {}; } })} />);
+    const turn = () => new Promise((r) => setTimeout(r, 0));
+    return {
+      ...view, asked: () => out, turn,
+      answer: async (n: number, page: DirectoryPage) => { out[n]!.resolve(page); await turn(); },
+      fail: async (n: number, e: unknown) => { out[n]!.reject(e); await turn(); },
+      visible: async () => { visible!(); await turn(); },
+    };
+  }
+  const aListener = (id: string): Listener => ({
+    participant: { ...helper, id, name: `Name ${id}` }, capabilities: PROFILE, status: "idle", currentWork: null,
+    cadence: { typicalGapMs: null, longestGapMs: null, samples: 0 },
+  });
+  const pageOf = (ids: string[], over: Partial<DirectoryPage> = {}): DirectoryPage => ({
+    total: ids.length, matched: ids.length, listeners: ids.map(aListener), statusCounts: { working: 0, idle: ids.length, offline: 0 }, ...over,
+  });
+  const names = (c: Element) => [...c.querySelectorAll(".listener-row")].map((r) => r.querySelector("td")!.textContent);
+  const changedLine = () => screen.queryByText("The list has changed since you loaded it.");
+
+  // Review 6 F3: the re-run is "Reload the list" (spec 2026-09-27 §6.6), so its answer is the new
+  // baseline and a listener that joined while the tab was hidden raises no "changed" line.
+  it("a re-run on becoming visible resets the list-changed baseline, as Reload does", async () => {
+    const d = held();
+    await d.turn();
+    await d.answer(0, pageOf(["a"]));
+    await d.visible();
+    await d.answer(1, pageOf(["a", "b"]));
+    expect([names(d.container).length, changedLine()]).toEqual([2, null]);
   });
 });

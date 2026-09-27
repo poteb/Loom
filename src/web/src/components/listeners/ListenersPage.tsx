@@ -175,7 +175,13 @@ export function ListenersPage({ session, invite, onOpenThread }: {
   useEffect(() => { run(view); }, [view, session]);
   // Spec 2026-09-27 §6.6: becoming visible re-runs the view on screen, the first page with facets as
   // "Reload the list" asks, rows kept until the answer. Pages Show more appended are replaced by it.
-  useEffect(() => session.onVisible(() => { if (live.current) run(viewRef.current); }), [session]);
+  // Like Reload, its answer is the new baseline: rows it has just re-read have not "changed".
+  useEffect(() => session.onVisible(() => {
+    if (!live.current) return;
+    firstTotal.current = undefined;
+    setChanged(false);
+    run(viewRef.current);
+  }), [session]);
 
   /**
    * The one way a control changes the page: new state, new URL, and — through the effect — one
