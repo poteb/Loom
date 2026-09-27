@@ -41,6 +41,19 @@ describe("migrations", () => {
     expect(rows[0]!.indexdef).toContain("WHERE (capabilities IS NOT NULL)");
   });
 
+  // Partial over exactly the rows the status's work lookup keeps (status.ts `holdsWorkSql`): a full
+  // index would also carry every offer, completion and removal ever made, which is what the table
+  // grows by. `status.test.ts` asserts the counts' plan can reach it.
+  it("indexes request_offers.participant_id over active acceptances only", async () => {
+    const db = await freshDb();
+    const rows = await db.execute<{ indexdef: string }>(
+      sql`select indexdef from pg_indexes where tablename = 'request_offers' and indexname = 'request_offers_active_participant_idx'`,
+    );
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.indexdef).toContain("(participant_id)");
+    expect(rows[0]!.indexdef).toContain("WHERE (accepted AND (removed_at IS NULL) AND (completed_at IS NULL))");
+  });
+
   // The index's existence says nothing about whether anything uses it. This is the test that fails
   // if a listener predicate is ever written against `capabilities->'tools'` instead of
   // `capabilities` itself: a GIN index serves only the expression it indexes, so the plan would

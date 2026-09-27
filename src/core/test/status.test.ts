@@ -1,5 +1,6 @@
 import { describe, it, expect, afterAll, beforeEach } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql, type SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { freshDb, closeTestDb } from "./helpers.js";
 import { EventBus } from "../src/bus.js";
 import { participants, requestOffers, requests as requestsTable } from "../src/db/schema.js";
@@ -13,7 +14,8 @@ import { listListeners } from "../src/lobby/listeners.js";
 import { cadenceOf, listenerStatus, DEFAULT_POLL_INTERVAL_MS, type ListenerStatus } from "../src/lobby/status.js";
 import type { Listener, ListenersPage, ListenersQuery } from "../src/lobby/listeners-input.js";
 import type { Profile } from "../src/lobby/matching.js";
-import type { Db } from "../src/db/index.js";
+import type { Db, Queryable } from "../src/db/index.js";
+import type { Actor } from "../src/types.js";
 
 describe("cadenceOf (spec 2026-09-27 §4.4)", () => {
   const T = Date.parse("2026-09-27T10:00:00.000Z");
@@ -124,6 +126,27 @@ const setOffer = (requestId: string, l: { id: string }, change: Partial<typeof r
 const setRequest = (requestId: string, change: Partial<typeof requestsTable.$inferInsert>) =>
   db.update(requestsTable).set(change).where(eq(requestsTable.id, requestId));
 const rowOf = (page: ListenersPage, l: { id: string }) => page.listeners.find((x) => x.participant.id === l.id)!;
+
+/**
+ * The plan of the status counts query exactly as `listListeners` sends it: the read runs through a
+ * handle that records every `execute`, the one carrying `count(*) FILTER` is picked out, and `run`
+ * (the pool, or a transaction with planner settings of its own) explains it.
+ */
+async function countsPlan(run: Queryable, reader: Actor): Promise<string> {
+  const seen: SQL[] = [];
+  const recording = new Proxy(db, {
+    get(target, key) {
+      if (key === "execute") return (q: SQL) => { seen.push(q); return target.execute(q); };
+      const v = Reflect.get(target, key, target);
+      return typeof v === "function" ? v.bind(target) : v;
+    },
+  });
+  await listListeners(recording, reader, { limit: 0, facets: false }, NOW);
+  const counts = seen.filter((q) => new PgDialect().sqlToQuery(q).sql.includes("count(*) FILTER"));
+  expect(counts).toHaveLength(1);
+  const rows = await run.execute<Record<string, string>>(sql`EXPLAIN ${counts[0]!}`);
+  return rows.map((r) => r["QUERY PLAN"]).join("\n");
+}
 
 describe("status and current work against Postgres (spec 2026-09-27 §4.2, §4.3)", () => {
   it("working needs an accepted, not removed, not completed acceptance on a request stored working", async () => {
@@ -301,6 +324,44 @@ describe("the status filter and the counts (spec 2026-09-27 §4.6)", () => {
       expect({ q, counts: (await listListeners(db, w.reader, q, NOW)).statusCounts })
         .toEqual({ q, counts: { working: 0, idle: 1, offline: 1 } });
     }
+  });
+
+  // A plan-shape guard, never a duration. The counts read each row's status three times over, one
+  // `count(*) FILTER` per word; an inlined CTE copies the status CASE, and its work EXISTS, into each
+  // of them, and on a real Lobby each copy became a per-row scan of `request_offers` (the
+  // whole-branch review measured 1.1 s at 5,000 listeners). Materialised, the CASE runs once per row
+  // and the plan holds exactly one work sub-plan. The count of sub-plans does not depend on the data,
+  // so a small fixture is enough.
+  it("the status counts compute each listener's status once: one work sub-plan, not one per word", async () => {
+    const w = await world();
+    const ada = await listener("ada");
+    await work(w, "Busy", [ada]);
+    await seenAt(ada, ago(60_000));
+    const plan = await countsPlan(db, w.reader);
+    expect(new Set([...plan.matchAll(/SubPlan (\d+)/g)].map((m) => m[1])).size).toBe(1);
+  });
+
+  // The partial index exists for the work lookup inside the status (spec §10, amended 2026-09-27):
+  // with sequential scans priced out, the counts' work sub-plan must be able to reach it. It fails
+  // if the index is dropped, or if the work predicate stops implying the index's `WHERE`.
+  it("the status counts' work lookup can use request_offers_active_participant_idx", async () => {
+    const w = await world();
+    const ada = await listener("ada");
+    const busy = await work(w, "Busy", [ada]);
+    await seenAt(ada, ago(60_000));
+    // 3,000 offers that were never accepted, by participants that are no listeners, so the primary
+    // key (which Postgres can also scan by its second column) is the larger index by far, as it is
+    // on a real Lobby, where the table keeps every offer ever made.
+    await db.execute(sql`
+      with p as (insert into participants (id, weave_id, name, kind, token)
+                 select gen_random_uuid(), ${w.target.weave.id}, 'o' || g, 'agent', 'plan-test-offerer-' || g
+                 from generate_series(1, 3000) g returning id)
+      insert into request_offers (request_id, participant_id) select ${busy.id}, id from p`);
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`analyze request_offers`);
+      await tx.execute(sql`set local enable_seqscan = off`);
+      expect(await countsPlan(tx, w.reader)).toContain("request_offers_active_participant_idx");
+    });
   });
 
   it("a status filter of [] is no filter; an unknown word, a non-array and four entries are validation", async () => {

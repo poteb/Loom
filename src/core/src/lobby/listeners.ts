@@ -282,10 +282,15 @@ async function readFacets(db: Db, lobbyId: string, c: Scope): Promise<ListenersF
 /**
  * The three status counts over the base predicate, the search and every filter **except** status
  * (spec 2026-09-27 §4.6), so they sum to what an "All" tab shows. One query, with the read's `now`.
+ *
+ * `MATERIALIZED` is load-bearing: a CTE referenced once is otherwise inlined, the status CASE is
+ * copied into each of the three `FILTER`s, and each copy's work EXISTS became a per-row scan of
+ * `request_offers` (about 1.1 s at 5,000 listeners and 15,000 offers, against 0.16 s materialised;
+ * spec §10 as amended). `status.test.ts` guards the plan's shape.
  */
 async function readStatusCounts(db: Db, lobbyId: string, c: Scope): Promise<StatusCounts> {
   const rows = await db.execute<StatusCounts>(sql`
-    WITH s AS (SELECT ${statusSql(c.now)} AS st FROM ${participants} WHERE ${whereFor(lobbyId, c, "status")})
+    WITH s AS MATERIALIZED (SELECT ${statusSql(c.now)} AS st FROM ${participants} WHERE ${whereFor(lobbyId, c, "status")})
     SELECT count(*) FILTER (WHERE st = 'working')::int AS working,
            count(*) FILTER (WHERE st = 'idle')::int AS idle,
            count(*) FILTER (WHERE st = 'offline')::int AS offline

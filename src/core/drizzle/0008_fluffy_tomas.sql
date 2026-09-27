@@ -1,0 +1,1 @@
+CREATE INDEX "request_offers_active_participant_idx" ON "request_offers" USING btree ("participant_id") WHERE "request_offers"."accepted" AND "request_offers"."removed_at" IS NULL AND "request_offers"."completed_at" IS NULL;

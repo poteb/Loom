@@ -118,6 +118,12 @@ idle or offline), its **current work** (the soonest due request it holds accepte
 `lobby/status.ts`, never stored and never an event: a status is true as of the read that computed
 it, and time alone moves a listener to offline.
 
+Migration 0008 adds `request_offers_active_participant_idx`, a partial btree index on
+`request_offers(participant_id)` over accepted, not removed, not completed rows: the work lookup
+behind a status (the directory's status filter and counts, `workFor`). The status counts compute
+each row's status once (`WITH s AS MATERIALIZED`), so a count read is one pass over the Lobby's
+listeners with one indexed lookup each.
+
 The three Lobby tables and the three added columns are migration
 `drizzle/0003_steep_dracula.sql`; it is purely additive. `drizzle/0004_furry_captain_stacy.sql` adds
 `participants_capabilities_idx`, a partial `jsonb_path_ops` GIN index on `participants.capabilities`

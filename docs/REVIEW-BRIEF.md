@@ -84,12 +84,12 @@ out because it needs the server. The spec is
 [superpowers/specs/2026-09-27-loom-listener-status-design.md](superpowers/specs/2026-09-27-loom-listener-status-design.md),
 the plan
 [superpowers/plans/2026-09-27-loom-listener-status.md](superpowers/plans/2026-09-27-loom-listener-status.md);
-both were approved by Paw (PR #43). One migration (0007, one nullable column); no new route, MCP
+both were approved by Paw (PR #43). Two migrations (0007, one nullable column; 0008, one partial index); no new route, MCP
 tool, CLI command, event type or error code, and no change to authorisation.
 
 | Layer | What this branch changed |
 | --- | --- |
-| core | `lobby/status.ts` (new): the one status rule twice, `listenerStatus` (TypeScript, for rows) and `statusSql(now)` (SQL, for the filter and the counts), asserted to agree: offline when never seen or when `now - last_seen_at` is more than twice the profile's numeric `pollIntervalMs` (`DEFAULT_POLL_INTERVAL_MS`, 15 minutes, otherwise; exactly twice is online), offline over working, working when the listener holds an accepted, not removed, not completed acceptance on a request stored `working`, otherwise idle; `workFor` (one query for a set of participants), `currentWorkOf` (soonest due, then created, then id; `{ requestId, title, threadId, more }`, the request's Lobby names only), `cadenceOf` (null gaps under two check-ins, the even-count median floored), `listenerFacts`. `actors.ts`: `stampSeen` appends the stamp to `seen_history` in the statement that writes `last_seen_at`, keeping the last 20; `toPublicParticipant` never reads it. `listeners-input.ts`: the `status` filter (a list of the three words, `[]` is no filter, anything else `validation` with the fixed message). `listeners.ts`: the filter as `statusSql(now) = ANY($1::text[])`, `statusCounts` on every answer (one CTE over every filter but status; the four facets honour status), one `now` per read as a bind parameter. `profile.ts`: `findAgents` results carry the three fields. `requests.ts`: `hydrate` gives every acceptance `listenerStatus`. Migration `0007`: `participants.seen_history`, `timestamptz[]`, nullable, nothing backfilled |
+| core | `lobby/status.ts` (new): the one status rule twice, `listenerStatus` (TypeScript, for rows) and `statusSql(now)` (SQL, for the filter and the counts), asserted to agree: offline when never seen or when `now - last_seen_at` is more than twice the profile's numeric `pollIntervalMs` (`DEFAULT_POLL_INTERVAL_MS`, 15 minutes, otherwise; exactly twice is online), offline over working, working when the listener holds an accepted, not removed, not completed acceptance on a request stored `working`, otherwise idle; `workFor` (one query for a set of participants), `currentWorkOf` (soonest due, then created, then id; `{ requestId, title, threadId, more }`, the request's Lobby names only), `cadenceOf` (null gaps under two check-ins, the even-count median floored), `listenerFacts`. `actors.ts`: `stampSeen` appends the stamp to `seen_history` in the statement that writes `last_seen_at`, keeping the last 20; `toPublicParticipant` never reads it. `listeners-input.ts`: the `status` filter (a list of the three words, `[]` is no filter, anything else `validation` with the fixed message). `listeners.ts`: the filter as `statusSql(now) = ANY($1::text[])`, `statusCounts` on every answer (one CTE over every filter but status; the four facets honour status), one `now` per read as a bind parameter. `profile.ts`: `findAgents` results carry the three fields. `requests.ts`: `hydrate` gives every acceptance `listenerStatus`. Migration `0007`: `participants.seen_history`, `timestamptz[]`, nullable, nothing backfilled. Migration `0008`: `request_offers_active_participant_idx`, partial, over the active acceptances; the counts CTE is `MATERIALIZED` (whole-branch review F1) |
 | server | nothing in `src/server/src`: the listeners route already spreads its `filter` JSON into the query, and the new fields ride the existing shapes |
 | client | `ListenerStatus`, `CurrentWork`, `Cadence`, `StatusCounts`; `Listener`, `FoundAgent`, `ListenersQuery`, `ListenersPage` and `Acceptance` gain their fields; `listListeners` sends `status` inside `filter`. No new method |
 | mcp-tools | the fields pass through `find_agents` and `get_request`; each description gains one sentence (the `find_agents` one verbatim from spec §5) |
@@ -145,9 +145,9 @@ reviews), not drift:
   generation-fenced Lobby refresh (about ten reads), not a read of that request alone.
 
 **KNOWN-ISSUES rows added on purpose**, not to be re-reported: a keyed agent's participant-token
-call in another Weave does not check in its Lobby listing; the working lookup, the status filter and
-the counts read `request_offers` by `participant_id`, which has no index; `seen_history` starts
-empty at the deploy of 0007, so every listener reads "rate unknown" until it has checked in twice;
+call in another Weave does not check in its Lobby listing; the status filter and the counts compute
+every listener's status on each read, one pass with an indexed work lookup each; `seen_history`
+starts empty at the deploy of 0007, so every listener reads "rate unknown" until it has checked in twice;
 statuses, counts and rates are as of their read, and time alone moves a listener to offline. Two
 existing rows changed: the per-refresh cost row on `session.ts` now names which events schedule a
 refresh, and the wall-clock ordering row now also names `lobby/onboarding.ts` (a test flake on this

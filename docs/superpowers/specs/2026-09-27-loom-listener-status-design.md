@@ -618,6 +618,15 @@ on its five-minute poll).
   added)**: the table holds a few rows per request (at most one per listener and request), so at
   the scale this instance runs at the planner's hashed semi-join over the rows the conditions keep
   is cheap, once per read. A partial index is the remedy if it grows (KNOWN-ISSUES).
+  Amended 2026-09-27 during implementation (whole-branch review, F1): the premise did not hold for
+  the counts. Their CTE was inlined, so each of the three counts evaluated the status, and its work
+  lookup ran as a per-row scan of `request_offers`. Measured on 5,000 listeners (1,197 online) and
+  15,000 offers (3,000 requests, half working): about 1.15 s for one count read. The counts now
+  compute each status once (`WITH s AS MATERIALIZED`, guarded by a plan-shape test): about 0.16 s.
+  **Migration 0008 adds the partial index** `request_offers_active_participant_idx` on
+  `request_offers(participant_id)` over accepted, not removed, not completed rows: the counts then
+  take about 16 ms, and a directory read with the status filter about 38 ms instead of about
+  480 ms.
 - No new credential, no new route, no new event, no change to authorisation.
 
 ## 11. What this does not promise
@@ -635,5 +644,6 @@ on its five-minute poll).
 
 ## 12. Deploy
 
-Migration 0007 is applied by `deploy/live-update.cmd` as 0006 was, then both health checks. Then
+Migration 0007 is applied by `deploy/live-update.cmd` as 0006 was, then both health checks.
+Amended 2026-09-27 (whole-branch review, F1): the same deploy applies 0008, the partial index of §10. Then
 smoke test 9 (§9.6) with Paw, one step at a time.

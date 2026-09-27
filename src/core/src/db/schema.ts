@@ -141,7 +141,14 @@ export const requestOffers = pgTable("request_offers", {
   completionNote: text("completion_note"),
   removedAt: timestamp("removed_at", { withTimezone: true }),
   overdueAt: timestamp("overdue_at", { withTimezone: true }),
-}, (t) => [primaryKey({ columns: [t.requestId, t.participantId] })]);
+}, (t) => [
+  primaryKey({ columns: [t.requestId, t.participantId] }),
+  // The work lookup a listener's status reads (lobby/status.ts, spec 2026-09-27 §10 as amended): by
+  // participant, over the active acceptances only, so it stays the size of the work in hand while
+  // the table keeps every offer ever made. The primary key leads with `request_id` and cannot serve it.
+  index("request_offers_active_participant_idx").on(t.participantId)
+    .where(sql`${t.accepted} AND ${t.removedAt} IS NULL AND ${t.completedAt} IS NULL`),
+]);
 
 /** A single-use way into another Weave, handed to a Lobby participant. Never carries a secret. */
 export const weaveInvitations = pgTable("weave_invitations", {
