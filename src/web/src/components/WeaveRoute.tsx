@@ -5,7 +5,7 @@ import type { SessionTarget } from "../session.js";
 import { useSession } from "../useSession.js";
 import { leavingIsSafe } from "../persistence.js";
 import { weaveKey } from "../weaves-store.js";
-import { pathForView, viewOfPath, type MainArea } from "../lobby-view.js";
+import { isWeavePathOf, pathForView, viewOfPath, type MainArea } from "../lobby-view.js";
 import { WeaveView } from "./WeaveView.js";
 import { HomeLink } from "./HomeLink.js";
 import { PersistenceBar } from "./PersistenceBar.js";
@@ -104,6 +104,10 @@ function WeaveSession({ initialView, ...props }:
   // directory's `key` (spec §4.4), bumped only by `popstate`.
   const [main, setMain] = useState<{ view: MainArea; popSeq: number }>(
     () => ({ view: initialView ?? "thread", popSeq: 0 }));
+  // Whether the address bar is on one of the Lobby's own paths. True from the start on `/lobby`, and
+  // turned true later by `claimLobbyAddress` on a `/weave/<lobby id>` that has just learned it is the
+  // Lobby. Never turned false again: once the page owns its address, it keeps it.
+  const [ownsAddress, setOwnsAddress] = useState(() => viewOfPath(location.pathname) !== undefined);
   // One listener, registered only where a path of ours could ever be popped, and deliberately NOT
   // conditioned on `canLeave`: storage can degrade after a push, and a listener torn down mid-life
   // would leave Back changing the URL without changing the view. A `popstate` this page never caused
@@ -112,23 +116,38 @@ function WeaveSession({ initialView, ...props }:
   // It needs no lifetime guard of its own, unlike the handler below: `WeaveSession` is above
   // `key={reloadKey}`, so a join does not remount it, and the effect closes over no render value —
   // it reads `location.pathname` when the event arrives and updates through the functional setter.
+  // `ownsAddress` is its one dependency, and it only ever goes from false to true, so the listener is
+  // registered at most once (amended 2026-09-27: a replaced `/weave/<lobby id>` needs it too).
   useEffect(() => {
-    if (viewOfPath(location.pathname) === undefined) return;
+    if (!ownsAddress) return;
     // The bump is deliberately not conditioned on the view having changed: two entries can carry the
     // same view and different query strings, and Back between them must re-seed the directory from
     // the entry it landed on (spec §4.4).
     const onPop = () => setMain((m) => ({ view: viewOfPath(location.pathname) ?? "thread", popSeq: m.popSeq + 1 }));
     addEventListener("popstate", onPop);
     return () => removeEventListener("popstate", onPop);
-  }, []);
+  }, [ownsAddress]);
   const setView = (next: MainArea) => setMain((m) => ({ ...m, view: next }));
+  // `/weave/<lobby id>` is an old spelling of `/lobby` (amended 2026-09-27, after smoke test 9): the
+  // address is replaced, which adds no entry and loads nothing, so this is the same page and the same
+  // session under the Lobby's own address. It asks no `leavingIsSafe`, because nothing is left: a
+  // reload of `/lobby` needs exactly the credential a reload of `/weave/<lobby id>` needs. The path
+  // is re-read here so a second call, or one arriving after something else moved the address, does
+  // nothing.
+  const claimLobbyAddress = (weaveId: string) => {
+    if (!isWeavePathOf(location.pathname, weaveId)) return;
+    history.replaceState(null, "", pathForView(main.view));
+    setOwnsAddress(true);
+  };
   return <WeaveMount key={reloadKey} {...props} onJoined={() => setReloadKey((n) => n + 1)}
-    view={main.view} viewKey={main.popSeq} setView={setView} />;
+    view={main.view} viewKey={main.popSeq} setView={setView} claimLobbyAddress={claimLobbyAddress} />;
 }
 
-function WeaveMount({ client, storage, notice, openMainInPlace, target, lobby, onJoined, view, viewKey, setView }:
+function WeaveMount({ client, storage, notice, openMainInPlace, target, lobby, onJoined, view, viewKey, setView,
+  claimLobbyAddress }:
   RouteDeps & { target: SessionTarget; lobby?: Lobby; onJoined: () => void;
-    view: MainArea; viewKey: number; setView: (next: MainArea) => void }) {
+    view: MainArea; viewKey: number; setView: (next: MainArea) => void;
+    claimLobbyAddress: (weaveId: string) => void }) {
   const { session, state } = useSession(target, { client, storage, onWrite: notice.note });
   // The notice is a plain page-scoped object, so a subscription is what turns a failed write —
   // raised by this session's own §10.9 entry write, or by the form that rendered this page in
@@ -212,6 +231,12 @@ function WeaveMount({ client, storage, notice, openMainInPlace, target, lobby, o
 
   const here = lobby ?? discovered;
   const isLobby = !!here && target.kind === "id" && here.weaveId === target.weaveId;
+  // The moment this page learns it is the Lobby, from whichever answer comes first: the fork's own
+  // `getLobby()` above on a page with no credential, or the session's discovery on one that loaded.
+  // Only an `id` target is ever claimed; `/w/<secret>` stays where it is.
+  const lobbyId = (here ?? state.lobby)?.weaveId;
+  const claimed = target.kind === "id" && lobbyId === target.weaveId ? lobbyId : undefined;
+  useEffect(() => { if (claimed !== undefined) claimLobbyAddress(claimed); }, [claimed]);
   // While the question is open the page has no honest card to show: the explanation is the wrong one
   // for the one Weave that can be joined from here, and a request is long enough to read. No way
   // home on it either, for the reason `WeaveView`'s `loading` card has none.

@@ -460,6 +460,23 @@ describe("the unjoined Lobby (spec §3.3)", () => {
     expect(v.calls(LOBBY_URL)).toBe(1);
   });
 
+  // Amended 2026-09-27 after smoke test 9: only the Lobby's id is an old spelling of `/lobby`.
+  it("leaves /weave/<otherId> in the address bar, joined or not", async () => {
+    const replaced = vi.spyOn(history, "replaceState");
+    const storage = memoryStorage();
+    setIdentity(storage, OTHER, { token: "participant-token", participantId: "p-dana" });
+    const joinedPage = mountApp({ path: `/weave/${OTHER}`, storage, routes: weaveRoutes(OTHER, "Test Weave") });
+    replaced.mockClear();
+    await settle();
+    const seen = [joinedPage.iAm(), location.pathname, replaced.mock.calls.length];
+    joinedPage.unmount();
+    mountApp({ path: `/weave/${OTHER}` });
+    replaced.mockClear();
+    await settle();
+    expect([...seen, !!screen.queryByText("This browser holds no key for this Weave."), location.pathname,
+      replaced.mock.calls.length]).toEqual(["dana", `/weave/${OTHER}`, 0, true, `/weave/${OTHER}`, 0]);
+  });
+
   it("asks nothing extra on a page that loaded with a stored token", async () => {
     // The fork's `getLobby()` belongs to the `no-credential` branch alone; the one call here is the
     // session's own discovery, which every load has always made.
@@ -1385,6 +1402,19 @@ describe("My Weaves row actions (spec §4.2, §5)", () => {
     saveWeaveEntry(storage, OTHER, { title: "Test Weave" });
     mountWeaves({ storage, lobbyWeaveId: OTHER });
     expect(!!screen.queryByText("Lobby")).toBe(true);
+  });
+
+  // Amended 2026-09-27 after smoke test 9: the Lobby opens at its own address, where its Listeners
+  // view can write to the address bar; every other row keeps `/weave/<id>`.
+  it("links the Lobby row to /lobby and every other row to /weave/<id>", () => {
+    const storage = memoryStorage();
+    saveWeaveEntry(storage, LOBBY.weaveId, { ...HELD, title: "Lobby", lastOpenedAt: "2026-09-27T10:00:00.000Z" });
+    saveWeaveEntry(storage, OTHER, { ...HELD, title: "Test Weave", lastOpenedAt: "2026-09-26T10:00:00.000Z" });
+    const v = mountWeaves({ storage, lobbyWeaveId: LOBBY.weaveId, routes: {
+      [weaveUrl(LOBBY.weaveId)]: () => json(weaveAnswer(LOBBY.weaveId, "Lobby")),
+      [weaveUrl(OTHER)]: () => json(weaveAnswer(OTHER, "Test Weave")),
+    } });
+    expect([v.titles(), v.href(0), v.href(1)]).toEqual([["Lobby", "Test Weave"], "/lobby", `/weave/${OTHER}`]);
   });
 
   it("badges an archived row", () => {

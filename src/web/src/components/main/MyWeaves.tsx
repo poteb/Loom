@@ -327,7 +327,9 @@ export function MyWeaves({ client, storage, weaves, onWrite, notice, openInPlace
                           <button type="button" class="weave-row-title weave-row-title-inplace"
                             onClick={() => openInPlace(open)}>{row.title}</button>
                         )
-                        : <a class="weave-row-title" href={`/weave/${open}`}>{row.title}</a>)
+                        // The Lobby's row goes to the Lobby's own address, where its Listeners
+                        // view may write to the address bar (amended 2026-09-27, smoke test 9).
+                        : <a class="weave-row-title" href={row.isLobby ? "/lobby" : `/weave/${open}`}>{row.title}</a>)
                       : <span class="weave-row-title">{row.title}</span>}
                     {row.isLobby && <span class="badge">Lobby</span>}
                     {row.archived && <span class="badge">Archived</span>}

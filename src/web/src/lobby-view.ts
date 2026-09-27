@@ -15,3 +15,9 @@ export function viewOfPath(pathname: string): MainArea | undefined {
 export function pathForView(view: MainArea): string {
   return view === "listeners" ? "/lobby/listeners" : "/lobby";
 }
+
+/** Whether `pathname` is `/weave/<weaveId>`, either spelling. For the Lobby's id that is an old
+ *  spelling of `/lobby`, which the Lobby page replaces with its own (amended 2026-09-27). */
+export function isWeavePathOf(pathname: string, weaveId: string): boolean {
+  return pathname === `/weave/${weaveId}` || pathname === `/weave/${weaveId}/`;
+}

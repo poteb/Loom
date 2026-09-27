@@ -587,6 +587,13 @@ page loads now**, and let the overhaul introduce a router if it needs one. One c
 accept: `/lobby` stays `/lobby` in the address bar (no rewrite to `/weave/<id>`), which is the
 better bookmark anyway.
 
+**Amended 2026-09-27 on Paw's word after smoke test 9:** the rewrite now runs the other way.
+`/weave/<the Lobby's id>` still renders the Lobby, and the moment the page learns the id is the
+Lobby's it replaces the address with `/lobby` (`history.replaceState`: no new entry, no reload, the
+same session), so old bookmarks and any other link land on the Lobby's own address, where its
+Listeners view can write to the address bar (listeners view spec §4.2, same date). Every other
+`/weave/<id>` is unchanged, and `/w/<secret>` is unchanged in every respect.
+
 #### The one exception: a credential that did not persist
 
 A full page load destroys the JS context, and with it the memory fallback that holds a credential
@@ -847,6 +854,9 @@ Per Paw's scale note, this has to survive hundreds of rows:
   (from the entry's `name`, §2.4), and — when the entry carries a `secret` — a **Copy link** action
   for `/w/<secret>`. The row links to `/weave/<id>`; it does **not** link to `/w/<secret>` even when
   the secret is known, so the address bar never gains a secret it did not already have (§5).
+  **Amended 2026-09-27 on Paw's word after smoke test 9:** the Lobby's row (the one whose id is the
+  discovered Lobby's, the row the Lobby badge is on) links to `/lobby` instead, the same address as
+  **Open the Lobby**. Copy link is unchanged.
 - **A row that cannot safely be followed is not a link at all.** When
   `leavingIsSafe(storage, notice, weaveKey(id))` is false (§3.1) — this row's entry is memory-only,
   **or** any write on this page has failed — the title is a **button** that opens the Weave in
