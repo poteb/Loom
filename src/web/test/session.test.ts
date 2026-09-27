@@ -2165,6 +2165,47 @@ describe("the Lobby's listener count (spec §5.1)", () => {
     } finally { session.dispose(); }
   });
 
+  it("stores the count read's statusCounts for the tiles", async () => {
+    const f = await lobbyFixture();
+    const session = await makeSession({ kind: "secret", secret: f.secret }, f.storage);
+    try {
+      await waitFor(() => session.getState().listenerStatusCounts !== undefined);
+      expect(session.getState().listenerStatusCounts)
+        .toEqual((await anon.withToken(f.requester.token).listListeners({ limit: 0, facets: false })).statusCounts);
+    } finally { session.dispose(); }
+  });
+
+  it("a failed count read keeps the last tiles", async () => {
+    const f = await lobbyFixture();
+    const c = sideReadClient({ [LISTENERS]: onCall(2, UNREACHABLE) });
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.secret }, storage: f.storage });
+    await session.load();
+    try {
+      await waitFor(() => session.getState().listenerStatusCounts !== undefined);
+      const answered = session.getState().listenerStatusCounts;
+      await waitFor(() => session.getState().connection === "open");
+      await anon.joinLobby({ name: `Late-${++fixtureN}`, kind: "human" });
+      await waitFor(() => session.getState().listenerCountError === true);
+      expect(session.getState().listenerStatusCounts).toBe(answered);
+    } finally { session.dispose(); }
+  });
+
+  it("becoming visible re-reads the tiles", async () => {
+    const f = await lobbyFixture();
+    const c = sideReadClient();
+    const vis = fakeVisibility();
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.secret }, storage: f.storage, visibility: vis });
+    await session.load();
+    try {
+      await waitFor(() => session.getState().listenerStatusCounts !== undefined);
+      const before = c.calls(LISTENERS);
+      vis.set(false);
+      expect(c.calls(LISTENERS)).toBe(before);                           // hiding reads nothing
+      vis.set(true);
+      await waitFor(() => c.calls(LISTENERS) > before);
+    } finally { session.dispose(); }
+  });
+
   // The ordering rule on the failure path. Without it, a stale rejection spends the page's
   // credential recovery — the most destructive act on this page — on a read nothing is waiting for.
   it("drops a count rejection that a newer answer has already overtaken", async () => {

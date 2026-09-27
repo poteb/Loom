@@ -1,5 +1,8 @@
 import type { SessionState } from "../session.js";
 
+/** The three tiles, in order (spec 2026-09-27 §6.4): display only, not controls. */
+const TILES = [["working", "Working"], ["idle", "Idle"], ["offline", "Offline"]] as const;
+
 /**
  * The Lobby sidebar's way into the listeners directory (spec §8): the `Listeners` section header and
  * its `View all <n>` toggle, in the file position the stack of
@@ -44,6 +47,17 @@ export function ListenersLink({ state, active, onToggle }: {
         <button type="button" class="listeners-line-link" aria-current={active ? "true" : undefined}
           onClick={() => onToggle()}>{label}</button>
       </div>
+      {/* Only once a count read has answered; the section's gate above keeps them to the Lobby. */}
+      {state.listenerStatusCounts && (
+        <div class="listener-tiles">
+          {TILES.map(([word, label]) => (
+            <div key={word} class={`listener-tile listener-tile-${word}`}>
+              <span class="listener-tile-count">{state.listenerStatusCounts![word].toLocaleString()}</span>{" "}
+              <span class="listener-tile-word">{label}</span>
+            </div>
+          ))}
+        </div>
+      )}
       {state.listenerCount === undefined && state.listenerCountError && <span class="muted nav-note">count unavailable</span>}
     </div>
   );

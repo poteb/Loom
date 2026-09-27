@@ -173,6 +173,9 @@ export function ListenersPage({ session, invite, onOpenThread }: {
   // view flip and across a `doLoad` — the re-query after a recovery comes from the `loading` →
   // `ready` remount (spec §6.3) and not from this dependency.
   useEffect(() => { run(view); }, [view, session]);
+  // Spec 2026-09-27 §6.6: becoming visible re-runs the view on screen, the first page with facets as
+  // "Reload the list" asks, rows kept until the answer. Pages Show more appended are replaced by it.
+  useEffect(() => session.onVisible(() => { if (live.current) run(viewRef.current); }), [session]);
 
   /**
    * The one way a control changes the page: new state, new URL, and — through the effect — one
@@ -504,7 +507,7 @@ function Row({ listener: l, now, invite, onInvite, onOpenThread }: {
       {open && (
         <tr class="listener-details" id={details}>
           <td colSpan={COLUMNS.length}>
-            <ProfileCard participant={{ ...p, capabilities: profile }} now={now} />
+            <ProfileCard participant={{ ...p, capabilities: profile }} now={now} status={l.status} />
           </td>
         </tr>
       )}

@@ -13,11 +13,12 @@ import { GuidelinesPanel, GUIDELINES_MAX } from "../src/components/GuidelinesPan
 import { RequestsPanel } from "../src/components/RequestsPanel.js";
 import { ProfileCard } from "../src/components/ProfileCard.js";
 import { WeaveView } from "../src/components/WeaveView.js";
+import { ListenersPage } from "../src/components/listeners/ListenersPage.js";
 import { App, routeOf } from "../src/app.js";
 import { MAX_GUIDELINES_LENGTH } from "@loom/core";
-import { LoomClient, type Acceptance, type Offer, type Thread } from "@loom/client";
+import { LoomClient, type Acceptance, type ListenersQuery, type LoomRequest, type Offer, type Thread } from "@loom/client";
 import { CLOSED_REQUESTS_PAGE, type Session, type SessionState } from "../src/session.js";
-import type { VersionedRequest } from "../src/requests-state.js";
+import { applyEvent, applySnapshot, type VersionedRequest } from "../src/requests-state.js";
 import { memoryStorage, type KeyValueStorage } from "../src/storage.js";
 import { createPersistenceNotice } from "../src/persistence.js";
 import { createWeavesSignal } from "../src/weaves-signal.js";
@@ -41,7 +42,9 @@ function session(over: Partial<Session> = {}): Session {
     openRequest: vi.fn(async () => ({ ...request(), acceptances: [] })), offer: vi.fn(async () => {}), accept: vi.fn(async () => {}), cancel: vi.fn(async () => {}),
     targets: vi.fn(async () => []),
     listListeners: vi.fn(() => ({ issue: { generation: 0 }, page: Promise.resolve({ total: 0, matched: 0, listeners: [], statusCounts: { working: 0, idle: 0, offline: 0 } }) })),
-    reportCredentialFailure: vi.fn(), markAllRead: vi.fn(async () => {}), ...over };
+    reportCredentialFailure: vi.fn(), markAllRead: vi.fn(async () => {}),
+    onVisible: () => () => {},
+    ...over };
 }
 
 // --- Lobby fixtures ---------------------------------------------------------
@@ -847,12 +850,43 @@ describe("RequestsPanel", () => {
     });
     const { container } = render(<RequestsPanel state={lobbyState({ participants: cast, requests: { r1: working } })} session={session()} onError={() => {}} now={NOW} />);
     expect([...container.querySelectorAll(".acceptance")].map((li) => li.textContent)).toEqual([
-      "Helper due 2026-09-16T14:30:00.000Z completed",
-      "Other due 2026-09-16T14:30:00.000Z removed",
-      "Fourth due 2026-09-16T13:00:00.000Z overdue",
-      "Fifth due 2026-09-16T14:30:00.000Z working",
+      "Helper due 2026-09-16T14:30:00.000Z completed never seen idle",
+      "Other due 2026-09-16T14:30:00.000Z removed never seen idle",
+      "Fourth due 2026-09-16T13:00:00.000Z overdue never seen idle",
+      "Fifth due 2026-09-16T14:30:00.000Z working never seen idle",
     ]);
     expect(container.querySelectorAll(".request-list > li")).toHaveLength(1);    // working is live, not closed
+  });
+
+  it("the requests panel's acceptance shows seen and the listener status beside the acceptance badge", () => {
+    const working = request({ status: "working", offers: [anOffer("p2", { accepted: true })], acceptances: [{
+      participantId: "p2", dueAt: "2026-09-16T14:30:00.000Z", completedAt: null, note: null, removed: false, removedAt: null,
+      overdue: false, overdueNotifiedAt: null, lastSeenAt: "2026-09-16T13:25:00.000Z", listenerStatus: "offline" }] });
+    const { container } = render(<RequestsPanel state={lobbyState({ requests: { r1: working } })} session={session()} onError={() => {}} now={NOW} />);
+    const li = container.querySelector(".acceptance")!;
+    const status = li.querySelector(".listener-status")!;
+    expect([li.querySelector(".badge")!.textContent, li.querySelector(".acceptance-seen")!.textContent, status.className, status.textContent])
+      .toEqual(["working", "seen 5 min ago", "listener-status listener-status-offline", "offline"]);
+  });
+
+  // Review round 1, F1. The keeper accepts a listener that is offline; the session folds the
+  // `request.accepted` event, and the request read that event triggers is held or fails, so no
+  // snapshot follows. The panel must not call that listener working: it shows no status word.
+  it("an offline agent accepted by an event, its follow-up request read held or failing, shows no listener status until a read supplies it", () => {
+    const accepted = applyEvent({ r1: request({ offers: [anOffer("p2")], version: 5 }) }, {
+      weaveId: "w1", seq: 6, threadId: "th1", type: "request.accepted", actor: "p1", at: "2026-09-16T13:20:00.000Z",
+      payload: { requestId: "r1", requesterId: "p1", participantIds: ["p2"], dueAt: "2026-09-16T14:30:00.000Z", targetWeaveTitle: "Loom session" },
+    });
+    const { container, rerender } = render(<RequestsPanel state={lobbyState({ requests: accepted })} session={session()} onError={() => {}} now={NOW} />);
+    const li = () => container.querySelector(".acceptance")!;
+    expect([li().querySelector(".listener-status"), li().querySelector(".acceptance-seen")!.textContent, li().textContent])
+      .toEqual([null, "never seen", "Helper due 2026-09-16T14:30:00.000Z working never seen"]);
+    // The read, when it lands, is the authority: the server says offline, and the panel says so.
+    const read = applySnapshot(accepted, request({ status: "working", lastEventSeq: 6, offers: [anOffer("p2", { accepted: true })], acceptances: [{
+      participantId: "p2", dueAt: "2026-09-16T14:30:00.000Z", completedAt: null, note: null, removed: false, removedAt: null,
+      overdue: false, overdueNotifiedAt: null, lastSeenAt: "2026-09-16T12:00:00.000Z", listenerStatus: "offline" }] }) as unknown as LoomRequest);
+    rerender(<RequestsPanel state={lobbyState({ requests: read })} session={session()} onError={() => {}} now={NOW} />);
+    expect(li().querySelector(".listener-status-offline")?.textContent).toBe("offline");
   });
 
   it("shows Cancel to the requester and to nobody else", () => {
@@ -1017,6 +1051,16 @@ describe("ProfileCard", () => {
     expect(container.querySelector(".profile-seen")!.textContent).toBe("seen 5 min ago");
     rerender(<ProfileCard participant={{ ...helper, lastSeenAt: null }} now={now} />);
     expect(container.querySelector(".profile-seen")!.textContent).toBe("never seen");
+  });
+
+  it("the profile card shows the status word beside seen", () => {
+    const now = Date.parse("2026-09-23T12:00:00.000Z");
+    const { container, rerender } = render(<ProfileCard participant={{ ...helper, lastSeenAt: "2026-09-23T11:55:00.000Z" }} now={now} status="offline" />);
+    const word = container.querySelector(".listener-status")!;
+    expect([container.querySelector(".profile-seen")!.textContent, word.className, word.textContent, word.previousElementSibling?.className])
+      .toEqual(["seen 5 min ago", "listener-status listener-status-offline", "offline", "profile-seen"]);
+    rerender(<ProfileCard participant={{ ...helper, lastSeenAt: "2026-09-23T11:55:00.000Z" }} now={now} />);
+    expect(container.querySelector(".listener-status")).toBeNull();
   });
 });
 
@@ -1418,4 +1462,17 @@ describe("GuidelinesPanel", () => {
       expect(s.setGuidelines).not.toHaveBeenCalled();
     });
   }
+});
+
+describe("the directory on becoming visible (spec 2026-09-27 §6.6)", () => {
+  it("becoming visible re-runs the directory's view: the first page, with facets", async () => {
+    let visible: (() => void) | undefined;
+    const page = { total: 1, matched: 1, listeners: [], statusCounts: { working: 0, idle: 1, offline: 0 } };
+    const listListeners = vi.fn((_q: ListenersQuery) => ({ issue: { generation: 0 }, page: Promise.resolve(page) }));
+    render(<ListenersPage session={session({ listListeners, onVisible: (fn) => { visible = fn; return () => {}; } })} />);
+    await new Promise((r) => setTimeout(r, 0));
+    visible!();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(listListeners.mock.calls.map((c) => c[0])).toEqual([{ sort: "name", dir: "asc", limit: 50 }, { sort: "name", dir: "asc", limit: 50 }]);
+  });
 });

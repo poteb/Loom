@@ -1226,6 +1226,14 @@ describe("a row's Invite and Profile", () => {
     expect([closed, open, toggle.getAttribute("aria-expanded"), !!card()])
       .toEqual([["false", false], ["true", "ada", "ada@example.com", ["ada"]], "false", false]);
   });
+
+  it("hands the row's status to the card it opens", async () => {
+    const v = mountLobby({ storage: joined() });
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Profile of ada" }));
+    await settle();
+    expect(v.container.querySelector(".listener-details .profile-card .listener-status")!.className).toBe("listener-status listener-status-idle");
+  });
 });
 
 /**
@@ -2048,6 +2056,24 @@ describe("the Lobby sidebar's listeners line (spec §5.1)", () => {
       <ListenersLink active={false} onToggle={() => {}} state={lobbyState({ weave: { ...LOBBY_WEAVE, id: "22222222-2222-4222-8222-222222222222" }, listenerCount: 3 })} />,
     );
     expect(container.innerHTML).toBe("");
+  });
+
+  it("the Lobby sidebar shows the three tiles once the count read answers; none before, none off the Lobby", () => {
+    const tiles = (c: Element) => [...c.querySelectorAll(".listener-tiles .listener-tile")].map((t) => [t.className, t.textContent]);
+    const counts = { working: 2, idle: 58, offline: 2 };
+    const on = render(<ListenersLink active={false} onToggle={() => {}} state={lobbyState({ listenerCount: 62, listenerStatusCounts: counts })} />);
+    expect(tiles(on.container)).toEqual([
+      ["listener-tile listener-tile-working", "2 Working"],
+      ["listener-tile listener-tile-idle", "58 Idle"],
+      ["listener-tile listener-tile-offline", "2 Offline"],
+    ]);
+    on.unmount();
+    const before = render(<ListenersLink active={false} onToggle={() => {}} state={lobbyState()} />);
+    expect(before.container.querySelector(".listener-tiles")).toBeNull();
+    before.unmount();
+    const off = render(<ListenersLink active={false} onToggle={() => {}}
+      state={lobbyState({ weave: { ...LOBBY_WEAVE, id: "22222222-2222-4222-8222-222222222222" }, listenerStatusCounts: counts })} />);
+    expect(off.container.innerHTML).toBe("");
   });
 
   // A reload keeps the Weave and the pointer on screen while it runs, and neither count cell is
