@@ -2249,9 +2249,17 @@ describe("the Lobby's listener count (spec §5.1)", () => {
     } finally { session.dispose(); }
   });
 
-  it("becoming visible re-reads the tiles", async () => {
+  it("becoming visible re-reads the tiles, and they take the new answer", async () => {
     const f = await lobbyFixture();
-    const c = sideReadClient();
+    // From the flip on, the count read answers with numbers no real Lobby here has, so the tiles
+    // can only hold them if the read the flip made is the one they took.
+    const NEW = { working: 701, idle: 702, offline: 703 };
+    let rewrite = false;
+    const rewritten: Answer = async (pass) => {
+      const body = await (await pass()).json();
+      return new Response(JSON.stringify({ ...body, statusCounts: NEW }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    const c = sideReadClient({ [LISTENERS]: () => (rewrite ? rewritten : undefined) });
     const vis = fakeVisibility();
     const session = createSession({ client: c.client, target: { kind: "secret", secret: f.secret }, storage: f.storage, visibility: vis });
     await session.load();
@@ -2260,9 +2268,46 @@ describe("the Lobby's listener count (spec §5.1)", () => {
       const before = c.calls(LISTENERS);
       vis.set(false);
       expect(c.calls(LISTENERS)).toBe(before);                           // hiding reads nothing
+      rewrite = true;
       vis.set(true);
       await waitFor(() => c.calls(LISTENERS) > before);
+      await waitFor(() => session.getState().listenerStatusCounts?.working === NEW.working);
+      expect(session.getState().listenerStatusCounts).toEqual(NEW);
     } finally { session.dispose(); }
+  });
+
+  // Spec 2026-09-27 §6.6: the directory re-runs through `onVisible`, so its fan-out is the
+  // mechanism, not a detail: once per show, never on a hide, and never after an unsubscribe.
+  it("onVisible calls a subscriber once per show, never on a hide, and not after it unsubscribes", async () => {
+    const f = await lobbyFixture();
+    const vis = fakeVisibility();
+    const session = createSession({ client: sideReadClient().client, target: { kind: "secret", secret: f.secret }, storage: f.storage, visibility: vis });
+    await session.load();
+    try {
+      let calls = 0;
+      const off = session.onVisible(() => { calls++; });
+      vis.set(false);
+      const onHide = calls;
+      vis.set(true);
+      const onShow = calls;
+      off();
+      vis.set(false);
+      vis.set(true);
+      expect([onHide, onShow, calls]).toEqual([0, 1, 1]);
+    } finally { session.dispose(); }
+  });
+
+  it("after dispose, a show calls no subscriber and the session no longer listens to the tab", async () => {
+    const f = await lobbyFixture();
+    const vis = fakeVisibility();
+    const session = createSession({ client: sideReadClient().client, target: { kind: "secret", secret: f.secret }, storage: f.storage, visibility: vis });
+    await session.load();
+    let calls = 0;
+    session.onVisible(() => { calls++; });
+    session.dispose();
+    vis.set(false);
+    vis.set(true);
+    expect([calls, vis.listening()]).toEqual([0, 0]);
   });
 
   // The ordering rule on the failure path. Without it, a stale rejection spends the page's
@@ -3087,13 +3132,15 @@ describe("read state (spec 2026-09-26 §6.1)", () => {
 });
 
 /** A tab whose visibility the test sets; `set` tells the session, as `visibilitychange` would. */
-function fakeVisibility(visible = true): Visibility & { set(next: boolean): void } {
+function fakeVisibility(visible = true): Visibility & { set(next: boolean): void; listening(): number } {
   const fns = new Set<() => void>();
   let v = visible;
   return {
     visible: () => v,
     onChange: (fn) => { fns.add(fn); return () => { fns.delete(fn); }; },
     set(next) { v = next; for (const fn of [...fns]) fn(); },
+    /** How many handlers the tab would tell: a disposed session must have taken its own away. */
+    listening: () => fns.size,
   };
 }
 

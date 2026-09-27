@@ -1488,10 +1488,11 @@ describe("the directory on becoming visible (spec 2026-09-27 §6.6)", () => {
       return { issue: { generation: 0 }, page };
     });
     let visible: (() => void) | undefined;
-    const view = render(<ListenersPage session={session({ listListeners, onVisible: (fn) => { visible = fn; return () => {}; } })} />);
+    const off = vi.fn();
+    const view = render(<ListenersPage session={session({ listListeners, onVisible: (fn) => { visible = fn; return off; } })} />);
     const turn = () => new Promise((r) => setTimeout(r, 0));
     return {
-      ...view, asked: () => out, turn,
+      ...view, asked: () => out, turn, off,
       answer: async (n: number, page: DirectoryPage) => { out[n]!.resolve(page); await turn(); },
       fail: async (n: number, e: unknown) => { out[n]!.reject(e); await turn(); },
       visible: async () => { visible!(); await turn(); },
@@ -1506,6 +1507,30 @@ describe("the directory on becoming visible (spec 2026-09-27 §6.6)", () => {
   });
   const names = (c: Element) => [...c.querySelectorAll(".listener-row")].map((r) => r.querySelector("td")!.textContent);
   const changedLine = () => screen.queryByText("The list has changed since you loaded it.");
+
+  // Spec 2026-09-27 §6.6: the rows stay on screen, dimmed, until the re-run answers, and the pages
+  // Show more appended are then replaced by its first page.
+  it("a re-run on becoming visible keeps the rows until it answers, then replaces the Show more pages", async () => {
+    const d = held();
+    await d.turn();
+    await d.answer(0, pageOf(["a"], { total: 2, matched: 2, nextCursor: "c1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+    await d.turn();
+    await d.answer(1, pageOf(["b"], { total: 2, matched: 2 }));
+    const appended = names(d.container);
+    await d.visible();
+    const pending = [names(d.container), !!d.container.querySelector(".listeners-table-stale"), d.asked()[2]!.query.cursor];
+    await d.answer(2, pageOf(["a"], { total: 2, matched: 2, nextCursor: "c1" }));
+    expect([appended, pending, names(d.container)]).toEqual([["Name a", "Name b"], [["Name a", "Name b"], true, undefined], ["Name a"]]);
+  });
+
+  it("unmounting the directory unsubscribes it from becoming visible", async () => {
+    const d = held();
+    await d.turn();
+    const before = d.off.mock.calls.length;
+    d.unmount();
+    expect([before, d.off.mock.calls.length]).toEqual([0, 1]);
+  });
 
   // Review 6 F3: the re-run is "Reload the list" (spec 2026-09-27 §6.6), so its answer is the new
   // baseline and a listener that joined while the tab was hidden raises no "changed" line.
