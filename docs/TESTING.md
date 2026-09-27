@@ -181,9 +181,9 @@ guarded by `typeof document !== "undefined"` because the package runs Vitest wit
 
 ## Current totals
 
-As of **unread counts and the New divider** on `feat/unread` (measured at `9f5def6`, the branch head
-after PR #39 review round 1; this commit changes only this file): **2166 tests in 76 files**: core 690
-in 30, web 899 in 16, server 231 in 10, claude-channel 145 in 9, cli 80 in 5, client 48 in 4,
+As of **the never-joined notice** on `fix/never-joined-notice` (measured at `1f38798`, the fix
+commit; this commit changes only this file): **2169 tests in 76 files**: core 690 in 30, web 902 in
+16, server 231 in 10, claude-channel 145 in 9, cli 80 in 5, client 48 in 4,
 mcp-tools 73 in 2, from `pnpm -r build`, `pnpm -r typecheck` (clean) and
 `pnpm --workspace-concurrency=1 -r test`, every suite passing with no stray output. The baseline
 recorded by the plan's Task 0 was `main` at `b9f7bd1`, 2093 in 74 (core 675/29, web 844/15, server
@@ -192,7 +192,9 @@ and two files**: core +15, all in the new `src/core/test/reads.test.ts`; web +55
 `src/web/test/unread.test.ts` holds 9 and the rest are in `session.test.ts`, `components.test.tsx`
 and `side-reads.test.ts`; server +2 in `routes.test.ts`; client +1 in `client.test.ts`. mcp-tools,
 cli and claude-channel did not move, which is spec 2026-09-26 §9.5 (`git diff --stat` over their
-directories against `b9f7bd1` prints nothing).
+directories against `b9f7bd1` prints nothing). The never-joined fix then added **3 web tests** in
+`components.test.tsx` (the notice for each of the two read-only reasons, and the composer and Join
+checks run for both), from 899 at `main` `380749d`.
 
 The shell contract tests are **not** in that figure and are their own run: `pnpm test:deploy` was
 **28 cases, 27 passed, 0 failed, 1 skipped** on Windows at the live instance (`65e684d`), exit 0,
@@ -714,4 +716,11 @@ row shows a count of 2 (`.unread-count`, "2 unread"). Paw opens it: the stream o
 that sits above the first of the two, and the count is gone. Paw reloads the page: no count comes
 back. Claude Code posts once more to another Thread; Paw presses "Mark all read": the count is gone.
 
-*Last run:* not yet run.
+*Last run: 2026-09-27, on the live instance at `e2f4a0a` (`live-update` applied migration 0006):
+**passed**.* Paw joined the Weave from the browser first: the page offered Join because that browser
+had only visited the Weave's link (it also called the identity "no longer valid", the defect fixed
+on `fix/never-joined-notice`). Claude Code created the Thread "Smoke 8" and posted twice to it; its row
+showed 2. Opening it landed at the "New" line above the first of the two, and the count went. A
+reload showed no count (the reload lands on General, as it always has). Claude Code then created
+"Smoke 8b" with one message and posted once more to "Smoke 8": both rows showed 1, and "Mark all
+read" cleared both.
