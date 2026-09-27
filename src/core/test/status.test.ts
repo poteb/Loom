@@ -1,5 +1,19 @@
-import { describe, it, expect } from "vitest";
-import { cadenceOf } from "../src/lobby/status.js";
+import { describe, it, expect, afterAll, beforeEach } from "vitest";
+import { and, eq } from "drizzle-orm";
+import { freshDb, closeTestDb } from "./helpers.js";
+import { EventBus } from "../src/bus.js";
+import { participants, requestOffers, requests as requestsTable } from "../src/db/schema.js";
+import { resolveCredential } from "../src/actors.js";
+import { createWeave } from "../src/weaves.js";
+import { createThread } from "../src/threads.js";
+import { ensureLobby, joinLobby } from "../src/lobby/lobby.js";
+import { setCapabilities, findAgents } from "../src/lobby/profile.js";
+import { accept, offer, openRequest } from "../src/lobby/requests.js";
+import { listListeners } from "../src/lobby/listeners.js";
+import { cadenceOf, listenerStatus, DEFAULT_POLL_INTERVAL_MS, type ListenerStatus } from "../src/lobby/status.js";
+import type { Listener, ListenersPage, ListenersQuery } from "../src/lobby/listeners-input.js";
+import type { Profile } from "../src/lobby/matching.js";
+import type { Db } from "../src/db/index.js";
 
 describe("cadenceOf (spec 2026-09-27 §4.4)", () => {
   const T = Date.parse("2026-09-27T10:00:00.000Z");
@@ -24,5 +38,268 @@ describe("cadenceOf (spec 2026-09-27 §4.4)", () => {
   it("an even number of gaps takes the floor of the mean of the two middle ones", () => {
     // Sorted 11 000, 20 001, 20 004, 40 000: the mean of the middle two is 20 002.5.
     expect(cadenceOf(history([40_000, 20_001, 11_000, 20_004]))).toEqual({ typicalGapMs: 20_002, longestGapMs: 40_000, samples: 5 });
+  });
+});
+
+afterAll(closeTestDb);
+let db: Db; let bus: EventBus;
+beforeEach(async () => { db = await freshDb(); bus = new EventBus(); });
+
+/** The one clock every status read in this file uses; every listener's last check-in is set against it. */
+const NOW = new Date("2026-09-27T12:00:00.000Z");
+const ago = (ms: number) => new Date(NOW.getTime() - ms);
+/** A profile, cast because the cases include a value `validateProfile` would refuse (a non-numeric `pollIntervalMs`). */
+const P = (over: Record<string, unknown> = {}): Profile => ({ owner: "paw", ...over }) as Profile;
+
+describe("listenerStatus (spec 2026-09-27 §4.2)", () => {
+  it("never seen is offline", () => {
+    expect([listenerStatus(null, null, false, NOW), listenerStatus(P({ pollIntervalMs: 300_000 }), null, true, NOW)])
+      .toEqual(["offline", "offline"]);
+  });
+
+  it("exactly twice the declared interval is online; one millisecond more is offline", () => {
+    const p = P({ pollIntervalMs: 300_000 });
+    expect([listenerStatus(p, ago(600_000), false, NOW), listenerStatus(p, ago(600_001), false, NOW)]).toEqual(["idle", "offline"]);
+  });
+
+  it("the 15 minute default: seen 30 min ago is online, 30 min and 1 ms ago is offline", () => {
+    expect(DEFAULT_POLL_INTERVAL_MS).toBe(900_000);
+    for (const p of [null, P(), P({ pollIntervalMs: "5 min" })]) {
+      expect({ p, got: [listenerStatus(p, ago(1_800_000), false, NOW), listenerStatus(p, ago(1_800_001), false, NOW)] })
+        .toEqual({ p, got: ["idle", "offline"] });
+    }
+  });
+
+  it("offline wins over working", () => {
+    expect(listenerStatus(P({ pollIntervalMs: 300_000 }), ago(600_001), true, NOW)).toBe("offline");
+  });
+
+  it("online with work is working; online without is idle", () => {
+    const p = P({ pollIntervalMs: 300_000 });
+    expect([listenerStatus(p, ago(60_000), true, NOW), listenerStatus(p, ago(60_000), false, NOW)]).toEqual(["working", "idle"]);
+  });
+});
+
+/**
+ * The Lobby's reader (its own secret), a requester **with no profile** (so it is no listener, and
+ * the listeners each test makes are the whole population), and a target Weave with a Thread.
+ */
+async function world() {
+  const lobby = await ensureLobby(db);
+  const reader = await resolveCredential(db, lobby.secret);
+  const target = await createWeave(db, bus, { title: "Session", opener: "hi", creator: { name: "Paw", kind: "human" } });
+  const keeper = await resolveCredential(db, target.token);
+  const thread = await createThread(db, bus, keeper, target.weave.id, "PR 14");
+  const asker = await joinLobby(db, bus, { name: "Asker", kind: "human" });
+  const requester = await resolveCredential(db, asker.token);
+  return { reader, target, keeper, thread, requester };
+}
+type World = Awaited<ReturnType<typeof world>>;
+
+/** A listener serving anyone (the requester's owner is ""). Its last check-in is set by `seenAt`. */
+async function listener(name: string, profile: Record<string, unknown> = {}) {
+  const j = await joinLobby(db, bus, { name, kind: "agent" });
+  const actor = await resolveCredential(db, j.token);
+  await setCapabilities(db, bus, actor, { owner: `${name}-owner`, serves: "anyone", ...profile });
+  return { id: j.participant.id, actor };
+}
+type L = Awaited<ReturnType<typeof listener>>;
+
+/** A request every listener is eligible for: `taking` offer and are accepted with an hour, `offeringOnly` only offer. */
+async function work(w: World, title: string, taking: L[], offeringOnly: L[] = []) {
+  const r = await openRequest(db, bus, w.requester, w.keeper, {
+    title, requirements: {}, wanted: Math.max(1, taking.length),
+    targetWeaveId: w.target.weave.id, targetThreadId: w.thread.id, url: null,
+  });
+  for (const l of [...taking, ...offeringOnly]) await offer(db, bus, l.actor, r.id, {});
+  if (taking.length > 0) await accept(db, bus, w.requester, r.id, taking.map((l) => l.id), { deadlineMs: 3_600_000 });
+  return r;
+}
+
+/** Sets the last check-in, and a history that agrees with it (spec §4.1: the two never disagree). */
+const seenAt = (l: { id: string }, at: Date | null) =>
+  db.update(participants).set({ lastSeenAt: at, seenHistory: at === null ? null : [at] }).where(eq(participants.id, l.id));
+const setOffer = (requestId: string, l: { id: string }, change: Partial<typeof requestOffers.$inferInsert>) =>
+  db.update(requestOffers).set(change).where(and(eq(requestOffers.requestId, requestId), eq(requestOffers.participantId, l.id)));
+const setRequest = (requestId: string, change: Partial<typeof requestsTable.$inferInsert>) =>
+  db.update(requestsTable).set(change).where(eq(requestsTable.id, requestId));
+const rowOf = (page: ListenersPage, l: { id: string }) => page.listeners.find((x) => x.participant.id === l.id)!;
+
+describe("status and current work against Postgres (spec 2026-09-27 §4.2, §4.3)", () => {
+  it("working needs an accepted, not removed, not completed acceptance on a request stored working", async () => {
+    const w = await world();
+    const unaccepted = await listener("unaccepted"), removed = await listener("removed"), completed = await listener("completed");
+    const overdue = await listener("overdue"), legacy = await listener("legacy"), closed = await listener("closed");
+    const shared = await work(w, "Shared", [removed, completed, overdue], [unaccepted]);
+    await setOffer(shared.id, removed, { removedAt: NOW });
+    await setOffer(shared.id, completed, { completedAt: NOW });
+    await setOffer(shared.id, overdue, { dueAt: ago(1) });            // overdue is still an active work item
+    const old = await work(w, "Legacy", [legacy]);
+    await setRequest(old.id, { status: "open" });                     // stored open never makes anyone working
+    const gone = await work(w, "Closed", [closed]);
+    await setRequest(gone.id, { status: "cancelled", closedAt: NOW });
+    const all = [unaccepted, removed, completed, overdue, legacy, closed];
+    for (const l of all) await seenAt(l, ago(60_000));
+    const page = await listListeners(db, w.reader, {}, NOW);
+    expect(all.map((l) => rowOf(page, l).status)).toEqual(["idle", "idle", "idle", "working", "idle", "idle"]);
+    expect((await listListeners(db, w.reader, { status: ["working"] }, NOW)).listeners.map((l) => l.participant.id)).toEqual([overdue.id]);
+  });
+
+  it("currentWork is the soonest due active item, with more counting the others", async () => {
+    const w = await world();
+    const busy = await listener("busy");
+    const later = await work(w, "Later", [busy]);
+    const first = await work(w, "First", [busy]);
+    const tie = await work(w, "Tie", [busy]);
+    const done = await work(w, "Done", [busy]);
+    const due = new Date("2026-09-27T13:00:00.000Z");
+    await setOffer(later.id, busy, { dueAt: new Date("2026-09-27T14:00:00.000Z") });
+    await setOffer(first.id, busy, { dueAt: due });
+    await setOffer(tie.id, busy, { dueAt: due });
+    // The tie is broken by the request's created_at; pinned so it does not rest on two now() calls.
+    await setRequest(first.id, { createdAt: new Date("2026-09-27T09:00:00.000Z") });
+    await setRequest(tie.id, { createdAt: new Date("2026-09-27T10:00:00.000Z") });
+    // Due soonest of all, but completed: not an active item, so neither current nor counted.
+    await setOffer(done.id, busy, { dueAt: new Date("2026-09-27T12:30:00.000Z"), completedAt: NOW });
+    await seenAt(busy, ago(60_000));
+    const [row] = (await listListeners(db, w.reader, {}, NOW)).listeners;
+    expect(row!.currentWork).toEqual({ requestId: first.id, title: "First", threadId: first.threadId, more: 2 });
+  });
+
+  it("currentWork carries the request's title and its Lobby Thread, and nothing of the target Weave", async () => {
+    const w = await world();
+    const busy = await listener("busy");
+    const r = await work(w, "Review PR 14", [busy]);
+    await seenAt(busy, ago(60_000));
+    const current = (await listListeners(db, w.reader, {}, NOW)).listeners[0]!.currentWork!;
+    expect(current).toEqual({ requestId: r.id, title: "Review PR 14", threadId: r.threadId, more: 0 });
+    expect(Object.keys(current).sort()).toEqual(["more", "requestId", "threadId", "title"]);
+    const text = JSON.stringify(current);
+    expect([text.includes(w.target.weave.id), text.includes(w.thread.id), text.includes("Session")]).toEqual([false, false, false]);
+  });
+
+  it("an offline listener keeps its currentWork", async () => {
+    const w = await world();
+    const busy = await listener("busy");
+    const r = await work(w, "Review PR 14", [busy]);
+    await seenAt(busy, ago(2 * DEFAULT_POLL_INTERVAL_MS + 1));
+    const [row] = (await listListeners(db, w.reader, {}, NOW)).listeners;
+    expect([row!.status, row!.currentWork?.requestId]).toEqual(["offline", r.id]);
+  });
+});
+
+describe("the status filter and the counts (spec 2026-09-27 §4.6)", () => {
+  it("the status filter and the counts agree with the TypeScript rule", async () => {
+    const w = await world();
+    const DECLARED = 300_000;
+    const cases: { name: string; profile: Record<string, unknown>; seen: Date | null }[] = [
+      { name: "never", profile: { pollIntervalMs: DECLARED }, seen: null },
+      { name: "at-twice", profile: { pollIntervalMs: DECLARED }, seen: ago(2 * DECLARED) },
+      { name: "past-twice", profile: { pollIntervalMs: DECLARED }, seen: ago(2 * DECLARED + 1) },
+      { name: "default-at", profile: {}, seen: ago(2 * DEFAULT_POLL_INTERVAL_MS) },
+      { name: "default-past", profile: {}, seen: ago(2 * DEFAULT_POLL_INTERVAL_MS + 1) },
+    ];
+    const made = new Map<string, L>();
+    let i = 0;
+    for (const c of cases) {
+      for (const suffix of ["free", "busy"]) {
+        // Every third one lists a tool, so the tools filter crosses both statuses and both work states.
+        made.set(`${c.name}-${suffix}`, await listener(`${c.name}-${suffix}`, { ...c.profile, ...(i++ % 3 === 0 ? { tools: ["shell"] } : {}) }));
+      }
+    }
+    const storedOpen = await listener("stored-open");
+    const busyOnes = [...made].filter(([name]) => name.endsWith("-busy")).map(([, l]) => l);
+    await work(w, "Busy", busyOnes);
+    const legacy = await work(w, "Legacy", [storedOpen]);
+    await setRequest(legacy.id, { status: "open" });
+    for (const c of cases) for (const suffix of ["free", "busy"]) await seenAt(made.get(`${c.name}-${suffix}`)!, c.seen);
+    await seenAt(storedOpen, ago(60_000));
+    // Who holds active work is what the fixture made, known here independently of `workFor`.
+    const holding = new Set(busyOnes.map((l) => l.id));
+    const want = (l: Listener): ListenerStatus => listenerStatus(l.capabilities,
+      l.participant.lastSeenAt === null ? null : new Date(l.participant.lastSeenAt), holding.has(l.participant.id), NOW);
+
+    // The rule, pinned by hand once, on the unfiltered read.
+    const all = await listListeners(db, w.reader, { limit: 1000 }, NOW);
+    expect(Object.fromEntries(all.listeners.map((l) => [l.participant.name, l.status]))).toEqual({
+      "at-twice-busy": "working", "at-twice-free": "idle", "default-at-busy": "working", "default-at-free": "idle",
+      "default-past-busy": "offline", "default-past-free": "offline", "never-busy": "offline", "never-free": "offline",
+      "past-twice-busy": "offline", "past-twice-free": "offline", "stored-open": "idle",
+    });
+
+    const filters: ListenerStatus[][] = [[], ["working"], ["idle"], ["offline"], ["working", "idle"],
+      ["working", "offline"], ["idle", "offline"], ["working", "idle", "offline"]];
+    const extras: ListenersQuery[] = [{}, { q: "busy" }, { tools: ["shell"] }];
+    for (const extra of extras) {
+      const base = await listListeners(db, w.reader, { ...extra, limit: 1000 }, NOW);
+      const counts = { working: 0, idle: 0, offline: 0 };
+      for (const l of base.listeners) counts[want(l)]++;
+      for (const status of filters) {
+        const page = await listListeners(db, w.reader, { ...extra, status, limit: 1000 }, NOW);
+        const expected = base.listeners.filter((l) => status.length === 0 || status.includes(want(l)));
+        expect({ extra, status, names: page.listeners.map((l) => l.participant.name),
+          statuses: page.listeners.map((l) => l.status), matched: page.matched, counts: page.statusCounts })
+          .toEqual({ extra, status, names: expected.map((l) => l.participant.name),
+            statuses: expected.map(want), matched: expected.length, counts });
+      }
+    }
+  });
+
+  it("statusCounts ignores the status filter and honours every other; the four facets honour it", async () => {
+    const w = await world();
+    const ada = await listener("ada", { tools: ["shell"], runtime: "node", models: [{ model: "opus-5", effort: "high" }] });
+    const bo = await listener("bo", { tools: ["shell"], runtime: "deno", models: [{ model: "opus-5", effort: "high" }] });
+    const cy = await listener("cy", { tools: ["git"], runtime: "node", models: [{ model: "sonnet-5", effort: "low" }] });
+    await seenAt(ada, ago(60_000));
+    await seenAt(bo, null);
+    await seenAt(cy, null);
+    const page = await listListeners(db, w.reader, { status: ["offline"], runtime: "node" }, NOW);
+    expect(page.listeners.map((l) => l.participant.name)).toEqual(["cy"]);
+    // Over runtime node, the status filter left out: ada idle, cy offline.
+    expect(page.statusCounts).toEqual({ working: 0, idle: 1, offline: 1 });
+    // Each facet over the other filters, the status filter included: the offline ones are bo and cy.
+    expect(page.facets!.runtimes.values).toEqual([{ value: "deno", count: 1 }, { value: "node", count: 1 }]);
+    expect(page.facets!.tools.values).toEqual([{ value: "git", count: 1 }]);
+    expect(page.facets!.models.values.map((m) => [m.model, m.count])).toEqual([["sonnet-5", 1]]);
+    expect(page.facets!.serves.values).toEqual([{ value: "anyone", count: 1 }, { value: "owner", count: 0 }, { value: "list", count: 0 }]);
+  });
+
+  it("statusCounts is present with facets false and with limit 0", async () => {
+    const w = await world();
+    await seenAt(await listener("ada"), ago(60_000));
+    await seenAt(await listener("bo"), null);
+    for (const q of [{ facets: false }, { limit: 0 }, { limit: 0, facets: false }] as ListenersQuery[]) {
+      expect({ q, counts: (await listListeners(db, w.reader, q, NOW)).statusCounts })
+        .toEqual({ q, counts: { working: 0, idle: 1, offline: 1 } });
+    }
+  });
+
+  it("a status filter of [] is no filter; an unknown word, a non-array and four entries are validation", async () => {
+    const w = await world();
+    await seenAt(await listener("ada"), null);
+    const none = await listListeners(db, w.reader, { status: [] }, NOW);
+    expect([none.listeners.map((l) => l.participant.name), none.matched, none.total]).toEqual([["ada"], 1, 1]);
+    // Duplicates mean the same as one.
+    expect((await listListeners(db, w.reader, { status: ["offline", "offline"] }, NOW)).matched).toBe(1);
+    for (const bad of [["busy"], "idle", ["idle", "idle", "offline", "working"], null, [1]]) {
+      await expect(listListeners(db, w.reader, { status: bad } as unknown as ListenersQuery, NOW))
+        .rejects.toMatchObject({ code: "validation", message: "status must be a list of working, idle or offline" });
+    }
+  });
+});
+
+describe("findAgents (spec 2026-09-27 §4.7)", () => {
+  it("findAgents results carry status, currentWork and cadence", async () => {
+    const w = await world();
+    const busy = await listener("busy", { pollIntervalMs: 300_000 });
+    const r = await work(w, "Review PR 14", [busy]);
+    const history = [ago(900_000), ago(600_000), ago(300_000)];
+    await db.update(participants).set({ lastSeenAt: history.at(-1)!, seenHistory: history }).where(eq(participants.id, busy.id));
+    const [found] = await findAgents(db, w.reader, {}, NOW);
+    expect(found).toMatchObject({
+      status: "working",
+      currentWork: { requestId: r.id, title: "Review PR 14", threadId: r.threadId, more: 0 },
+      cadence: { typicalGapMs: 300_000, longestGapMs: 300_000, samples: 3 },
+    });
   });
 });

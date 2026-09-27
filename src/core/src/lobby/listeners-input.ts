@@ -3,9 +3,13 @@ import { isUuid } from "../ids.js";
 import { MAX_PAGE_LIMIT } from "../paging.js";
 import type { PublicParticipant } from "../types.js";
 import { validateRequirements, type Profile } from "./matching.js";
+import type { Cadence, CurrentWork, ListenerStatus, StatusCounts } from "./status.js";
 
-/** One directory entry. Shaped like `FoundAgent` on purpose: the same pair, the same order. */
-export type Listener = { participant: PublicParticipant; capabilities: Profile };
+/** One directory entry. Shaped like `FoundAgent` on purpose: the same fields, the same order. */
+export type Listener = {
+  participant: PublicParticipant; capabilities: Profile;
+  status: ListenerStatus; currentWork: CurrentWork | null; cadence: Cadence;
+};
 
 export type ListenersSort = "name" | "owner" | "joined";
 export type ServesKind = "anyone" | "owner" | "list";
@@ -32,6 +36,8 @@ export type ListenersQuery = {
   /** Equality. */
   runtime?: string;
   serves?: ServesKind;
+  /** Any-of: one or more of working, idle, offline (spec 2026-09-27 §4.6). An empty array is no filter. */
+  status?: ListenerStatus[];
   sort?: ListenersSort;          // default "name"
   dir?: "asc" | "desc";          // default "asc"
   limit?: number;                // default 50, 0..MAX_PAGE_LIMIT
@@ -50,6 +56,8 @@ export type ListenersPage = {
   nextCursor?: string;
   /** Absent only when the caller asked for `facets: false`. */
   facets?: ListenersFacets;
+  /** Per-status counts over the search and every filter except `status`. Always present, `facets: false` and `limit: 0` included. */
+  statusCounts: StatusCounts;
 };
 
 /** A page position: the sort key value as the database rendered it, plus the row's id. */
@@ -58,7 +66,7 @@ export type Cursor = { s: ListenersSort; d: "asc" | "desc"; k: string; i: string
 /** The query every predicate is built from: bounded, normalised, with the defaults applied. */
 export type CleanQuery = {
   q?: string; models?: { model: string; effort?: string }[]; tools?: string[];
-  runtime?: string; serves?: ServesKind; sort: ListenersSort; dir: "asc" | "desc";
+  runtime?: string; serves?: ServesKind; status?: ListenerStatus[]; sort: ListenersSort; dir: "asc" | "desc";
   limit: number; facets: boolean; cursor?: Cursor;
 };
 
@@ -71,7 +79,9 @@ const DEFAULT_LIMIT = 50;
  * `"tool"` for `"tools"` — with the **entire Lobby** instead of a 400, which is a filter silently
  * not applied. Keep in step with `ListenersQuery` above.
  */
-const QUERY_KEYS = ["q", "models", "tools", "runtime", "serves", "sort", "dir", "limit", "cursor", "facets"];
+const QUERY_KEYS = ["q", "models", "tools", "runtime", "serves", "status", "sort", "dir", "limit", "cursor", "facets"];
+/** The three words a status filter may name (spec 2026-09-27 §4.6). */
+const STATUS_WORDS: readonly string[] = ["working", "idle", "offline"];
 /** How much of a rejected key the message repeats. It is a value out of a URL, so it is bounded. */
 const MAX_SHOWN_KEY = 64;
 
@@ -148,6 +158,14 @@ export function validateListenersQuery(input: ListenersQuery = {}): CleanQuery {
   if (input.serves !== undefined && !["anyone", "owner", "list"].includes(input.serves)) {
     throw errors.validation("serves must be anyone, owner or list");
   }
+  // Spec 2026-09-27 §4.6: any-of over three fixed words. An actually empty array is no filter, as
+  // for `tools` and `models`; duplicates mean the same as one. The words reach SQL as a bind
+  // parameter, so no value from the query ever reaches SQL text.
+  const status = emptyArrayToAbsent(input.status as unknown);
+  if (status !== undefined && (!Array.isArray(status) || status.length > 3
+      || !status.every((w) => typeof w === "string" && STATUS_WORDS.includes(w)))) {
+    throw errors.validation("status must be a list of working, idle or offline");
+  }
   // `=== undefined`, not `??`: a supplied `null` is a value the caller chose and a rejection it has
   // earned, not an absence that quietly takes the default. (`??` would read `sort: null` as "name"
   // and `limit: null` as 50.) The checks below then do the rejecting, each with its own message.
@@ -163,7 +181,7 @@ export function validateListenersQuery(input: ListenersQuery = {}): CleanQuery {
   }
   if (input.facets !== undefined && typeof input.facets !== "boolean") throw errors.validation("facets must be a boolean");
   return {
-    q: q || undefined, models, tools, runtime, serves: input.serves, sort, dir, limit,
+    q: q || undefined, models, tools, runtime, serves: input.serves, status: status as ListenerStatus[] | undefined, sort, dir, limit,
     facets: input.facets ?? true,
     cursor: input.cursor === undefined ? undefined : decodeCursor(input.cursor, sort, dir),
   };

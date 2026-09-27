@@ -156,6 +156,7 @@ export { validateProfile, validateOwner, MAX_PROFILE_LENGTH, type AgentFilter, t
 export { validateRequirements, matches, admits, eligible, isLive, type Profile, type ModelSpec, type Requirements, type Seen } from "./lobby/matching.js";
 // The listeners query's types live beside its validation, so an adapter has one place to import from.
 export { type Listener, type ListenersFacets, type ListenersPage, type ListenersQuery, type ListenersSort, type ServesKind, type FacetValue, type ModelFacet } from "./lobby/listeners-input.js";
+export { type ListenerStatus, type CurrentWork, type Cadence, type StatusCounts } from "./lobby/status.js";
 export { type InvitationDraft } from "./lobby/invitations.js";
 export { GET_STARTED_NEEDS_AGENT, type OnboardingFacts } from "./lobby/onboarding.js";
 export { type RemovalResult } from "./removals.js";
