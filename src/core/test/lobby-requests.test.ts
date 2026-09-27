@@ -906,8 +906,8 @@ describe("reading the lifecycle", () => {
     const due = (await offersOf(req.id)).find((o) => o.participantId === f.shared.id)!.dueAt!;
     const beforeDue = await getRequest(db, f.claude.actor, req.id, new Date(due.getTime() - 1));
     expect(beforeDue.acceptances).toEqual([
-      { participantId: f.pawbot.id, dueAt: due.toISOString(), completedAt: expect.any(String), note: "done", removed: false, removedAt: null, overdue: false, overdueNotifiedAt: null, lastSeenAt: expect.any(String) },
-      { participantId: f.shared.id, dueAt: due.toISOString(), completedAt: null, note: null, removed: false, removedAt: null, overdue: false, overdueNotifiedAt: null, lastSeenAt: seen.toISOString() },
+      { participantId: f.pawbot.id, dueAt: due.toISOString(), completedAt: expect.any(String), note: "done", removed: false, removedAt: null, overdue: false, overdueNotifiedAt: null, lastSeenAt: expect.any(String), listenerStatus: "offline" },
+      { participantId: f.shared.id, dueAt: due.toISOString(), completedAt: null, note: null, removed: false, removedAt: null, overdue: false, overdueNotifiedAt: null, lastSeenAt: seen.toISOString(), listenerStatus: "offline" },
     ]);
     // Computed on read: no sweep has run, and a reader at the due time already sees it.
     expect((await getRequest(db, f.claude.actor, req.id, due)).acceptances[1]!.overdue).toBe(true);

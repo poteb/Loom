@@ -11,6 +11,7 @@ import { validatePage } from "../paging.js";
 import { getLobby } from "./lobby.js";
 import { invitationRowAndEvent } from "./invitations.js";
 import { eligible as isEligible, validateRequirements, type Profile, type Requirements } from "./matching.js";
+import { listenerStatus, workFor, type ListenerStatus } from "./status.js";
 import type { Actor } from "../types.js";
 
 /** How many helpers one request may ask for. */
@@ -45,6 +46,8 @@ export type PublicAcceptance = {
   participantId: string; dueAt: string | null; completedAt: string | null; note: string | null;
   removed: boolean; removedAt: string | null; overdue: boolean; overdueNotifiedAt: string | null;
   lastSeenAt: string | null;
+  /** The accepted participant's listener status now (spec 2026-09-27 §4.2): not the acceptance's own state. */
+  listenerStatus: ListenerStatus;
 };
 
 export type PublicRequest = {
@@ -89,13 +92,17 @@ function toPublicOffer(o: OfferRow): PublicOffer {
 
 const iso = (d: Date | null): string | null => (d ? d.toISOString() : null);
 
-function toAcceptance(o: OfferRow, lastSeenAt: Date | null, now: Date): PublicAcceptance {
+function toAcceptance(
+  o: OfferRow, who: { lastSeenAt: Date | null; capabilities: unknown } | undefined, holdsWork: boolean, now: Date,
+): PublicAcceptance {
   const removed = o.removedAt !== null;
+  const lastSeenAt = who?.lastSeenAt ?? null;
   return {
     participantId: o.participantId, dueAt: iso(o.dueAt), completedAt: iso(o.completedAt),
     note: o.completionNote ?? null, removed, removedAt: iso(o.removedAt),
     overdue: o.dueAt !== null && o.completedAt === null && !removed && now.getTime() >= o.dueAt.getTime(),
     overdueNotifiedAt: iso(o.overdueAt), lastSeenAt: iso(lastSeenAt),
+    listenerStatus: listenerStatus((who?.capabilities as Profile | null) ?? null, lastSeenAt, holdsWork, now),
   };
 }
 
@@ -175,15 +182,19 @@ async function hydrate(db: Queryable, lobbyId: string, rows: RequestRow[], now: 
     .where(inArray(requestOffers.requestId, rows.map((r) => r.id))).orderBy(asc(requestOffers.createdAt));
   // An acceptance carries its agent's liveness, so a requester reading an overdue sees how stale it is.
   const acceptedIds = [...new Set(offerRows.filter((o) => o.accepted).map((o) => o.participantId))];
-  const seen = new Map(acceptedIds.length === 0 ? [] : (await db.select({ id: participants.id, lastSeenAt: participants.lastSeenAt })
-    .from(participants).where(inArray(participants.id, acceptedIds))).map((p) => [p.id, p.lastSeenAt]));
+  const seen = new Map(acceptedIds.length === 0 ? [] : (await db.select({
+    id: participants.id, lastSeenAt: participants.lastSeenAt, capabilities: participants.capabilities,
+  }).from(participants).where(inArray(participants.id, acceptedIds))).map((p) => [p.id, p]));
+  // One work lookup for every accepted participant, for the listener status beside each acceptance
+  // (spec 2026-09-27 §4.5), on the same `now` as the rest of the request.
+  const work = await workFor(db, acceptedIds);
   // Indexed by request once rather than re-scanned per row: a page of requests each carrying a
   // handful of offers turned the join into rows x offers comparisons.
   const offersByRequest = new Map<string, PublicOffer[]>();
   const acceptancesByRequest = new Map<string, PublicAcceptance[]>();
   for (const o of offerRows) {
     pushTo(offersByRequest, o.requestId, toPublicOffer(o));
-    if (o.accepted) pushTo(acceptancesByRequest, o.requestId, toAcceptance(o, seen.get(o.participantId) ?? null, now));
+    if (o.accepted) pushTo(acceptancesByRequest, o.requestId, toAcceptance(o, seen.get(o.participantId), work.has(o.participantId), now));
   }
   const eligible = await eligibleByThread(db, lobbyId, rows.map((r) => r.threadId));
   return rows.map((r) => ({

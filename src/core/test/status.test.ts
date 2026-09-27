@@ -8,7 +8,7 @@ import { createWeave } from "../src/weaves.js";
 import { createThread } from "../src/threads.js";
 import { ensureLobby, joinLobby } from "../src/lobby/lobby.js";
 import { setCapabilities, findAgents } from "../src/lobby/profile.js";
-import { accept, offer, openRequest } from "../src/lobby/requests.js";
+import { accept, getRequest, offer, openRequest } from "../src/lobby/requests.js";
 import { listListeners } from "../src/lobby/listeners.js";
 import { cadenceOf, listenerStatus, DEFAULT_POLL_INTERVAL_MS, type ListenerStatus } from "../src/lobby/status.js";
 import type { Listener, ListenersPage, ListenersQuery } from "../src/lobby/listeners-input.js";
@@ -301,5 +301,21 @@ describe("findAgents (spec 2026-09-27 §4.7)", () => {
       currentWork: { requestId: r.id, title: "Review PR 14", threadId: r.threadId, more: 0 },
       cadence: { typicalGapMs: 300_000, longestGapMs: 300_000, samples: 3 },
     });
+  });
+});
+
+describe("a request's acceptances (spec 2026-09-27 §4.5)", () => {
+  it("getRequest acceptances carry listenerStatus, including an offline one and one that completed this request while working on another", async () => {
+    const w = await world();
+    const gone = await listener("gone"), doubled = await listener("doubled"), fresh = await listener("fresh");
+    const r = await work(w, "Review PR 14", [gone, doubled, fresh]);
+    await work(w, "Review PR 15", [doubled]);
+    await setOffer(r.id, doubled, { completedAt: NOW });              // done here, still working on PR 15
+    await seenAt(gone, ago(2 * DEFAULT_POLL_INTERVAL_MS + 1));
+    await seenAt(doubled, ago(60_000));
+    await seenAt(fresh, ago(60_000));
+    const req = await getRequest(db, w.reader, r.id, NOW);
+    expect(req.acceptances.map((a) => [a.participantId, a.listenerStatus]))
+      .toEqual([[gone.id, "offline"], [doubled.id, "working"], [fresh.id, "working"]]);
   });
 });
