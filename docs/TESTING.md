@@ -181,16 +181,17 @@ guarded by `typeof document !== "undefined"` because the package runs Vitest wit
 
 ## Current totals
 
-As of **the listener-status slice** on `feat/listener-status` (measured at `03164c2`, the last code
-commit; this commit changes only docs): **2244 tests in 78 files**: core 715 in 31, web 944 in 17,
+As of **the listener-status slice** on `feat/listener-status` (measured at `65a2547`, after the
+whole-branch review's fix wave; this commit changes only docs): **2250 tests in 78 files**: core 719
+in 31, web 946 in 17,
 server 233 in 10, claude-channel 145 in 9, cli 82 in 5, client 49 in 4, mcp-tools 76 in 2, from
 `pnpm -r build`, `pnpm -r typecheck` (clean) and `pnpm --workspace-concurrency=1 -r test`, every
 suite passing with no stray output. The baseline recorded by the plan's Task 0 was `main` at
 `f614597`, 2169 in 76 (core 690/30, web 902/16, server 231/10, claude-channel 145/9, cli 80/5,
-client 48/4, mcp-tools 73/2), so the slice added **75 tests and two files**: core +25, of which the
-new `src/core/test/status.test.ts` holds 19 and `liveness.test.ts` the other 6; web +42, of which
+client 48/4, mcp-tools 73/2), so the slice added **81 tests and two files**: core +29, of which the
+new `src/core/test/status.test.ts` holds 22, `liveness.test.ts` 6 and `db.test.ts` 1; web +44, of which
 the new `src/web/test/listener-status.test.ts` holds 3, `listeners-page.test.tsx` 12,
-`components.test.tsx` 10, `session.test.ts` 8, `listeners-query.test.ts` 6 and
+`components.test.tsx` 12, `session.test.ts` 8, `listeners-query.test.ts` 6 and
 `requests-state.test.ts` 3; mcp-tools +3 in `tools.test.ts`; server +2 in `lobby-routes.test.ts`;
 cli +2 in `lobby.test.ts` (`loom lobby --json`, spec 2026-09-27 §5 as amended); client +1 in
 `client.test.ts`. claude-channel did not move, and `git diff --stat` against `origin/main` over
