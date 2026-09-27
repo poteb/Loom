@@ -1033,9 +1033,9 @@ describe("a row of the table (Listeners.dc.html)", () => {
     const v = mountLobby({ storage: joined(), routes: { [LISTENERS]: () => json(directory([row])) } });
     await settle();
     const heads = [...v.container.querySelectorAll(".listeners thead th")].map((th) => th.textContent);
-    expect([heads, cells(v).slice(0, 7), !!v.container.querySelector(`.listeners tbody time[datetime="${seen}"]`)]).toEqual([
-      ["Listener", "Owner", "Models", "Tools", "Runtime", "Serves", "Last seen", "Joined", "Actions"],
-      ["ada", "ada@example.com", "opus-5/high, fable/max", "shell, git, web +2", "node", "anyone", "3 min ago"],
+    expect([heads, cells(v).slice(0, 9), !!v.container.querySelector(`.listeners tbody time[datetime="${seen}"]`)]).toEqual([
+      ["Listener", "Owner", "Status", "Current work", "Models", "Tools", "Runtime", "Serves", "Last seen", "Joined", "Actions"],
+      ["ada", "ada@example.com", "idle", "", "opus-5/high, fable/max", "shell, git, web +2", "node", "anyone", "3 min agorate unknown (no declared interval)"],
       true,
     ]);
   });
@@ -1043,13 +1043,114 @@ describe("a row of the table (Listeners.dc.html)", () => {
   it("says never for a listener that has not been seen, and its owner for a default serves", async () => {
     const v = mountLobby({ storage: joined() });
     await settle();
-    expect([cells(v)[5], cells(v)[6]]).toEqual(["its owner", "never"]);
+    expect([cells(v)[7], cells(v)[8]]).toEqual(["its owner", "neverrate unknown (no declared interval)"]);
   });
 
   it("names how many listeners the Lobby holds beside the heading", async () => {
     const v = mountLobby({ storage: joined() });
     await settle();
     expect(v.container.querySelector(".listeners-header")!.textContent).toBe("Listeners12 listeners on Lobby");
+  });
+});
+
+describe("the status tabs (spec 2026-09-27 §6.1)", () => {
+  const tab = (v: { container: Element }, key: string) => v.container.querySelector(`.status-tab-${key}`) as HTMLButtonElement;
+  const tabs = (v: { container: Element }) =>
+    [...v.container.querySelectorAll(".status-tab")].map((b) => [b.textContent, b.getAttribute("aria-pressed")]);
+  const counted = () => json(directory([listener("ada", "ada@example.com")], { statusCounts: { working: 2, idle: 58, offline: 2 } }));
+  const linkTo = (filter: string) => `/lobby/listeners?filter=${encodeURIComponent(filter)}`;
+
+  it("the directory shows All, Working, Idle and Offline tabs with the server's counts, All the sum", async () => {
+    const v = mountLobby({ storage: joined(), routes: { [LISTENERS]: counted } });
+    await settle();
+    expect(tabs(v)).toEqual([["All 62", "true"], ["Working 2", "false"], ["Idle 58", "false"], ["Offline 2", "false"]]);
+  });
+
+  it("pressing a tab queries the server with that status and marks it pressed; All sends none", async () => {
+    const v = mountLobby({ storage: joined(), routes: { [LISTENERS]: counted } });
+    await settle();
+    fireEvent.click(tab(v, "idle"));
+    await settle();
+    expect([v.queries().at(-1)!.get("filter"), tab(v, "idle").getAttribute("aria-pressed"), tab(v, "all").getAttribute("aria-pressed")])
+      .toEqual(['{"status":["idle"]}', "true", "false"]);
+    fireEvent.click(tab(v, "all"));
+    await settle();
+    expect([v.queries().at(-1)!.has("filter"), tab(v, "all").getAttribute("aria-pressed"), v.asked()]).toEqual([false, "true", 3]);
+  });
+
+  it("a tab's status is carried in the URL; a link with two statuses or an unknown one is reported and dropped", async () => {
+    const v = mountLobby({ storage: joined() });
+    await settle();
+    fireEvent.click(tab(v, "offline"));
+    await settle();
+    expect(new URLSearchParams(location.search).get("filter")).toBe('{"status":["offline"]}');
+    v.unmount();
+    const kept = mountLobby({ path: linkTo('{"status":["idle"]}'), storage: joined() });
+    await settle();
+    expect([tab(kept, "idle").getAttribute("aria-pressed"), kept.queries()[0]!.get("filter")]).toEqual(["true", '{"status":["idle"]}']);
+    kept.unmount();
+    for (const bad of ['{"status":["idle","offline"]}', '{"status":["busy"]}', '{"status":"idle"}']) {
+      const b = mountLobby({ path: linkTo(bad), storage: joined() });
+      await settle();
+      expect({ bad, note: !!screen.queryByText("Part of this link was not understood, so it was ignored."),
+        filter: b.queries()[0]!.has("filter"), all: tab(b, "all").getAttribute("aria-pressed") })
+        .toEqual({ bad, note: true, filter: false, all: "true" });
+      b.unmount();
+    }
+  });
+
+  it("Clear filters returns the tab to All", async () => {
+    const v = mountLobby({ path: linkTo('{"status":["working"]}'), storage: joined() });
+    await settle();
+    const clear = screen.getByRole("button", { name: "Clear filters" }) as HTMLButtonElement;
+    expect(clear.disabled).toBe(false);
+    fireEvent.click(clear);
+    await settle();
+    expect([tab(v, "all").getAttribute("aria-pressed"), v.queries().at(-1)!.has("filter")]).toEqual(["true", false]);
+  });
+});
+
+describe("the Status and Current work columns, and the rate (spec 2026-09-27 §6.2, §6.3)", () => {
+  const REQ_THREAD = { ...GENERAL, id: "th-req", name: "Review PR 14", isGeneral: false };
+  const busy = (over: Partial<Listener> = {}): Listener => ({
+    ...listener("ada", "ada@example.com"), status: "working",
+    currentWork: { requestId: "r1", title: "Review PR 14", threadId: "th-req", more: 2 }, ...over,
+  });
+  const row = (v: { container: Element }, n = 0) => v.container.querySelectorAll(".listeners tbody tr.listener-row")[n]!;
+
+  it("the Status column shows each row's word; Current work shows the title and +N, and pressing it opens that Thread in the thread view", async () => {
+    const v = mountLobby({ storage: joined(), routes: {
+      [LISTENERS]: () => json(directory([busy(), listener("bo", "bo@example.com")])),
+      [WEAVE]: () => json(weaveBody({ threads: [GENERAL, REQ_THREAD] })),
+    } });
+    await settle();
+    const word = (n: number) => row(v, n).querySelector(".listener-status")!;
+    expect([[word(0).className, word(0).textContent], [word(1).className, word(1).textContent]]).toEqual([
+      ["listener-status listener-status-working", "working"], ["listener-status listener-status-idle", "idle"]]);
+    // An accessible name, not only an attribute: a bare span's aria-label names nothing (the unread count's lesson).
+    const more = within(row(v) as HTMLElement).getByRole("img", { name: "2 more" });
+    expect([row(v).querySelector("button.current-work")!.textContent, more.className, more.textContent,
+      row(v, 1).querySelector(".current-work")]).toEqual(["Review PR 14", "current-work-more", "+2", null]);
+    fireEvent.click(row(v).querySelector("button.current-work")!);
+    await settle();
+    expect([v.directory(), v.container.querySelector(".thread-header h2")!.textContent]).toEqual([false, "# Review PR 14"]);
+  });
+
+  it("an offline row with work shows both", async () => {
+    const v = mountLobby({ storage: joined(), routes: { [LISTENERS]: () => json(directory([busy({ status: "offline" })])) } });
+    await settle();
+    expect([row(v).querySelector(".listener-status-offline")?.textContent, row(v).querySelector("button.current-work")?.textContent])
+      .toEqual(["offline", "Review PR 14"]);
+  });
+
+  it("the Last seen cell shows the rate text", async () => {
+    const measured = busy({
+      capabilities: { owner: "ada@example.com", models: [{ model: "opus-5", effort: "high" }], tools: ["shell"], runtime: "node", pollIntervalMs: 300_000 },
+      cadence: { typicalGapMs: 300_000, longestGapMs: 540_000, samples: 20 },
+    });
+    const v = mountLobby({ storage: joined(), routes: { [LISTENERS]: () => json(directory([measured])) } });
+    await settle();
+    expect(row(v).querySelector(".listener-rate")!.textContent).toBe("every ~5 min (declares 5 min), longest 9 min");
   });
 });
 
