@@ -5,6 +5,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   registerLoomTools, LOOM_TOOL_NAMES, LOOM_RESOURCE_URIS, READ_GUIDELINES, LOBBY_MECHANICS, LoomToolError, type LoomToolBackend, type RegisterOptions,
   renderState, pendingOf, GET_STARTED_NEEDS_AGENT, NEXT, type OnboardingFacts,
+  parseSkill, renderSkillsIndex, renderDocument, type Skill,
 } from "../src/index.js";
 
 const calls: unknown[][] = [];
@@ -265,7 +266,7 @@ describe("lobby tools", () => {
   it("advertises the ten Lobby tools and nothing else new", async () => {
     const names = (await client.listTools()).tools.map((t) => t.name);
     for (const n of LOBBY_TOOLS) expect(names).toContain(n);
-    expect(LOOM_TOOL_NAMES).toHaveLength(38);
+    expect(LOOM_TOOL_NAMES).toHaveLength(39);
     expect(names.sort()).toEqual([...LOOM_TOOL_NAMES].sort());
   });
 
@@ -392,7 +393,7 @@ describe("listener onboarding tools", () => {
 
   it("LOOM_TOOL_NAMES has the four new names, and the registered tools equal it", async () => {
     for (const n of ["get_started", "complete", "remove_participant", "keeper_agents_set_owner"]) expect(LOOM_TOOL_NAMES).toContain(n);
-    expect(LOOM_TOOL_NAMES).toHaveLength(38);
+    expect(LOOM_TOOL_NAMES).toHaveLength(39);
     expect((await client.listTools()).tools.map((t) => t.name).sort()).toEqual([...LOOM_TOOL_NAMES].sort());
   });
 
@@ -551,5 +552,94 @@ describe("the tool descriptions are the spec's", () => {
   it("LOBBY_MECHANICS ends its second paragraph with the deadline sentence", () => {
     expect(LOBBY_MECHANICS.split("\n")[1]).toContain("An accept gives you a deadline: when the work is done, post your closing message in the work Thread, then call complete(requestId); a requester who sees request.overdue decides whether to remove you and accept someone else.");
     expect(LOBBY_MECHANICS.endsWith("accept someone else.")).toBe(true);
+  });
+});
+
+describe("get_skill (spec 2026-09-28 §5.1)", () => {
+  const ORIGIN = "https://loom.example";
+  const skillOf = (name: string, description: string): Skill =>
+    parseSkill(name, ["---", `name: ${name}`, `description: ${description}`, "---", "", `# ${name}`, "", "Body."].join("\n") + "\n");
+  const SKILLS = [skillOf("loom-a", "Use when A."), skillOf("loom-b", "Use when B.")];
+  /** Every property read of the backend, so a case can prove get_skill reads none. */
+  const touched: string[] = [];
+  const untouchable = new Proxy({}, { get: (_target, prop) => { touched.push(String(prop)); return undefined; } }) as LoomToolBackend;
+  /** A client over a registration with no defaultCredential and a backend get_skill must never read. */
+  const skillsClient = async (opts: RegisterOptions): Promise<Client> => {
+    const server = new McpServer({ name: "test", version: "0.0.0" });
+    registerLoomTools(server, untouchable, opts);
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await server.connect(a);
+    const c = new Client({ name: "t", version: "0" });
+    await c.connect(b);
+    return c;
+  };
+  const ask = (c: Client, name?: string) => c.callTool({ name: "get_skill", arguments: name === undefined ? {} : { name } });
+
+  it("LOOM_TOOL_NAMES has get_skill: 39 names", () => {
+    expect(LOOM_TOOL_NAMES).toContain("get_skill");
+    expect(LOOM_TOOL_NAMES).toHaveLength(39);
+  });
+
+  it("with no name, get_skill answers renderSkillsIndex(skills, origin) as one text block, not JSON", async () => {
+    const c = await skillsClient({ skills: SKILLS, origin: ORIGIN });
+    try {
+      const r = await ask(c);
+      expect(r.isError).toBeFalsy();
+      expect(r.content).toEqual([{ type: "text", text: renderSkillsIndex(SKILLS, ORIGIN) }]);
+      expect(text(r).startsWith("# Loom skills\n")).toBe(true);
+    } finally { await c.close(); }
+  });
+
+  it("an empty name is no name: the index", async () => {
+    const c = await skillsClient({ skills: SKILLS, origin: ORIGIN });
+    try { expect(text(await ask(c, ""))).toBe(renderSkillsIndex(SKILLS, ORIGIN)); } finally { await c.close(); }
+  });
+
+  it("with each skill's name, get_skill answers that skill's text; with join-loom, renderDocument(origin)", async () => {
+    const c = await skillsClient({ skills: SKILLS, origin: ORIGIN });
+    try {
+      for (const s of SKILLS) expect((await ask(c, s.name)).content, s.name).toEqual([{ type: "text", text: s.text }]);
+      expect((await ask(c, "join-loom")).content).toEqual([{ type: "text", text: renderDocument(ORIGIN) }]);
+    } finally { await c.close(); }
+  });
+
+  it("an unknown name is not_found in the error envelope, the name passed through quoteTitle", async () => {
+    const c = await skillsClient({ skills: SKILLS, origin: ORIGIN });
+    try {
+      const r = await ask(c, "nope \"x\"");
+      expect(r.isError).toBe(true);
+      expect(JSON.parse(text(r))).toEqual({ code: "not_found", message: "No skill named nope 'x'; call get_skill with no name for the list" });
+    } finally { await c.close(); }
+  });
+
+  it("without an origin, join-loom is not_found and the index's links are root-relative", async () => {
+    const c = await skillsClient({ skills: SKILLS });
+    try {
+      const j = await ask(c, "join-loom");
+      expect(j.isError).toBe(true);
+      expect(JSON.parse(text(j))).toEqual({ code: "not_found", message: "join-loom needs this Loom's origin; read /join-loom.md" });
+      const index = text(await ask(c));
+      expect(index).toBe(renderSkillsIndex(SKILLS, ""));
+      expect(index).toContain("\n- [join-loom](/join-loom.md): ");
+      expect(index).toContain("\n- [loom-a](/skills/loom-a.md): Use when A.\n");
+    } finally { await c.close(); }
+  });
+
+  it("get_skill works with no credential and no defaultCredential, and reads no backend method", async () => {
+    const c = await skillsClient({ skills: SKILLS, origin: ORIGIN });
+    try {
+      touched.length = 0;
+      for (const name of [undefined, "loom-a", "join-loom", "nope"]) await ask(c, name);
+      expect(touched).toEqual([]);
+      const schema = (await c.listTools()).tools.find((t) => t.name === "get_skill")!.inputSchema as { properties: Record<string, unknown>; required?: string[] };
+      expect(Object.keys(schema.properties)).toEqual(["name"]);
+      expect(schema.required ?? []).toEqual([]);
+    } finally { await c.close(); }
+  });
+
+  it("get_skill's description and its name argument read exactly as the spec gives them", async () => {
+    const tool = (await client.listTools()).tools.find((t) => t.name === "get_skill")!;
+    expect(tool.description).toBe("Loom's skills for agents: step-by-step guides for working in a Thread, asking for a review, requesting helpers and doing accepted work, plus join-loom. With no name, returns the index (each skill's name, description and link). With a name, returns that skill's Markdown. Needs no credential.");
+    expect((tool.inputSchema as { properties: Record<string, { description?: string }> }).properties.name!.description).toBe("A skill name from the index, such as loom-ask-for-review");
   });
 });

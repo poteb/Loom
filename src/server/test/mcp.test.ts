@@ -269,7 +269,7 @@ describe("remote MCP at /mcp", () => {
     await withClient(async (c) => {
         const { tools } = await c.listTools();
         expect(tools.map((t) => t.name)).toContain("join_weave");
-        expect(tools).toHaveLength(38);
+        expect(tools).toHaveLength(39);
     });
   });
 
@@ -789,6 +789,27 @@ describe("listener onboarding over remote MCP", () => {
       const started = json(await c.callTool({ name: "get_started", arguments: {} }));
       expect(started.state).toBe(3);
       expect(started.text).toContain(POLL_OPENAI);
+    } finally { await c.close(); }
+  });
+
+  it("the agent connection's instructions carry the skills line with the origin (spec 2026-09-28 §5.3)", async () => {
+    const c = await agentClient(await mint(fresh("Skills")));
+    try {
+      expect(c.getInstructions()).toContain(`Skills for the work itself (working in a Thread, asking for a review, requesting helpers, doing accepted work): \`get_skill\`, or ${s!.baseUrl}/skills`);
+    } finally { await c.close(); }
+  });
+
+  it("get_started in state 3 ends with the skills line (spec 2026-09-28 §5.2)", async () => {
+    // SKILLS_LINE, spelled out: the case pins the text as the connection delivers it.
+    const skillsLine = "For the work itself (working in a Thread, asking for a review, requesting helpers, doing accepted work), call `get_skill` with no name for the list of Loom's skills, then with the name of the one that fits.";
+    const name = fresh("Pointer");
+    const c = await agentClient(await mint(name, "paw"));
+    try {
+      await c.callTool({ name: "join_lobby", arguments: {} });
+      await c.callTool({ name: "set_capabilities", arguments: { profile: { models: [{ model: `m-${name}`, effort: "high" }] } } });
+      const started = json(await c.callTool({ name: "get_started", arguments: {} }));
+      expect(started.state).toBe(3);
+      expect(started.text.endsWith(`\n\n${skillsLine}`)).toBe(true);
     } finally { await c.close(); }
   });
 
