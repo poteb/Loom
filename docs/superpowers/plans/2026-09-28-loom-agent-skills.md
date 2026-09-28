@@ -6,7 +6,7 @@
 
 **Architecture:** Core gains three runtime lists and no behaviour: `ERROR_CODES` (`errors.ts`) and `EVENT_TYPES` (`types.ts`) as `as const` arrays with `ErrorCode` and `EventType` derived from them, and `REQUIREMENT_KEYS` (`lobby/matching.ts`, `Object.keys` of the requirements schema). `@loom/mcp-tools` gains `src/skills.ts`, its one file that touches the filesystem (`parseSkill`, `loadSkills`, `defaultSkillsDir`, `defaultSkills`, `renderSkillsIndex`), the `get_skill` tool (`RegisterOptions.skills` and `origin`), and three pointer texts in `onboarding.ts`. The server registers the three routes beside `/join-loom.md`, loads the skills in `main.ts` before anything else and hands the same array to the routes and every MCP session; the channel passes `defaultSkills()` and its Loom's origin. The image copies `skills/`. The guard, `src/mcp-tools/test/skills.test.ts`, runs over the real folder and the tools as registered, with `@loom/core` as a dev dependency for the three lists.
 
-Plan review round 1 (PR #49, via the API): SP1, ST1 and ST2 fixed in this revision.
+Plan review rounds 1 and 2 (PR #49, via the API): SP1, ST1 to ST4 fixed in this revision.
 
 **Tech Stack:** TypeScript 5.9 strict ESM (`.js` import suffixes, `verbatimModuleSyntax`), pnpm 10 workspace, Node 24, Vitest 4 (core, server and channel against a real Postgres 17 testcontainer, `fileParallelism: false`; mcp-tools with no database), zod 4, Hono 4, `@modelcontextprotocol/sdk` 1.30.0. **No `package.json` gains a third-party dependency anywhere in this plan**; the one new entry is the workspace dev dependency `"@loom/core": "workspace:*"` in `src/mcp-tools/package.json` (spec §6), as `@loom/claude-channel` already has.
 
@@ -197,7 +197,7 @@ describe("REQUIREMENT_KEYS (spec 2026-09-28 §10.0)", () => {
 - [ ] **Step 3: Run them to verify they fail**
 
 Run: `cd src/core && npx vitest run test/units.test.ts test/lobby-matching.test.ts`
-Expected: FAIL. The three new cases fail with a `TypeError` (`ERROR_CODES`, `EVENT_TYPES` and `REQUIREMENT_KEYS` are undefined, so `new Set(...)`, the spread or `.sort()` throws); every existing case in both files still passes. (The core suite needs Docker for its global setup even for these pure units.)
+Expected: FAIL **at collection**, in both files: they import `ERROR_CODES`, `EVENT_TYPES` and `REQUIREMENT_KEYS`, which the source does not export yet, so under strict ESM each file fails to load (the error names the missing export) and none of its cases run, existing ones included. That missing export is this step's RED; the new cases' own assertions are first exercised in Step 8. (The core suite needs Docker for its global setup even for these pure units.) `pnpm --filter @loom/core typecheck` reports the same three missing exports (TS2305).
 
 - [ ] **Step 4: `ERROR_CODES`.** In `src/core/src/errors.ts`, replace
 
@@ -334,7 +334,7 @@ Spec §3.2, §3.4, §4.2, §5, §9 (the three `not_found` rows), §10.1 (the loa
 - Create: `src/mcp-tools/test/skills.test.ts`
 - Modify: `src/mcp-tools/test/tools.test.ts` (the import; the two `toHaveLength(38)`; a new describe at the end)
 - Modify: `src/mcp-tools/test/onboarding.test.ts` (imports; `SKILLS`; `state3`; the state 6, `agentInstructions` and `renderDocument` exact texts; `corpus`; two new cases)
-- Modify: `src/server/test/mcp.test.ts` (the import; `toHaveLength(38)`; two new cases)
+- Modify: `src/server/test/mcp.test.ts` (`toHaveLength(38)`; two new cases)
 
 **Interfaces:**
 - Consumes: `renderDocument(origin)`, `quoteTitle(title)`, `toToolResult(promise)`, `LoomToolError(code, message)`.
@@ -666,19 +666,7 @@ Inside `describe("the connect instructions and the document", ...)`, after "rend
   });
 ```
 
-- [ ] **Step 4: Write the failing `/mcp` cases.** In `src/server/test/mcp.test.ts`, replace
-
-```ts
-import { LOBBY_MECHANICS, agentInstructions, POLL_OPENAI } from "@loom/mcp-tools";
-```
-
-with
-
-```ts
-import { LOBBY_MECHANICS, agentInstructions, POLL_OPENAI, SKILLS_LINE } from "@loom/mcp-tools";
-```
-
-In "serves the tool catalog without connection-level auth", replace `expect(tools).toHaveLength(38);` with `expect(tools).toHaveLength(39);` (the known ripple). Inside `describe("listener onboarding over remote MCP", ...)`, after the "a client that names itself ChatGPT in initialize gets the scheduled-task wording" case, add:
+- [ ] **Step 4: Write the failing `/mcp` cases.** In `src/server/test/mcp.test.ts` (its imports stay as they are: the cases below spell the expected text out, so the file still loads against the old `dist` and the RED is in the named cases), in "serves the tool catalog without connection-level auth", replace `expect(tools).toHaveLength(38);` with `expect(tools).toHaveLength(39);` (the known ripple). Inside `describe("listener onboarding over remote MCP", ...)`, after the "a client that names itself ChatGPT in initialize gets the scheduled-task wording" case, add:
 
 ```ts
   it("the agent connection's instructions carry the skills line with the origin (spec 2026-09-28 §5.3)", async () => {
@@ -688,7 +676,9 @@ In "serves the tool catalog without connection-level auth", replace `expect(tool
     } finally { await c.close(); }
   });
 
-  it("get_started in state 3 ends with SKILLS_LINE (spec 2026-09-28 §5.2)", async () => {
+  it("get_started in state 3 ends with the skills line (spec 2026-09-28 §5.2)", async () => {
+    // SKILLS_LINE, spelled out: the case pins the text as the connection delivers it.
+    const skillsLine = "For the work itself (working in a Thread, asking for a review, requesting helpers, doing accepted work), call `get_skill` with no name for the list of Loom's skills, then with the name of the one that fits.";
     const name = fresh("Pointer");
     const c = await agentClient(await mint(name, "paw"));
     try {
@@ -696,7 +686,7 @@ In "serves the tool catalog without connection-level auth", replace `expect(tool
       await c.callTool({ name: "set_capabilities", arguments: { profile: { models: [{ model: `m-${name}`, effort: "high" }] } } });
       const started = json(await c.callTool({ name: "get_started", arguments: {} }));
       expect(started.state).toBe(3);
-      expect(started.text.endsWith(`\n\n${SKILLS_LINE}`)).toBe(true);
+      expect(started.text.endsWith(`\n\n${skillsLine}`)).toBe(true);
     } finally { await c.close(); }
   });
 ```
@@ -704,10 +694,10 @@ In "serves the tool catalog without connection-level auth", replace `expect(tool
 - [ ] **Step 5: Run them to verify they fail**
 
 Run: `cd src/mcp-tools && npx vitest run`
-Expected: FAIL. `skills.test.ts` and `onboarding.test.ts` fail to resolve `../src/skills.js`; `tools.test.ts` fails at collection with `TypeError: parseSkill is not a function` (the index does not export it yet).
+Expected: FAIL **at collection**, all three files, none of their cases running (existing ones included): `skills.test.ts` and `onboarding.test.ts` cannot resolve `../src/skills.js`, and `tools.test.ts` imports `parseSkill` and `renderSkillsIndex` (and the type `Skill`) from `../src/index.js`, which does not export them yet (the error names the missing export). Those missing modules and exports are this step's RED; the new cases' assertions are first exercised in Step 10.
 
 Then, as a separate command (the server suite reads `@loom/mcp-tools` from its `dist`, built here from the unchanged source): `pnpm -r build`, then `cd src/server && npx vitest run test/mcp.test.ts`.
-Expected: FAIL, exactly three cases: "serves the tool catalog without connection-level auth" (38 tools, 39 expected), "the agent connection's instructions carry the skills line with the origin" (no such line), and "get_started in state 3 ends with SKILLS_LINE" (`SKILLS_LINE` is undefined in the old `dist`). Every other case passes. Record both runs' output in the report.
+Expected: FAIL, exactly three cases: "serves the tool catalog without connection-level auth" (38 tools, 39 expected), "the agent connection's instructions carry the skills line with the origin" (no such line), and "get_started in state 3 ends with the skills line" (the old `renderState` has no such line). Every other case passes: the file imports nothing new, so it loads. Record both runs' output in the report.
 
 - [ ] **Step 6: The loader.** Create `src/mcp-tools/src/skills.ts`:
 
@@ -1874,7 +1864,7 @@ The agent-skills slice adds `skills.test.ts`: `parseSkill` (a valid file, each f
 The agent-skills slice adds, in `static.test.ts`, `GET /skills`, `/skills/` and `/skills/<name>.md` (the headers, the index and the files, the JSON 404 for every near miss, no web bundle, no credential, nothing reflected); in `mcp.test.ts` `get_skill` equal to those bodies with and without an agent key, the skills line in the agent instructions and `SKILLS_LINE` in state 3; and in `migrate.test.ts` the boot's `skills:` line.
 ```
 
-    - The claude-channel row (it ends ``with `credential: "stored"` |``) gains:
+    - The claude-channel row (it ends ``with `credential: "stored"` |``) is rewritten, so its three existing em dashes go (Paw, 2026-09-23; plan review round 2, ST4): replace `event formatting and wake rules` + space + em dash + ` including every Lobby event type` with `event formatting and wake rules (including every Lobby event type`; replace ``and the `requests` preference`` + space + em dash + ` the Lobby end-to-end` with ``and the `requests` preference), the Lobby end-to-end``; replace `that clears the profile first` + space + em dash + ` read through` with `that clears the profile first, read through`. Then it gains:
 
 ```markdown
 The agent-skills slice adds `get_skill` in the tool list, answering the index with the configured Loom's origin.
@@ -2102,7 +2092,7 @@ Run, from the worktree root, a scan of every line this branch adds:
 git diff origin/main -U0 | node -e "const d = String.fromCharCode(0x2014); let s = ''; process.stdin.on('data', (c) => { s += c; }).on('end', () => { const bad = s.split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++') && l.includes(d)); console.log(bad.length ? bad.join('\n') : 'no em dash added'); });"
 ```
 
-Expected: exactly one line, the `claude-channel` row of `docs/TESTING.md`: that row is one line, Step 6 appended a sentence to it, and its em dash sits in its existing, untouched text (left alone by the rule above). Any other line it prints is rewritten without the character before the commit.
+Expected: `no em dash added`: no added line contains U+2014. Every line this branch rewrites that carried one (the TESTING.md `claude-channel` row, the REVIEW-BRIEF current-state lines, §4 row 6 and the §5 Spec bullet) has lost it in the rewrite. Any line the scan prints is rewritten without the character before the commit.
 
 ```bash
 git add README.md src/server/README.md src/mcp-tools/README.md docs/ARCHITECTURE.md docs/SECURITY.md docs/TESTING.md CLAUDE.md docs/HANDBOOK.md docs/REVIEW-BRIEF.md docs/DOGFOOD.md docs/superpowers/specs/v2-notes.md
