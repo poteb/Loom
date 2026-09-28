@@ -164,6 +164,7 @@ const FIELD_NAMES = new Map<string, string>([
   ...group(["weaveId", "threadId"], "LoomEvent, src/core/src/types.ts; the join_weave and join_lobby results; PublicRequest.threadId"),
   ...group(["requestId"], "the request events' and weave.invited payloads, src/core/src/lobby/requests.ts and invitations.ts"),
   ...group(["participantId"], "the request.offered and request.overdue payloads and PublicOffer, src/core/src/lobby/requests.ts; the thread.invited payload, src/core/src/invites.ts and lobby/invitations.ts"),
+  ...group(["invitedBy"], "the thread.invited payload, src/core/src/invites.ts and lobby/invitations.ts"),
   ...group(["model", "effort", "note"], "the arguments of offer, tools.ts; the request.offered payload and PublicOffer, requests.ts"),
   ...group(["inviteId"], "the argument of join_weave, tools.ts, named in prose"),
   ...group(["title", "requirements", "wanted", "timeoutMs", "targetWeaveId", "targetThreadId", "targetCredential"],

@@ -1220,9 +1220,9 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 const want = {
   "loom-work-in-a-thread": [7386, "20307bc8f1182a1350a7deef294cf72766f60b426f4f6ac6d37b1fda21b47500"],
-  "loom-ask-for-review": [6865, "e3223675319de016282a7b7706c2ffd35b47e87c4b5727eb7e1fc50086fb64cb"],
-  "loom-request-helpers": [6989, "4318b47093e8a897741455a8d810b93ac9694b153072c94f9a8adfd2c4f522f5"],
-  "loom-do-accepted-work": [6683, "2752faddbe9de4c0e95d692732f84b038bd00ebd2a14294f65924c645000b695"],
+  "loom-ask-for-review": [7133, "e808c3e498f648870c23cdede3965f517c7e1046b1cbd6e581f712ebd2a62f8b"],
+  "loom-request-helpers": [7204, "160b3f198a8862311fb7da8b3b05a433caae58a54e2ce5692ea7db101ae80b42"],
+  "loom-do-accepted-work": [7002, "6917ec43e8416f2a810bc7898fe887558bca22532a9216325fb91fe37e63ae13"],
 };
 for (const [name, [size, sha]] of Object.entries(want)) {
   const bytes = fs.readFileSync(`skills/${name}/SKILL.md`);
@@ -1234,7 +1234,7 @@ git add .gitattributes skills
 git ls-files --eol skills
 ```
 
-Expected: four `ok` lines, and four `git ls-files --eol` rows each starting `i/lf    w/lf    attr/text eol=lf`. The sizes and hashes are those of the spec §7 texts at the approved head `238331a`, as amended 2026-09-29 after the whole-branch and external reviews (the spec's dated line; at `238331a` they were 6691, 6343, 6086 and 5920 bytes). A `MISMATCH` means the spec on this branch is not the approved one, or a file was written by other means: stop and report; never edit a skill file to make it match.
+Expected: four `ok` lines, and four `git ls-files --eol` rows each starting `i/lf    w/lf    attr/text eol=lf`. The sizes and hashes are those of the spec §7 texts at the approved head `238331a`, as amended 2026-09-29 after the whole-branch and external reviews and again after external review round 2 (the spec's dated lines; at `238331a` they were 6691, 6343, 6086 and 5920 bytes). A `MISMATCH` means the spec on this branch is not the approved one, or a file was written by other means: stop and report; never edit a skill file to make it match.
 
 - [ ] **Step 7: Run the guard to verify it passes**
 
