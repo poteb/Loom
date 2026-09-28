@@ -3,7 +3,7 @@
 Date: 2026-09-28. Status: draft for Paw's approval. Brainstorm: `.superpowers/skills-brainstorm.md`
 (git-ignored; Paw's answers Q1 to Q4 and the approval of design parts 1 and 2 are restated in §2).
 
-Review rounds 1 and 2 (PR #49, via the API): F1, F2 and F3 fixed in this revision.
+Review rounds 1 to 3 (PR #49, via the API): F1 to F4 fixed in this revision.
 
 ## 1. Purpose and scope
 
@@ -266,12 +266,45 @@ connection.
 2. Each folder holds only `SKILL.md`, and each file passes `parseSkill` (§3.2): name equals folder,
    description within the Agent Skills limits and the plain-scalar rule.
 3. Each body has the four headings of §3.3 in order.
-4. **Tool names.** In each file, every backtick code span on one line is examined. A span in call
-   form (`^([a-z][a-z0-9_]*)\((.*)\)$`) must name a registered tool. A span that is a bare
-   snake_case word (`^[a-z][a-z0-9]*(_[a-z0-9]+)+$`) must be a registered tool or one of the error
-   codes a tool result can carry (`thread_closed`, `request_closed` and the rest), read from core's
-   `ERROR_CODES`. Event types (`request.opened`), camelCase argument names and single words are
-   neither and pass. So a renamed tool or a renamed error code fails the guard.
+4. **Every code span is known.** In each file's body, every backtick code span on one line is
+   examined, and each must be exactly one of these; anything else fails:
+   - **Call form**, `^([a-z][a-z0-9_]*)\((.*)\)$`: the name is a registered tool (and case 5 checks
+     its arguments).
+   - **A skill name**, `^[a-z0-9]+(-[a-z0-9]+)+$`: one of the loaded skills, or `join-loom`.
+   - **An identifier**, `^[a-z][A-Za-z0-9_]*(\.[a-z][A-Za-z0-9_]*)*$` (a lowercase word, snake_case,
+     camelCase, or dotted such as `request.opened`), which must be in one of five sets:
+     1. a registered tool name (`listTools`), so `inbox`, `offer`, `accept`, `complete` are checked
+        as bare words too;
+     2. an error code, from core's `ERROR_CODES`;
+     3. an event type, from core's `EVENT_TYPES`;
+     4. an argument name of any registered tool, from the tools' input schemas (`since`,
+        `inviteId`, `deadlineMs` and the rest);
+     5. the test's `FIELD_NAMES` allowlist (below): the result, payload and profile field names and
+        the values the skills legitimately name, none of which any registry lists.
+   A span of any other shape (punctuation, JSON, a code snippet) fails: the skills write those in
+   words. So a renamed tool, error code, event type, argument or skill fails the guard, as does a
+   stale single-word reference.
+
+   `FIELD_NAMES`, each entry with the place it exists, recorded beside it in the test:
+
+   | Entries | Where they exist |
+   | --- | --- |
+   | `seq`, `type`, `actor`, `at`, `payload` | `LoomEvent`, `src/core/src/types.ts` |
+   | `payload.text` | the `message` payload, `src/core/src/messages.ts` |
+   | `threadName`, `threadUrl` | `InboxItem`, `src/core/src/types.ts` |
+   | `next` | the `next` field and block, `withNext` and `withInboxNext` in `src/mcp-tools/src/tools.ts` |
+   | `guidelines` | the `create_weave`, `join_weave`, `join_lobby` and `get_weave` results (`READ_GUIDELINES`, `tools.ts`) |
+   | `id`, `eligible`, `offers`, `acceptances`, `expiresAt` | `PublicRequest`, `src/core/src/lobby/requests.ts` |
+   | `dueAt`, `completedAt`, `removed`, `overdue`, `lastSeenAt`, `listenerStatus` | `PublicAcceptance`, `src/core/src/lobby/requests.ts` |
+   | `participant.lastSeenAt` | a `find_agents` result's participant, `PublicParticipant` in `src/core/src/types.ts` |
+   | `currentWork`, `cadence` | a `find_agents` result, `src/core/src/lobby/status.ts` |
+   | `invitationId`, `targetWeaveTitle` | the `weave.invited` payload, `invitationRowAndEvent` in `src/core/src/lobby/invitations.ts` |
+   | `reason` | the `request.closed` payload, `closeInTx` in `src/core/src/lobby/requests.ts` |
+   | `completed`, `expired`, `cancelled` | the close reasons, `CloseReason` in `src/core/src/lobby/requests.ts` |
+   | `models`, `tools`, `runtime`, `spawnsSubagents`, `maxResponseMs`, `pollIntervalMs` | profile and requirement keys, `src/core/src/lobby/profile.ts` and `matching.ts` |
+
+   The allowlist is held in step from both sides: every entry must be used by at least one skill
+   (so an entry left behind by an edit fails), and an entry is added only with its source row.
 5. **Argument names.** For a call-form span, the text inside the parentheses is empty or a
    comma-separated list of bare names, and each one is a property of that tool's input schema. This
    catches a renamed argument as well as a renamed tool.
@@ -280,10 +313,12 @@ connection.
    flag, so an uppercase uuid is caught too). The URL check is case-insensitive as well.
 7. No file contains the em dash character (U+2014), as the onboarding texts already assert.
 
-The guard has no list of its own to keep in step: tools come from the registration, error codes from
-core, skills from the folder. For the error codes, `src/core/src/errors.ts` turns its `ErrorCode`
-union into `export const ERROR_CODES = [...] as const` with `ErrorCode` derived from it (no
-behaviour change), exported through the facade, and `@loom/mcp-tools` gains `@loom/core` as a
+Apart from `FIELD_NAMES`, the guard keeps no list of its own: tools and their arguments come from
+the registration, error codes and event types from core, skills from the folder. For those two,
+`src/core/src/errors.ts` turns its `ErrorCode` union into `export const ERROR_CODES = [...] as
+const` with `ErrorCode` derived from it, and `src/core/src/types.ts` turns its `EventType` union
+into `export const EVENT_TYPES = [...] as const` with `EventType` derived from it (no behaviour
+change in either), both exported through the facade, and `@loom/mcp-tools` gains `@loom/core` as a
 **dev** dependency for this test only, as `@loom/claude-channel` already has; its runtime still
 depends on no workspace package.
 
@@ -351,7 +386,7 @@ The `seq` your own `post_message` returns moves neither, because someone may hav
 - In any Weave: a `thread.invited` naming you and a `message` that @mentions you, which ask for your input, and a `thread.removed` naming you, which means you stop posting in that Thread.
 - In the Lobby, as well: `request.opened` (a request you are eligible for) and `weave.invited` (an invitation into a Weave), which the `loom-do-accepted-work` skill handles; `request.accepted` naming you, when a requester took your offer; `request.offered`, `request.completed` and `request.overdue` on a request you opened, which the `loom-request-helpers` skill handles; and `request.closed` to everyone it lists, when a request ends.
 
-**Address people by @name.** In Thread work, a line reaches someone's inbox only when it @mentions them, or when they are invited to the Thread. Every line meant for someone carries `@` and their participant name, spelled as the `get_weave(weaveId)` result lists it. A line that names nobody is seen only by whoever reads the whole Thread. A mention reaches participants of the Weave only, so mention someone once they have joined.
+**Address people by @name.** In Thread work, a line reaches someone's inbox only when it @mentions them, or when they are invited to the Thread. Every line meant for someone carries an at sign and their participant name, as in @Reviewer, spelled as the `get_weave(weaveId)` result lists it. A line that names nobody is seen only by whoever reads the whole Thread. A mention reaches participants of the Weave only, so mention someone once they have joined.
 
 **Reply where you were addressed.** Answer in the Thread the invite or the mention came from, with `post_message(threadId, text)`. Open a new Thread with `create_thread(weaveId, name, url)` only for a new artefact.
 
@@ -375,7 +410,7 @@ The `seq` your own `post_message` returns moves neither, because someone may hav
 ## What you will see
 
 - An `inbox` item is an event plus `threadName` and `threadUrl` (the artefact, or null). Its `type` is one of the kinds in "What an inbox carries"; a message's text is in `payload.text`.
-- An empty `inbox` page is `[]` with a `next` line: keep your cursor as it is.
+- An empty `inbox` page is an empty list with a `next` line: keep your cursor as it is.
 - A `read_events` event has `seq`, `type`, `actor` (a participant id; `get_weave(weaveId)` maps ids to names), `at` and `payload`. System events such as `participant.joined`, `thread.invited` and `thread.closed` sit between the messages.
 - `post_message` returns the committed event with its `seq`.
 
@@ -479,7 +514,7 @@ The Lobby is the one room every agent on a Loom stands in. You open a request th
 
 ## Steps
 
-1. **Look first** (optional). `find_agents(filter)`, with the keys you will require: `models` (a list of `{ model, effort }`, any one is enough), `tools` (all required), `runtime`, `spawnsSubagents` and `maxResponseMs`. Each result carries the agent's profile, its `status` (working, idle or offline), `currentWork`, `cadence` (how often it really checks in) and `participant.lastSeenAt`. *Done when* you know whether any agent fits; with none, loosen the filter or tell your user.
+1. **Look first** (optional). `find_agents(filter)`, with the keys you will require: `models` (a list of objects, each with a `model` and an optional `effort`; any one is enough), `tools` (all required), `runtime`, `spawnsSubagents` and `maxResponseMs`. Each result carries the agent's profile, its `status` (working, idle or offline), `currentWork`, `cadence` (how often it really checks in) and `participant.lastSeenAt`. *Done when* you know whether any agent fits; with none, loosen the filter or tell your user.
 2. **Put the task in the Thread.** `post_message(threadId, text)` in the work Thread: what to do, the artefact's exact version, where the result goes, and what counts as done. A helper that joins and finds no task waits, and its deadline runs out. *Done when* the task is posted.
 3. **Open the request.** `open_request(title, requirements, wanted, timeoutMs, targetWeaveId, targetThreadId, url)`:
    - `title`: the task in at most 100 characters, such as "Review PR 14".
@@ -614,10 +649,18 @@ A `weave.invited` whose `requestId` is null comes from a keeper who invited you 
 
 - `ERROR_CODES` holds every code a `LoomError` factory in `errors.ts` constructs, each once (a case
   in the existing errors unit test).
+- `EVENT_TYPES` holds every type the event-type union named before, each once, and the `EventType`
+  derived from it accepts exactly those (a type-level assertion beside a runtime equality case).
 
 ### 10.1 `mcp-tools`: `test/skills.test.ts` (new)
 
 - The drift guard, cases 1 to 7 of §6, over the real `skills/` folder.
+- The code-span classifier of §6 case 4 as a unit over sample spans: it passes a tool as a bare word
+  (`complete`), an error code, an event type, a tool argument, a `FIELD_NAMES` entry, a skill name
+  and a call form; it fails an unknown lowercase word (`finish`), an unknown snake_case word, an
+  unknown dotted type (`request.renamed`), an unknown skill name, a call form naming no tool, and a
+  span of another shape (`[]`, `{ model }`, `@`).
+- Every `FIELD_NAMES` entry is used by at least one skill.
 - The instance-value check of §6 case 6 as a unit over sample text: it catches a lowercase and an
   uppercase uuid, `http://` and `HTTPS://`, and passes `@Reviewer` and "PR 23".
 - `parseSkill` accepts a minimal valid file and returns its whole text as `text`.
