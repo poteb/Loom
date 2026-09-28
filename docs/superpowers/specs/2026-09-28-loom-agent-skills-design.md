@@ -337,7 +337,7 @@ connection.
    | `url` | the argument of `create_thread` and `open_request`, `tools.ts`; a Thread's url and `PublicRequest.url` |
    | `weaveId`, `threadId` | `LoomEvent`, `src/core/src/types.ts`; the `join_weave` and `join_lobby` results; `PublicRequest.threadId` |
    | `requestId` | the request events' and `weave.invited` payloads, `src/core/src/lobby/requests.ts` and `invitations.ts` |
-   | `participantId` | the `request.offered` and `request.overdue` payloads and `PublicOffer`, `src/core/src/lobby/requests.ts` |
+   | `participantId` | the `request.offered` and `request.overdue` payloads and `PublicOffer`, `src/core/src/lobby/requests.ts`; the `thread.invited` payload, `src/core/src/invites.ts` and `lobby/invitations.ts` (amended 2026-09-29) |
    | `model`, `effort`, `note` | the arguments of `offer`, `tools.ts`; the `request.offered` payload and `PublicOffer`, `requests.ts` |
    | `inviteId` | the argument of `join_weave`, `tools.ts`, named in prose |
    | `title`, `requirements`, `wanted`, `timeoutMs`, `targetWeaveId`, `targetThreadId`, `targetCredential` | the arguments of `open_request`, `tools.ts`, named in its prose; `requirements`, `wanted`, `targetWeaveId`, `targetThreadId` also on `PublicRequest` |
