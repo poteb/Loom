@@ -20,6 +20,8 @@ const named = (name: string): string => file(name, { front: [`name: ${name}`, "d
 const FRONT_SHAPE = "the frontmatter must be exactly two lines, name then description";
 const NAME_FORM = "name must be 1 to 64 lowercase letters, digits and single hyphens";
 const DESCRIPTION_LENGTH = "description must be 1 to 1024 characters";
+const BODY_RULE = "one empty line must follow the closing ---, then the body";
+const FINAL_NEWLINE = "the file must end with exactly one newline";
 
 describe("parseSkill (spec 2026-09-28 §3.2)", () => {
   it("accepts a minimal valid file and returns its whole text as text", () => {
@@ -44,8 +46,20 @@ describe("parseSkill (spec 2026-09-28 §3.2)", () => {
     ["a description containing ': '", "loom-x", described("loom-x", "Use when: testing"), "description must contain neither ': ' nor ' #'"],
     ["a description containing ' #'", "loom-x", described("loom-x", "Use when testing #1"), "description must contain neither ': ' nor ' #'"],
     ["a description starting with a quote", "loom-x", described("loom-x", "\"Use when testing\""), "description must start with a letter and end without a space"],
+    ["a description ending in a space", "loom-x", described("loom-x", "Use when testing "), "description must start with a letter and end without a space"],
+    ["no empty line after the closing ---", "loom-x", ["---", "name: loom-x", "description: Use when testing the loader.", "---", "# Test", ""].join("\n"), BODY_RULE],
+    ["an empty body", "loom-x", "---\nname: loom-x\ndescription: Use when testing the loader.\n---\n\n", BODY_RULE],
+    ["no final newline", "loom-x", file("loom-x").slice(0, -1), FINAL_NEWLINE],
+    ["two final newlines", "loom-x", file("loom-x") + "\n", FINAL_NEWLINE],
   ])("refuses %s", (_label, folder, raw, rule) => {
     expect(() => parseSkill(folder, raw)).toThrow(`skills/${folder}: ${rule}`);
+  });
+
+  it.each<[string, string, string]>([
+    ["a name of 64 characters", "a".repeat(64), named("a".repeat(64))],
+    ["a description of 1024 characters", "loom-x", described("loom-x", "a".repeat(1024))],
+  ])("accepts %s", (_label, folder, raw) => {
+    expect(parseSkill(folder, raw).text).toBe(raw);
   });
 
   it("turns CRLF into LF, and the result equals the LF file's", () => {
