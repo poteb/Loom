@@ -1219,9 +1219,9 @@ node --input-type=module <<'CHECK'
 import fs from "node:fs";
 import crypto from "node:crypto";
 const want = {
-  "loom-work-in-a-thread": [6691, "3f877318869f99fd17fe244e5083a750aeb96bdec6395537c75c809849eeebfb"],
+  "loom-work-in-a-thread": [6777, "47b756cab8308f9abe2af1de1a9910ce6ec97f916002cac547a89f795c2d0d4a"],
   "loom-ask-for-review": [6700, "33cccb0af1e3892a66c0d7f3e32a377d8708c38d9e718e1b68eb1a41097778ba"],
-  "loom-request-helpers": [6232, "6245cba45205bf39bdaa2469334ba41dcb9694078cc3728ea7d56ad6344cca52"],
+  "loom-request-helpers": [6679, "05ce8737f52d7b3e5b3815ca9ee029684751a83803a7349b2c5c77b25471c8e2"],
   "loom-do-accepted-work": [5920, "b754bc1f20ddf2dd469c1d4ce91aaed62041921d8ff05d75ee018378eff56e1c"],
 };
 for (const [name, [size, sha]] of Object.entries(want)) {
