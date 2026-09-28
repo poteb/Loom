@@ -6,9 +6,11 @@
 
 **Architecture:** Core gains three runtime lists and no behaviour: `ERROR_CODES` (`errors.ts`) and `EVENT_TYPES` (`types.ts`) as `as const` arrays with `ErrorCode` and `EventType` derived from them, and `REQUIREMENT_KEYS` (`lobby/matching.ts`, `Object.keys` of the requirements schema). `@loom/mcp-tools` gains `src/skills.ts`, its one file that touches the filesystem (`parseSkill`, `loadSkills`, `defaultSkillsDir`, `defaultSkills`, `renderSkillsIndex`), the `get_skill` tool (`RegisterOptions.skills` and `origin`), and three pointer texts in `onboarding.ts`. The server registers the three routes beside `/join-loom.md`, loads the skills in `main.ts` before anything else and hands the same array to the routes and every MCP session; the channel passes `defaultSkills()` and its Loom's origin. The image copies `skills/`. The guard, `src/mcp-tools/test/skills.test.ts`, runs over the real folder and the tools as registered, with `@loom/core` as a dev dependency for the three lists.
 
+Plan review round 1 (PR #49, via the API): SP1, ST1 and ST2 fixed in this revision.
+
 **Tech Stack:** TypeScript 5.9 strict ESM (`.js` import suffixes, `verbatimModuleSyntax`), pnpm 10 workspace, Node 24, Vitest 4 (core, server and channel against a real Postgres 17 testcontainer, `fileParallelism: false`; mcp-tools with no database), zod 4, Hono 4, `@modelcontextprotocol/sdk` 1.30.0. **No `package.json` gains a third-party dependency anywhere in this plan**; the one new entry is the workspace dev dependency `"@loom/core": "workspace:*"` in `src/mcp-tools/package.json` (spec §6), as `@loom/claude-channel` already has.
 
-**Spec:** `docs/superpowers/specs/2026-09-28-loom-agent-skills-design.md`, approved by Paw on 2026-09-28 after five API review rounds (PR #49). Read it whole before any task; it is the binding requirement text, and its §7 holds the four skill texts **byte for byte**. Where this plan decides something the spec leaves open, the decision is listed under "Decisions this plan makes" at the end, with its reason. Conventions: `CONTRIBUTING.md`, `docs/TESTING.md`, `docs/ARCHITECTURE.md`; the dispatch loop is `docs/HANDBOOK.md` §3 step 9; the ledger is `.superpowers/sdd/2026-09-28-loom-agent-skills/progress.md`.
+**Spec:** `docs/superpowers/specs/2026-09-28-loom-agent-skills-design.md`, approved by Paw on 2026-09-28 after five API review rounds (PR #49). Read it whole before any task; it is the binding requirement text, and its §7 holds the four skill texts **byte for byte**. Its dated line "Amended 2026-09-28 during plan review" (`get_skill` treats an empty name as no name, §5.1, §9, §10.2) is the requirement where it differs from the text around it. Where this plan decides something the spec leaves open, the decision is listed under "Decisions this plan makes" at the end, with its reason. Conventions: `CONTRIBUTING.md`, `docs/TESTING.md`, `docs/ARCHITECTURE.md`; the dispatch loop is `docs/HANDBOOK.md` §3 step 9; the ledger is `.superpowers/sdd/2026-09-28-loom-agent-skills/progress.md`.
 
 **Base:** branch `feat/agent-skills` off `origin/main` **after the docs PR carrying the spec and this plan (PR #49) merges**, in the worktree `.claude/worktrees/agent-skills`. From `main` this plan consumes, unchanged unless a task says otherwise: `LoomError`, `errors`, `ErrorCode` (`src/core/src/errors.ts`); `EventType`, `LoomEvent` (`src/core/src/types.ts`); `validateRequirements`, `reqSchema`, `Requirements` (`src/core/src/lobby/matching.ts`); the facade `src/core/src/index.ts`; `registerLoomTools`, `LOOM_TOOL_NAMES`, `RegisterOptions`, `toToolResult`, `LoomToolError` (`src/mcp-tools/src/tools.ts`, `result.ts`, `backend.ts`); `renderState`, `agentInstructions`, `renderDocument`, `quoteTitle`, `CURSOR_RULES`, `SITUATION_6` (`src/mcp-tools/src/onboarding.ts`); `buildApp`, `AppDeps` (`src/server/src/app.ts`); `mountMcp`, `MountMcpOptions`, `buildMcpServer`, `MCP_INSTRUCTIONS` (`src/server/src/mcp/index.ts`); `publicOrigin` (`src/server/src/origin.ts`); `main` (`src/server/src/main.ts`, `src/claude-channel/src/server.ts`); in `src/mcp-tools/test/tools.test.ts` `fake`, `calls`, `connect`, `client`, `text`, `described`; in `src/mcp-tools/test/onboarding.test.ts` `fresh`, `joined`, `profiled`, `invited`, `asked`, `state3`, `corpus`; in `src/server/test/static.test.ts` `baseUrl`, `apiOnlyUrl`; in `src/server/test/mcp.test.ts` `s`, `withClient`, `withAgentClient`, `text`, `json`, and inside "listener onboarding over remote MCP" `agentClient`, `mint`, `fresh`; in `src/server/test/migrate.test.ts` `runServer`, `freshDatabase`; in `src/claude-channel/test/channel.test.ts` `s`, `stateDir`, `withChannel`.
 
@@ -702,7 +704,10 @@ In "serves the tool catalog without connection-level auth", replace `expect(tool
 - [ ] **Step 5: Run them to verify they fail**
 
 Run: `cd src/mcp-tools && npx vitest run`
-Expected: FAIL. `skills.test.ts` and `onboarding.test.ts` fail to resolve `../src/skills.js`; `tools.test.ts` fails at collection with `TypeError: parseSkill is not a function` (the index does not export it yet). The server cases are run in Step 11.
+Expected: FAIL. `skills.test.ts` and `onboarding.test.ts` fail to resolve `../src/skills.js`; `tools.test.ts` fails at collection with `TypeError: parseSkill is not a function` (the index does not export it yet).
+
+Then, as a separate command (the server suite reads `@loom/mcp-tools` from its `dist`, built here from the unchanged source): `pnpm -r build`, then `cd src/server && npx vitest run test/mcp.test.ts`.
+Expected: FAIL, exactly three cases: "serves the tool catalog without connection-level auth" (38 tools, 39 expected), "the agent connection's instructions carry the skills line with the origin" (no such line), and "get_started in state 3 ends with SKILLS_LINE" (`SKILLS_LINE` is undefined in the old `dist`). Every other case passes. Record both runs' output in the report.
 
 - [ ] **Step 6: The loader.** Create `src/mcp-tools/src/skills.ts`:
 
@@ -1439,8 +1444,8 @@ and directly after that case add:
 
 - [ ] **Step 5: Run them to verify they fail**
 
-Run: `pnpm -r build && cd src/server && npx vitest run test/static.test.ts test/mcp.test.ts test/migrate.test.ts && cd ../claude-channel && npx vitest run test/channel.test.ts`
-Expected: FAIL. In `static.test.ts` every `/skills` path is the app's own 404 (`No such route`); in `mcp.test.ts` the two new cases fail at `bodies()` (the routes answer JSON 404, not an index); in `migrate.test.ts` the boot prints no `skills:` line; in `channel.test.ts` the new case receives an index with root-relative links. Every other case passes (the tool list already carries `get_skill` from Task 2). Run the channel file even if the server run failed.
+Run, as three separate commands, recording each one's exit code in the report (a failing server run must not stop the channel run): each from the worktree root: `pnpm -r build`; then `cd src/server && npx vitest run test/static.test.ts test/mcp.test.ts test/migrate.test.ts`; then `cd src/claude-channel && npx vitest run test/channel.test.ts`.
+Expected: the build exits 0; both test runs FAIL (non-zero exit). In `static.test.ts` every `/skills` path is the app's own 404 (`No such route`); in `mcp.test.ts` the two new cases fail at `bodies()` (the routes answer JSON 404, not an index); in `migrate.test.ts` the boot prints no `skills:` line; in `channel.test.ts` the new case receives an index with root-relative links. Every other case passes (the tool list already carries `get_skill` from Task 2).
 
 - [ ] **Step 6: The routes and `AppDeps`.** In `src/server/src/app.ts`, replace
 
@@ -1877,7 +1882,7 @@ The agent-skills slice adds `get_skill` in the tool list, answering the index wi
 
 - [ ] **Step 7: CLAUDE.md and HANDBOOK.md.** In `CLAUDE.md`, replace `build-before-test, and the nine manual smoke tests.` with `build-before-test, and the ten manual smoke tests.`. In `docs/HANDBOOK.md`, replace `How the suites run, and the nine manual smoke tests with a dated last-run paragraph each.` with `How the suites run, and the ten manual smoke tests with a dated last-run paragraph each.`.
 
-- [ ] **Step 8: docs/REVIEW-BRIEF.md.** The house pattern: each branch rewrites the branch line and §1a, and moves the previous branch's spec down the list in §2.
+- [ ] **Step 8: docs/REVIEW-BRIEF.md.** The house pattern: each branch rewrites the branch line and §1a, and moves the previous branch's spec down the list in §2. This step also rewrites, in the brief's own shape, every other branch-specific part that is false once this slice lands (plan review round 1, ST2): the current-state sentence, the §3 items that say "this branch" about earlier branches, the §4 reading rows (tool count, this branch's files), the §5 lens and totals, and the §6 questions for this branch. Nothing else in the brief changes.
   - Replace the start of the branch line,
 
 ```markdown
@@ -1928,6 +1933,9 @@ web UI; no live reload (an edited skill is served after the next restart).
 **Checked in review, not by the guard** (spec §6): that no skill names a real instance, Weave or
 participant, and that `FIELD_NAMES` still names fields that exist.
 
+**Amendments**, each a dated line in the spec, and not drift: `get_skill` treats an empty name as no
+name and answers the index (spec §5.1, §9 and §10.2, amended 2026-09-28 during plan review).
+
 **Choices made during implementation** are the plan's "Decisions this plan makes", and not drift.
 ```
 
@@ -1950,6 +1958,105 @@ participant, and that `FIELD_NAMES` still names fields that exist.
 ```
 
   - In the listener-status entry, replace `    **the spec for this branch**, with` with `    (the previous branch: listener heartbeat and status), with`, and `    they differ from the text around them (§1a lists them). It builds on the listener onboarding` with `    they differ from the text around them. It builds on the listener onboarding`. In the unread entry, replace `    (the previous branch: unread counts and the "New" divider), with` with `    (an earlier branch: unread counts and the "New" divider), with`.
+
+  - The current-state sentence of §1: replace its first two lines (the two lines that begin `Current state: **v1 plus v2 sub-projects 1 to 4` and `page `; they carry two existing em dashes, which this rewrite drops) with:
+
+```markdown
+Current state: **v1 plus v2 sub-projects 1 to 5 on `main` (sub-project 5 is the Lobby listeners
+page), then listener onboarding, two removal rules, unread counts and listener status; this branch
+adds agent skills.** Sub-project 1 added Thread URLs, Thread invites, `inbox`, and instance-level agent keys.
+```
+
+  - §3 item 5: in its first line, replace `that this branch took deliberately` with `that the Lobby branch (sub-project 3) took deliberately`. §3 item 6: in its first line, replace ``The deliberate deviations of *this* branch**`` with ``The deliberate deviations of the Lobby listeners branch** (sub-project 5)``. After item 6 (after its "**Superseded 2026-09-20**" paragraph, which ends `stand as written.`) add, with an empty line before it:
+
+```markdown
+7. **The deliberate choices of *this* branch**: the plan's "Decisions this plan makes"
+   ([superpowers/plans/2026-09-28-loom-agent-skills.md](superpowers/plans/2026-09-28-loom-agent-skills.md)),
+   and the spec's one amendment (`get_skill` treats an empty name as no name). The skill texts of
+   spec §7 are binding byte for byte: a finding about their wording is a finding against the spec,
+   and says so.
+```
+
+  - §4, row 4 (`core`): replace
+
+```markdown
+`lobby/listeners-input.ts` and `lobby/listeners.ts` (**this branch's core work**)
+```
+
+    with
+
+```markdown
+`lobby/listeners-input.ts` and `lobby/listeners.ts` (the listeners directory), `errors.ts`, `types.ts` and `lobby/matching.ts` (**this branch**: `ERROR_CODES`, `EVENT_TYPES`, `REQUIREMENT_KEYS`)
+```
+
+    Row 5 (`server`): replace its ending
+
+```markdown
+and `main.ts` / `app.ts` (boot `ensureLobby`, the sweep interval) |
+```
+
+    with
+
+```markdown
+and `main.ts` / `app.ts` (boot `ensureLobby`, the sweep interval, and on **this branch** the skills loaded before anything else and the `/skills` routes) |
+```
+
+    Row 6 (the line that begins ``| 6 | `mcp-tools` ``; it carries two existing em dashes, which this rewrite drops) is replaced whole with:
+
+```markdown
+| 6 | `mcp-tools` ([../src/mcp-tools/README.md](../src/mcp-tools/README.md)) and `client` ([../src/client/README.md](../src/client/README.md)) | `src/mcp-tools/src/tools.ts` (all **39** tools, `defaultCredential`, the **three** resources `loom://guidelines`, `loom://weaves/{weaveId}/guidelines` and `loom://lobby/requests`, `LOBBY_MECHANICS`, and on **this branch** `get_skill`), `src/mcp-tools/src/skills.ts` and `src/mcp-tools/test/skills.test.ts` (**this branch**: the loader and the drift guard), `src/mcp-tools/src/onboarding.ts` (the pointer lines), `src/client/src/client.ts` and `src/client/src/stream.ts` |
+```
+
+    After row 9 (`web`) add:
+
+```markdown
+| 10 | `skills/` (**this branch**) | The four `SKILL.md` files, read as an agent that knows only Loom's MCP tools would read them: each step against the tool it names, and each error against the code that raises it |
+```
+
+  - §5, the Spec lens: replace the three lines of the bullet that begins `- **Spec**` (its first line carries an existing em dash, which this rewrite drops) with:
+
+```markdown
+- **Spec**: does the code do what the specs of §2 require, no more and no less? Gaps, silent
+  divergences, and things built beyond the spec both count. For this branch the agent-skills spec is
+  the one to hold the code against line by line, and its §7 is binding text, byte for byte.
+```
+
+    §5, the totals: replace the two lines that begin `  they should be **1663 tests in 65 files**` and `  139/9, cli 70/5` with the figures Step 11 measures, in this shape (each number is the run's own, never an estimate):
+
+```markdown
+  they should be **<tests> tests in <files> files** (core <n>/<f>, web <n>/<f>, server <n>/<f>,
+  claude-channel <n>/<f>, cli <n>/<f>, client <n>/<f>, mcp-tools <n>/3), with `pnpm -r typecheck` clean.
+```
+
+    Step 11 fills this in; until it has, the step is not done.
+
+  - §6: replace the questions for this branch, everything from the line that begins `13. **Does the SQL agree with` up to, not including, the line `## 7. How findings will be handled`, with:
+
+```markdown
+13. **Is the drift guard sound?** Every code span in a skill must be a registered tool with only
+    that tool's arguments, a skill, one of core's error codes, event types or requirement keys, or a
+    `FIELD_NAMES` entry. Find a span that passes and names nothing real, a rename in code (a tool,
+    an argument, a code, an event type, a requirement key, a skill) the guard would miss, or a
+    `FIELD_NAMES` entry whose recorded place no longer holds that field.
+14. **Can a request reach the filesystem, or a file other than a loaded skill?** `/skills/*`
+    compares the request path with `/skills/<name>.md` for each skill loaded at boot. Find a path
+    (percent-encoding, case, dot segments, a doubled or trailing slash, a query) that answers
+    anything but a loaded skill's text, the index or the JSON 404 `No such skill`.
+15. **Are the surfaces the same bytes?** `GET /skills`, `GET /skills/<name>.md`, `get_skill` over
+    `/mcp` with and without an agent key, and `get_skill` over the channel. Find an origin
+    (`X-Forwarded-Proto`, `Host`), a checkout (CRLF, `core.autocrlf`) or an image layout where they
+    differ, or where `/app/skills` is not the folder `defaultSkillsDir()` resolves.
+16. **Does a missing or broken skill stop both the server and the channel at boot**, before
+    anything is served, and is there any path that loads the skills per request and could fail there
+    instead?
+17. **Do the skills tell any agent the truth?** Walk each skill's steps against the tools as they
+    behave: the arguments, the order of invite and @mention (a mention reaches participants only),
+    the direct-invitation branch (`requestId` null, no `complete`), the two positions (inbox cursor
+    and Thread position), and the error each step names. Is anything in them specific to one AI
+    product, or to one instance, Weave or participant?
+18. **Is `get_skill` credential-free and backend-free on both surfaces**, and does anything
+    request-derived besides the origin reach what it or `/skills` answers?
+```
 
 - [ ] **Step 9: docs/DOGFOOD.md.** In §4, after the first paragraph (it ends `` the reviewer finds both through `` and then `` `inbox`. `` on its own line) add, with an empty line on each side:
 
@@ -1985,7 +2092,7 @@ In the smoke-test lessons, directly after the second line of the "**Skills, not 
 Run: `pnpm -r build && pnpm -r typecheck && pnpm --workspace-concurrency=1 -r test`
 Expected: every suite green, pristine. Then `git diff --stat origin/main -- src/client src/cli src/web` prints nothing (spec: no change there).
 
-Rewrite TESTING.md "Current totals" from **what this run printed** (per package, tests and files, and overall): a new first paragraph "As of **the agent-skills slice** on `feat/agent-skills` (measured at `<the commit measured>`): ..." against Task 0's ledger record, naming the one new file (`src/mcp-tools/test/skills.test.ts`) and where the other new cases went, and turning the present first paragraph's "As of" into "Before it, as of". Never estimate.
+Rewrite TESTING.md "Current totals" from **what this run printed** (per package, tests and files, and overall): a new first paragraph "As of **the agent-skills slice** on `feat/agent-skills` (measured at `<the commit measured>`): ..." against Task 0's ledger record, naming the one new file (`src/mcp-tools/test/skills.test.ts`) and where the other new cases went, and turning the present first paragraph's "As of" into "Before it, as of". Write the same figures into REVIEW-BRIEF §5 in the shape Step 8 gives. Never estimate.
 
 - [ ] **Step 12: Check the text rules, then commit**
 
@@ -2014,7 +2121,7 @@ Expected: the stat shows no `Bin` row, and the scan prints `no mojibake`.
 
 1. **Task order: the loader and `get_skill` before the files and the guard** (see "Why six tasks"). Reason: the guard reads the tools as registered and every skill names `get_skill(name)`.
 2. **`get_skill` reads `opts.skills` when it runs**, not at registration, falling back to `defaultSkills()` then. The server passes the app's array and the channel `defaultSkills()`, each loaded eagerly at boot, so a broken skill still stops both at start (spec §9). Reason: a registration that never calls `get_skill` (most tool tests, the guard's own listing) never touches the disk.
-3. **An empty `name` is no name**: `get_skill` with `name: ""` answers the index. Reason: the spec says "without `name`" and "any other name" and leaves the empty string open; MCP clients commonly send an empty string for an optional argument they mean to leave out, and answering `not_found` there would send the agent in a circle.
+3. **An empty `name` is no name**: `get_skill` with `name: ""` answers the index. Reason: MCP clients commonly send an empty string for an optional argument they mean to leave out, and answering `not_found` there would send the agent in a circle. Plan review round 1 (SP1) found that the approved text gave the index only for an omitted name; the controller kept this behaviour and **the spec is amended to match** ("Amended 2026-09-28 during plan review", §5.1, §9 and §10.2), so this is now the spec's rule, not a deviation.
 4. **`parseSkill`'s rule messages** are fixed wordings (Task 2 Step 6), each naming the folder as `skills/<folder>: <rule>`. A missing `name`, a missing `description` and a third key share one message ("the frontmatter must be exactly two lines, name then description"); a repeated key is reported as the second line not being `description: <value>`. The name's form is checked before its equality with the folder. Reason: the spec requires the folder and the rule, not the words; the test pins each case.
 5. **"One empty line, then the body"** is read as: line 4 is empty and line 5 is not. Reason: "one empty line" excludes two, and a body is text.
 6. **`loadSkills`' refusals**: a missing path or one that is not a directory is `skills folder not found: <path>`; a skill folder holding anything besides `SKILL.md`, a hidden file included, is refused. Reason: spec §3.1 says a folder holds nothing but `SKILL.md`.
@@ -2031,7 +2138,7 @@ Expected: the stat shows no `Bin` row, and the scan prints `no mojibake`.
 17. **`get_skill` sits after `get_started` in `LOOM_TOOL_NAMES`.**
 18. **Smoke test 10 step 3** says which states carry the line. Reason: a waiting invitation or request answers state 4 or 5 first, which do not carry it (spec §5.2), so the step could otherwise fail for a correct build.
 19. **DOGFOOD's sentence** goes after §4's first paragraph; v2-notes' pointer is a new line under "Skills, not prompts", so that bullet's existing line (which carries an em dash) is untouched.
-20. **Beyond the list:** `an empty name is no name: the index` (Task 2, decision 3); `get_skill's description and its name argument read exactly as the spec gives them` (Task 2, the house habit of pinning every description); the boot's `skills:` line in `migrate.test.ts` (Task 4, spec §4.1's log line, otherwise untested).
+20. **Beyond the list:** `get_skill's description and its name argument read exactly as the spec gives them` (Task 2, the house habit of pinning every description); the boot's `skills:` line in `migrate.test.ts` (Task 4, spec §4.1's log line, otherwise untested).
 
 ## Spec test traceability
 
@@ -2056,6 +2163,7 @@ Expected: the stat shows no `Bin` row, and the scan prints `no mojibake`.
 | §10.1 `renderSkillsIndex` gives the exact text | 2 |
 | §10.2 `LOOM_TOOL_NAMES` has 39 names including `get_skill`; the registered tools equal it | 2 |
 | §10.2 `get_skill` with no name answers the index as one text block, not JSON | 2 |
+| §10.2 `get_skill` with an empty name answers the index (amended 2026-09-28): `an empty name is no name: the index` | 2 |
 | §10.2 `get_skill` with each skill's name; with `join-loom` | 2 |
 | §10.2 unknown name `not_found`; `join-loom` without origin `not_found`; no origin root-relative | 2 |
 | §10.2 no credential, no `defaultCredential`, no backend call | 2 |
@@ -2075,4 +2183,4 @@ Expected: the stat shows no `Bin` row, and the scan prints `no mojibake`.
 | §10.5 the image carrying `skills/` (not automated; smoke test 10 step 1) | 5 (written) |
 | §10.6 smoke test 10, written into TESTING.md (run by Paw after the deploy) | 5 |
 
-Cases this plan adds beyond the spec's list, each in the task named: `an empty name is no name: the index` (2); `get_skill's description and its name argument read exactly as the spec gives them` (2); the boot's `skills:` line in `migrate.test.ts` "false with nothing pending starts normally and serves" (4). Known ripples repaired, each named in its commit: `tools.test.ts` "advertises the ten Lobby tools and nothing else new" and "LOOM_TOOL_NAMES has the four new names, and the registered tools equal it" (38 to 39), `mcp.test.ts` "serves the tool catalog without connection-level auth" (38 to 39), and in `onboarding.test.ts` `state3`, the state 6 exact text, "agentInstructions produces the exact text of spec §5.3 with the origin" and "renderDocument produces the exact document of spec §7 with the origin" (the added line) (all 2).
+Cases this plan adds beyond the spec's list, each in the task named: `get_skill's description and its name argument read exactly as the spec gives them` (2); the boot's `skills:` line in `migrate.test.ts` "false with nothing pending starts normally and serves" (4). Known ripples repaired, each named in its commit: `tools.test.ts` "advertises the ten Lobby tools and nothing else new" and "LOOM_TOOL_NAMES has the four new names, and the registered tools equal it" (38 to 39), `mcp.test.ts` "serves the tool catalog without connection-level auth" (38 to 39), and in `onboarding.test.ts` `state3`, the state 6 exact text, "agentInstructions produces the exact text of spec §5.3 with the origin" and "renderDocument produces the exact document of spec §7 with the origin" (the added line) (all 2).

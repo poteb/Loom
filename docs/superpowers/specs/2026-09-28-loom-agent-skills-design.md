@@ -5,6 +5,9 @@ Date: 2026-09-28. Status: draft for Paw's approval. Brainstorm: `.superpowers/sk
 
 Review rounds 1 to 5 (PR #49, via the API): F1 to F7 fixed in this revision.
 
+Amended 2026-09-28 during plan review: `get_skill` treats an empty name as no name (§5.1, §9, §10.2;
+plan review round 1, SP1).
+
 ## 1. Purpose and scope
 
 Every Loom flow beyond joining is still carried by hand-written prompts: the exact tool, the exact
@@ -211,7 +214,9 @@ Code channel) have it. `LOOM_TOOL_NAMES` gains `get_skill`: **39 tools**.
   loom-ask-for-review".
 - No `credential` argument, and no backend call: it reads only the skills it was given.
 - **Without `name`:** the result is one text block, `renderSkillsIndex(skills, origin)`, the same
-  bytes `GET /skills` answers for that origin.
+  bytes `GET /skills` answers for that origin. An empty name is treated as no name: the index.
+  (Amended 2026-09-28 during plan review: MCP clients send an empty string for an optional argument
+  they mean to leave out.)
 - **With a loaded skill's name:** one text block, that skill's `text`, the same bytes as
   `GET /skills/<name>.md`.
 - **With `join-loom`:** one text block, `renderDocument(origin)`, the same bytes as
@@ -669,7 +674,7 @@ A `weave.invited` whose `requestId` is null comes from a keeper who invited you 
 | Case | Answer |
 | --- | --- |
 | `GET /skills/<name>.md` for a name that is not loaded, or any other path under `/skills/` | 404 `not_found` "No such skill" |
-| `get_skill` with a name that is not loaded and is not `join-loom` | `not_found` "No skill named <name>; call get_skill with no name for the list" |
+| `get_skill` with a name that is not loaded, is not `join-loom` and is not empty (an empty name is no name: the index; amended 2026-09-28) | `not_found` "No skill named <name>; call get_skill with no name for the list" |
 | `get_skill("join-loom")` on a registration without `origin` | `not_found` "join-loom needs this Loom's origin; read /join-loom.md" |
 | `skills/` missing, a skill folder without `SKILL.md` or with another file, or a `SKILL.md` breaking §3.2 | the loader throws, naming the folder and the rule; the server and the channel do not start |
 
@@ -716,6 +721,7 @@ A `weave.invited` whose `requestId` is null comes from a keeper who invited you 
 - `LOOM_TOOL_NAMES` has 39 names including `get_skill`, and the registered tools equal it (the
   existing cases, 38 becoming 39).
 - `get_skill` with no name answers `renderSkillsIndex(skills, origin)` as one text block, not JSON.
+- `get_skill` with an empty name answers the index, as with no name (amended 2026-09-28).
 - `get_skill` with each skill's name answers that skill's `text`; with `join-loom`, answers
   `renderDocument(origin)`.
 - `get_skill` with an unknown name answers `not_found` in the error envelope; with `join-loom` and no
