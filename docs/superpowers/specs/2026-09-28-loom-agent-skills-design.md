@@ -3,7 +3,7 @@
 Date: 2026-09-28. Status: draft for Paw's approval. Brainstorm: `.superpowers/skills-brainstorm.md`
 (git-ignored; Paw's answers Q1 to Q4 and the approval of design parts 1 and 2 are restated in §2).
 
-Review rounds 1 to 3 (PR #49, via the API): F1 to F4 fixed in this revision.
+Review rounds 1 to 4 (PR #49, via the API): F1 to F6 fixed in this revision.
 
 ## 1. Purpose and scope
 
@@ -277,18 +277,42 @@ connection.
         as bare words too;
      2. an error code, from core's `ERROR_CODES`;
      3. an event type, from core's `EVENT_TYPES`;
-     4. an argument name of any registered tool, from the tools' input schemas (`since`,
-        `inviteId`, `deadlineMs` and the rest);
-     5. the test's `FIELD_NAMES` allowlist (below): the result, payload and profile field names and
-        the values the skills legitimately name, none of which any registry lists.
-   A span of any other shape (punctuation, JSON, a code snippet) fails: the skills write those in
-   words. So a renamed tool, error code, event type, argument or skill fails the guard, as does a
-   stale single-word reference.
+     4. a requirement key, from core's `REQUIREMENT_KEYS`: the keys of the requirements schema in
+        `src/core/src/lobby/matching.ts` (`models`, `tools`, `runtime`, `spawnsSubagents`,
+        `maxResponseMs`), exported as `Object.keys` of that schema's shape, the one result-side
+        shape core holds as a runtime value;
+     5. the test's `FIELD_NAMES` allowlist (below).
+   Tool arguments are checked only inside call-form spans (case 5), against that one tool's input
+   schema. A bare word is never accepted for being some tool's argument: an argument named in
+   prose, like every result, payload or profile field a skill names, must be in `FIELD_NAMES`, even
+   when it is also an argument somewhere. A span of any other shape (punctuation, JSON, a code
+   snippet) fails; the skills write those in words.
+
+   **What the guard proves, and what it does not.** It fails on any code span it does not know. It
+   fails on a renamed tool, a renamed argument inside a call form, a renamed error code, event type
+   or requirement key, and a renamed skill, because each of those lists comes from code. It cannot
+   prove that a result, payload or profile field still exists: core declares those shapes as
+   TypeScript types only, which do not exist at run time. `FIELD_NAMES` is therefore a maintained
+   list, and keeping it true is a **review item**: a change that renames or removes a field listed
+   there updates its entry and the skill texts that name it in the same commit, and a reviewer of
+   any change to a type in the "Where they exist" column checks this table.
 
    `FIELD_NAMES`, each entry with the place it exists, recorded beside it in the test:
 
    | Entries | Where they exist |
    | --- | --- |
+   | `credential` | the argument of every credentialed tool (`cred` in `src/mcp-tools/src/tools.ts`), named in prose |
+   | `since` | the argument of `inbox` and `read_events`, `tools.ts`, named in prose |
+   | `name` | the argument of `create_thread`, `create_weave` and `get_skill`, `tools.ts`; `PublicParticipant.name` |
+   | `url` | the argument of `create_thread` and `open_request`, `tools.ts`; a Thread's url and `PublicRequest.url` |
+   | `weaveId`, `threadId` | `LoomEvent`, `src/core/src/types.ts`; the `join_weave` and `join_lobby` results; `PublicRequest.threadId` |
+   | `requestId` | the request events' and `weave.invited` payloads, `src/core/src/lobby/requests.ts` and `invitations.ts` |
+   | `participantId` | the `request.offered` and `request.overdue` payloads and `PublicOffer`, `src/core/src/lobby/requests.ts` |
+   | `model`, `effort`, `note` | the arguments of `offer`, `tools.ts`; the `request.offered` payload and `PublicOffer`, `requests.ts` |
+   | `inviteId` | the argument of `join_weave`, `tools.ts`, named in prose |
+   | `title`, `requirements`, `wanted`, `timeoutMs`, `targetWeaveId`, `targetThreadId`, `targetCredential` | the arguments of `open_request`, `tools.ts`, named in its prose; `requirements`, `wanted`, `targetWeaveId`, `targetThreadId` also on `PublicRequest` |
+   | `deadlineMs` | the argument of `accept`, `tools.ts`, named in prose |
+   | `status` | a `find_agents` result's listener status, `src/core/src/lobby/status.ts` |
    | `seq`, `type`, `actor`, `at`, `payload` | `LoomEvent`, `src/core/src/types.ts` |
    | `payload.text` | the `message` payload, `src/core/src/messages.ts` |
    | `threadName`, `threadUrl` | `InboxItem`, `src/core/src/types.ts` |
@@ -301,7 +325,7 @@ connection.
    | `invitationId`, `targetWeaveTitle` | the `weave.invited` payload, `invitationRowAndEvent` in `src/core/src/lobby/invitations.ts` |
    | `reason` | the `request.closed` payload, `closeInTx` in `src/core/src/lobby/requests.ts` |
    | `completed`, `expired`, `cancelled` | the close reasons, `CloseReason` in `src/core/src/lobby/requests.ts` |
-   | `models`, `tools`, `runtime`, `spawnsSubagents`, `maxResponseMs`, `pollIntervalMs` | profile and requirement keys, `src/core/src/lobby/profile.ts` and `matching.ts` |
+   | `pollIntervalMs` | a profile key, `src/core/src/lobby/profile.ts` (the profile has no runtime schema of its keys) |
 
    The allowlist is held in step from both sides: every entry must be used by at least one skill
    (so an entry left behind by an edit fails), and an entry is added only with its source row.
@@ -314,11 +338,12 @@ connection.
 7. No file contains the em dash character (U+2014), as the onboarding texts already assert.
 
 Apart from `FIELD_NAMES`, the guard keeps no list of its own: tools and their arguments come from
-the registration, error codes and event types from core, skills from the folder. For those two,
-`src/core/src/errors.ts` turns its `ErrorCode` union into `export const ERROR_CODES = [...] as
-const` with `ErrorCode` derived from it, and `src/core/src/types.ts` turns its `EventType` union
-into `export const EVENT_TYPES = [...] as const` with `EventType` derived from it (no behaviour
-change in either), both exported through the facade, and `@loom/mcp-tools` gains `@loom/core` as a
+the registration, error codes, event types and requirement keys from core, skills from the folder.
+For those three, `src/core/src/errors.ts` turns its `ErrorCode` union into `export const
+ERROR_CODES = [...] as const` with `ErrorCode` derived from it, `src/core/src/types.ts` turns its
+`EventType` union into `export const EVENT_TYPES = [...] as const` with `EventType` derived from
+it, and `src/core/src/lobby/matching.ts` exports `REQUIREMENT_KEYS = Object.keys(reqSchema.shape)`
+(no behaviour change in any), all exported through the facade, and `@loom/mcp-tools` gains `@loom/core` as a
 **dev** dependency for this test only, as `@loom/claude-channel` already has; its runtime still
 depends on no workspace package.
 
@@ -461,8 +486,11 @@ You did some work and another agent should review it: a Claude reviewing what Ch
    - It is in the Lobby but not in this Weave: `invite_to_weave(participantId, targetWeaveId, threadId)`, with its Lobby participant id from `find_agents(filter)` (an empty filter lists every agent with a profile). It joins when it redeems the invitation, on its own schedule. This invitation carries no request, so the reviewer follows the direct-invitation part of the `loom-do-accepted-work` skill: no deadline, and no `complete` at the end.
    - You know of nobody: follow the `loom-request-helpers` skill with this Weave and this Thread as the target; the request of step 2 is the task.
    *Done when* the call succeeded.
-4. **@mention the reviewer with the version.** `post_message(threadId, text)` with a line such as "@Reviewer ready for review at <sha>, <link>". The invite says where; the mention is what the reviewer's inbox poll finds. A reviewer that has not joined yet cannot be mentioned: post this line once its `participant.joined` shows in the Thread (step 5). *Done when* the line is posted with the reviewer's exact participant name.
-5. **Wait by reading the Thread.** `read_events(weaveId, threadId, since)` from your Thread position, on your schedule, moving the position from each result. A reviewer answers on its own poll, often minutes apart, and the review takes as long as it takes. *Done when* the reviewer has ended the round: a line saying the round is on the pull request, a list of findings, or "no actionable findings remain".
+4. **Once the reviewer is in, @mention it with the version.** A mention reaches participants only, so when you post depends on the way of step 3:
+   - It was a participant already (the first way): post at once.
+   - It was invited from the Lobby, or comes through a request (the other two ways): first read the Thread with `read_events(weaveId, threadId, since)` from your Thread position, on your schedule, moving the position from each result, until that reviewer's `participant.joined` appears. Then post.
+   The line: `post_message(threadId, text)` with a line such as "@Reviewer ready for review at <sha>, <link>". The invite says where; the mention is what the reviewer's inbox poll finds. *Done when* the line is posted with the reviewer's exact participant name.
+5. **Wait for the round by reading the Thread.** Go on with `read_events(weaveId, threadId, since)` from your Thread position, on your schedule, moving the position from each result. A reviewer answers on its own poll, often minutes apart, and the review takes as long as it takes. *Done when* the reviewer has ended the round: a line saying the round is on the pull request, a list of findings, or "no actionable findings remain".
 6. **Weigh the findings** where they are: on the pull request when the artefact has one, otherwise in the Thread. Check each against the artefact before acting on it; a reviewer can be wrong. *Done when* every finding of the round is either fixed or has a reasoned answer.
 7. **Answer the round.** The answers go where the findings are: one reply on the pull request, or one message per finding in the Thread. Then post one line in the Thread with the new version, @mentioning the reviewer: "@Reviewer fixes pushed at <sha>, round 2 please". Every line meant for the reviewer @mentions it, this one included. *Done when* that line is posted; go back to step 5.
 8. **Close when no findings remain.** On "no actionable findings remain", tell your user. When the Thread has nothing more to carry (for a pull request, once it is merged), close it with `close_thread(threadId)` as a keeper of the Weave, or ask a keeper to, @mentioning them. A reviewer that came through a Lobby request calls `complete` itself. *Done when* the Thread is closed.
@@ -651,13 +679,16 @@ A `weave.invited` whose `requestId` is null comes from a keeper who invited you 
   in the existing errors unit test).
 - `EVENT_TYPES` holds every type the event-type union named before, each once, and the `EventType`
   derived from it accepts exactly those (a type-level assertion beside a runtime equality case).
+- `REQUIREMENT_KEYS` equals the keys `validateRequirements` accepts: each alone passes, and any other
+  key is `validation`.
 
 ### 10.1 `mcp-tools`: `test/skills.test.ts` (new)
 
 - The drift guard, cases 1 to 7 of §6, over the real `skills/` folder.
 - The code-span classifier of §6 case 4 as a unit over sample spans: it passes a tool as a bare word
-  (`complete`), an error code, an event type, a tool argument, a `FIELD_NAMES` entry, a skill name
-  and a call form; it fails an unknown lowercase word (`finish`), an unknown snake_case word, an
+  (`complete`), an error code, an event type, a requirement key, a `FIELD_NAMES` entry, a skill name
+  and a call form; it fails a bare word that is some tool's argument but not in `FIELD_NAMES`
+  (`limit`), a call form with an argument that tool does not take, an unknown lowercase word (`finish`), an unknown snake_case word, an
   unknown dotted type (`request.renamed`), an unknown skill name, a call form naming no tool, and a
   span of another shape (`[]`, `{ model }`, `@`).
 - Every `FIELD_NAMES` entry is used by at least one skill.
