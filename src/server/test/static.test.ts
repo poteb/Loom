@@ -1,11 +1,11 @@
 import { describe, it, expect, afterAll, beforeAll } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { serve, type ServerType } from "@hono/node-server";
 import { createCore } from "@loom/core";
 import { freshDb, closeTestDb } from "../../core/test/helpers.js";
-import { renderDocument } from "@loom/mcp-tools";
+import { renderDocument, renderSkillsIndex, defaultSkills, defaultSkillsDir } from "@loom/mcp-tools";
 import { buildApp } from "../src/app.js";
 import { TicketStore } from "../src/tickets.js";
 
@@ -140,5 +140,53 @@ describe("GET /join-loom.md", () => {
 
   it("its body equals renderDocument(origin) for the request's origin", async () => {
     expect(await (await fetch(`${baseUrl}/join-loom.md`)).text()).toBe(renderDocument(baseUrl));
+  });
+});
+
+describe("GET /skills and GET /skills/<name>.md (spec 2026-09-28 §4.1)", () => {
+  const NAMES = ["loom-ask-for-review", "loom-do-accepted-work", "loom-request-helpers", "loom-work-in-a-thread"];
+  /** The file as it is in the repo, bytes read as UTF-8 and not normalised. */
+  const inRepo = (name: string) => readFileSync(path.join(defaultSkillsDir(), name, "SKILL.md"), "utf8");
+  const markdown = (r: Response, label: string) => {
+    expect(r.status, label).toBe(200);
+    expect(r.headers.get("content-type"), label).toBe("text/markdown; charset=utf-8");
+    expect(r.headers.get("cache-control"), label).toBe("max-age=300");
+  };
+
+  it("GET /skills and GET /skills/ are 200 markdown for five minutes, the body the index for the request's origin", async () => {
+    for (const p of ["/skills", "/skills/"]) {
+      const r = await fetch(`${baseUrl}${p}`);
+      markdown(r, p);
+      expect(await r.text(), p).toBe(renderSkillsIndex(defaultSkills(), baseUrl));
+    }
+  });
+
+  it("GET /skills/<name>.md for each of the four is 200 markdown, the body the file", async () => {
+    for (const name of NAMES) {
+      const r = await fetch(`${baseUrl}/skills/${name}.md`);
+      markdown(r, name);
+      expect(await r.text(), name).toBe(inRepo(name));
+    }
+  });
+
+  it("anything else under /skills/ is the JSON 404 No such skill", async () => {
+    for (const p of ["/skills/nope.md", "/skills/loom-ask-for-review", "/skills/join-loom.md", "/skills/LOOM-ASK-FOR-REVIEW.md", "/skills/..%2Fpackage.json"]) {
+      const r = await fetch(`${baseUrl}${p}`);
+      expect(r.status, p).toBe(404);
+      expect(await r.json(), p).toEqual({ code: "not_found", message: "No such skill" });
+    }
+  });
+
+  it("they are served by an app built without webDist, with no credential, and a ?agent= or bearer is not reflected", async () => {
+    const key = "k".repeat(43);
+    const bearer = "b".repeat(43);
+    for (const p of ["/skills", `/skills/${NAMES[0]}.md`]) {
+      const r = await fetch(`${apiOnlyUrl}${p}?agent=${key}`, { headers: { authorization: `Bearer ${bearer}` } });
+      markdown(r, p);
+      const body = await r.text();
+      expect(body, p).not.toContain(key);
+      expect(body, p).not.toContain(bearer);
+    }
+    expect(await (await fetch(`${apiOnlyUrl}/skills`)).text()).toBe(renderSkillsIndex(defaultSkills(), apiOnlyUrl));
   });
 });

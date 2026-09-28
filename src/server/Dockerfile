@@ -33,6 +33,10 @@ COPY --from=build /app/src/server/package.json ./src/server/package.json
 COPY --from=build /app/src/server/dist ./src/server/dist
 COPY --from=build /app/src/server/node_modules ./src/server/node_modules
 COPY --from=build /app/src/web/dist ./src/web/dist
+# Loom's skills are read from disk at boot (spec 2026-09-28 §3.4, §4.4), from the build context (the
+# repo root in both compose files): /app/skills is three levels above /app/src/mcp-tools/dist, where
+# defaultSkillsDir() looks. An image without them does not start, which the health check reports.
+COPY skills ./skills
 ENV NODE_ENV=production
 ENV LOOM_WEB_DIST=/app/src/web/dist
 # The container's port 3000 is only reachable on the Docker network (compose does not publish

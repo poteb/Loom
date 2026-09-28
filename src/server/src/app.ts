@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { LoomError, type Core } from "@loom/core";
-import { renderDocument } from "@loom/mcp-tools";
+import { defaultSkills, renderDocument, renderSkillsIndex, type Skill } from "@loom/mcp-tools";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { bearer, type Env } from "./auth.js";
 import { statusFor } from "./errors.js";
@@ -29,6 +29,12 @@ export type AppDeps = {
   mcpLog?: MountMcpOptions["log"];
   /** How often crossed requests are swept. A test seam; a minute in production. */
   requestSweepMs?: number;
+  /**
+   * The skills `/skills` and every MCP session serve (spec 2026-09-28 §4.1): one array, so the routes
+   * and `get_skill` cannot disagree. `main.ts` loads it before building the app; `defaultSkills()`
+   * when omitted.
+   */
+  skills?: readonly Skill[];
 };
 
 /** What one pass of the request sweep did: requests closed as expired, and overdue notices emitted. */
@@ -55,10 +61,20 @@ export function buildApp(deps: AppDeps): LoomApp {
   app.get("/health", (c) => c.json({ ok: true }));
   // The walkthrough as a document (spec §7): public, reads no database, reflects nothing from the
   // request but its origin. Registered here, not in the webDist block, so an API-only server serves it.
-  app.get("/join-loom.md", (c) => c.body(renderDocument(publicOrigin(c)), 200, {
-    "Content-Type": "text/markdown; charset=utf-8",
-    "Cache-Control": "max-age=300",
-  }));
+  const markdown = { "Content-Type": "text/markdown; charset=utf-8", "Cache-Control": "max-age=300" };
+  app.get("/join-loom.md", (c) => c.body(renderDocument(publicOrigin(c)), 200, markdown));
+  // Loom's skills (spec 2026-09-28 §4.1), beside /join-loom.md and for the same reasons: public, no
+  // database read, served by an API-only server too. A skill is found by exact name among those
+  // loaded at boot, so the request never becomes a file path; any other path under /skills/ is the
+  // skills' own 404. Registered in this order because Hono matches in registration order.
+  const skills = deps.skills ?? defaultSkills();
+  const skillsIndex = (c: Context<Env>) => c.body(renderSkillsIndex(skills, publicOrigin(c)), 200, markdown);
+  app.get("/skills", skillsIndex);
+  app.get("/skills/", skillsIndex);
+  app.get("/skills/*", (c) => {
+    const skill = skills.find((s) => `/skills/${s.name}.md` === c.req.path);
+    return skill ? c.body(skill.text, 200, markdown) : c.json({ code: "not_found", message: "No such skill" }, 404);
+  });
 
   app.notFound((c) => c.json({ code: "not_found", message: "No such route" }, 404));
   app.onError((err, c) => {
@@ -82,7 +98,7 @@ export function buildApp(deps: AppDeps): LoomApp {
   app.route("/api/admin", adminRoutes(deps.core));
   app.route("/api/auth", authRoutes(deps.core, deps.tickets));
 
-  mountMcp(app, deps.core, { connect: deps.mcpConnect, sessionTtlMs: deps.mcpSessionTtlMs, log: deps.mcpLog });
+  mountMcp(app, deps.core, { connect: deps.mcpConnect, sessionTtlMs: deps.mcpSessionTtlMs, log: deps.mcpLog, skills });
 
   if (deps.webDist) {
     const indexHtml = readFileSync(path.join(deps.webDist, "index.html"), "utf8");

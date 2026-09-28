@@ -422,6 +422,8 @@ describe("LOOM_MIGRATE_ON_BOOT as a boot", () => {
     const run = await runServer({ DATABASE_URL: url, LOOM_MIGRATE_ON_BOOT: "false" });
     try {
       expect(run.outcome).toBe("listening");
+      // spec 2026-09-28 §4.1: the skills are loaded before anything else, and the boot says which.
+      expect(run.stdout).toContain("skills: loom-ask-for-review, loom-do-accepted-work, loom-request-helpers, loom-work-in-a-thread");
       const res = await fetch(`http://127.0.0.1:${run.port}/api/guidelines`);
       expect(res.status).toBe(200);
     } finally {

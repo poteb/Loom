@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { DEFAULT_INSTANCE_GUIDELINES, INSTANCE_HEADING, WEAVE_HEADING } from "@loom/core";
+import { defaultSkills, renderSkillsIndex } from "@loom/mcp-tools";
 import { api, keeperToken, startTestServer, type TestServer } from "../../server/test/helpers.js";
 
 let s: TestServer | undefined;
@@ -64,8 +65,16 @@ describe("channel tools", () => {
       expect(caps?.experimental).toHaveProperty("claude/channel");
       const { tools } = await c.listTools();
       const names = tools.map((t) => t.name);
-      for (const n of ["create_weave", "join_weave", "post_message", "read_events", "leave_weave", "set_wake", "list_joined", "set_weave_guidelines"]) expect(names).toContain(n);
+      for (const n of ["create_weave", "join_weave", "post_message", "read_events", "leave_weave", "set_wake", "list_joined", "set_weave_guidelines", "get_skill"]) expect(names).toContain(n);
       expect(c.getInstructions()).toMatch(/<channel source="loom"/);
+    });
+  });
+
+  it("get_skill with no name answers the skills index with the configured Loom's origin (spec 2026-09-28 §5.1)", async () => {
+    await withChannel(stateDir, async (c) => {
+      const r = await c.callTool({ name: "get_skill", arguments: {} });
+      expect(r.isError).toBeFalsy();
+      expect((r.content as { text: string }[])[0]!.text).toBe(renderSkillsIndex(defaultSkills(), new URL(s!.baseUrl).origin));
     });
   });
 

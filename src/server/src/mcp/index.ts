@@ -2,7 +2,7 @@ import type { Hono } from "hono";
 import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPTransport } from "@hono/mcp";
-import { registerLoomTools, LOBBY_MECHANICS, agentInstructions } from "@loom/mcp-tools";
+import { registerLoomTools, LOBBY_MECHANICS, agentInstructions, defaultSkills, type Skill } from "@loom/mcp-tools";
 // The heading core's `guidelinesFor` gives the instance layer: the text reads the same whether it
 // arrives here at initialize or inside a join_weave/get_weave result, and only core spells it.
 import { INSTANCE_HEADING, type Core } from "@loom/core";
@@ -37,19 +37,21 @@ export function clientText(v: unknown): string {
  * to `<origin>/join-loom.md`. `instanceGuidelines` is read by the caller rather than here:
  * `McpServer` fixes `instructions` at construction, so the text has to be in hand before this runs,
  * and `mountMcp` reads it per new session, which is what makes a keeper's edit reach the next
- * connection. `origin` is `publicOrigin` of the initialize request. */
+ * connection. `origin` is `publicOrigin` of the initialize request; `skills` is the app's array,
+ * which `get_skill` answers from. */
 export function buildMcpServer(
   core: Core, instanceGuidelines: string, agent: { credential: string; name: string } | undefined, origin: string,
-  log: (line: string) => void = logInfo,
+  log: (line: string) => void = logInfo, skills: readonly Skill[] = defaultSkills(),
 ): McpServer {
   const mechanics = agent ? agentInstructions(agent.name, origin) : MCP_INSTRUCTIONS;
   const instructions = instanceGuidelines ? `${mechanics}\n\n${INSTANCE_HEADING}\n${instanceGuidelines}` : mechanics;
   const server = new McpServer({ name: "loom", version: "0.2.0" }, { instructions });
   // Read when get_started runs, by which time the handshake has been answered (spec §4.4).
   const clientName = () => server.server.getClientVersion()?.name;
+  // `get_skill` answers from the app's skills, and links with this session's origin (spec 2026-09-28 §5.1).
   registerLoomTools(server, new CoreToolBackend(core), agent
-    ? { defaultCredential: () => agent.credential, agentName: agent.name, clientName }
-    : { clientName });
+    ? { defaultCredential: () => agent.credential, agentName: agent.name, clientName, skills, origin }
+    : { clientName, skills, origin });
   // One line per session, agent or not, and never the mcp-session-id, which the README says to
   // treat like a credential. The client's name and version are its own text, so they are cleaned.
   server.server.oninitialized = () => {
@@ -72,6 +74,9 @@ export type MountMcpOptions = {
   sessionTtlMs?: number;
   /** Test seam: where the one line per session goes. Defaults to `logInfo` (redacted, stdout). */
   log?: (line: string) => void;
+  /** The skills every session's `get_skill` answers from: the app's own array, so `/skills` and
+   * `get_skill` agree. `defaultSkills()` when omitted. */
+  skills?: readonly Skill[];
 };
 
 type McpSession = { server: McpServer; transport: StreamableHTTPTransport; lastSeen: number };
@@ -79,6 +84,7 @@ type McpSession = { server: McpServer; transport: StreamableHTTPTransport; lastS
 export function mountMcp(app: Hono<Env>, core: Core, opts?: MountMcpOptions): { closeIdle: () => void } {
   const doConnect = opts?.connect ?? ((s, t) => s.connect(t));
   const ttlMs = opts?.sessionTtlMs ?? DEFAULT_SESSION_TTL_MS;
+  const skills = opts?.skills ?? defaultSkills();
   // One McpServer + one StreamableHTTPTransport per MCP session, keyed by the session id the
   // transport itself assigns on `initialize`. A single shared transport correlates responses by
   // JSON-RPC message id alone, so two independent clients whose first requests both use id 0 in the
@@ -132,7 +138,7 @@ export function mountMcp(app: Hono<Env>, core: Core, opts?: MountMcpOptions): { 
       if (actor.kind === "agent") agent = { credential, name: actor.agent.name };
     }
     // Per new session, so an instance keeper's edit reaches the next connection without a restart.
-    const server = buildMcpServer(core, await core.getInstanceGuidelines(), agent, publicOrigin(c), opts?.log);
+    const server = buildMcpServer(core, await core.getInstanceGuidelines(), agent, publicOrigin(c), opts?.log, skills);
     let session: McpSession;
     const transport = new StreamableHTTPTransport({
       sessionIdGenerator: () => randomUUID(),
