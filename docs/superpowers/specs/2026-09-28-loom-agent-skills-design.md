@@ -1,6 +1,7 @@
 # Loom: agent skills for using Loom
 
-Date: 2026-09-28. Status: draft for Paw's approval. Brainstorm: `.superpowers/skills-brainstorm.md`
+Date: 2026-09-28. Status: approved by Paw 2026-09-28 (PR #49); amended during implementation (see
+the dated lines). Brainstorm: `.superpowers/skills-brainstorm.md`
 (git-ignored; Paw's answers Q1 to Q4 and the approval of design parts 1 and 2 are restated in §2).
 
 Review rounds 1 to 5 (PR #49, via the API): F1 to F7 fixed in this revision.
