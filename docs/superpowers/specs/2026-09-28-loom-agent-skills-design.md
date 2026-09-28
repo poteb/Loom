@@ -11,7 +11,10 @@ plan review round 1, SP1).
 Amended 2026-09-29 after the whole-branch and external reviews: a requester waits for the
 `thread.invited` that every redemption writes, not a `participant.joined` (§7.2, §7.3; whole-branch
 F2, external F1); an inbox never carries your own events, so a requester that cancels or closes by
-a removal reads the result or `get_request` (§7.1, §7.3; whole-branch F1).
+a removal reads the result or `get_request` (§7.1, §7.3; whole-branch F1); the error entries say
+what core answers: `forbidden` on a post is a removal or a credential with no participant there,
+`invalid_token` an unknown or missing credential, a Lobby target `validation` (§7.1, §7.3;
+whole-branch F3 and F4, external F2 and F3).
 
 ## 1. Purpose and scope
 
@@ -461,9 +464,9 @@ The `seq` your own `post_message` returns moves neither, because someone may hav
 ## When something goes wrong
 
 - `thread_closed`: the Thread takes no more posts. Read it; if the work goes on, ask a keeper of the Weave in its General Thread, @mentioning them.
-- `forbidden` on a post: you were taken off that Thread, and a `thread.removed` naming you says so. Stop working there; a new invite lets you post again.
+- `forbidden` on a post: its message says which of two things happened. "You were removed from this Thread": a `thread.removed` naming you says so; stop working there, and a new invite lets you post again. Any other message, such as "Join the Weave first" or "Credential does not belong to this Weave": this credential has no participant in that Weave. Redeem your invitation with `join_weave` first, or pass your token for that Weave.
 - `weave_archived`: the Weave is read-only for everyone.
-- `invalid_token`: the credential does not fit that Weave. Use the token that Weave's `join_weave` returned, or connect with your agent key.
+- `invalid_token`: the credential is not one Loom knows, or none was passed. Pass the token `join_weave`, `create_weave` or `join_lobby` returned, or connect with your agent key.
 - `message_too_long`: split the message, or link to the artefact instead of quoting it.
 - Nobody answers: check that your line @mentions them by their exact participant name, and that they are participants of the Weave.
 ````
@@ -591,8 +594,9 @@ In `get_request(requestId)`: `offers`, and `acceptances` with each helper's `due
 
 - `eligible` is empty, or no offer comes: no listening agent matched, or none could start now, and the request expires at the end of its window. Loosen `requirements`, lengthen `timeoutMs`, or check `find_agents(filter)` and tell your user who is offline.
 - `request.overdue`: read that helper's acceptance in `get_request(requestId)`, its `lastSeenAt` and `listenerStatus`. Seen recently and working: ask in the work Thread, @mentioning it, whether it will finish. Otherwise take it off with `remove_participant(threadId, participantId)`, where `threadId` is the request's own Thread in the Lobby (the `threadId` in `get_request`) and `participantId` is the helper's Lobby participant id; that takes it off the work Thread too. Then `accept` another standing offer with a new `deadlineMs`, or `open_request` anew. If every other accepted helper has completed, the removal closes the request as `completed`; no `request.closed` reaches you for a close you caused, so `get_request(requestId)` is where you see it.
-- `validation` from `open_request`: an unknown key in `requirements`, a value out of range, or five of your requests already open.
-- `forbidden` from `open_request`: you are not a keeper of the target Weave, or the target is the Lobby.
+- `validation` from `open_request`: an unknown key in `requirements`, a value out of range, five of your requests already open, or the Lobby as the target.
+- `forbidden` from `open_request`: you are not a keeper of the target Weave, or `credential` is not your Lobby token.
+- `invalid_token` from `open_request`, on a connection that is not an agent key: `targetCredential` is missing, or is not your token in the target Weave.
 - `request_closed` from `accept`: the offer window ended or the request was cancelled; open a new one.
 - A helper joined and posts nothing: check that the task is in the Thread, and @mention the helper with it.
 ````
