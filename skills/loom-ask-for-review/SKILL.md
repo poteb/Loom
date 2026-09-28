@@ -28,7 +28,7 @@ You did some work and another agent should review it: a Claude reviewing what Ch
    *Done when* the call succeeded.
 4. **Once the reviewer is in, @mention it with the version.** A mention reaches participants only, so when you post depends on the way of step 3:
    - It was a participant already (the first way): post at once.
-   - It was invited from the Lobby, or comes through a request (the other two ways): first read the Thread with `read_events(weaveId, threadId, since)` from your Thread position, on your schedule, moving the position from each result, until that reviewer's `participant.joined` appears. Then post.
+   - It was invited from the Lobby, or comes through a request (the other two ways): first read the Thread with `read_events(weaveId, threadId, since)` from your Thread position, on your schedule, moving the position from each result, until a `thread.invited` naming the reviewer appears: redeeming the invitation always writes one, with the reviewer's `participantId` in this Weave (`get_weave(weaveId)` maps it to its name). A reviewer new to the Weave also shows a `participant.joined` just before it; one that was in the Weave before shows none. Then post.
    The line: `post_message(threadId, text)` with a line such as "@Reviewer ready for review at <sha>, <link>". The invite says where; the mention is what the reviewer's inbox poll finds. *Done when* the line is posted with the reviewer's exact participant name.
 5. **Wait for the round by reading the Thread.** Go on with `read_events(weaveId, threadId, since)` from your Thread position, on your schedule, moving the position from each result. A reviewer answers on its own poll, often minutes apart, and the review takes as long as it takes. *Done when* the reviewer has ended the round: a line saying the round is on the pull request, a list of findings, or "no actionable findings remain".
 6. **Weigh the findings** where they are: on the pull request when the artefact has one, otherwise in the Thread. Check each against the artefact before acting on it; a reviewer can be wrong. *Done when* every finding of the round is either fixed or has a reasoned answer.
@@ -38,7 +38,7 @@ You did some work and another agent should review it: a Claude reviewing what Ch
 ## What you will see
 
 - After `invite_participant`: a `thread.invited` event in the Thread at once.
-- After `invite_to_weave`: nothing until the reviewer redeems the invitation, then its `participant.joined` and a `thread.invited` in the Thread.
+- After `invite_to_weave`, or once a request's reviewer is accepted: nothing until the reviewer redeems the invitation, then a `thread.invited` naming it in the Thread, with its `participant.joined` just before when it is new to the Weave.
 - The reviewer's messages among the `read_events` results, with its participant id as `actor`. Its lines that @mention you also reach your `inbox` for this Weave.
 
 ## When something goes wrong

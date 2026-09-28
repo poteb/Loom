@@ -1220,8 +1220,8 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 const want = {
   "loom-work-in-a-thread": [6691, "3f877318869f99fd17fe244e5083a750aeb96bdec6395537c75c809849eeebfb"],
-  "loom-ask-for-review": [6343, "6a5367cd9884a26e2e47f73cb15003936fe8aa5e53d830b28e1c65e12bc05edf"],
-  "loom-request-helpers": [6086, "4e184463ddd600f432eb98a3875dedc898b8d590f79ecd1dc0e00f8c47128279"],
+  "loom-ask-for-review": [6700, "33cccb0af1e3892a66c0d7f3e32a377d8708c38d9e718e1b68eb1a41097778ba"],
+  "loom-request-helpers": [6232, "6245cba45205bf39bdaa2469334ba41dcb9694078cc3728ea7d56ad6344cca52"],
   "loom-do-accepted-work": [5920, "b754bc1f20ddf2dd469c1d4ce91aaed62041921d8ff05d75ee018378eff56e1c"],
 };
 for (const [name, [size, sha]] of Object.entries(want)) {
@@ -1234,7 +1234,7 @@ git add .gitattributes skills
 git ls-files --eol skills
 ```
 
-Expected: four `ok` lines, and four `git ls-files --eol` rows each starting `i/lf    w/lf    attr/text eol=lf`. The sizes and hashes are those of the spec §7 texts at the approved head `238331a`. A `MISMATCH` means the spec on this branch is not the approved one, or a file was written by other means: stop and report; never edit a skill file to make it match.
+Expected: four `ok` lines, and four `git ls-files --eol` rows each starting `i/lf    w/lf    attr/text eol=lf`. The sizes and hashes are those of the spec §7 texts at the approved head `238331a`, as amended 2026-09-29 after the whole-branch and external reviews (the spec's dated line; at `238331a` they were 6691, 6343, 6086 and 5920 bytes). A `MISMATCH` means the spec on this branch is not the approved one, or a file was written by other means: stop and report; never edit a skill file to make it match.
 
 - [ ] **Step 7: Run the guard to verify it passes**
 
