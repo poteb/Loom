@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,6 +8,14 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ERROR_CODES, EVENT_TYPES, REQUIREMENT_KEYS } from "@loom/core";
 import { registerLoomTools, type LoomToolBackend } from "../src/index.js";
 import { parseSkill, loadSkills, defaultSkillsDir, renderSkillsIndex, type Skill } from "../src/skills.js";
+
+// The one seam over the file system: readdirSync is the real one, except in the case that hands
+// loadSkills a listing out of order. NTFS lists a folder in name order, so without the seam a case
+// on Windows cannot tell a sorted result from the file system's own order.
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, readdirSync: vi.fn(actual.readdirSync) };
+});
 
 /** A valid SKILL.md for `name`; `front` replaces the two frontmatter lines, `body` the body. */
 const file = (name: string, over: { front?: string[]; body?: string } = {}): string =>
@@ -82,11 +90,21 @@ describe("loadSkills over a temporary folder (spec 2026-09-28 §3.4)", () => {
     writeFileSync(path.join(dir, folder, name), content);
   };
 
-  it("reads every folder, sorted by name, and ignores plain files at the top", () => {
+  it("reads every folder and ignores plain files at the top", () => {
     put("loom-b");
     put("loom-a");
     writeFileSync(path.join(dir, "README.md"), "Not a skill.\n");
     expect(loadSkills(dir).map((s) => s.name)).toEqual(["loom-a", "loom-b"]);
+  });
+
+  it("sorts by name whatever order the file system lists the folders in", async () => {
+    put("loom-a");
+    put("loom-b");
+    put("loom-c");
+    const real = (await vi.importActual<typeof import("node:fs")>("node:fs")).readdirSync;
+    // loadSkills' first listing is the top folder's; this one call gets it reversed.
+    vi.mocked(readdirSync).mockImplementationOnce(((p: string, o: object) => [...real(p, o as { withFileTypes: true })].reverse()) as typeof readdirSync);
+    expect(loadSkills(dir).map((s) => s.name)).toEqual(["loom-a", "loom-b", "loom-c"]);
   });
 
   it("refuses a folder without SKILL.md", () => {
