@@ -12,3 +12,10 @@ src/core/drizzle/** text eol=lf
 deploy/*.sh text eol=lf
 deploy/test/**/*.sh text eol=lf
 deploy/test/stubs/* text eol=lf
+
+# skills/ holds the Agent Skills files Loom serves byte for byte, over HTTP and through get_skill,
+# and that are meant to be copied as they stand into other tools or onto a website. Paw's checkout
+# has core.autocrlf=true: keep them LF in the working tree on every platform, whatever the
+# developer's autocrlf setting, so a skill is the same bytes in a Windows checkout, in the image
+# and on a website.
+skills/** text eol=lf

@@ -95,6 +95,10 @@ importers:
       zod:
         specifier: 4.6.1
         version: 4.6.1
+    devDependencies:
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../core
 
   src/server:
     dependencies:

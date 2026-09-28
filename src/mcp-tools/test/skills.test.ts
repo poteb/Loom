@@ -1,8 +1,13 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { parseSkill, loadSkills, renderSkillsIndex, type Skill } from "../src/skills.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { ERROR_CODES, EVENT_TYPES, REQUIREMENT_KEYS } from "@loom/core";
+import { registerLoomTools, type LoomToolBackend } from "../src/index.js";
+import { parseSkill, loadSkills, defaultSkillsDir, renderSkillsIndex, type Skill } from "../src/skills.js";
 
 /** A valid SKILL.md for `name`; `front` replaces the two frontmatter lines, `body` the body. */
 const file = (name: string, over: { front?: string[]; body?: string } = {}): string =>
@@ -95,5 +100,200 @@ describe("renderSkillsIndex (spec 2026-09-28 §4.2)", () => {
       "- [loom-b](https://loom.example/skills/loom-b.md): Use when B.",
       "",
     ].join("\n"));
+  });
+});
+
+// --- The drift guard (spec 2026-09-28 §6) -----------------------------------------------------
+// Apart from FIELD_NAMES it keeps no list of its own: tools and their arguments come from the
+// registration, error codes, event types and requirement keys from core, skills from the folder.
+
+const SKILL_NAMES = ["loom-ask-for-review", "loom-do-accepted-work", "loom-request-helpers", "loom-work-in-a-thread"];
+const HEADINGS = ["## When to use", "## Steps", "## What you will see", "## When something goes wrong"];
+
+const group = (names: string[], where: string): [string, string][] => names.map((n) => [n, where]);
+/**
+ * The result, payload, profile and argument names a skill may write in prose, each with the place it
+ * exists (spec §6 case 4, set 5). Core declares these shapes as TypeScript types only, so this list
+ * is maintained by hand, and keeping it true is a review item: a change that renames or removes one
+ * of these updates its entry and the skill texts that name it in the same commit, and an entry is
+ * added only with its place.
+ */
+const FIELD_NAMES = new Map<string, string>([
+  ...group(["credential"], "the argument of every credentialed tool (cred in src/mcp-tools/src/tools.ts), named in prose"),
+  ...group(["since"], "the argument of inbox and read_events, tools.ts, named in prose"),
+  ...group(["name"], "the argument of create_thread, create_weave and get_skill, tools.ts; PublicParticipant.name"),
+  ...group(["url"], "the argument of create_thread and open_request, tools.ts; a Thread's url and PublicRequest.url"),
+  ...group(["weaveId", "threadId"], "LoomEvent, src/core/src/types.ts; the join_weave and join_lobby results; PublicRequest.threadId"),
+  ...group(["requestId"], "the request events' and weave.invited payloads, src/core/src/lobby/requests.ts and invitations.ts"),
+  ...group(["participantId"], "the request.offered and request.overdue payloads and PublicOffer, src/core/src/lobby/requests.ts"),
+  ...group(["model", "effort", "note"], "the arguments of offer, tools.ts; the request.offered payload and PublicOffer, requests.ts"),
+  ...group(["inviteId"], "the argument of join_weave, tools.ts, named in prose"),
+  ...group(["title", "requirements", "wanted", "timeoutMs", "targetWeaveId", "targetThreadId", "targetCredential"],
+    "the arguments of open_request, tools.ts, named in its prose; requirements, wanted, targetWeaveId, targetThreadId also on PublicRequest"),
+  ...group(["deadlineMs"], "the argument of accept, tools.ts, named in prose"),
+  ...group(["status"], "a find_agents result's listener status, src/core/src/lobby/status.ts"),
+  ...group(["seq", "type", "actor", "at", "payload"], "LoomEvent, src/core/src/types.ts"),
+  ...group(["payload.text"], "the message payload, src/core/src/messages.ts"),
+  ...group(["threadName", "threadUrl"], "InboxItem, src/core/src/types.ts"),
+  ...group(["next"], "the next field and block, withNext and withInboxNext in src/mcp-tools/src/tools.ts"),
+  ...group(["guidelines"], "the create_weave, join_weave, join_lobby and get_weave results (READ_GUIDELINES, tools.ts)"),
+  ...group(["id", "eligible", "offers", "acceptances", "expiresAt"], "PublicRequest, src/core/src/lobby/requests.ts"),
+  ...group(["dueAt", "completedAt", "removed", "overdue", "lastSeenAt", "listenerStatus"], "PublicAcceptance, src/core/src/lobby/requests.ts"),
+  ...group(["participant.lastSeenAt"], "a find_agents result's participant, PublicParticipant in src/core/src/types.ts"),
+  ...group(["currentWork", "cadence"], "a find_agents result, src/core/src/lobby/status.ts"),
+  ...group(["invitationId", "targetWeaveTitle"], "the weave.invited payload, invitationRowAndEvent in src/core/src/lobby/invitations.ts"),
+  ...group(["reason"], "the request.closed payload, closeInTx in src/core/src/lobby/requests.ts"),
+  ...group(["completed", "expired", "cancelled"], "the close reasons, CloseReason in src/core/src/lobby/requests.ts"),
+  ...group(["pollIntervalMs"], "a profile key, src/core/src/lobby/profile.ts (the profile has no runtime schema of its keys)"),
+]);
+
+/** The registered tools and each one's input properties, as a client lists them (§6 cases 4 and 5). */
+async function registeredTools(): Promise<Map<string, string[]>> {
+  const server = new McpServer({ name: "guard", version: "0.0.0" });
+  // Listing runs no handler, so the backend is never read.
+  registerLoomTools(server, {} as LoomToolBackend, { skills: [], origin: "" });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await server.connect(a);
+  const client = new Client({ name: "guard", version: "0" });
+  await client.connect(b);
+  try {
+    const { tools } = await client.listTools();
+    return new Map(tools.map((t) => [t.name, Object.keys((t.inputSchema as { properties?: Record<string, unknown> }).properties ?? {})]));
+  } finally { await client.close(); }
+}
+
+type Known = { tools: ReadonlyMap<string, readonly string[]>; skills: ReadonlySet<string> };
+const CALL_RE = /^([a-z][a-z0-9_]*)\((.*)\)$/;
+const SKILL_RE = /^[a-z0-9]+(-[a-z0-9]+)+$/;
+const IDENT_RE = /^[a-z][A-Za-z0-9_]*(\.[a-z][A-Za-z0-9_]*)*$/;
+const BARE_RE = /^[a-z][A-Za-z0-9_]*$/;
+
+/**
+ * Why a code span is not known, or null when it is (§6 cases 4 and 5): a call form naming a
+ * registered tool with only that tool's arguments; a skill name that is loaded or `join-loom`; or an
+ * identifier that is a tool, an error code, an event type, a requirement key or a FIELD_NAMES entry.
+ * A bare word is never accepted for being some tool's argument. Any other shape fails.
+ */
+function unknownSpan(span: string, known: Known): string | null {
+  const call = CALL_RE.exec(span);
+  if (call) {
+    const args = known.tools.get(call[1]!);
+    if (!args) return `no tool named ${call[1]}`;
+    if (call[2] === "") return null;
+    const bad = call[2]!.split(",").map((a) => a.trim()).filter((a) => !BARE_RE.test(a) || !args.includes(a));
+    return bad.length === 0 ? null : `${call[1]} takes no ${bad.join(", ")}`;
+  }
+  if (SKILL_RE.test(span)) return known.skills.has(span) ? null : `no skill named ${span}`;
+  if (IDENT_RE.test(span)) {
+    const sets: { has(v: string): boolean }[] = [known.tools, new Set<string>(ERROR_CODES), new Set<string>(EVENT_TYPES), new Set<string>(REQUIREMENT_KEYS), FIELD_NAMES];
+    return sets.some((set) => set.has(span)) ? null : `unknown word ${span}`;
+  }
+  return `a span of no known shape: ${span}`;
+}
+
+/** A skill's body: everything after the frontmatter, which parseSkill has put on lines 0 to 3. */
+const bodyOf = (text: string): string => text.split("\n").slice(4).join("\n");
+/** Every backtick code span on one line of `body`. */
+const spansOf = (body: string): string[] => body.split("\n").flatMap((line) => [...line.matchAll(/`([^`]+)`/g)].map((m) => m[1]!));
+/** §6 case 6: any URI scheme followed by ://, mailto:, or a uuid, all case-insensitive. */
+const INSTANCE_RE = /[a-z][a-z0-9+.-]*:\/\/|mailto:|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+const instanceValues = (text: string): string[] => [...text.matchAll(INSTANCE_RE)].map((m) => m[0]);
+
+describe("the drift guard over the real skills/ folder (spec 2026-09-28 §6)", () => {
+  const dir = defaultSkillsDir();
+  let skills: readonly Skill[];
+  let known: Known;
+  beforeAll(async () => {
+    skills = loadSkills(dir);
+    known = { tools: await registeredTools(), skills: new Set([...skills.map((s) => s.name), "join-loom"]) };
+  });
+
+  it("case 1: the loaded names are exactly the four", () => {
+    expect(skills.map((s) => s.name)).toEqual(SKILL_NAMES);
+  });
+
+  it("case 2: each folder holds only SKILL.md, and each file passes parseSkill", () => {
+    for (const s of skills) {
+      expect(readdirSync(path.join(dir, s.name)), s.name).toEqual(["SKILL.md"]);
+      expect(parseSkill(s.name, readFileSync(path.join(dir, s.name, "SKILL.md"), "utf8")), s.name).toEqual(s);
+    }
+  });
+
+  it("case 3: each body has the four headings, in order", () => {
+    for (const s of skills) {
+      expect(bodyOf(s.text).split("\n").filter((l) => HEADINGS.includes(l)), s.name).toEqual(HEADINGS);
+    }
+  });
+
+  it("cases 4 and 5: every code span is known, and a call form names only that tool's arguments", () => {
+    const unknown = skills.flatMap((s) => spansOf(bodyOf(s.text))
+      .map((span) => unknownSpan(span, known))
+      .filter((why): why is string => why !== null)
+      .map((why) => `${s.name}: ${why}`));
+    expect(unknown).toEqual([]);
+  });
+
+  it("every FIELD_NAMES entry is used by at least one skill", () => {
+    const used = new Set(skills.flatMap((s) => spansOf(bodyOf(s.text))));
+    expect([...FIELD_NAMES.keys()].filter((f) => !used.has(f))).toEqual([]);
+  });
+
+  it("case 6: no file contains a URL or a uuid", () => {
+    for (const s of skills) expect(instanceValues(s.text), s.name).toEqual([]);
+  });
+
+  it("case 7: no file contains the em dash character (U+2014)", () => {
+    const emDash = String.fromCharCode(0x2014);
+    for (const s of skills) expect(s.text.includes(emDash), s.name).toBe(false);
+  });
+});
+
+describe("the code-span classifier (spec 2026-09-28 §6 case 4)", () => {
+  let known: Known;
+  beforeAll(async () => { known = { tools: await registeredTools(), skills: new Set(["loom-ask-for-review", "join-loom"]) }; });
+
+  it.each([
+    "complete",                                        // a tool as a bare word
+    "thread_closed",                                   // an error code
+    "request.opened",                                  // an event type
+    "maxResponseMs",                                   // a requirement key
+    "dueAt",                                           // a FIELD_NAMES entry
+    "loom-ask-for-review",                             // a skill name
+    "accept(requestId, participantIds, deadlineMs)",   // a call form
+  ])("passes %s", (span) => {
+    expect(unknownSpan(span, known)).toBeNull();
+  });
+
+  it.each([
+    "limit",                        // some tool's argument, but not in FIELD_NAMES
+    "inbox(weaveId, threadId)",     // an argument that tool does not take
+    "finish",                       // an unknown lowercase word
+    "finish_work",                  // an unknown snake_case word
+    "request.renamed",              // an unknown dotted type
+    "loom-do-everything",           // an unknown skill name
+    "finish(requestId)",            // a call form naming no tool
+    "[]", "{ model }", "@",         // spans of another shape
+  ])("fails %s", (span) => {
+    expect(unknownSpan(span, known)).not.toBeNull();
+  });
+});
+
+describe("the instance-value check (spec 2026-09-28 §6 case 6)", () => {
+  it.each<[string, string]>([
+    ["a lowercase uuid", "id 3f2b8c1e-9a4d-4e6f-8b2a-1c3d5e7f9a0b here"],
+    ["an uppercase uuid", "id 3F2B8C1E-9A4D-4E6F-8B2A-1C3D5E7F9A0B here"],
+    ["http://", "see http://x"],
+    ["HTTPS://", "see HTTPS://X"],
+    ["ftp://", "see ftp://x"],
+    ["ws://", "see ws://x"],
+    ["loom://", "see loom://guidelines"],
+    ["git+ssh://", "see git+ssh://x"],
+    ["MAILTO:", "write to MAILTO:someone"],
+  ])("catches %s", (_label, text) => {
+    expect(instanceValues(text)).not.toEqual([]);
+  });
+
+  it.each(["@Reviewer", "PR 23", "at <sha>, <link>", "the rule: reply"])("passes %s", (text) => {
+    expect(instanceValues(text)).toEqual([]);
   });
 });
