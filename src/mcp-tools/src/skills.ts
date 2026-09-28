@@ -72,7 +72,8 @@ export function loadSkills(dir: string = defaultSkillsDir()): readonly Skill[] {
  * channel land on the same folder. No environment variable overrides it.
  */
 export function defaultSkillsDir(): string {
-  return fileURLToPath(new URL("../../../skills/", import.meta.url));
+  // From the module's file path, not `new URL(..., import.meta.url)`: Vite rewrites that form into an http URL in the web tests.
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../skills");
 }
 
 let loaded: readonly Skill[] | undefined;

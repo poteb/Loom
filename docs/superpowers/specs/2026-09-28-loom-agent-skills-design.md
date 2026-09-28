@@ -139,6 +139,8 @@ export function renderSkillsIndex(skills: readonly Skill[], origin: string): str
   `src/mcp-tools/dist/` when built, both three levels below the root. Node resolves the pnpm
   workspace symlink to the real path, so the server and the channel land on the same folder. No
   environment variable overrides it.
+  Amended 2026-09-29 during implementation: defaultSkillsDir resolves the folder with path.resolve
+  from the module's file path; the new URL form was rewritten by Vite in the web tests. Same folder.
 - `defaultSkills()` memoises `loadSkills(defaultSkillsDir())` for the process.
 
 This is the one file in `@loom/mcp-tools` that touches the filesystem; its README says so and why:
