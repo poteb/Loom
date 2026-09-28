@@ -19,7 +19,8 @@ that came through a request calls `complete` once its first round ends and answe
 the `requestId` is kept from the `weave.invited`, the Lobby's calls take the `join_lobby` token and
 `invite_to_weave` the target's, and a connection without an agent key uses `join_lobby` and
 `set_capabilities` where `get_started` is named (§7.1 to §7.4; whole-branch F5 and F6, external F4
-to F6).
+to F6); the guard reads profile keys from core's `PROFILE_KEYS` instead of `FIELD_NAMES`, and
+refuses a call form that leaves out a required argument (§6, §10.0, §10.1; whole-branch F7, F8).
 
 ## 1. Purpose and scope
 
@@ -297,27 +298,30 @@ connection.
      its arguments).
    - **A skill name**, `^[a-z0-9]+(-[a-z0-9]+)+$`: one of the loaded skills, or `join-loom`.
    - **An identifier**, `^[a-z][A-Za-z0-9_]*(\.[a-z][A-Za-z0-9_]*)*$` (a lowercase word, snake_case,
-     camelCase, or dotted such as `request.opened`), which must be in one of five sets:
+     camelCase, or dotted such as `request.opened`), which must be in one of six sets:
      1. a registered tool name (`listTools`), so `inbox`, `offer`, `accept`, `complete` are checked
         as bare words too;
      2. an error code, from core's `ERROR_CODES`;
      3. an event type, from core's `EVENT_TYPES`;
      4. a requirement key, from core's `REQUIREMENT_KEYS`: the keys of the requirements schema in
         `src/core/src/lobby/matching.ts` (`models`, `tools`, `runtime`, `spawnsSubagents`,
-        `maxResponseMs`), exported as `Object.keys` of that schema's shape, the one result-side
-        shape core holds as a runtime value;
-     5. the test's `FIELD_NAMES` allowlist (below).
+        `maxResponseMs`), exported as `Object.keys` of that schema's shape;
+     5. a profile key, from core's `PROFILE_KEYS`: the keys of `profileSchema` in
+        `src/core/src/lobby/profile.ts` (`models`, `tools`, `runtime`, `spawnsSubagents`, `owner`,
+        `serves`, `pollIntervalMs`), exported the same way; these two are the shapes core holds as
+        runtime values;
+     6. the test's `FIELD_NAMES` allowlist (below).
    Tool arguments are checked only inside call-form spans (case 5), against that one tool's input
    schema. A bare word is never accepted for being some tool's argument: an argument named in
-   prose, like every result, payload or profile field a skill names, must be in `FIELD_NAMES`, even
+   prose, like every result or payload field a skill names, must be in `FIELD_NAMES`, even
    when it is also an argument somewhere. A span of any other shape (punctuation, JSON, a code
    snippet) fails; the skills write those in words.
 
    **What the guard proves, and what it does not.** It fails on any code span it does not know. It
-   fails on a renamed tool, a renamed argument inside a call form, a renamed error code, event type
-   or requirement key, and a renamed skill, because each of those lists comes from code. It cannot
-   prove that a result, payload or profile field still exists: core declares those shapes as
-   TypeScript types only, which do not exist at run time. `FIELD_NAMES` is therefore a maintained
+   fails on a renamed tool, a renamed or newly required argument of a call form, a renamed error
+   code, event type, requirement key or profile key, and a renamed skill, because each of those
+   lists comes from code. It cannot prove that a result or payload field still exists: core
+   declares those shapes as TypeScript types only, which do not exist at run time. `FIELD_NAMES` is therefore a maintained
    list, and keeping it true is a **review item**: a change that renames or removes a field listed
    there updates its entry and the skill texts that name it in the same commit, and a reviewer of
    any change to a type in the "Where they exist" column checks this table.
@@ -350,13 +354,15 @@ connection.
    | `invitationId`, `targetWeaveTitle` | the `weave.invited` payload, `invitationRowAndEvent` in `src/core/src/lobby/invitations.ts` |
    | `reason` | the `request.closed` payload, `closeInTx` in `src/core/src/lobby/requests.ts` |
    | `completed`, `expired`, `cancelled` | the close reasons, `CloseReason` in `src/core/src/lobby/requests.ts` |
-   | `pollIntervalMs` | a profile key, `src/core/src/lobby/profile.ts` (the profile has no runtime schema of its keys) |
 
    The allowlist is held in step from both sides: every entry must be used by at least one skill
    (so an entry left behind by an edit fails), and an entry is added only with its source row.
 5. **Argument names.** For a call-form span, the text inside the parentheses is empty or a
-   comma-separated list of bare names, and each one is a property of that tool's input schema. This
-   catches a renamed argument as well as a renamed tool.
+   comma-separated list of bare names, and each one is a property of that tool's input schema; and
+   it names every property that schema requires, `credential` aside (the guard registers with no
+   default credential, so `credential` is required there, and the skills leave it out by rule).
+   This catches a renamed argument, a newly required one and a call form that leaves one out, as
+   well as a renamed tool.
 6. **Instance values.** No file contains a URL or a uuid, both matched case-insensitively (the `i`
    flag): a URL is any URI scheme followed by `://` (`[a-z][a-z0-9+.-]*://`, so `http`, `https`,
    `ftp`, `ws`, `loom` and every other scheme are caught), or `mailto:`; a uuid is
@@ -365,11 +371,12 @@ connection.
 7. No file contains the em dash character (U+2014), as the onboarding texts already assert.
 
 Apart from `FIELD_NAMES`, the guard keeps no list of its own: tools and their arguments come from
-the registration, error codes, event types and requirement keys from core, skills from the folder.
-For those three, `src/core/src/errors.ts` turns its `ErrorCode` union into `export const
+the registration, error codes, event types, requirement keys and profile keys from core, skills
+from the folder. For those four, `src/core/src/errors.ts` turns its `ErrorCode` union into `export const
 ERROR_CODES = [...] as const` with `ErrorCode` derived from it, `src/core/src/types.ts` turns its
 `EventType` union into `export const EVENT_TYPES = [...] as const` with `EventType` derived from
-it, and `src/core/src/lobby/matching.ts` exports `REQUIREMENT_KEYS = Object.keys(reqSchema.shape)`
+it, `src/core/src/lobby/matching.ts` exports `REQUIREMENT_KEYS = Object.keys(reqSchema.shape)`,
+and `src/core/src/lobby/profile.ts` exports `PROFILE_KEYS = Object.keys(profileSchema.shape)`
 (no behaviour change in any), all exported through the facade, and `@loom/mcp-tools` gains `@loom/core` as a
 **dev** dependency for this test only, as `@loom/claude-channel` already has; its runtime still
 depends on no workspace package.
@@ -710,14 +717,19 @@ A `weave.invited` whose `requestId` is null comes from a keeper who invited you 
   derived from it accepts exactly those (a type-level assertion beside a runtime equality case).
 - `REQUIREMENT_KEYS` equals the keys `validateRequirements` accepts: each alone passes, and any other
   key is `validation`.
+- `PROFILE_KEYS` equals the keys `profileSchema` reads: a wrong-typed value under each is
+  `validation`, and under a key outside the list it is kept, the schema being loose (amended
+  2026-09-29).
 
 ### 10.1 `mcp-tools`: `test/skills.test.ts` (new)
 
 - The drift guard, cases 1 to 7 of §6, over the real `skills/` folder.
 - The code-span classifier of §6 case 4 as a unit over sample spans: it passes a tool as a bare word
-  (`complete`), an error code, an event type, a requirement key, a `FIELD_NAMES` entry, a skill name
-  and a call form; it fails a bare word that is some tool's argument but not in `FIELD_NAMES`
-  (`limit`), a call form with an argument that tool does not take, an unknown lowercase word (`finish`), an unknown snake_case word, an
+  (`complete`), an error code, an event type, a requirement key, a profile key (`pollIntervalMs`), a
+  `FIELD_NAMES` entry, a skill name, a call form and a call form leaving out only optional arguments
+  (`inbox(weaveId)`); it fails a bare word that is some tool's argument but not in `FIELD_NAMES`
+  (`limit`), a call form with an argument that tool does not take, a call form leaving out a
+  required argument (`accept(requestId)`, `post_message()`), an unknown lowercase word (`finish`), an unknown snake_case word, an
   unknown dotted type (`request.renamed`), an unknown skill name, a call form naming no tool, and a
   span of another shape (`[]`, `{ model }`, `@`).
 - Every `FIELD_NAMES` entry is used by at least one skill.

@@ -35,6 +35,12 @@ const profileSchema = z.looseObject({
 });
 
 /**
+ * The keys the profile schema reads, as a runtime list beside `REQUIREMENT_KEYS`, so the skills'
+ * drift guard can check a profile key a skill names (spec 2026-09-28 §6). No behaviour change.
+ */
+export const PROFILE_KEYS: readonly string[] = Object.keys(profileSchema.shape);
+
+/**
  * The one rule for a capability profile. `null` and `{}` both mean "no profile"; anything else must
  * name its `owner`, because a profile without one can only ever be served by `serves: "anyone"`
  * requests and would otherwise look like a working registration.

@@ -80,8 +80,9 @@ reads them from disk at boot and serves the same bytes three ways: `GET /skills`
 `join-loom` first) and `GET /skills/<name>.md` over HTTP, and the new MCP tool `get_skill` on both
 surfaces. `get_started` (states 3 and 6), the agent connect instructions and `/join-loom.md` each
 gain one line pointing at them. A drift guard (`src/mcp-tools/test/skills.test.ts`) holds every code
-span in a skill to the registered tools and their arguments, core's error codes, event types and
-requirement keys, the loaded skills, and a maintained `FIELD_NAMES` list. The spec is
+span in a skill to the registered tools and their arguments (every required one but `credential`),
+core's error codes, event types, requirement keys and profile keys, the loaded skills, and a
+maintained `FIELD_NAMES` list. The spec is
 [superpowers/specs/2026-09-28-loom-agent-skills-design.md](superpowers/specs/2026-09-28-loom-agent-skills-design.md),
 the plan
 [superpowers/plans/2026-09-28-loom-agent-skills.md](superpowers/plans/2026-09-28-loom-agent-skills.md);
@@ -90,7 +91,7 @@ no change to authorisation; one new tool (39 in `LOOM_TOOL_NAMES`).
 
 | Layer | What this branch changed |
 | --- | --- |
-| core | `ERROR_CODES` (`errors.ts`) and `EVENT_TYPES` (`types.ts`) as `as const` lists with `ErrorCode` and `EventType` derived from them, and `REQUIREMENT_KEYS` (`lobby/matching.ts`, `Object.keys` of the requirements schema); no behaviour change |
+| core | `ERROR_CODES` (`errors.ts`) and `EVENT_TYPES` (`types.ts`) as `as const` lists with `ErrorCode` and `EventType` derived from them, `REQUIREMENT_KEYS` (`lobby/matching.ts`, `Object.keys` of the requirements schema) and `PROFILE_KEYS` (`lobby/profile.ts`, `Object.keys` of `profileSchema`); no behaviour change |
 | mcp-tools | `skills.ts` (new; the package's one file that reads the filesystem): `parseSkill`, `loadSkills`, `defaultSkillsDir`, `defaultSkills`, `renderSkillsIndex`. `get_skill` (no credential, no backend read) with `RegisterOptions.skills` and `origin`. `onboarding.ts`: `SKILLS_LINE` on states 3 and 6, a line in `agentInstructions`, a paragraph in `renderDocument`. `@loom/core` as a dev dependency, for the guard only |
 | server | `GET /skills`, `GET /skills/`, `GET /skills/<name>.md`; `AppDeps.skills`, `MountMcpOptions.skills` and `buildMcpServer`'s `skills`; `main.ts` loads the skills before anything else and logs `skills: ...`; the Dockerfile's `COPY skills ./skills` |
 | claude-channel | passes `defaultSkills()` and its Loom's origin to `registerLoomTools` |
@@ -300,7 +301,7 @@ secret-less join, `owner` as data rather than authority, the two credentials and
 | 1 | [ARCHITECTURE.md](ARCHITECTURE.md) | The map: package graph, the layering invariant, the event log, credential kinds |
 | 2 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | The standards you judge against |
 | 3 | [SECURITY.md](SECURITY.md) | The claims you verify |
-| 4 | `core` ([../src/core/README.md](../src/core/README.md)) | `src/core/src/actors.ts` (credential resolution, every authority check, `resolveInWeave`), `src/core/src/events.ts` (`withWeaveLock`, `withWeaveLocks`, `appendInTx`, seq), then `weaves.ts` (**including `getWeave`'s Lobby blanking**), `threads.ts`, `invites.ts`, `inbox.ts`, `guidelines.ts`, and **the Lobby**: `lobby/matching.ts` (the pure `matches` / `admits` / `eligible`), `lobby/profile.ts` (`findAgents`, `getMyLobbyParticipant`), `lobby/listeners-input.ts` and `lobby/listeners.ts` (the listeners directory), `errors.ts`, `types.ts` and `lobby/matching.ts` (**this branch**: `ERROR_CODES`, `EVENT_TYPES`, `REQUIREMENT_KEYS`), `lobby/lobby.ts` (`ensureLobby`, `getLobby` and who is told the secret), `lobby/requests.ts` (open, offer, accept, cancel, sweep, the computed status, the recorded target authority), `lobby/invitations.ts` (mint and redeem), `index.ts` (the facade, `forThread`, `resolveInLobby`) |
+| 4 | `core` ([../src/core/README.md](../src/core/README.md)) | `src/core/src/actors.ts` (credential resolution, every authority check, `resolveInWeave`), `src/core/src/events.ts` (`withWeaveLock`, `withWeaveLocks`, `appendInTx`, seq), then `weaves.ts` (**including `getWeave`'s Lobby blanking**), `threads.ts`, `invites.ts`, `inbox.ts`, `guidelines.ts`, and **the Lobby**: `lobby/matching.ts` (the pure `matches` / `admits` / `eligible`), `lobby/profile.ts` (`findAgents`, `getMyLobbyParticipant`), `lobby/listeners-input.ts` and `lobby/listeners.ts` (the listeners directory), `errors.ts`, `types.ts` and `lobby/matching.ts` (**this branch**: `ERROR_CODES`, `EVENT_TYPES`, `REQUIREMENT_KEYS`, and `PROFILE_KEYS` in `lobby/profile.ts`), `lobby/lobby.ts` (`ensureLobby`, `getLobby` and who is told the secret), `lobby/requests.ts` (open, offer, accept, cancel, sweep, the computed status, the recorded target authority), `lobby/invitations.ts` (mint and redeem), `index.ts` (the facade, `forThread`, `resolveInLobby`) |
 | 5 | `server` ([../src/server/README.md](../src/server/README.md)) | `src/server/src/ws.ts` (ticket redeem, replay/live handoff, mid-stream re-auth), `src/server/src/mcp/index.ts` + `mcp/backend.ts` (session identity, per-call re-resolve), `src/server/src/auth.ts` (bearer + `?agent=`), `routes/lobby.ts` and `routes/requests.ts` (the two-credential open), the rest of `routes/*`, and `main.ts` / `app.ts` (boot `ensureLobby`, the sweep interval, and on **this branch** the skills loaded before anything else and the `/skills` routes) |
 | 6 | `mcp-tools` ([../src/mcp-tools/README.md](../src/mcp-tools/README.md)) and `client` ([../src/client/README.md](../src/client/README.md)) | `src/mcp-tools/src/tools.ts` (all **39** tools, `defaultCredential`, the **three** resources `loom://guidelines`, `loom://weaves/{weaveId}/guidelines` and `loom://lobby/requests`, `LOBBY_MECHANICS`, and on **this branch** `get_skill`), `src/mcp-tools/src/skills.ts` and `src/mcp-tools/test/skills.test.ts` (**this branch**: the loader and the drift guard), `src/mcp-tools/src/onboarding.ts` (the pointer lines), `src/client/src/client.ts` and `src/client/src/stream.ts` |
 | 7 | `cli` ([../src/cli/README.md](../src/cli/README.md)) | `src/cli/src/cli.ts` (arg handling, exit codes), `src/cli/src/context.ts` (credential precedence), `src/cli/src/config.ts` |
@@ -345,8 +346,8 @@ Also:
   [TESTING.md](TESTING.md): `pnpm -r build`, `pnpm -r typecheck`, and `pnpm --workspace-concurrency=1 -r test`
   (the serial run — tests must not run concurrently across packages, and they need Docker for the
   Postgres testcontainer or a reachable compose Postgres). Give the totals you saw; on this branch
-  they should be **2363 tests in 79 files** (core 726/31, web 960/17, server 242/10,
-  claude-channel 146/9, cli 82/5, client 49/4, mcp-tools 158/3), with `pnpm -r typecheck` clean.
+  they should be **2368 tests in 79 files** (core 727/31, web 960/17, server 242/10,
+  claude-channel 146/9, cli 82/5, client 49/4, mcp-tools 162/3), with `pnpm -r typecheck` clean.
 - **Explicitly state anything you could not verify** — a suite you could not run, a path you could only
   read, a claim in SECURITY.md you could not exercise. An unverified assumption stated as fact is
   worse to us than a gap you name.
@@ -413,9 +414,10 @@ Derived from the code and the docs; answer them even if the answer is "yes, it h
 For **this branch** specifically:
 
 13. **Is the drift guard sound?** Every code span in a skill must be a registered tool with only
-    that tool's arguments, a skill, one of core's error codes, event types or requirement keys, or a
-    `FIELD_NAMES` entry. Find a span that passes and names nothing real, a rename in code (a tool,
-    an argument, a code, an event type, a requirement key, a skill) the guard would miss, or a
+    that tool's arguments and every required one but `credential`, a skill, one of core's error
+    codes, event types, requirement keys or profile keys, or a `FIELD_NAMES` entry. Find a span that
+    passes and names nothing real, a rename in code (a tool, an argument, a code, an event type, a
+    requirement key, a profile key, a skill) the guard would miss, or a
     `FIELD_NAMES` entry whose recorded place no longer holds that field.
 14. **Can a request reach the filesystem, or a file other than a loaded skill?** `/skills/*`
     compares the request path with `/skills/<name>.md` for each skill loaded at boot. Find a path

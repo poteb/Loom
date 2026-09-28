@@ -274,9 +274,10 @@ and each file at `GET /skills/<name>.md` (public, `text/markdown`, five minutes)
 the same texts over both MCP surfaces, `join-loom` included. `get_started` states 3 and 6, the agent
 connect instructions and `/join-loom.md` each carry one line pointing at them. The image copies
 `skills/` to `/app/skills` (`src/server/Dockerfile`). `src/mcp-tools/test/skills.test.ts` is the
-drift guard: every code span in a skill must be a registered tool with its real arguments, a skill,
-an error code, event type or requirement key read from core (`ERROR_CODES`, `EVENT_TYPES`,
-`REQUIREMENT_KEYS`), or an entry of its `FIELD_NAMES` list.
+drift guard: every code span in a skill must be a registered tool with its real arguments (every
+required one but `credential`), a skill, an error code, event type, requirement key or profile key
+read from core (`ERROR_CODES`, `EVENT_TYPES`, `REQUIREMENT_KEYS`, `PROFILE_KEYS`), or an entry of
+its `FIELD_NAMES` list.
 
 **Web UI**: `index.html` is served for exactly nine paths — `/`, `/lobby`, `/lobby/`,
 `/lobby/listeners`, `/lobby/listeners/`, `/weave/:id`, `/weave/:id/`, `/w/:secret`, `/w/:secret/` —

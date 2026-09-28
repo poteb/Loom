@@ -5,7 +5,7 @@ import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { ERROR_CODES, EVENT_TYPES, REQUIREMENT_KEYS } from "@loom/core";
+import { ERROR_CODES, EVENT_TYPES, PROFILE_KEYS, REQUIREMENT_KEYS } from "@loom/core";
 import { registerLoomTools, type LoomToolBackend } from "../src/index.js";
 import { parseSkill, loadSkills, defaultSkillsDir, renderSkillsIndex, type Skill } from "../src/skills.js";
 
@@ -142,14 +142,15 @@ describe("renderSkillsIndex (spec 2026-09-28 §4.2)", () => {
 
 // --- The drift guard (spec 2026-09-28 §6) -----------------------------------------------------
 // Apart from FIELD_NAMES it keeps no list of its own: tools and their arguments come from the
-// registration, error codes, event types and requirement keys from core, skills from the folder.
+// registration, error codes, event types, requirement keys and profile keys from core, skills from
+// the folder.
 
 const SKILL_NAMES = ["loom-ask-for-review", "loom-do-accepted-work", "loom-request-helpers", "loom-work-in-a-thread"];
 const HEADINGS = ["## When to use", "## Steps", "## What you will see", "## When something goes wrong"];
 
 const group = (names: string[], where: string): [string, string][] => names.map((n) => [n, where]);
 /**
- * The result, payload, profile and argument names a skill may write in prose, each with the place it
+ * The result, payload and argument names a skill may write in prose, each with the place it
  * exists (spec §6 case 4, set 5). Core declares these shapes as TypeScript types only, so this list
  * is maintained by hand, and keeping it true is a review item: a change that renames or removes one
  * of these updates its entry and the skill texts that name it in the same commit, and an entry is
@@ -181,11 +182,13 @@ const FIELD_NAMES = new Map<string, string>([
   ...group(["invitationId", "targetWeaveTitle"], "the weave.invited payload, invitationRowAndEvent in src/core/src/lobby/invitations.ts"),
   ...group(["reason"], "the request.closed payload, closeInTx in src/core/src/lobby/requests.ts"),
   ...group(["completed", "expired", "cancelled"], "the close reasons, CloseReason in src/core/src/lobby/requests.ts"),
-  ...group(["pollIntervalMs"], "a profile key, src/core/src/lobby/profile.ts (the profile has no runtime schema of its keys)"),
 ]);
 
+/** A registered tool's input properties, and which of them its input schema requires. */
+type ToolArgs = { properties: readonly string[]; required: readonly string[] };
+
 /** The registered tools and each one's input properties, as a client lists them (§6 cases 4 and 5). */
-async function registeredTools(): Promise<Map<string, string[]>> {
+async function registeredTools(): Promise<Map<string, ToolArgs>> {
   const server = new McpServer({ name: "guard", version: "0.0.0" });
   // Listing runs no handler, so the backend is never read.
   registerLoomTools(server, {} as LoomToolBackend, { skills: [], origin: "" });
@@ -195,11 +198,14 @@ async function registeredTools(): Promise<Map<string, string[]>> {
   await client.connect(b);
   try {
     const { tools } = await client.listTools();
-    return new Map(tools.map((t) => [t.name, Object.keys((t.inputSchema as { properties?: Record<string, unknown> }).properties ?? {})]));
+    return new Map(tools.map((t) => {
+      const schema = t.inputSchema as { properties?: Record<string, unknown>; required?: string[] };
+      return [t.name, { properties: Object.keys(schema.properties ?? {}), required: schema.required ?? [] }];
+    }));
   } finally { await client.close(); }
 }
 
-type Known = { tools: ReadonlyMap<string, readonly string[]>; skills: ReadonlySet<string> };
+type Known = { tools: ReadonlyMap<string, ToolArgs>; skills: ReadonlySet<string> };
 const CALL_RE = /^([a-z][a-z0-9_]*)\((.*)\)$/;
 const SKILL_RE = /^[a-z0-9]+(-[a-z0-9]+)+$/;
 const IDENT_RE = /^[a-z][A-Za-z0-9_]*(\.[a-z][A-Za-z0-9_]*)*$/;
@@ -207,22 +213,29 @@ const BARE_RE = /^[a-z][A-Za-z0-9_]*$/;
 
 /**
  * Why a code span is not known, or null when it is (§6 cases 4 and 5): a call form naming a
- * registered tool with only that tool's arguments; a skill name that is loaded or `join-loom`; or an
- * identifier that is a tool, an error code, an event type, a requirement key or a FIELD_NAMES entry.
- * A bare word is never accepted for being some tool's argument. Any other shape fails.
+ * registered tool with only that tool's arguments and every one it requires but `credential`; a
+ * skill name that is loaded or `join-loom`; or an identifier that is a tool, an error code, an event
+ * type, a requirement key, a profile key or a FIELD_NAMES entry. A bare word is never accepted for
+ * being some tool's argument. Any other shape fails.
  */
 function unknownSpan(span: string, known: Known): string | null {
   const call = CALL_RE.exec(span);
   if (call) {
     const args = known.tools.get(call[1]!);
     if (!args) return `no tool named ${call[1]}`;
-    if (call[2] === "") return null;
-    const bad = call[2]!.split(",").map((a) => a.trim()).filter((a) => !BARE_RE.test(a) || !args.includes(a));
-    return bad.length === 0 ? null : `${call[1]} takes no ${bad.join(", ")}`;
+    const given = call[2] === "" ? [] : call[2]!.split(",").map((a) => a.trim());
+    const bad = given.filter((a) => !BARE_RE.test(a) || !args.properties.includes(a));
+    if (bad.length > 0) return `${call[1]} takes no ${bad.join(", ")}`;
+    // The guard registers with no default credential, so `credential` is required here; the skills
+    // leave it out by rule (the credential paragraph of loom-work-in-a-thread).
+    const missing = args.required.filter((a) => a !== "credential" && !given.includes(a));
+    return missing.length === 0 ? null : `${call[1]} needs ${missing.join(", ")}`;
   }
   if (SKILL_RE.test(span)) return known.skills.has(span) ? null : `no skill named ${span}`;
   if (IDENT_RE.test(span)) {
-    const sets: { has(v: string): boolean }[] = [known.tools, new Set<string>(ERROR_CODES), new Set<string>(EVENT_TYPES), new Set<string>(REQUIREMENT_KEYS), FIELD_NAMES];
+    const sets: { has(v: string): boolean }[] = [
+      known.tools, new Set<string>(ERROR_CODES), new Set<string>(EVENT_TYPES), new Set<string>(REQUIREMENT_KEYS), new Set<string>(PROFILE_KEYS), FIELD_NAMES,
+    ];
     return sets.some((set) => set.has(span)) ? null : `unknown word ${span}`;
   }
   return `a span of no known shape: ${span}`;
@@ -294,9 +307,11 @@ describe("the code-span classifier (spec 2026-09-28 §6 case 4)", () => {
     "thread_closed",                                   // an error code
     "request.opened",                                  // an event type
     "maxResponseMs",                                   // a requirement key
+    "pollIntervalMs",                                  // a profile key
     "dueAt",                                           // a FIELD_NAMES entry
     "loom-ask-for-review",                             // a skill name
     "accept(requestId, participantIds, deadlineMs)",   // a call form
+    "inbox(weaveId)",                                  // a call form leaving out only optional arguments
   ])("passes %s", (span) => {
     expect(unknownSpan(span, known)).toBeNull();
   });
@@ -304,6 +319,8 @@ describe("the code-span classifier (spec 2026-09-28 §6 case 4)", () => {
   it.each([
     "limit",                        // some tool's argument, but not in FIELD_NAMES
     "inbox(weaveId, threadId)",     // an argument that tool does not take
+    "accept(requestId)",            // a call form leaving out a required argument
+    "post_message()",               // a call form with none of its required arguments
     "finish",                       // an unknown lowercase word
     "finish_work",                  // an unknown snake_case word
     "request.renamed",              // an unknown dotted type

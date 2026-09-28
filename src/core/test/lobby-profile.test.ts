@@ -9,7 +9,7 @@ import { readEvents } from "../src/events.js";
 import { resolveCredential } from "../src/actors.js";
 import { seedKeepers } from "../src/keepers.js";
 import { ensureLobby, joinLobby } from "../src/lobby/lobby.js";
-import { validateProfile, setCapabilities, findAgents, getMyLobbyParticipant } from "../src/lobby/profile.js";
+import { PROFILE_KEYS, validateProfile, setCapabilities, findAgents, getMyLobbyParticipant } from "../src/lobby/profile.js";
 import { createCore, type Core } from "../src/index.js";
 import type { Db } from "../src/db/index.js";
 import type { Profile } from "../src/lobby/matching.js";
@@ -135,6 +135,20 @@ describe("validateProfile", () => {
 });
 
 /** The Lobby, an agent joined to it, and that agent's participant actor. */
+describe("PROFILE_KEYS (spec 2026-09-28 §6, §10.0)", () => {
+  it("equals the keys the profile schema reads: a wrong value under each is validation, under any other key it is kept", () => {
+    expect([...PROFILE_KEYS].sort()).toEqual(["models", "owner", "pollIntervalMs", "runtime", "serves", "spawnsSubagents", "tools"]);
+    // The schema is loose, so an unknown key is stored as given; a key it reads refuses a wrong type.
+    for (const key of PROFILE_KEYS) {
+      const p = key === "owner" ? { owner: 7 } : { owner: "paw", [key]: { wrong: true } };
+      expect(codeOf(() => validateProfile(p)), key).toBe("validation");
+    }
+    for (const key of ["pollInterval", "maxResponseMs", "model", "effort"]) {
+      expect(codeOf(() => validateProfile({ owner: "paw", [key]: { wrong: true } })), key).toBeUndefined();
+    }
+  });
+});
+
 async function lobbyWith(name: string, profile: Profile | null = null) {
   const { weaveId } = await ensureLobby(db);
   const j = await joinLobby(db, bus, { name, kind: "agent" });

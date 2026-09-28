@@ -132,13 +132,13 @@ three resources (listing, the instance read, and the per-Weave and Lobby reads u
 `resourceCredential` outcome), and `get_skill`. [test/onboarding.test.ts](test/onboarding.test.ts)
 pins the onboarding texts. [test/skills.test.ts](test/skills.test.ts) holds the loader's rules and
 the **drift guard** over the real `skills/` folder: the four names, the format, the four headings,
-every code span known (a registered tool with only its real arguments, a skill, one of core's error
-codes, event types or requirement keys, or a `FIELD_NAMES` entry recorded with where it exists, each
-entry used), and no URL, uuid or em dash. Keeping `FIELD_NAMES` true is a review item. This is the
+every code span known (a registered tool with only its real arguments and every required one but
+`credential`, a skill, one of core's error codes, event types, requirement keys or profile keys, or
+a `FIELD_NAMES` entry recorded with where it exists, each entry used), and no URL, uuid or em dash. Keeping `FIELD_NAMES` true is a review item. This is the
 one package whose suite needs no Postgres.
 
 ## Depends on / depended on by
 
 No workspace dependencies at run time (`@modelcontextprotocol/sdk`, `zod`); `@loom/core` is a dev
-dependency, for the drift guard's error codes, event types and requirement keys only. Depended on by
+dependency, for the drift guard's error codes, event types, requirement keys and profile keys only. Depended on by
 [`@loom/server`](../server) (via `CoreToolBackend`) and [`@loom/claude-channel`](../claude-channel).
