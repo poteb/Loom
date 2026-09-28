@@ -3,7 +3,7 @@
 Date: 2026-09-28. Status: draft for Paw's approval. Brainstorm: `.superpowers/skills-brainstorm.md`
 (git-ignored; Paw's answers Q1 to Q4 and the approval of design parts 1 and 2 are restated in §2).
 
-Review rounds 1 to 4 (PR #49, via the API): F1 to F6 fixed in this revision.
+Review rounds 1 to 5 (PR #49, via the API): F1 to F7 fixed in this revision.
 
 ## 1. Purpose and scope
 
@@ -96,8 +96,8 @@ agent that saves it gets a valid `SKILL.md`.
 
 Every skill body has these four second-level headings, in this order, and may have others between
 them: `## When to use`, `## Steps`, `## What you will see`, `## When something goes wrong`. It holds
-no instance-specific value. Two kinds are checked mechanically by §6 case 6: a URL of any kind (no
-`http://` or `https://`) and a uuid. The third kind, the name of a real instance, Weave or
+no instance-specific value. Two kinds are checked mechanically by §6 case 6: a URL of any kind (any
+scheme followed by `://`, and `mailto:`) and a uuid. The third kind, the name of a real instance, Weave or
 participant, is not machine-checkable and is a review requirement (§6, "Checked in review"):
 examples use generic names such as `@Reviewer`, "PR 23" and "Review PR 14". Where a skill needs
 such a value it says where to get it (`get_started`, a tool result). Every tool call is written in call form inside backticks, `tool(arg, arg)` with bare
@@ -332,9 +332,11 @@ connection.
 5. **Argument names.** For a call-form span, the text inside the parentheses is empty or a
    comma-separated list of bare names, and each one is a property of that tool's input schema. This
    catches a renamed argument as well as a renamed tool.
-6. **Instance values.** No file contains `http://`, `https://` or a uuid, matched
-   case-insensitively (`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}` with the `i`
-   flag, so an uppercase uuid is caught too). The URL check is case-insensitive as well.
+6. **Instance values.** No file contains a URL or a uuid, both matched case-insensitively (the `i`
+   flag): a URL is any URI scheme followed by `://` (`[a-z][a-z0-9+.-]*://`, so `http`, `https`,
+   `ftp`, `ws`, `loom` and every other scheme are caught), or `mailto:`; a uuid is
+   `[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`, so an uppercase one is caught
+   too. The four skill texts of §7 contain neither.
 7. No file contains the em dash character (U+2014), as the onboarding texts already assert.
 
 Apart from `FIELD_NAMES`, the guard keeps no list of its own: tools and their arguments come from
@@ -693,7 +695,9 @@ A `weave.invited` whose `requestId` is null comes from a keeper who invited you 
   span of another shape (`[]`, `{ model }`, `@`).
 - Every `FIELD_NAMES` entry is used by at least one skill.
 - The instance-value check of §6 case 6 as a unit over sample text: it catches a lowercase and an
-  uppercase uuid, `http://` and `HTTPS://`, and passes `@Reviewer` and "PR 23".
+  uppercase uuid, `http://`, `HTTPS://`, `ftp://`, `ws://`, `loom://`, `git+ssh://` and
+  `MAILTO:`, and passes `@Reviewer`, "PR 23", "at <sha>, <link>" and a colon in ordinary prose
+  ("the rule: reply").
 - `parseSkill` accepts a minimal valid file and returns its whole text as `text`.
 - `parseSkill` refuses, one case each: no opening `---`; no closing `---`; a missing `name`; a
   missing `description`; a third key; a repeated key; `name` not equal to the folder; `name` with an
