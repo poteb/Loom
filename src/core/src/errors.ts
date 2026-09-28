@@ -1,8 +1,14 @@
-export type ErrorCode =
-  | "validation" | "invalid_token" | "forbidden"
-  | "weave_not_found" | "thread_not_found"
-  | "weave_archived" | "thread_closed" | "name_taken"
-  | "message_too_long" | "request_closed" | "not_found";
+/**
+ * The fixed set of error codes, as a runtime list (spec 2026-09-28 §6): the skills' drift guard
+ * reads it, so a renamed code fails there. `ErrorCode` is derived from it, never written apart.
+ */
+export const ERROR_CODES = [
+  "validation", "invalid_token", "forbidden",
+  "weave_not_found", "thread_not_found",
+  "weave_archived", "thread_closed", "name_taken",
+  "message_too_long", "request_closed", "not_found",
+] as const;
+export type ErrorCode = (typeof ERROR_CODES)[number];
 
 export class LoomError extends Error {
   constructor(public readonly code: ErrorCode, message: string) {

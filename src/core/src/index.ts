@@ -140,7 +140,7 @@ export function createCore(db: Db) {
   };
 }
 
-export { LoomError, errors, type ErrorCode } from "./errors.js";
+export { LoomError, errors, ERROR_CODES, type ErrorCode } from "./errors.js";
 export { assertCanRead } from "./actors.js";
 export { createDb, runMigrations, closeDb, type Db } from "./db/index.js";
 export { migrationsFolder, migrationStatus, assertTransactionSafe, assertPendingTransactionSafe, type MigrationStatus } from "./db/migrations.js";
@@ -153,7 +153,7 @@ export type { CreateWeaveInput, CreateWeaveResult, WeaveInfo, JoinResult } from 
 export type { PublicKeeper, SeedKeepersResult } from "./keepers.js";
 export type { Lobby } from "./lobby/lobby.js";
 export { validateProfile, validateOwner, MAX_PROFILE_LENGTH, type AgentFilter, type FoundAgent } from "./lobby/profile.js";
-export { validateRequirements, matches, admits, eligible, isLive, type Profile, type ModelSpec, type Requirements, type Seen } from "./lobby/matching.js";
+export { validateRequirements, matches, admits, eligible, isLive, REQUIREMENT_KEYS, type Profile, type ModelSpec, type Requirements, type Seen } from "./lobby/matching.js";
 // The listeners query's types live beside its validation, so an adapter has one place to import from.
 export { type Listener, type ListenersFacets, type ListenersPage, type ListenersQuery, type ListenersSort, type ServesKind, type FacetValue, type ModelFacet } from "./lobby/listeners-input.js";
 export { type ListenerStatus, type CurrentWork, type Cadence, type StatusCounts } from "./lobby/status.js";
@@ -162,4 +162,5 @@ export { GET_STARTED_NEEDS_AGENT, type OnboardingFacts } from "./lobby/onboardin
 export { type RemovalResult } from "./removals.js";
 export { type MarkReadResult, type MarkAllReadResult, type ReadPositions } from "./reads.js";
 export { computedStatus, type PublicRequest, type PublicOffer, type PublicAcceptance, type OpenRequestInput, type RequestStatus, type CloseReason, type AcceptOptions, type AcceptInput } from "./lobby/requests.js";
+export { EVENT_TYPES } from "./types.js";
 export type * from "./types.js";

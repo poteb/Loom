@@ -39,6 +39,13 @@ const reqSchema = z.object({
   maxResponseMs: z.number().int().min(MIN_INTERVAL_MS).max(MAX_INTERVAL_MS).optional(),
 }).strict();
 
+/**
+ * The keys a request's requirements may carry, read from the schema itself (spec 2026-09-28 §6):
+ * the one result-side shape core holds as a runtime value, so the skills' drift guard can check a
+ * requirement key a skill names.
+ */
+export const REQUIREMENT_KEYS: readonly string[] = Object.keys(reqSchema.shape);
+
 /** The one rule for a request's requirements: known keys only, within their bounds, trimmed. */
 export function validateRequirements(r: unknown): Requirements {
   const p = reqSchema.safeParse(r);

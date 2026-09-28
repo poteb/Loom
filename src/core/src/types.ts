@@ -1,13 +1,19 @@
 import type { Profile } from "./lobby/matching.js";
 
-export type EventType =
-  | "message" | "participant.joined" | "participant.role_changed"
-  | "thread.created" | "thread.closed" | "thread.invited" | "thread.removed" | "thread.url_changed"
-  | "weave.archived" | "weave.guidelines_changed"
+/**
+ * Every event type, as a runtime list (spec 2026-09-28 §6): the skills' drift guard reads it, so a
+ * renamed type fails there. `EventType` is derived from it, never written apart.
+ */
+export const EVENT_TYPES = [
+  "message", "participant.joined", "participant.role_changed",
+  "thread.created", "thread.closed", "thread.invited", "thread.removed", "thread.url_changed",
+  "weave.archived", "weave.guidelines_changed",
   // Lobby. All of these are addressed-only: they never wake anyone through a Weave's "all events" mode.
-  | "participant.capabilities_changed"
-  | "request.opened" | "request.offered" | "request.accepted" | "request.closed" | "request.completed" | "request.overdue"
-  | "weave.invited";
+  "participant.capabilities_changed",
+  "request.opened", "request.offered", "request.accepted", "request.closed", "request.completed", "request.overdue",
+  "weave.invited",
+] as const;
+export type EventType = (typeof EVENT_TYPES)[number];
 
 export type LoomEvent = {
   weaveId: string; seq: number; threadId: string; type: EventType;

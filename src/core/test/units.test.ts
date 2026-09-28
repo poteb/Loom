@@ -1,5 +1,6 @@
-import { describe, it, expect } from "vitest";
-import { LoomError, errors } from "../src/errors.js";
+import { describe, it, expect, expectTypeOf } from "vitest";
+import { LoomError, errors, ERROR_CODES } from "../src/errors.js";
+import { EVENT_TYPES, type EventType } from "../src/types.js";
 import { newId, newSecret, isUuid } from "../src/ids.js";
 import { validateName } from "../src/names.js";
 import { parseMentions } from "../src/mentions.js";
@@ -12,6 +13,32 @@ describe("errors", () => {
     expect(e).toBeInstanceOf(LoomError);
     expect(e.code).toBe("weave_archived");
     expect(e.message.length).toBeGreaterThan(0);
+  });
+
+  it("ERROR_CODES holds every code a LoomError factory constructs, each once (spec 2026-09-28 §10.0)", () => {
+    // Every factory takes at most one argument; "x" stands for any of them.
+    const made = Object.values(errors).map((make) => (make as (...args: unknown[]) => LoomError)("x").code);
+    expect(new Set(ERROR_CODES).size).toBe(ERROR_CODES.length);
+    expect([...made].sort()).toEqual([...ERROR_CODES].sort());
+  });
+});
+
+describe("EVENT_TYPES (spec 2026-09-28 §10.0)", () => {
+  /** The members the EventType union named before it was derived from EVENT_TYPES, in its order. */
+  const NAMED = [
+    "message", "participant.joined", "participant.role_changed",
+    "thread.created", "thread.closed", "thread.invited", "thread.removed", "thread.url_changed",
+    "weave.archived", "weave.guidelines_changed",
+    "participant.capabilities_changed",
+    "request.opened", "request.offered", "request.accepted", "request.closed", "request.completed", "request.overdue",
+    "weave.invited",
+  ] as const;
+
+  it("EVENT_TYPES holds every type the EventType union named, each once, and EventType accepts exactly those", () => {
+    expect([...EVENT_TYPES]).toEqual([...NAMED]);
+    expect(new Set(EVENT_TYPES).size).toBe(EVENT_TYPES.length);
+    // A type-level assertion: `pnpm --filter @loom/core typecheck` (tsconfig.test.json) checks it, not the run.
+    expectTypeOf<EventType>().toEqualTypeOf<(typeof NAMED)[number]>();
   });
 });
 
