@@ -19,7 +19,8 @@ describe("errors", () => {
     // Every factory takes at most one argument; "x" stands for any of them.
     const made = Object.values(errors).map((make) => (make as (...args: unknown[]) => LoomError)("x").code);
     expect(new Set(ERROR_CODES).size).toBe(ERROR_CODES.length);
-    expect([...made].sort()).toEqual([...ERROR_CODES].sort());
+    // Distinct: a second factory may reuse a code (two ways to say not_found); "each once" is ERROR_CODES's.
+    expect([...new Set(made)].sort()).toEqual([...ERROR_CODES].sort());
   });
 });
 
