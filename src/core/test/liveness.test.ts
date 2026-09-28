@@ -11,6 +11,7 @@ import { ensureLobby, joinLobby } from "../src/lobby/lobby.js";
 import { setCapabilities, findAgents } from "../src/lobby/profile.js";
 import type { Db } from "../src/db/index.js";
 import { createCore } from "../src/index.js";
+import { cadenceOf } from "../src/lobby/status.js";
 
 afterAll(closeTestDb);
 let db: Db; let bus: EventBus;
@@ -113,10 +114,53 @@ describe("the check-in history (spec 2026-09-27 §4.1)", () => {
     expect([await seenOf(r.participant.id), await historyOf(r.participant.id)]).toEqual([T0, [T0]]);
     await resolveCredential(db, r.token, at(9_999));
     await resolveCredential(db, r.token, at(10_000));
-    expect(await historyOf(r.participant.id)).toEqual([T0]);
-    await resolveCredential(db, r.token, at(10_001));
-    const history = await historyOf(r.participant.id);
-    expect([history, history!.at(-1)]).toEqual([[T0, at(10_001)], await seenOf(r.participant.id)]);
+    expect([await seenOf(r.participant.id), await historyOf(r.participant.id)]).toEqual([T0, [T0]]);
+    await resolveCredential(db, r.token, at(60_000));
+    expect([await seenOf(r.participant.id), await historyOf(r.participant.id)]).toEqual([at(60_000), [T0, at(60_000)]]);
+  });
+
+  it("stamps less than 60 s after the last check-in move last_seen_at and append nothing: one poll run counts once", async () => {
+    const r = await newWeave();
+    await resolveCredential(db, r.token, T0);
+    for (const ms of [10_001, 25_000, 40_000, 59_999]) await resolveCredential(db, r.token, at(ms));
+    expect([await seenOf(r.participant.id), await historyOf(r.participant.id)]).toEqual([at(59_999), [T0]]);
+  });
+
+  it("a stamp exactly 60 000 ms after the last check-in appends, and so does any later one", async () => {
+    const r = await newWeave();
+    await resolveCredential(db, r.token, T0);
+    // A stamp between them moves last_seen_at only; the 60 s are counted from the history's last entry.
+    await resolveCredential(db, r.token, at(30_000));
+    await resolveCredential(db, r.token, at(60_000));
+    expect(await historyOf(r.participant.id)).toEqual([T0, at(60_000)]);
+    await resolveCredential(db, r.token, at(119_999));
+    expect(await historyOf(r.participant.id)).toEqual([T0, at(60_000)]);
+    await resolveCredential(db, r.token, at(185_000));
+    expect([await seenOf(r.participant.id), await historyOf(r.participant.id)]).toEqual([at(185_000), [T0, at(60_000), at(185_000)]]);
+  });
+
+  it("the throttle still comes first: a stamp it skips appends nothing, even 60 s after the last check-in", async () => {
+    const r = await newWeave();
+    await resolveCredential(db, r.token, T0);
+    await resolveCredential(db, r.token, at(55_000));
+    await resolveCredential(db, r.token, at(62_000));
+    expect([await seenOf(r.participant.id), await historyOf(r.participant.id)]).toEqual([at(55_000), [T0]]);
+    await resolveCredential(db, r.token, at(65_001));
+    expect([await seenOf(r.participant.id), await historyOf(r.participant.id)]).toEqual([at(65_001), [T0, at(65_001)]]);
+  });
+
+  it("runs of two or three calls every five minutes give a cadence of about five minutes", async () => {
+    const r = await newWeave();
+    // Smoke test 9's pattern: each poll run reads the Lobby inbox and then a Weave's, seconds apart
+    // (4 s is throttled, 11 s and 12 s stamp). Runs start 300 000 ms apart, plus up to 4 s of jitter.
+    const starts = Array.from({ length: 8 }, (_, k) => k * 300_000 + (k % 3) * 2_000);
+    for (const [k, s] of starts.entries()) {
+      for (const offset of k % 2 === 0 ? [0, 4_000, 12_000] : [0, 11_000]) await resolveCredential(db, r.token, at(s + offset));
+    }
+    expect(await historyOf(r.participant.id)).toEqual(starts.map(at));
+    expect(await seenOf(r.participant.id)).toEqual(at(starts.at(-1)! + 11_000));
+    // Gaps of 302 000 ms five times and 296 000 twice: the median and the longest are both 302 000.
+    expect(cadenceOf(await historyOf(r.participant.id))).toEqual({ typicalGapMs: 302_000, longestGapMs: 302_000, samples: 8 });
   });
 
   it("a row checked in before the history existed starts it with the next check-in, nothing backfilled", async () => {
@@ -130,9 +174,10 @@ describe("the check-in history (spec 2026-09-27 §4.1)", () => {
 
   it("seen_history keeps the last 20, oldest first", async () => {
     const r = await newWeave();
-    for (let i = 0; i < 25; i++) await resolveCredential(db, r.token, at(i * 10_001));
-    expect(await historyOf(r.participant.id)).toEqual(Array.from({ length: 20 }, (_, k) => at((k + 5) * 10_001)));
-    expect(await seenOf(r.participant.id)).toEqual(at(24 * 10_001));
+    // 60 000 ms apart, the least gap that appends, so every one of the 25 is a check-in.
+    for (let i = 0; i < 25; i++) await resolveCredential(db, r.token, at(i * 60_000));
+    expect(await historyOf(r.participant.id)).toEqual(Array.from({ length: 20 }, (_, k) => at((k + 5) * 60_000)));
+    expect(await seenOf(r.participant.id)).toEqual(at(24 * 60_000));
   });
 
   it("an agent-key call in another Weave checks in the agent's Lobby participant", async () => {

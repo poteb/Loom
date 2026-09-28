@@ -71,7 +71,7 @@ Rule families, all in `src/core/src`:
 | The listeners directory: bounds, normalisation, the cursor, the SQL | `lobby/listeners-input.ts` — `validateListenersQuery`, `encodeCursor` / `decodeCursor`; `lobby/listeners.ts` — `listListeners`. Every bound, default and normalisation is core's; the REST route parses the query string and hands the values over |
 | Requests, offers, acceptance and closure | `lobby/requests.ts` — `computedStatus`, `openRequest`, `offer`, `accept`, `cancelRequest`, `sweepRequests` |
 | Cross-Weave invitations | `lobby/invitations.ts` — `inviteToWeave`, `redeemInvitation` (single-use, identity checked against the recorded invitee) |
-| Liveness | `actors.ts`: `stampSeen`, called from `resolveCredential` and `resolveInWeave`; at most once per 10 s per participant, no event, no lock. The same statement appends the stamp to `participants.seen_history`, the last 20 |
+| Liveness | `actors.ts`: `stampSeen`, called from `resolveCredential` and `resolveInWeave`; at most once per 10 s per participant, no event, no lock. The same statement appends the stamp to `participants.seen_history`, the last 20, when the history's last entry is 60 s or more older (`CHECKIN_SPACING_MS`), so one poll run counts once |
 | Removal from a Thread and the marker rule | `removals.ts`: `removeParticipant`, `latestMarker`, `lastRemovalSeq`; read by `postMessage` and `inviteParticipant` |
 | Onboarding facts | `lobby/onboarding.ts`: `onboardingFacts` (the words are `@loom/mcp-tools`' `onboarding.ts`) |
 | Work deadlines | `lobby/requests.ts`: `accept` (`deadlineMs`), `complete`, `sweepOverdue`, `stillRunning` |
@@ -110,10 +110,13 @@ Migration 0006 creates `read_positions` and nothing else; nothing is backfilled,
 row reads from the participant's own `participant.joined`.
 
 Migration 0007 adds `participants.seen_history` (`timestamptz[]`, nullable) and nothing else;
-nothing is backfilled. A **check-in** is a stamp that writes: the throttled `stampSeen` update sets
-`last_seen_at` and appends the same moment to `seen_history`, cut to the last 20, in one statement,
-so after any check-in since 0007 the history's last element equals `last_seen_at` (a row last
-stamped before 0007 has `last_seen_at` and no history until its next check-in). A Lobby listener's **status** (working,
+nothing is backfilled. The throttled `stampSeen` update sets `last_seen_at` on every stamp that
+writes, and in the same statement appends the same moment to `seen_history`, cut to the last 20,
+only when the history is empty or its last entry is at least `CHECKIN_SPACING_MS` (60 s, exactly
+60 s included) older: that append is a **check-in**. One poll run makes several calls seconds apart
+and so counts once, and the history's last element can be up to a minute older than
+`last_seen_at` (a row last stamped before 0007 has `last_seen_at` and no history until its next
+stamp). A Lobby listener's **status** (working,
 idle or offline), its **current work** (the soonest due request it holds accepted work on) and its
 **cadence** (the median and longest gap of those 20) are computed at read time in
 `lobby/status.ts`, never stored and never an event: a status is true as of the read that computed

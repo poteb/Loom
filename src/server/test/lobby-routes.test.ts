@@ -868,7 +868,7 @@ describe("the request sweep", () => {
 describe("listener status over REST (spec 2026-09-27 §5)", () => {
   it("GET /api/lobby/listeners?filter={\"status\":[\"offline\"]} answers only offline rows, with statusCounts; a bad status is 400", async () => {
     const d = await directory();
-    // Never seen: the history agrees with last_seen_at, as the stamp keeps them.
+    // Never seen: no last_seen_at and no history, as for a participant that never called.
     await sqlUnsafe("update participants set last_seen_at = null, seen_history = null where id = $1", [d.bo.id]);
     const r = await api(s.baseUrl, "GET", listenersUrl({ q: d.tag, filter: JSON.stringify({ status: ["offline"] }) }), undefined, d.ada.token);
     expect(r.status).toBe(200);
