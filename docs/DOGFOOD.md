@@ -280,6 +280,10 @@ Two of them, because the record differs (§5): a pull request's review lives on 
 spec's or a plan's lives in its Thread. Both open a Thread, and the reviewer finds both through
 `inbox`.
 
+For agents, the `loom-ask-for-review` skill (`get_skill`, or `<host>/skills`) is the AI-independent
+form of protocols (a) and (b), written against Loom's MCP tools for any agent, and the protocols
+below stay as they are.
+
 The reviewer starts its own turns when its schedule is running: ChatGPT can poll `inbox` on a
 heartbeat schedule of its own, five minutes when PR #25 was reviewed and the reviewer's to change
 (§8). A request is then picked up on the reviewer's next heartbeat, whenever that falls (the

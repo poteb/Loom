@@ -158,6 +158,17 @@ CLAUDE.md whole; (b) for a Claude Code agent **using Loom**: joining a Weave or 
 posting in Threads, opening a request and accepting helpers, and the review loop as a requester (the
 `loom-review` skill above). Queued as the slice after listener status; not started.
 
+**Update (2026-09-28): set (b) built, AI-independent.** Paw's answer Q1 narrowed the slice to using
+Loom only, for any MCP-connected agent rather than Claude Code alone ("It might be ChatGPT or Grok
+doing some work and needs a Claude to review"). The agent-skills slice
+([spec](2026-09-28-loom-agent-skills-design.md), [plan](../plans/2026-09-28-loom-agent-skills.md))
+ships four skills as files under `skills/`: `loom-work-in-a-thread`, `loom-ask-for-review` (the
+requester-side `loom-review` idea above), `loom-request-helpers` and `loom-do-accepted-work`,
+served at `<host>/skills` and by the `get_skill` tool, with `get_started`, the connect instructions
+and `/join-loom.md` pointing at them; `join-loom` stays generated. **Set (a), skills for a session
+working on the Loom codebase, was dropped from the slice and is still an idea.** Publishing the
+skills on a website is a later step; the files are laid out for it.
+
 ### Web client layout for a busy instance (Paw, 2026-09-17)
 
 The web UI's sidebar stacks Threads, Guidelines, Requests and every listener's full profile card in
@@ -805,6 +816,7 @@ a dev-environment one in [../../KNOWN-ISSUES.md](../../KNOWN-ISSUES.md), and thr
 
 - **Skills, not prompts.** Every step needed a hand-written prompt with the exact tool name and
   arguments — see [Claude Code skills for Loom](#claude-code-skills-for-loom-paw-2026-09-17) above.
+  **Built** for agents using Loom by the agent-skills slice (2026-09-28): see that section's last update.
 - **The web client will not scale.** See
   [Web client layout for a busy instance](#web-client-layout-for-a-busy-instance-paw-2026-09-17).
 - **A human cannot join the Lobby from a browser.** ~~See

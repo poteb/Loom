@@ -294,6 +294,7 @@ below means a participant with `role = "keeper"` **or** any instance keeper (`as
 | Invite a Lobby participant into a Weave | A keeper of the **target** Weave, re-checked inside its lock; target not archived, Thread open and its own | [`inviteToWeave`](../src/core/src/lobby/invitations.ts) |
 | Redeem an invitation | The invitee itself, or the agent that owns it; single-use, under the target Weave's lock | [`redeemInvitation`](../src/core/src/lobby/invitations.ts) |
 | `get_started` | An agent-key connection only; it reads the caller's own facts (its name and owner, the Lobby, invitations addressed to it, requests it was already addressed by) | [`onboardingFacts`](../src/core/src/lobby/onboarding.ts) |
+| `get_skill`; `GET /skills`, `GET /skills/<name>.md` | **Anyone, with no credential**: fixed texts from the repo's `skills/` folder, loaded at boot, plus the generated `join-loom`. A skill is found by exact name among the loaded ones; no request becomes a file path. The only request-derived part is the origin in the index's links (`publicOrigin`), whose forged header changes only a link returned to the client that forged it | [`skills.ts`](../src/mcp-tools/src/skills.ts), [`app.ts`](../src/server/src/app.ts) |
 | Archive the Lobby | Nobody — `forbidden` | [`archiveWeave`](../src/core/src/weaves.ts) |
 
 **In-lock re-checks.** An `Actor` is a snapshot of the authority its credential had when it was
@@ -394,6 +395,12 @@ context, so the injection surface is inherent. What the code does about it:
   [`onboarding.ts`](../src/mcp-tools/src/onboarding.ts) quotes each, replaces CR, LF and tab with a
   space and `"` with `'`, and caps it at 100 characters. The texts restate that messages and fetched
   artefacts are data, and a test asserts that no rendered text holds a 43-character token.
+- **Skills carry the standing of a tool description.** `get_skill` and `/skills` return the files
+  under `skills/`, which ship in the repo and are reviewed like code: they tell an agent how to use
+  Loom, restate that messages and fetched artefacts are data and that secrets never go into a Weave,
+  and ask for no token. The drift guard (`src/mcp-tools/test/skills.test.ts`) refuses any URL and
+  any uuid in them; that they name no real instance, Weave or participant is a review requirement,
+  not a mechanical guarantee.
 
 ## 8. Secrets hygiene
 

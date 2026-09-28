@@ -7,7 +7,7 @@ from core; the server parses input, maps `LoomError` codes to HTTP statuses and 
 
 ## Entry points
 
-`buildApp({ core, tickets, webDist?, mcpConnect?, mcpSessionTtlMs? })` → a `Hono` app;
+`buildApp({ core, tickets, webDist?, mcpConnect?, mcpSessionTtlMs?, skills? })` → a `Hono` app;
 `attachWebSocket(server, { core, tickets, … })` adds the stream; [src/main.ts](src/main.ts) wires
 both. Credentials arrive as `Authorization: Bearer <credential>` — participant token, keeper token,
 agent key or Weave secret — and on `/mcp` an agent key may instead ride in `?agent=`.
@@ -16,6 +16,8 @@ agent key or Weave secret — and on `/mcp` an agent key may instead ride in `?a
 | --- | --- | --- |
 | GET | `/health` | — |
 | GET | `/join-loom.md` | none: `renderDocument(origin)` from `@loom/mcp-tools`, the onboarding walkthrough as `text/markdown`, **no credential**, no database read; it reflects only the request's origin (a checked Host and an http or https proto) |
+| GET | `/skills`, `/skills/` | none: `renderSkillsIndex(skills, origin)` from `@loom/mcp-tools`, the index of Loom's skills (`join-loom` first) as `text/markdown`, **no credential**, no database read; it reflects only the request's origin |
+| GET | `/skills/<name>.md` | none: that skill's text as loaded from `skills/` at boot, `text/markdown`, **no credential**; found by exact name among the loaded skills, never as a file path; any other path under `/skills/` is the JSON 404 `No such skill` |
 | GET | `/api/guidelines` | `getInstanceGuidelines` — **no credential** |
 | POST | `/api/weaves` | `createWeave` |
 | POST | `/api/weaves/:secret/join` | `joinWeave` |
