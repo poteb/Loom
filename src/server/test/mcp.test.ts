@@ -912,7 +912,12 @@ describe("skills over remote MCP (spec 2026-09-28 §5.1)", () => {
     const fresh = await startFreshApp(s!.core, { skills: [fixture] });
     try {
       expect(await (await fetch(`${fresh.baseUrl}/skills/fixture-skill.md`)).text()).toBe(fixture.text);
+      const index = await (await fetch(`${fresh.baseUrl}/skills`)).text();
+      expect(index).toContain(`- [fixture-skill](${fresh.baseUrl}/skills/fixture-skill.md): A fixture that exists on no disk\n`);
+      expect(index).not.toContain("loom-ask-for-review");
       await withClientsAt(fresh.mcpUrl, 1, async ([c]) => {
+        // The index too: built from the app's skills, so it lists the fixture and none of the four.
+        expect(text(await c!.callTool({ name: "get_skill", arguments: {} }))).toBe(index);
         expect(text(await c!.callTool({ name: "get_skill", arguments: { name: "fixture-skill" } }))).toBe(fixture.text);
         const onDisk = await c!.callTool({ name: "get_skill", arguments: { name: "loom-ask-for-review" } });
         expect(onDisk.isError).toBe(true);
