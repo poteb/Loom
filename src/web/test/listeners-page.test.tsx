@@ -609,8 +609,9 @@ describe("Back and Forward (spec §4.4)", () => {
 });
 
 /**
- * Spec §4.5: on the Lobby's other two addresses the path is not this page's at all, so the directory
- * opens and filters and **nothing whatever** is written — not an entry, and not a query string.
+ * Spec §4.5: on `/w/<lobby secret>` the path is not this page's at all, so the directory opens and
+ * filters and **nothing whatever** is written, not an entry, and not a query string. (`/weave/<lobby
+ * id>` stood beside it here until 2026-09-27; that address now becomes `/lobby`, below.)
  */
 describe("the Lobby under an address that is not its own (spec §4.5)", () => {
   const SECRET = "s".repeat(43);
@@ -628,7 +629,6 @@ describe("the Lobby under an address that is not its own (spec §4.5)", () => {
   }
 
   for (const [name, path] of [
-    ["/weave/<lobby id>", `/weave/${LOBBY.weaveId}`],
     ["/w/<lobby secret>", `/w/${SECRET}`],
   ] as const) {
     it(`opens and filters the directory on ${name}`, async () => {
@@ -641,6 +641,45 @@ describe("the Lobby under an address that is not its own (spec §4.5)", () => {
       expect([s.push.mock.calls.length, s.replace.mock.calls.length]).toEqual([0, 0]);
     });
   }
+});
+
+/**
+ * Amended 2026-09-27 after smoke test 9: `/weave/<lobby id>` is an old spelling of `/lobby`, so the
+ * page replaces the address with `/lobby` (no new entry, no reload, the same session) and from then
+ * on behaves exactly as a page opened at `/lobby`.
+ */
+describe("the Lobby's old address becomes its own (amended 2026-09-27)", () => {
+  async function landed(storage: KeyValueStorage = joined()) {
+    const v = mountLobby({ path: `/weave/${LOBBY.weaveId}`, storage });
+    const s = spies();
+    await settle();
+    return { v, s };
+  }
+
+  it("replaces /weave/<lobby id> with /lobby, adding no entry, and renders the Lobby", async () => {
+    const { v, s } = await landed();
+    expect([location.pathname, s.replace.mock.calls.map((c) => c[2]), s.pushed(), !!v.line(),
+      !!v.container.querySelector(".messages")]).toEqual(["/lobby", ["/lobby"], [], true, true]);
+  });
+
+  it("pushes /lobby/listeners when the Listeners line is pressed there", async () => {
+    const { v, s } = await landed();
+    await v.toggle();
+    expect([s.pushed(), location.pathname, v.directory()]).toEqual([["/lobby/listeners"], "/lobby/listeners", true]);
+  });
+
+  it("closes the directory when Back returns to the replaced /lobby", async () => {
+    const { v } = await landed();
+    await v.toggle();
+    await pop("/lobby");
+    expect([v.directory(), !!v.container.querySelector(".messages")]).toEqual([false, true]);
+  });
+
+  it("replaces it for a browser that has not joined, and still offers the join form", async () => {
+    const { v, s } = await landed(memoryStorage());
+    expect([location.pathname, s.pushed(), !!screen.queryByRole("heading", { name: "Join the Lobby" }),
+      v.calls(LOBBY_URL)]).toEqual(["/lobby", [], true, 1]);
+  });
 });
 
 /** Spec §4.5: a `/lobby` this browser could not load again keeps its view flip and loses its URL. */

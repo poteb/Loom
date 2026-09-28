@@ -404,6 +404,17 @@ The first half — the path test — also disposes of the in-place cases for fre
 and nothing is written. On `/weave/<lobbyId>` and `/w/<secret>` — where the Lobby gate of §5 can still
 be true and the directory can still be opened — the same test fails and history is never touched.
 
+**Amended 2026-09-27 on Paw's word after smoke test 9:** `/weave/<lobbyId>` no longer stays under
+that address. The moment the page learns it is the Lobby (the session's discovery, or the
+no-credential fork's own `getLobby()`), `WeaveSession` replaces the address with `/lobby` by
+`history.replaceState`: no new entry, no reload, the same session. From then on the path test passes
+and the page behaves exactly as one opened at `/lobby`, so pressing the Listeners line pushes
+`/lobby/listeners` under this section's one condition. No `leavingIsSafe` is asked for the replace,
+because nothing is left: a reload of `/lobby` needs exactly the credential a reload of
+`/weave/<lobbyId>` needs. `/w/<secret>` and a Lobby rendered in place are unchanged. Found when Paw
+entered the Lobby from My Weaves, whose row then linked to `/weave/<id>`, and F5 lost the Listeners
+tab; the Lobby's My Weaves row now links to `/lobby` (web main page spec §4.2, same date).
+
 ### 4.3 The query string, and `replaceState`
 
 Unchanged from listeners spec §5.4, minus one dead parameter:
@@ -439,6 +450,12 @@ screen before any control that could have pushed. Registration deliberately does
 changing the URL without changing the view. A `popstate` the page never caused is harmless — it sets
 the view to what the URL already says.
 
+**Amended 2026-09-27 on Paw's word after smoke test 9:** "defined at mount" becomes "defined at
+mount, or later made so by the replace of §4.2's amendment". The effect depends on one flag,
+`ownsAddress`, which starts as the mount-time path test and is turned true (never false) when a
+`/weave/<lobbyId>` is replaced with `/lobby`, so the listener is still registered at most once and a
+Back to the replaced `/lobby` closes the directory.
+
 On each event:
 
 1. `setView(viewOfPath(location.pathname) ?? "thread")`.
@@ -462,6 +479,11 @@ says the address it would push is one this browser could load again (§4.2). Tha
 Global Constraint's claim on this feature, and it holds on `/weave/<lobbyId>`, on `/w/<secret>`, on
 any Lobby rendered in place, and on any Lobby page whose storage is degraded: the view switches and
 the URL does not move.
+
+**Amended 2026-09-27 on Paw's word after smoke test 9:** `/weave/<lobbyId>` leaves this list, and the
+two later mentions of it in this section and in §6 with it: that address is replaced with `/lobby`
+(§4.2's amendment) and then follows `/lobby`'s rules. The replace is a `replaceState` and not a push,
+so the promise above still holds word for word.
 
 **The exception, stated once and narrowly.** The directory rewrites **its own page's query string**
 whenever `location.pathname` is `/lobby/listeners` — either spelling — whatever `leavingIsSafe`
@@ -861,7 +883,10 @@ instance refuses"; and `ListenersLink`'s link-versus-button tests.
 6. Deep link: `/lobby/listeners?q=ada` mounts the Lobby with the directory open, the box seeded, and
    exactly one query carrying `q=ada`.
 7. `/weave/<lobbyId>` and `/w/<lobby secret>`: the directory opens and filters, and neither
-   `pushState` nor `replaceState` is called.
+   `pushState` nor `replaceState` is called. **Amended 2026-09-27 on Paw's word after smoke test 9:**
+   `/w/<lobby secret>` only. `/weave/<lobbyId>` is replaced with `/lobby` (one `replaceState`, no
+   push), the Listeners line then pushes `/lobby/listeners`, and Back to `/lobby` closes the
+   directory; a browser with no credential gets the same replace and the join form.
 8. Memory-only `/lobby` (a degraded notice, and a pending storage key): the view switches, filtering
    works, and the address bar never changes — no push, so the path stays `/lobby` and `writeSearch`
    has nothing to write to.
