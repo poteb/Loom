@@ -41,8 +41,10 @@ export function parseSkill(folder: string, raw: string): Skill {
   if (name !== folder) broken("name must equal the folder name");
   if (description.length < 1 || description.length > MAX_DESCRIPTION) broken("description must be 1 to 1024 characters");
   if (!/^[A-Za-z]/.test(description) || /\s$/.test(description)) broken("description must start with a letter and end without a space");
-  // Either would stop the value being a plain YAML scalar that every reader parses the same way.
-  if (description.includes(": ") || description.includes(" #")) broken("description must contain neither ': ' nor ' #'");
+  // In YAML's block context a ':' before whitespace or at the end is a mapping indicator, and a '#'
+  // after whitespace starts a comment: either would stop the value being a plain scalar that every
+  // reader parses to the same string.
+  if (/:(\s|$)/.test(description) || /\s#/.test(description)) broken("description must have no ':' before whitespace or at its end, and no '#' after whitespace");
   if (lines[4] !== "" || !lines[5]) broken("one empty line must follow the closing ---, then the body");
   if (!text.endsWith("\n") || text.endsWith("\n\n")) broken("the file must end with exactly one newline");
   return { name, description, text };

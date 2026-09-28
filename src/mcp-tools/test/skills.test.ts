@@ -22,6 +22,7 @@ const NAME_FORM = "name must be 1 to 64 lowercase letters, digits and single hyp
 const DESCRIPTION_LENGTH = "description must be 1 to 1024 characters";
 const BODY_RULE = "one empty line must follow the closing ---, then the body";
 const FINAL_NEWLINE = "the file must end with exactly one newline";
+const YAML_SPECIAL = "description must have no ':' before whitespace or at its end, and no '#' after whitespace";
 
 describe("parseSkill (spec 2026-09-28 §3.2)", () => {
   it("accepts a minimal valid file and returns its whole text as text", () => {
@@ -43,8 +44,11 @@ describe("parseSkill (spec 2026-09-28 §3.2)", () => {
     ["a name of 65 characters", "a".repeat(65), named("a".repeat(65)), NAME_FORM],
     ["an empty description", "loom-x", described("loom-x", ""), DESCRIPTION_LENGTH],
     ["a description of 1025 characters", "loom-x", described("loom-x", "a".repeat(1025)), DESCRIPTION_LENGTH],
-    ["a description containing ': '", "loom-x", described("loom-x", "Use when: testing"), "description must contain neither ': ' nor ' #'"],
-    ["a description containing ' #'", "loom-x", described("loom-x", "Use when testing #1"), "description must contain neither ': ' nor ' #'"],
+    ["a description containing ': '", "loom-x", described("loom-x", "Use when: testing"), YAML_SPECIAL],
+    ["a description containing ':' then a tab", "loom-x", described("loom-x", "Use when:\ttesting"), YAML_SPECIAL],
+    ["a description ending in ':'", "loom-x", described("loom-x", "Use when testing, for example:"), YAML_SPECIAL],
+    ["a description containing ' #'", "loom-x", described("loom-x", "Use when testing #1"), YAML_SPECIAL],
+    ["a description containing a tab then '#'", "loom-x", described("loom-x", "Use when testing\t#1"), YAML_SPECIAL],
     ["a description starting with a quote", "loom-x", described("loom-x", "\"Use when testing\""), "description must start with a letter and end without a space"],
     ["a description ending in a space", "loom-x", described("loom-x", "Use when testing "), "description must start with a letter and end without a space"],
     ["no empty line after the closing ---", "loom-x", ["---", "name: loom-x", "description: Use when testing the loader.", "---", "# Test", ""].join("\n"), BODY_RULE],
@@ -58,6 +62,7 @@ describe("parseSkill (spec 2026-09-28 §3.2)", () => {
   it.each<[string, string, string]>([
     ["a name of 64 characters", "a".repeat(64), named("a".repeat(64))],
     ["a description of 1024 characters", "loom-x", described("loom-x", "a".repeat(1024))],
+    ["a description with ':' and '#' inside words", "loom-x", described("loom-x", "Use when a:b or PR#1 is tested.")],
   ])("accepts %s", (_label, folder, raw) => {
     expect(parseSkill(folder, raw).text).toBe(raw);
   });

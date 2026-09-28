@@ -88,6 +88,11 @@ A `SKILL.md` is YAML frontmatter, then plain Markdown:
    with no leading or trailing space, containing neither `: ` nor ` #`. That keeps it a plain YAML
    scalar that any YAML reader parses to the same string, the rule `renderDocument`'s description
    already follows.
+   **Amended 2026-09-28 after the review of Tasks 1 and 2:** the two literals were not enough for
+   that goal, because in YAML's block context a `:` followed by any whitespace or by the end of the
+   line is a mapping indicator, and a `#` after any whitespace starts a comment. So `description`
+   contains no `:` followed by whitespace or at its end (`/:(\s|$)/`), and no `#` after whitespace
+   (`/\s#/`). The four skill texts of §7 and `renderDocument`'s description already pass.
 5. After the closing `---`, one empty line, then the body. The file ends with exactly one newline.
 6. Line endings: the loader turns every CRLF into LF before parsing, so a checkout that ignored
    `.gitattributes` still serves LF.
