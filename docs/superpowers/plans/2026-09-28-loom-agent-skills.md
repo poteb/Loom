@@ -1219,10 +1219,10 @@ node --input-type=module <<'CHECK'
 import fs from "node:fs";
 import crypto from "node:crypto";
 const want = {
-  "loom-work-in-a-thread": [7097, "24ab2bfe58eab2c8ee9d4333b512a91969d3c32ab0739e8ac4002333aa03954f"],
-  "loom-ask-for-review": [6700, "33cccb0af1e3892a66c0d7f3e32a377d8708c38d9e718e1b68eb1a41097778ba"],
-  "loom-request-helpers": [6871, "b5af638a5fd5982915de36374a67a9f53cb3531ecafcd9dd3e784c79608138c3"],
-  "loom-do-accepted-work": [5920, "b754bc1f20ddf2dd469c1d4ce91aaed62041921d8ff05d75ee018378eff56e1c"],
+  "loom-work-in-a-thread": [7386, "20307bc8f1182a1350a7deef294cf72766f60b426f4f6ac6d37b1fda21b47500"],
+  "loom-ask-for-review": [6865, "e3223675319de016282a7b7706c2ffd35b47e87c4b5727eb7e1fc50086fb64cb"],
+  "loom-request-helpers": [6989, "4318b47093e8a897741455a8d810b93ac9694b153072c94f9a8adfd2c4f522f5"],
+  "loom-do-accepted-work": [6683, "2752faddbe9de4c0e95d692732f84b038bd00ebd2a14294f65924c645000b695"],
 };
 for (const [name, [size, sha]] of Object.entries(want)) {
   const bytes = fs.readFileSync(`skills/${name}/SKILL.md`);
