@@ -101,8 +101,10 @@ classify_inspect() {             # round 9's F3: the ONE way any inspect's resul
   CLASSIFY_OUT="$(dk "$@" 2>"$INSPECT_ERR")" || rc=$?
   [ "$rc" -eq 0 ] && return 0
   CLASSIFY_ERR="$(tr '\n' ' ' < "$INSPECT_ERR" 2>/dev/null)"
-  case "$CLASSIFY_ERR" in
-    *"No such object"*|*"No such volume"*|*"No such container"*) return 1 ;;
+  local err_lc                   # matched case-blind: Docker 29 prints "error: no such object:",
+  err_lc="$(printf '%s' "$CLASSIFY_ERR" | tr '[:upper:]' '[:lower:]')"   #   older ones "No such object:"
+  case "$err_lc" in
+    *"no such object"*|*"no such volume"*|*"no such container"*) return 1 ;;
   esac
   return 2                       # 124 from the timeout, a daemon error, a permission failure,
 }                                #   an empty message, anything a future Docker invents
