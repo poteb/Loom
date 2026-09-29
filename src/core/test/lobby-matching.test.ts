@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { LoomError } from "../src/errors.js";
-import { admits, eligible, matches, validateRequirements } from "../src/lobby/matching.js";
+import { REQUIREMENT_KEYS, admits, eligible, matches, validateRequirements } from "../src/lobby/matching.js";
 import type { Profile, Requirements } from "../src/lobby/matching.js";
 
 /** The code a call rejects with, or undefined when it is accepted. */
@@ -208,5 +208,17 @@ describe("maxResponseMs and the liveness term", () => {
   it("eligible ignores liveness when maxResponseMs is absent", () => {
     expect(eligible(listener, { tools: ["github"] }, "paw")).toBe(true);
     expect(eligible(listener, { tools: ["github"] }, "paw", { lastSeenAt: null, now: NOW })).toBe(true);
+  });
+});
+
+describe("REQUIREMENT_KEYS (spec 2026-09-28 §10.0)", () => {
+  it("equals the keys validateRequirements accepts: each alone passes, and any other key is validation", () => {
+    expect([...REQUIREMENT_KEYS].sort()).toEqual(["maxResponseMs", "models", "runtime", "spawnsSubagents", "tools"]);
+    const sample: Record<string, unknown> = {
+      models: [{ model: "gpt-5.6-sol" }], tools: ["github"], runtime: "codex-cli", spawnsSubagents: true, maxResponseMs: 60_000,
+    };
+    for (const key of REQUIREMENT_KEYS) expect(codeOf(() => validateRequirements({ [key]: sample[key] })), key).toBeUndefined();
+    // Profile keys and near misses: none is a requirement key.
+    for (const key of ["owner", "serves", "pollIntervalMs", "model", "anyOf"]) expect(codeOf(() => validateRequirements({ [key]: 1 })), key).toBe("validation");
   });
 });

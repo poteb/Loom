@@ -3,7 +3,8 @@ import { ResourceTemplate, type McpServer } from "@modelcontextprotocol/sdk/serv
 import { LoomToolError, type LoomToolBackend } from "./backend.js";
 import { toToolResult } from "./result.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { GET_STARTED_NEEDS_AGENT, NEXT, nextState, pendingOf, renderState } from "./onboarding.js";
+import { GET_STARTED_NEEDS_AGENT, NEXT, nextState, pendingOf, quoteTitle, renderDocument, renderState } from "./onboarding.js";
+import { defaultSkills, renderSkillsIndex, type Skill } from "./skills.js";
 
 export const LOOM_TOOL_NAMES = [
   "create_weave", "join_weave", "lookup_weave", "get_weave", "read_events", "inbox", "post_message", "create_thread",
@@ -11,7 +12,7 @@ export const LOOM_TOOL_NAMES = [
   "set_weave_guidelines",
   "keeper_list_weaves", "keeper_get_settings", "keeper_set_settings", "keeper_list", "keeper_add", "keeper_remove",
   "keeper_agents_list", "keeper_agents_add", "keeper_agents_revoke", "keeper_agents_set_owner",
-  "get_started", "join_lobby", "set_capabilities", "find_agents",
+  "get_started", "get_skill", "join_lobby", "set_capabilities", "find_agents",
   "open_request", "offer", "accept", "complete", "cancel_request", "list_requests", "get_request", "invite_to_weave",
 ] as const;
 
@@ -67,7 +68,35 @@ export type RegisterOptions = {
    * resource callback's `try`, where `resourceError` folds the code into the message.
    */
   resourceCredential?: (weaveId: string) => string | undefined;
+  /**
+   * The skills `get_skill` answers from (spec 2026-09-28 §5.1). Read when `get_skill` runs, so a
+   * registration that never calls it never touches the disk; `defaultSkills()` when absent. Remote
+   * `/mcp` passes the app's own array and the channel `defaultSkills()`, each loaded at boot.
+   */
+  skills?: readonly Skill[];
+  /**
+   * This Loom's origin, for the index's links and for `get_skill("join-loom")`. Remote `/mcp` passes
+   * the origin of the initialize request, the channel its Loom's. Absent (a test that gives none), the
+   * links are root-relative and `join-loom` is `not_found`.
+   */
+  origin?: string;
 };
+
+/**
+ * What `get_skill` answers (spec 2026-09-28 §5.1): with no name (an empty one counts as none) the
+ * index, with a loaded skill's name its text, with `join-loom` the generated document. Always the
+ * Markdown itself, never JSON, which would escape every newline and quote in it.
+ */
+function skillText(skills: readonly Skill[], origin: string | undefined, name: string | undefined): string {
+  if (name === undefined || name === "") return renderSkillsIndex(skills, origin ?? "");
+  if (name === "join-loom") {
+    if (origin === undefined) throw new LoomToolError("not_found", "join-loom needs this Loom's origin; read /join-loom.md");
+    return renderDocument(origin);
+  }
+  const skill = skills.find((s) => s.name === name);
+  if (!skill) throw new LoomToolError("not_found", `No skill named ${quoteTitle(name)}; call get_skill with no name for the list`);
+  return skill.text;
+}
 
 /** `{ ...result, next }` (spec §5.2): the backend's fields untouched, one sentence of guidance added. */
 async function withNext(p: Promise<unknown>, next: string | ((value: unknown) => string)): Promise<unknown> {
@@ -217,6 +246,12 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
     shownState3 = step.shownState3;
     return { state: step.state, text: renderState(step.state, facts, opts.clientName?.()), pending: pendingOf(facts) };
   })));
+
+  // No credential and no backend call: it reads only the skills it was given (spec 2026-09-28 §5.1).
+  server.registerTool("get_skill", {
+    description: "Loom's skills for agents: step-by-step guides for working in a Thread, asking for a review, requesting helpers and doing accepted work, plus join-loom. With no name, returns the index (each skill's name, description and link). With a name, returns that skill's Markdown. Needs no credential.",
+    inputSchema: { name: z.string().optional().describe("A skill name from the index, such as loom-ask-for-review") },
+  }, ({ name }) => toToolResult(Promise.resolve().then(() => skillText(opts.skills ?? defaultSkills(), opts.origin, name))));
 
   server.registerTool("join_lobby", {
     description: `Join this Loom's Lobby: the one room every agent on the instance stands in, where work is asked for and offered. No secret is needed — anyone who can reach the instance may join, as they would a chat server. Returns the same shape as join_weave (weaveId, your participant and your participant token — keep it). Join once, then call set_capabilities so requests can find you. ${READ_GUIDELINES}`,

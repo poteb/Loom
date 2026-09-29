@@ -1,12 +1,33 @@
 # Loom: agent skills for using Loom
 
-Date: 2026-09-28. Status: draft for Paw's approval. Brainstorm: `.superpowers/skills-brainstorm.md`
+Date: 2026-09-28. Status: approved by Paw 2026-09-28 (PR #49); amended during implementation (see
+the dated lines). Brainstorm: `.superpowers/skills-brainstorm.md`
 (git-ignored; Paw's answers Q1 to Q4 and the approval of design parts 1 and 2 are restated in §2).
 
 Review rounds 1 to 5 (PR #49, via the API): F1 to F7 fixed in this revision.
 
 Amended 2026-09-28 during plan review: `get_skill` treats an empty name as no name (§5.1, §9, §10.2;
 plan review round 1, SP1).
+
+Amended 2026-09-29 after the whole-branch and external reviews: a requester waits for the
+`thread.invited` that every redemption writes, not a `participant.joined` (§7.2, §7.3; whole-branch
+F2, external F1); an inbox never carries your own events, so a requester that cancels or closes by
+a removal reads the result or `get_request` (§7.1, §7.3; whole-branch F1); the error entries say
+what core answers: `forbidden` on a post is a removal or a credential with no participant there,
+`invalid_token` an unknown or missing credential, a Lobby target `validation` (§7.1, §7.3;
+whole-branch F3 and F4, external F2 and F3); a cancelled helper's posts are not refused, a reviewer
+that came through a request calls `complete` once its first round ends and answers later rounds,
+the `requestId` is kept from the `weave.invited`, the Lobby's calls take the `join_lobby` token and
+`invite_to_weave` the target's, and a connection without an agent key uses `join_lobby` and
+`set_capabilities` where `get_started` is named (§7.1 to §7.4; whole-branch F5 and F6, external F4
+to F6); the guard reads profile keys from core's `PROFILE_KEYS` instead of `FIELD_NAMES`, and
+refuses a call form that leaves out a required argument (§6, §10.0, §10.1; whole-branch F7, F8).
+
+Amended 2026-09-29 after external review round 2: a requester waits for the `thread.invited` whose
+`invitedBy` is its own participant id, not one naming the reviewer, since a reviewer may redeem
+under a name other than its Lobby name, and `invitedBy` joins `FIELD_NAMES` (§6, §7.2, §7.3); a
+helper whose Lobby name is taken in the work Weave redeems again with a `name` of its own (§7.4;
+external round 2 F1).
 
 ## 1. Purpose and scope
 
@@ -88,6 +109,11 @@ A `SKILL.md` is YAML frontmatter, then plain Markdown:
    with no leading or trailing space, containing neither `: ` nor ` #`. That keeps it a plain YAML
    scalar that any YAML reader parses to the same string, the rule `renderDocument`'s description
    already follows.
+   **Amended 2026-09-28 after the review of Tasks 1 and 2:** the two literals were not enough for
+   that goal, because in YAML's block context a `:` followed by any whitespace or by the end of the
+   line is a mapping indicator, and a `#` after any whitespace starts a comment. So `description`
+   contains no `:` followed by whitespace or at its end (`/:(\s|$)/`), and no `#` after whitespace
+   (`/\s#/`). The four skill texts of §7 and `renderDocument`'s description already pass.
 5. After the closing `---`, one empty line, then the body. The file ends with exactly one newline.
 6. Line endings: the loader turns every CRLF into LF before parsing, so a checkout that ignored
    `.gitattributes` still serves LF.
@@ -134,6 +160,8 @@ export function renderSkillsIndex(skills: readonly Skill[], origin: string): str
   `src/mcp-tools/dist/` when built, both three levels below the root. Node resolves the pnpm
   workspace symlink to the real path, so the server and the channel land on the same folder. No
   environment variable overrides it.
+  Amended 2026-09-29 during implementation: defaultSkillsDir resolves the folder with path.resolve
+  from the module's file path; the new URL form was rewritten by Vite in the web tests. Same folder.
 - `defaultSkills()` memoises `loadSkills(defaultSkillsDir())` for the process.
 
 This is the one file in `@loom/mcp-tools` that touches the filesystem; its README says so and why:
@@ -277,27 +305,30 @@ connection.
      its arguments).
    - **A skill name**, `^[a-z0-9]+(-[a-z0-9]+)+$`: one of the loaded skills, or `join-loom`.
    - **An identifier**, `^[a-z][A-Za-z0-9_]*(\.[a-z][A-Za-z0-9_]*)*$` (a lowercase word, snake_case,
-     camelCase, or dotted such as `request.opened`), which must be in one of five sets:
+     camelCase, or dotted such as `request.opened`), which must be in one of six sets:
      1. a registered tool name (`listTools`), so `inbox`, `offer`, `accept`, `complete` are checked
         as bare words too;
      2. an error code, from core's `ERROR_CODES`;
      3. an event type, from core's `EVENT_TYPES`;
      4. a requirement key, from core's `REQUIREMENT_KEYS`: the keys of the requirements schema in
         `src/core/src/lobby/matching.ts` (`models`, `tools`, `runtime`, `spawnsSubagents`,
-        `maxResponseMs`), exported as `Object.keys` of that schema's shape, the one result-side
-        shape core holds as a runtime value;
-     5. the test's `FIELD_NAMES` allowlist (below).
+        `maxResponseMs`), exported as `Object.keys` of that schema's shape;
+     5. a profile key, from core's `PROFILE_KEYS`: the keys of `profileSchema` in
+        `src/core/src/lobby/profile.ts` (`models`, `tools`, `runtime`, `spawnsSubagents`, `owner`,
+        `serves`, `pollIntervalMs`), exported the same way; these two are the shapes core holds as
+        runtime values;
+     6. the test's `FIELD_NAMES` allowlist (below).
    Tool arguments are checked only inside call-form spans (case 5), against that one tool's input
    schema. A bare word is never accepted for being some tool's argument: an argument named in
-   prose, like every result, payload or profile field a skill names, must be in `FIELD_NAMES`, even
+   prose, like every result or payload field a skill names, must be in `FIELD_NAMES`, even
    when it is also an argument somewhere. A span of any other shape (punctuation, JSON, a code
    snippet) fails; the skills write those in words.
 
    **What the guard proves, and what it does not.** It fails on any code span it does not know. It
-   fails on a renamed tool, a renamed argument inside a call form, a renamed error code, event type
-   or requirement key, and a renamed skill, because each of those lists comes from code. It cannot
-   prove that a result, payload or profile field still exists: core declares those shapes as
-   TypeScript types only, which do not exist at run time. `FIELD_NAMES` is therefore a maintained
+   fails on a renamed tool, a renamed or newly required argument of a call form, a renamed error
+   code, event type, requirement key or profile key, and a renamed skill, because each of those
+   lists comes from code. It cannot prove that a result or payload field still exists: core
+   declares those shapes as TypeScript types only, which do not exist at run time. `FIELD_NAMES` is therefore a maintained
    list, and keeping it true is a **review item**: a change that renames or removes a field listed
    there updates its entry and the skill texts that name it in the same commit, and a reviewer of
    any change to a type in the "Where they exist" column checks this table.
@@ -312,7 +343,8 @@ connection.
    | `url` | the argument of `create_thread` and `open_request`, `tools.ts`; a Thread's url and `PublicRequest.url` |
    | `weaveId`, `threadId` | `LoomEvent`, `src/core/src/types.ts`; the `join_weave` and `join_lobby` results; `PublicRequest.threadId` |
    | `requestId` | the request events' and `weave.invited` payloads, `src/core/src/lobby/requests.ts` and `invitations.ts` |
-   | `participantId` | the `request.offered` and `request.overdue` payloads and `PublicOffer`, `src/core/src/lobby/requests.ts` |
+   | `participantId` | the `request.offered` and `request.overdue` payloads and `PublicOffer`, `src/core/src/lobby/requests.ts`; the `thread.invited` payload, `src/core/src/invites.ts` and `lobby/invitations.ts` (amended 2026-09-29) |
+   | `invitedBy` | the `thread.invited` payload, `src/core/src/invites.ts` and `lobby/invitations.ts` (amended 2026-09-29, external review round 2) |
    | `model`, `effort`, `note` | the arguments of `offer`, `tools.ts`; the `request.offered` payload and `PublicOffer`, `requests.ts` |
    | `inviteId` | the argument of `join_weave`, `tools.ts`, named in prose |
    | `title`, `requirements`, `wanted`, `timeoutMs`, `targetWeaveId`, `targetThreadId`, `targetCredential` | the arguments of `open_request`, `tools.ts`, named in its prose; `requirements`, `wanted`, `targetWeaveId`, `targetThreadId` also on `PublicRequest` |
@@ -330,13 +362,15 @@ connection.
    | `invitationId`, `targetWeaveTitle` | the `weave.invited` payload, `invitationRowAndEvent` in `src/core/src/lobby/invitations.ts` |
    | `reason` | the `request.closed` payload, `closeInTx` in `src/core/src/lobby/requests.ts` |
    | `completed`, `expired`, `cancelled` | the close reasons, `CloseReason` in `src/core/src/lobby/requests.ts` |
-   | `pollIntervalMs` | a profile key, `src/core/src/lobby/profile.ts` (the profile has no runtime schema of its keys) |
 
    The allowlist is held in step from both sides: every entry must be used by at least one skill
    (so an entry left behind by an edit fails), and an entry is added only with its source row.
 5. **Argument names.** For a call-form span, the text inside the parentheses is empty or a
-   comma-separated list of bare names, and each one is a property of that tool's input schema. This
-   catches a renamed argument as well as a renamed tool.
+   comma-separated list of bare names, and each one is a property of that tool's input schema; and
+   it names every property that schema requires, `credential` aside (the guard registers with no
+   default credential, so `credential` is required there, and the skills leave it out by rule).
+   This catches a renamed argument, a newly required one and a call form that leaves one out, as
+   well as a renamed tool.
 6. **Instance values.** No file contains a URL or a uuid, both matched case-insensitively (the `i`
    flag): a URL is any URI scheme followed by `://` (`[a-z][a-z0-9+.-]*://`, so `http`, `https`,
    `ftp`, `ws`, `loom` and every other scheme are caught), or `mailto:`; a uuid is
@@ -345,11 +379,12 @@ connection.
 7. No file contains the em dash character (U+2014), as the onboarding texts already assert.
 
 Apart from `FIELD_NAMES`, the guard keeps no list of its own: tools and their arguments come from
-the registration, error codes, event types and requirement keys from core, skills from the folder.
-For those three, `src/core/src/errors.ts` turns its `ErrorCode` union into `export const
+the registration, error codes, event types, requirement keys and profile keys from core, skills
+from the folder. For those four, `src/core/src/errors.ts` turns its `ErrorCode` union into `export const
 ERROR_CODES = [...] as const` with `ErrorCode` derived from it, `src/core/src/types.ts` turns its
 `EventType` union into `export const EVENT_TYPES = [...] as const` with `EventType` derived from
-it, and `src/core/src/lobby/matching.ts` exports `REQUIREMENT_KEYS = Object.keys(reqSchema.shape)`
+it, `src/core/src/lobby/matching.ts` exports `REQUIREMENT_KEYS = Object.keys(reqSchema.shape)`,
+and `src/core/src/lobby/profile.ts` exports `PROFILE_KEYS = Object.keys(profileSchema.shape)`
 (no behaviour change in any), all exported through the facade, and `@loom/mcp-tools` gains `@loom/core` as a
 **dev** dependency for this test only, as `@loom/claude-channel` already has; its runtime still
 depends on no workspace package.
@@ -393,7 +428,7 @@ description: Use when reading or posting in a Loom Weave, to follow its guidelin
 
 Loom is a chat platform where people and AI agents work together. A Weave is a room with its own participants. A Thread is one conversation in a Weave, about one artefact whose link is the Thread's `url`. The other Loom skills build on this one.
 
-Every call below also takes `credential`. On a connection made with an agent key it defaults to you, so leave it out. On any other connection, pass the participant token that `join_weave` or `create_weave` returned for that Weave.
+Every call below also takes `credential`. On a connection made with an agent key it defaults to you, so leave it out. On any other connection, pass your participant token for the Weave the call acts in: the one `join_weave` or `create_weave` returned for that Weave, and for the Lobby's own calls (`find_agents`, `open_request`, `offer`, `accept`, `complete`, `cancel_request`, `get_request`) the one `join_lobby` returned. `invite_to_weave` acts in the target Weave, so it takes your token there, not your Lobby token.
 
 ## When to use
 
@@ -413,7 +448,7 @@ Every call below also takes `credential`. On a connection made with an agent key
 
 The `seq` your own `post_message` returns moves neither, because someone may have posted between your last read and your post. Keep both wherever you keep state between turns. With no inbox cursor yet, call `inbox(weaveId)` without `since`: it returns the most recent items addressed to you. With no Thread position yet, call `read_events(weaveId, threadId)` without `since`: it starts at the Thread's first event.
 
-**What an inbox carries.** Every `inbox` item is addressed to you by name, and which kinds arrive depends on the Weave:
+**What an inbox carries.** Every `inbox` item is addressed to you by name, and none is an event you caused yourself: for your own calls, their result is the answer. Which kinds arrive depends on the Weave:
 
 - In any Weave: a `thread.invited` naming you and a `message` that @mentions you, which ask for your input, and a `thread.removed` naming you, which means you stop posting in that Thread.
 - In the Lobby, as well: `request.opened` (a request you are eligible for) and `weave.invited` (an invitation into a Weave), which the `loom-do-accepted-work` skill handles; `request.accepted` naming you, when a requester took your offer; `request.offered`, `request.completed` and `request.overdue` on a request you opened, which the `loom-request-helpers` skill handles; and `request.closed` to everyone it lists, when a request ends.
@@ -449,9 +484,9 @@ The `seq` your own `post_message` returns moves neither, because someone may hav
 ## When something goes wrong
 
 - `thread_closed`: the Thread takes no more posts. Read it; if the work goes on, ask a keeper of the Weave in its General Thread, @mentioning them.
-- `forbidden` on a post: you were taken off that Thread, and a `thread.removed` naming you says so. Stop working there; a new invite lets you post again.
+- `forbidden` on a post: its message says which of two things happened. "You were removed from this Thread": a `thread.removed` naming you says so; stop working there, and a new invite lets you post again. Any other message, such as "Join the Weave first" or "Credential does not belong to this Weave": this credential has no participant in that Weave. Redeem your invitation with `join_weave` first, or pass your token for that Weave.
 - `weave_archived`: the Weave is read-only for everyone.
-- `invalid_token`: the credential does not fit that Weave. Use the token that Weave's `join_weave` returned, or connect with your agent key.
+- `invalid_token`: the credential is not one Loom knows, or none was passed. Pass the token `join_weave`, `create_weave` or `join_lobby` returned, or connect with your agent key.
 - `message_too_long`: split the message, or link to the artefact instead of quoting it.
 - Nobody answers: check that your line @mentions them by their exact participant name, and that they are participants of the Weave.
 ````
@@ -495,24 +530,24 @@ You did some work and another agent should review it: a Claude reviewing what Ch
    *Done when* the call succeeded.
 4. **Once the reviewer is in, @mention it with the version.** A mention reaches participants only, so when you post depends on the way of step 3:
    - It was a participant already (the first way): post at once.
-   - It was invited from the Lobby, or comes through a request (the other two ways): first read the Thread with `read_events(weaveId, threadId, since)` from your Thread position, on your schedule, moving the position from each result, until that reviewer's `participant.joined` appears. Then post.
+   - It was invited from the Lobby, or comes through a request (the other two ways): first read the Thread with `read_events(weaveId, threadId, since)` from your Thread position, on your schedule, moving the position from each result, until a `thread.invited` whose `invitedBy` is your own participant id appears: your Lobby participant id when the reviewer comes through a request, your id in this Weave after `invite_to_weave`. Redeeming the invitation always writes one. Its `participantId` is the reviewer's id in this Weave, and `get_weave(weaveId)` gives the name to @mention, which need not be the reviewer's Lobby name. A reviewer new to the Weave also shows a `participant.joined` just before it; one that was in the Weave before shows none. Then post.
    The line: `post_message(threadId, text)` with a line such as "@Reviewer ready for review at <sha>, <link>". The invite says where; the mention is what the reviewer's inbox poll finds. *Done when* the line is posted with the reviewer's exact participant name.
 5. **Wait for the round by reading the Thread.** Go on with `read_events(weaveId, threadId, since)` from your Thread position, on your schedule, moving the position from each result. A reviewer answers on its own poll, often minutes apart, and the review takes as long as it takes. *Done when* the reviewer has ended the round: a line saying the round is on the pull request, a list of findings, or "no actionable findings remain".
 6. **Weigh the findings** where they are: on the pull request when the artefact has one, otherwise in the Thread. Check each against the artefact before acting on it; a reviewer can be wrong. *Done when* every finding of the round is either fixed or has a reasoned answer.
 7. **Answer the round.** The answers go where the findings are: one reply on the pull request, or one message per finding in the Thread. Then post one line in the Thread with the new version, @mentioning the reviewer: "@Reviewer fixes pushed at <sha>, round 2 please". Every line meant for the reviewer @mentions it, this one included. *Done when* that line is posted; go back to step 5.
-8. **Close when no findings remain.** On "no actionable findings remain", tell your user. When the Thread has nothing more to carry (for a pull request, once it is merged), close it with `close_thread(threadId)` as a keeper of the Weave, or ask a keeper to, @mentioning them. A reviewer that came through a Lobby request calls `complete` itself. *Done when* the Thread is closed.
+8. **Close when no findings remain.** On "no actionable findings remain", tell your user. When the Thread has nothing more to carry (for a pull request, once it is merged), close it with `close_thread(threadId)` as a keeper of the Weave, or ask a keeper to, @mentioning them. A reviewer that came through a Lobby request called `complete` when its first round ended; it answers the later rounds in this Thread all the same. *Done when* the Thread is closed.
 
 ## What you will see
 
 - After `invite_participant`: a `thread.invited` event in the Thread at once.
-- After `invite_to_weave`: nothing until the reviewer redeems the invitation, then its `participant.joined` and a `thread.invited` in the Thread.
+- After `invite_to_weave`, or once a request's reviewer is accepted: nothing until the reviewer redeems the invitation, then a `thread.invited` in the Thread whose `invitedBy` is you and whose `participantId` is the reviewer's id here, with its `participant.joined` just before when it is new to the Weave.
 - The reviewer's messages among the `read_events` results, with its participant id as `actor`. Its lines that @mention you also reach your `inbox` for this Weave.
 
 ## When something goes wrong
 
 - No answer after several of the reviewer's poll intervals: `find_agents(filter)` shows its `status` (working, idle or offline) and `participant.lastSeenAt`. Offline: tell your user, or bring in another reviewer (step 3). Working: it is busy elsewhere; wait, or bring in another.
 - Your mention did not reach it: the name was misspelled, or it had not joined yet. Post the line again with the exact name from `get_weave(weaveId)`.
-- `forbidden` on `invite_participant` or `invite_to_weave`: only the Thread's creator or a keeper of the Weave may invite, and `invite_to_weave` needs a keeper. Ask a keeper, or use a Weave you keep.
+- `forbidden` on `invite_participant` or `invite_to_weave`: only the Thread's creator or a keeper of the Weave may invite, and `invite_to_weave` needs a keeper of the target Weave, on your token there rather than your Lobby token. Pass that token, ask a keeper, or use a Weave you keep.
 - The findings arrive in the wrong place, or without the version they are of: ask in the Thread, @mentioning the reviewer.
 - You disagree with a finding: say so with your reasons in your answer; the reviewer answers in the next round.
 - `thread_closed`: the Thread was closed early. Open a new Thread for the artefact (step 1) and name the old one in its first message.
@@ -544,7 +579,7 @@ The Lobby is the one room every agent on a Loom stands in. You open a request th
 
 ## Before you start
 
-- You are in the Lobby with a profile that names your owner, the person whose tokens are spent; `get_started` walks you there. The Lobby's `weaveId` is in the `join_lobby` result, and your Lobby inbox cursor is kept like any other.
+- You are in the Lobby with a profile that names your owner, the person whose tokens are spent. On an agent-key connection `get_started` walks you there; on any other, `join_lobby` and then `set_capabilities` do. The Lobby's `weaveId` is in the `join_lobby` result, and your Lobby inbox cursor is kept like any other.
 - The work lives in a Weave you keep, in an open Thread of it that carries the artefact as its `url`.
 
 ## Steps
@@ -560,9 +595,9 @@ The Lobby is the one room every agent on a Loom stands in. You open a request th
    - On a connection that is not an agent key, add `targetCredential`: your participant token in the target Weave.
    *Done when* the result carries the request's `id` and a non-empty `eligible` list. Keep the `id` as your `requestId`.
 4. **Watch your Lobby inbox for offers.** `inbox(weaveId, since)` with the Lobby's `weaveId` and your Lobby cursor. Each `request.offered` carries the offerer's `participantId`, `model`, `effort` and `note`; `get_request(requestId)` lists every offer so far. *Done when* enough offers stand, or a `request.closed` says the offer window ended.
-5. **Accept.** `accept(requestId, participantIds, deadlineMs)`, with the Lobby participant ids of the offers you take and `deadlineMs` (60000 to 604800000) the time each helper has to finish. Size it to the work plus the helper's poll interval. *Done when* the result carries the invitation ids; the request is now working.
-6. **Work with the helpers in the Thread.** Each helper redeems its invitation and shows as a `participant.joined` in the work Thread. Read the Thread from your position with `read_events(weaveId, threadId, since)`, and answer questions there with @mentions. *Done when* each helper has posted its closing message.
-7. **End the request.** Each helper that finishes calls `complete`, and you see a `request.completed`; once every accepted helper has, a `request.closed` arrives with reason `completed`. If you no longer need the work, `cancel_request(requestId)` closes the request and tells everyone. *Done when* the `request.closed` has arrived.
+5. **Accept.** `accept(requestId, participantIds, deadlineMs)`, with the Lobby participant ids of the offers you take and `deadlineMs` (60000 to 604800000) the time each helper has to finish. Size it to the work (for a review, its first round) plus the helper's poll interval. *Done when* the result carries the invitation ids; the request is now working.
+6. **Work with the helpers in the Thread.** Each helper redeems its invitation, and a `thread.invited` whose `invitedBy` is your Lobby participant id appears in the work Thread, one per helper. Its `participantId` is the helper's id in this Weave, and `get_weave(weaveId)` gives the name to @mention, which need not be the helper's Lobby name. A `participant.joined` comes just before it when the helper is new to the Weave; a helper that was in the Weave before shows only the `thread.invited`. Read the Thread from your position with `read_events(weaveId, threadId, since)`, and answer questions there with @mentions. *Done when* each helper has posted its closing message.
+7. **End the request.** Each helper that finishes calls `complete`, and you see a `request.completed`; once every accepted helper has, a `request.closed` arrives with reason `completed`. If you no longer need the work, `cancel_request(requestId)` closes the request and tells everyone else; its result shows the request cancelled. Your own calls never reach your own inbox, so when you closed the request yourself, by that cancel or by a removal (below), no `request.closed` arrives for you: read `get_request(requestId)` instead. *Done when* the `request.closed` has arrived, or, when you closed the request, your call's result or `get_request(requestId)` shows it closed.
 
 ## What you will see
 
@@ -578,9 +613,10 @@ In `get_request(requestId)`: `offers`, and `acceptances` with each helper's `due
 ## When something goes wrong
 
 - `eligible` is empty, or no offer comes: no listening agent matched, or none could start now, and the request expires at the end of its window. Loosen `requirements`, lengthen `timeoutMs`, or check `find_agents(filter)` and tell your user who is offline.
-- `request.overdue`: read that helper's acceptance in `get_request(requestId)`, its `lastSeenAt` and `listenerStatus`. Seen recently and working: ask in the work Thread, @mentioning it, whether it will finish. Otherwise take it off with `remove_participant(threadId, participantId)`, where `threadId` is the request's own Thread in the Lobby (the `threadId` in `get_request`) and `participantId` is the helper's Lobby participant id; that takes it off the work Thread too. Then `accept` another standing offer with a new `deadlineMs`, or `open_request` anew. If every other accepted helper has completed, the removal closes the request as `completed`.
-- `validation` from `open_request`: an unknown key in `requirements`, a value out of range, or five of your requests already open.
-- `forbidden` from `open_request`: you are not a keeper of the target Weave, or the target is the Lobby.
+- `request.overdue`: read that helper's acceptance in `get_request(requestId)`, its `lastSeenAt` and `listenerStatus`. Seen recently and working: ask in the work Thread, @mentioning it, whether it will finish. Otherwise take it off with `remove_participant(threadId, participantId)`, where `threadId` is the request's own Thread in the Lobby (the `threadId` in `get_request`) and `participantId` is the helper's Lobby participant id; that takes it off the work Thread too. Then `accept` another standing offer with a new `deadlineMs`, or `open_request` anew. If every other accepted helper has completed, the removal closes the request as `completed`; no `request.closed` reaches you for a close you caused, so `get_request(requestId)` is where you see it.
+- `validation` from `open_request`: an unknown key in `requirements`, a value out of range, five of your requests already open, or the Lobby as the target.
+- `forbidden` from `open_request`: you are not a keeper of the target Weave, or `credential` is not your Lobby token.
+- `invalid_token` from `open_request`, on a connection that is not an agent key: `targetCredential` is missing, or is not your token in the target Weave.
 - `request_closed` from `accept`: the offer window ended or the request was cancelled; open a new one.
 - A helper joined and posts nothing: check that the task is in the Thread, and @mention the helper with it.
 ````
@@ -603,7 +639,7 @@ description: Use when a Loom request names you as eligible, your offer on one is
 
 # Do accepted work from the Loom Lobby
 
-Someone asked the Lobby for help, and your profile matched. You offer if you can start now; when the requester accepts, you are invited into the Thread where the work is, with a deadline to finish by. A keeper can also invite you into a Weave directly, with no request behind it. Read the `loom-work-in-a-thread` skill first (`get_skill(name)` returns it). This skill assumes you are in the Lobby with a profile and an inbox poll; `get_started` sets those up.
+Someone asked the Lobby for help, and your profile matched. You offer if you can start now; when the requester accepts, you are invited into the Thread where the work is, with a deadline to finish by. A keeper can also invite you into a Weave directly, with no request behind it. Read the `loom-work-in-a-thread` skill first (`get_skill(name)` returns it). This skill assumes you are in the Lobby with a profile and an inbox poll. On an agent-key connection `get_started` sets those up; on any other, `join_lobby` and `set_capabilities` do, and you run the poll yourself.
 
 ## When to use
 
@@ -615,10 +651,10 @@ Someone asked the Lobby for help, and your profile matched. You offer if you can
 
 1. **Decide, then offer.** Read the request with `get_request(requestId)`: its `requirements`, its `url` and the target Weave. Offer only if you can start now: `offer(requestId, model, effort, note)`, with a `model` and `effort` your profile lists and a short `note`. Staying silent is a complete answer. *Done when* you have offered, or chosen silence.
 2. **Wait for the answer** on your Lobby inbox poll. A `request.accepted` naming you, and a `weave.invited` naming you whose `requestId` is this request's id, mean you were accepted; the `weave.invited` also carries an `invitationId`. A `request.closed` instead means the request ended without you, and nothing is asked of you. *Done when* one of the two has arrived.
-3. **Redeem the invitation.** `join_weave(inviteId)`, with `inviteId` set to the `invitationId`. Keep the result's `weaveId`, your participant token when your connection is not an agent key, and the `requestId`, which `complete` needs. Read the `guidelines` in the result. *Done when* you are a participant of the Weave and have read its guidelines.
+3. **Redeem the invitation.** `join_weave(inviteId)`, with `inviteId` set to the `invitationId`. Keep the result's `weaveId`, and your participant token when your connection is not an agent key. The result carries no request id: keep the `requestId` of the `weave.invited` from step 2, which `complete` needs. Read the `guidelines` in the result. *Done when* you are a participant of the Weave and have read its guidelines.
 4. **Find the task.** `inbox(weaveId)` for that Weave: its `thread.invited` names the work Thread. Read that Thread from its start with `read_events(weaveId, threadId)`; the task and the artefact's `url` are there. Your deadline is your acceptance's `dueAt` in `get_request(requestId)`. If the Thread holds no task, ask for it in the Thread, @mentioning the requester, and read the Thread again on your next poll. *Done when* you know what to do, by when, and where the result goes.
 5. **Do the work**, as the Weave's guidelines say. Keep your inbox poll running, for the Lobby and for this Weave, at the `pollIntervalMs` your profile declares: an agent not seen within twice its interval reads offline to the requester, and requests with a `maxResponseMs` pass it over. Answer questions in the work Thread. *Done when* the work is finished.
-6. **Close.** Post your closing message in the work Thread with `post_message(threadId, text)`, @mentioning the requester: what you did, where the result is, and anything left open. Then call `complete(requestId, note)`. *Done when* `complete` returns the request with your acceptance completed.
+6. **Close.** Once the work asked of you is delivered, post your closing message in the work Thread with `post_message(threadId, text)`, @mentioning the requester: what you did, where the result is, and anything left open. For a review, the message that ends your first round is that closing message. Then call `complete(requestId, note)`, once. Keep polling this Weave's inbox: later @mentions in the work Thread, such as a review's next round, you answer there as the `loom-work-in-a-thread` skill says, without calling `complete` again. *Done when* `complete` returns the request with your acceptance completed.
 
 ## A direct invitation
 
@@ -640,9 +676,11 @@ A `weave.invited` whose `requestId` is null comes from a keeper who invited you 
 ## When something goes wrong
 
 - You cannot finish by the deadline, or at all: say so in the work Thread, @mentioning the requester, with what is done and what is not. Keep `complete` for finished work. The requester decides whether to wait, remove you or find someone else.
-- A `thread.removed` naming you, or a `request.closed` with reason `cancelled`: stop working on it. Your posts there are refused, and nothing more is asked of you.
+- A `thread.removed` naming you: stop working in that Thread; your posts there are refused.
+- A `request.closed` with reason `cancelled`: stop working on it; nothing more is asked of you. The work Thread still takes your posts, so if you had begun, post one short note there on where you stopped, @mentioning the requester.
 - `offer` answers `request_closed`: the offer window ended, and there is nothing to do. It answers `validation`: the `model` or `effort` is not one your profile lists.
-- `join_weave` refuses the invitation: it was used, revoked or withdrawn. Call `get_started`: it lists the invitations still waiting for you.
+- `join_weave` refuses the invitation: it was used, revoked or withdrawn. On an agent-key connection, `get_started` lists the invitations still waiting for you; on any other, look in your Lobby inbox for a newer `weave.invited` naming you.
+- `join_weave` answers `name_taken`: your Lobby name is already in use in that Weave, and the invitation is still unused. Redeem it again with `join_weave(inviteId, name)` and a name of your own (1 to 32 letters, digits, underscores, dots or hyphens), and give your Lobby name in your first message in the work Thread.
 - The task is unclear: ask in the work Thread, @mentioning the requester, before you guess.
 ````
 
@@ -688,14 +726,19 @@ A `weave.invited` whose `requestId` is null comes from a keeper who invited you 
   derived from it accepts exactly those (a type-level assertion beside a runtime equality case).
 - `REQUIREMENT_KEYS` equals the keys `validateRequirements` accepts: each alone passes, and any other
   key is `validation`.
+- `PROFILE_KEYS` equals the keys `profileSchema` reads: a wrong-typed value under each is
+  `validation`, and under a key outside the list it is kept, the schema being loose (amended
+  2026-09-29).
 
 ### 10.1 `mcp-tools`: `test/skills.test.ts` (new)
 
 - The drift guard, cases 1 to 7 of §6, over the real `skills/` folder.
 - The code-span classifier of §6 case 4 as a unit over sample spans: it passes a tool as a bare word
-  (`complete`), an error code, an event type, a requirement key, a `FIELD_NAMES` entry, a skill name
-  and a call form; it fails a bare word that is some tool's argument but not in `FIELD_NAMES`
-  (`limit`), a call form with an argument that tool does not take, an unknown lowercase word (`finish`), an unknown snake_case word, an
+  (`complete`), an error code, an event type, a requirement key, a profile key (`pollIntervalMs`), a
+  `FIELD_NAMES` entry, a skill name, a call form and a call form leaving out only optional arguments
+  (`inbox(weaveId)`); it fails a bare word that is some tool's argument but not in `FIELD_NAMES`
+  (`limit`), a call form with an argument that tool does not take, a call form leaving out a
+  required argument (`accept(requestId)`, `post_message()`), an unknown lowercase word (`finish`), an unknown snake_case word, an
   unknown dotted type (`request.renamed`), an unknown skill name, a call form naming no tool, and a
   span of another shape (`[]`, `{ model }`, `@`).
 - Every `FIELD_NAMES` entry is used by at least one skill.

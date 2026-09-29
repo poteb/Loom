@@ -4,7 +4,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { serve, type ServerType } from "@hono/node-server";
 import { DEFAULT_INSTANCE_GUIDELINES, INSTANCE_HEADING } from "@loom/core";
 import { buildApp } from "../src/app.js";
-import { LOBBY_MECHANICS, agentInstructions, POLL_OPENAI } from "@loom/mcp-tools";
+import { LOBBY_MECHANICS, agentInstructions, POLL_OPENAI, parseSkill, type Skill } from "@loom/mcp-tools";
 import { publicOrigin } from "../src/origin.js";
 import { logInfo } from "../src/log.js";
 import { MCP_INSTRUCTIONS, clientText, type MountMcpOptions } from "../src/mcp/index.js";
@@ -19,9 +19,9 @@ function withTimeout<T>(p: Promise<T>, label: string, ms = 5000): Promise<T> {
   ]);
 }
 
-async function startFreshApp(core: TestServer["core"], opts?: { mcpConnect?: MountMcpOptions["connect"]; mcpSessionTtlMs?: number; mcpLog?: (line: string) => void }) {
+async function startFreshApp(core: TestServer["core"], opts?: { mcpConnect?: MountMcpOptions["connect"]; mcpSessionTtlMs?: number; mcpLog?: (line: string) => void; skills?: readonly Skill[] }) {
   const tickets = new TicketStore();
-  const { app, stop: stopSweep } = buildApp({ core, tickets, mcpConnect: opts?.mcpConnect, mcpSessionTtlMs: opts?.mcpSessionTtlMs, mcpLog: opts?.mcpLog ?? (() => {}) });
+  const { app, stop: stopSweep } = buildApp({ core, tickets, mcpConnect: opts?.mcpConnect, mcpSessionTtlMs: opts?.mcpSessionTtlMs, mcpLog: opts?.mcpLog ?? (() => {}), skills: opts?.skills });
   const server: ServerType = await new Promise((resolve) => {
     const h = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolve(h));
   });
@@ -269,7 +269,7 @@ describe("remote MCP at /mcp", () => {
     await withClient(async (c) => {
         const { tools } = await c.listTools();
         expect(tools.map((t) => t.name)).toContain("join_weave");
-        expect(tools).toHaveLength(38);
+        expect(tools).toHaveLength(39);
     });
   });
 
@@ -792,6 +792,27 @@ describe("listener onboarding over remote MCP", () => {
     } finally { await c.close(); }
   });
 
+  it("the agent connection's instructions carry the skills line with the origin (spec 2026-09-28 §5.3)", async () => {
+    const c = await agentClient(await mint(fresh("Skills")));
+    try {
+      expect(c.getInstructions()).toContain(`Skills for the work itself (working in a Thread, asking for a review, requesting helpers, doing accepted work): \`get_skill\`, or ${s!.baseUrl}/skills`);
+    } finally { await c.close(); }
+  });
+
+  it("get_started in state 3 ends with the skills line (spec 2026-09-28 §5.2)", async () => {
+    // SKILLS_LINE, spelled out: the case pins the text as the connection delivers it.
+    const skillsLine = "For the work itself (working in a Thread, asking for a review, requesting helpers, doing accepted work), call `get_skill` with no name for the list of Loom's skills, then with the name of the one that fits.";
+    const name = fresh("Pointer");
+    const c = await agentClient(await mint(name, "paw"));
+    try {
+      await c.callTool({ name: "join_lobby", arguments: {} });
+      await c.callTool({ name: "set_capabilities", arguments: { profile: { models: [{ model: `m-${name}`, effort: "high" }] } } });
+      const started = json(await c.callTool({ name: "get_started", arguments: {} }));
+      expect(started.state).toBe(3);
+      expect(started.text.endsWith(`\n\n${skillsLine}`)).toBe(true);
+    } finally { await c.close(); }
+  });
+
   it("each session logs one redacted info line naming the agent and the client, and never the session id", async () => {
     const name = fresh("Logger");
     const key = await mint(name);
@@ -857,6 +878,53 @@ describe("listener onboarding over remote MCP", () => {
         .toMatchObject({ created: true, acceptanceRemoved: true, targetRemoved: false });
     } finally {
       await Promise.all([requester.close().catch(() => {}), helper.close().catch(() => {})]);
+    }
+  });
+});
+
+describe("skills over remote MCP (spec 2026-09-28 §5.1)", () => {
+  const mint = async (name: string) => (await s!.core.addAgent(await s!.core.resolveCredential(keeperToken("k1")), name)).key;
+  const served = async (p: string) => (await fetch(`${s!.baseUrl}${p}`)).text();
+  const bodies = async () => {
+    const want = [await served("/skills"), await served("/skills/loom-ask-for-review.md")];
+    expect(want[0]!.startsWith("# Loom skills\n")).toBe(true);
+    return want;
+  };
+  const answers = async (c: Client) => [
+    text(await c.callTool({ name: "get_skill", arguments: {} })),
+    text(await c.callTool({ name: "get_skill", arguments: { name: "loom-ask-for-review" } })),
+  ];
+
+  it("with an agent key, get_skill with no name equals GET /skills, and with a name GET /skills/<name>.md", async () => {
+    const want = await bodies();
+    await withAgentClient(await mint("SkillsReader"), async (c) => { expect(await answers(c)).toEqual(want); });
+  });
+
+  it("on a connection without an agent key, get_skill answers the same", async () => {
+    const want = await bodies();
+    await withClient(async (c) => { expect(await answers(c)).toEqual(want); });
+  });
+
+  it("every session answers from the app's skills and never reads the disk when get_skill runs", async () => {
+    // A skill that exists on no disk, and none of the four that do: a session that read the folder
+    // when get_skill ran would find loom-ask-for-review and not the fixture.
+    const fixture = parseSkill("fixture-skill", "---\nname: fixture-skill\ndescription: A fixture that exists on no disk\n---\n\nThe fixture's body.\n");
+    const fresh = await startFreshApp(s!.core, { skills: [fixture] });
+    try {
+      expect(await (await fetch(`${fresh.baseUrl}/skills/fixture-skill.md`)).text()).toBe(fixture.text);
+      const index = await (await fetch(`${fresh.baseUrl}/skills`)).text();
+      expect(index).toContain(`- [fixture-skill](${fresh.baseUrl}/skills/fixture-skill.md): A fixture that exists on no disk\n`);
+      expect(index).not.toContain("loom-ask-for-review");
+      await withClientsAt(fresh.mcpUrl, 1, async ([c]) => {
+        // The index too: built from the app's skills, so it lists the fixture and none of the four.
+        expect(text(await c!.callTool({ name: "get_skill", arguments: {} }))).toBe(index);
+        expect(text(await c!.callTool({ name: "get_skill", arguments: { name: "fixture-skill" } }))).toBe(fixture.text);
+        const onDisk = await c!.callTool({ name: "get_skill", arguments: { name: "loom-ask-for-review" } });
+        expect(onDisk.isError).toBe(true);
+        expect(JSON.parse(text(onDisk))).toEqual({ code: "not_found", message: "No skill named loom-ask-for-review; call get_skill with no name for the list" });
+      });
+    } finally {
+      await fresh.close();
     }
   });
 });

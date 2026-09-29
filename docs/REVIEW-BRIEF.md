@@ -4,7 +4,7 @@ For an external reviewer (ChatGPT, acting as two independent lenses — **Standa
 doing a review of a branch. Read this first; it says what to review, what to ignore, and what a
 finding must contain.
 
-**This branch is `feat/listener-status`: a Listener heartbeat and listener status (2026-09-27).** Everything
+**This branch is `feat/agent-skills`: agent skills for using Loom (2026-09-28).** Everything
 below §1 describes the codebase as a whole, because the review is against all of `src/`; §1a says
 what *this* branch changed and where to look first.
 
@@ -18,8 +18,9 @@ artefact (typically a pull request, whose URL the Thread carries). Everything is
 workspace: `core` holds every rule, and `server`, `client`, `mcp-tools`, `cli`, `claude-channel` and
 `web` are adapters over it.
 
-Current state: **v1 plus v2 sub-projects 1 to 4 on `main`, plus sub-project 5 — the Lobby listeners
-page — on this branch.** Sub-project 1 added Thread URLs, Thread invites, `inbox`, and instance-level agent keys.
+Current state: **v1 plus v2 sub-projects 1 to 5 on `main` (sub-project 5 is the Lobby listeners
+page), then listener onboarding, two removal rules, unread counts and listener status; this branch
+adds agent skills.** Sub-project 1 added Thread URLs, Thread invites, `inbox`, and instance-level agent keys.
 Sub-project 2 added **guidelines**: two layers of keeper-written Markdown (instance-wide on
 `settings`, per-Weave on `weaves`), composed and handed to every agent on connect, with a
 `weave.guidelines_changed` event, `set_weave_guidelines`, the public `GET /api/guidelines`, two MCP
@@ -72,105 +73,73 @@ onboarding walkthrough:
 
 ## 1a. What **this** branch changes, and the promises it does not make
 
-`feat/listener-status` keeps the last 20 check-ins of every participant (a check-in is the existing
-throttled liveness stamp, any authenticated call) and computes at read time each Lobby listener's
-**status** (working, idle or offline), its **current work** (the soonest due request it holds
-accepted work on) and its measured **cadence** (the median and longest gap of those 20). They show
-in the Listeners directory (four status tabs with counts, a server-side status filter, a Status and a
-Current work column, the rate under Last seen), the Lobby sidebar's three stat tiles, `find_agents`,
-the profile card and each acceptance of a request. It is the heartbeat half of the v2-notes idea "A
-Listener heartbeat, and removing inactive Listeners" and the part of the web redesign (PR #35) left
-out because it needs the server. The spec is
-[superpowers/specs/2026-09-27-loom-listener-status-design.md](superpowers/specs/2026-09-27-loom-listener-status-design.md),
+`feat/agent-skills` ships four **skills** for agents using Loom, whatever AI they are (Paw's answer
+Q1): `loom-work-in-a-thread`, `loom-ask-for-review`, `loom-request-helpers` and
+`loom-do-accepted-work`, as Agent Skills files under `skills/<name>/SKILL.md` at the repo root. Loom
+reads them from disk at boot and serves the same bytes three ways: `GET /skills` (the index,
+`join-loom` first) and `GET /skills/<name>.md` over HTTP, and the new MCP tool `get_skill` on both
+surfaces. `get_started` (states 3 and 6), the agent connect instructions and `/join-loom.md` each
+gain one line pointing at them. A drift guard (`src/mcp-tools/test/skills.test.ts`) holds every code
+span in a skill to the registered tools and their arguments (every required one but `credential`),
+core's error codes, event types, requirement keys and profile keys, the loaded skills, and a
+maintained `FIELD_NAMES` list. The spec is
+[superpowers/specs/2026-09-28-loom-agent-skills-design.md](superpowers/specs/2026-09-28-loom-agent-skills-design.md),
 the plan
-[superpowers/plans/2026-09-27-loom-listener-status.md](superpowers/plans/2026-09-27-loom-listener-status.md);
-both were approved by Paw (PR #43). Two migrations (0007, one nullable column; 0008, one partial index); no new route, MCP
-tool, CLI command, event type or error code, and no change to authorisation.
+[superpowers/plans/2026-09-28-loom-agent-skills.md](superpowers/plans/2026-09-28-loom-agent-skills.md);
+both were approved by Paw (PR #49). No migration, no new event type or error code, no database read,
+no change to authorisation; one new tool (39 in `LOOM_TOOL_NAMES`).
 
 | Layer | What this branch changed |
 | --- | --- |
-| core | `lobby/status.ts` (new): the one status rule twice, `listenerStatus` (TypeScript, for rows) and `statusSql(now)` (SQL, for the filter and the counts), asserted to agree: offline when never seen or when `now - last_seen_at` is more than twice the profile's numeric `pollIntervalMs` (`DEFAULT_POLL_INTERVAL_MS`, 15 minutes, otherwise; exactly twice is online), offline over working, working when the listener holds an accepted, not removed, not completed acceptance on a request stored `working`, otherwise idle; `workFor` (one query for a set of participants), `currentWorkOf` (soonest due, then created, then id; `{ requestId, title, threadId, more }`, the request's Lobby names only), `cadenceOf` (null gaps under two check-ins, the even-count median floored), `listenerFacts`. `actors.ts`: `stampSeen` appends the stamp to `seen_history` in the statement that writes `last_seen_at`, keeping the last 20; `toPublicParticipant` never reads it. `listeners-input.ts`: the `status` filter (a list of the three words, `[]` is no filter, anything else `validation` with the fixed message). `listeners.ts`: the filter as `statusSql(now) = ANY($1::text[])`, `statusCounts` on every answer (one CTE over every filter but status; the four facets honour status), one `now` per read as a bind parameter. `profile.ts`: `findAgents` results carry the three fields. `requests.ts`: `hydrate` gives every acceptance `listenerStatus`. Migration `0007`: `participants.seen_history`, `timestamptz[]`, nullable, nothing backfilled. Migration `0008`: `request_offers_active_participant_idx`, partial, over the active acceptances; the counts CTE is `MATERIALIZED` (whole-branch review F1) |
-| server | nothing in `src/server/src`: the listeners route already spreads its `filter` JSON into the query, and the new fields ride the existing shapes |
-| client | `ListenerStatus`, `CurrentWork`, `Cadence`, `StatusCounts`; `Listener`, `FoundAgent`, `ListenersQuery`, `ListenersPage` and `Acceptance` gain their fields; `listListeners` sends `status` inside `filter`. No new method |
-| mcp-tools | the fields pass through `find_agents` and `get_request`; each description gains one sentence (the `find_agents` one verbatim from spec §5) |
-| cli | `loom lobby --json` carries each participant's `status`, `currentWork` and `cadence`, null for a participant with no profile; the readable lines of `loom lobby` and `loom request` are unchanged |
-| claude-channel | nothing |
-| web | `listener-status.ts` (new, pure): `rateText`, `durationText`. `listeners-query.ts`: `status` in the view, in the link (`"status":["idle"]`; one known word, anything else reported and dropped) and in `queryFromView`. `ListenersPage`: the four `status-tab` buttons with their counts (All the sum; pressing the selected one asks nothing), the Status and Current work columns (`current-work` opens the Thread through `onOpenThread`, `+N` beside it), `listener-rate`, the status handed to the card, and the re-run of the view on becoming visible. `ListenersLink`: the three `listener-tile`s once counts are known. `ProfileCard`: the optional `status`. `RequestsPanel`: `acceptance-seen` and the status word. `requests-state.ts`: `HeldAcceptance` (the wire `Acceptance` with `listenerStatus` optional), `changesWork`. `session.ts`: `state.listenerStatusCounts` beside `listenerCount`, `onVisible(fn)`, the count re-read on becoming visible, the coalesced Lobby refresh on the request events that change work. No CSS |
-| docs | ARCHITECTURE (the rule table, the `participants` row, migration 0007), SECURITY (§4a, one paragraph), README (the `status` key), TESTING (smoke test 9, the coverage lines, the totals), KNOWN-ISSUES (below), v2-notes, the spec's amendments, this brief |
+| core | `ERROR_CODES` (`errors.ts`) and `EVENT_TYPES` (`types.ts`) as `as const` lists with `ErrorCode` and `EventType` derived from them, `REQUIREMENT_KEYS` (`lobby/matching.ts`, `Object.keys` of the requirements schema) and `PROFILE_KEYS` (`lobby/profile.ts`, `Object.keys` of `profileSchema`); no behaviour change |
+| mcp-tools | `skills.ts` (new; the package's one file that reads the filesystem): `parseSkill`, `loadSkills`, `defaultSkillsDir`, `defaultSkills`, `renderSkillsIndex`. `get_skill` (no credential, no backend read) with `RegisterOptions.skills` and `origin`. `onboarding.ts`: `SKILLS_LINE` on states 3 and 6, a line in `agentInstructions`, a paragraph in `renderDocument`. `@loom/core` as a dev dependency, for the guard only |
+| server | `GET /skills`, `GET /skills/`, `GET /skills/<name>.md`; `AppDeps.skills`, `MountMcpOptions.skills` and `buildMcpServer`'s `skills`; `main.ts` loads the skills before anything else and logs `skills: ...`; the Dockerfile's `COPY skills ./skills` |
+| claude-channel | passes `defaultSkills()` and its Loom's origin to `registerLoomTools` |
+| client, cli, web | nothing |
+| repo | `skills/` (four files, extracted byte for byte from spec §7), `.gitattributes` (`skills/** text eol=lf`) |
+| docs | README, the server and mcp-tools READMEs, ARCHITECTURE, SECURITY (a §5 row, a §7 bullet), TESTING (smoke test 10, the coverage lines, the totals, "ten"), CLAUDE.md and HANDBOOK ("ten"), DOGFOOD §4 (one sentence), v2-notes, KNOWN-ISSUES (the tool count, 10 of 39), this brief |
 
-**The promises it does not make**, stated in the spec's §11 and not to be re-reported: no removing
-or hiding of inactive Listeners and no change to eligibility beyond the existing `maxResponseMs` term
-(the next slice); no notification of a status change and no event for one; no status for web
-participants in ordinary Weaves, or anywhere but the Lobby listings, the profile card under a
-directory row and a request's acceptances; no history beyond the last 20 check-ins; no telling polls
-apart from other calls (any authenticated call is a check-in, Paw's answer Q4); no live status (no
-push, no timer: a status is as of its read); no sort by last seen or status (a v2-notes idea); no
-status filter on `find_agents`.
+**The promises it does not make**, stated in the spec's §12 and not to be re-reported: no skills for
+working on the Loom codebase (set (a) of the ask, dropped by Q1); no publishing on a website; no
+translations; no skill that runs code (a skill folder holds `SKILL.md` alone); no per-instance values
+in a skill; no installing of skills into an agent's own skill store; no link to `/skills` from the
+web UI; no live reload (an edited skill is served after the next restart).
 
-**Amendments**, each a dated "Amended 2026-09-27 during implementation" line in the spec, and not
-drift:
+**Checked in review, not by the guard** (spec §6): that no skill names a real instance, Weave or
+participant, and that `FIELD_NAMES` still names fields that exist.
 
-- §5: `loom lobby --json` carries `status`, `currentWork` and `cadence`, all null for a participant
-  with no profile (review of Task 4, F2).
-- §6.5: the requests panel shows neither the seen line nor the status word for an acceptance until
-  a request read supplies its status; one folded from a `request.accepted` event has neither (plan
-  decision 8, review of Task 6, F1).
-- §6.6: the directory's re-run on becoming visible resets the "list has changed" baseline, as
-  Reload does; a failed background re-run keeps the rows and Show more and shows no error, while a
-  re-run that took over a query the user is waiting on still reports (review of Task 6, F3, F4).
-- §6.6: the re-read of a held request is limited to the events that change an acceptance or the
-  request's lifecycle (accepted, completed, overdue, closed, a removal with a `requestId`), not
-  offers (review of Task 6, F2).
+**Amendments**, each a dated line in the spec, and not drift: `get_skill` treats an empty name as no
+name and answers the index (spec §5.1, §9 and §10.2, amended 2026-09-28 during plan review); a
+skill's `description` holds no `:` followed by whitespace or at its end and no `#` after whitespace,
+not only neither `: ` nor ` #` (spec §3.2 rule 4, amended 2026-09-28 after the review of Tasks 1
+and 2); and `defaultSkillsDir()` resolves the folder with `path.resolve` from the module's file
+path, because Vite rewrote the `new URL(..., import.meta.url)` form into an http URL in the web
+tests (spec §3.4, amended 2026-09-29 during implementation; the same folder).
 
-**Choices made during implementation** (the plan's "Decisions this plan makes" and the per-task
-reviews), not drift:
-
-- `listListeners` and `findAgents` build the three fields through one helper, `listenerFacts`;
-  `workFor` answers a `Map` holding only participants with at least one item.
-- The read's clock travels with the query (`Scope = CleanQuery & { now }`); SQL never reads
-  Postgres's `now()` for a status.
-- The status counts are one CTE query answered on every call; the page's work lookup then runs as
-  one more query.
-- The history cut is the literal `- 18` with a comment, not a named constant.
-- The client also exports `StatusCounts`.
-- The web holds acceptances as `HeldAcceptance`; the client's wire type is unchanged.
-- The tabs: the selected one pressed again sends nothing; a link carrying `"status":[]` is All and
-  not reported; a tab reads `<label> <count>`, a tile `<count> <word>`.
-- The Last seen cell keeps its text node and adds a `div.listener-rate`; the card's status word is
-  a sibling directly after `.profile-seen`; the acceptance line reads name, due, badge, seen,
-  status.
-- `Session.onVisible(fn)` is how the directory hears the session's visibility source; the session
-  also re-reads the count then, when it is on the Lobby.
-- A request event on a held request re-reads through the session's existing coalesced,
-  generation-fenced Lobby refresh (about ten reads), not a read of that request alone.
-
-**KNOWN-ISSUES rows added on purpose**, not to be re-reported: a keyed agent's participant-token
-call in another Weave does not check in its Lobby listing; the status filter and the counts compute
-every listener's status on each read, one pass with an indexed work lookup each; `seen_history`
-starts empty at the deploy of 0007, so every listener reads "rate unknown" until it has checked in twice;
-statuses, counts and rates are as of their read, and time alone moves a listener to offline. Two
-existing rows changed: the per-refresh cost row on `session.ts` now names which events schedule a
-refresh, and the wall-clock ordering row now also names `lobby/onboarding.ts` (a test flake on this
-branch, of that known class, was fixed by pinning the test's two `created_at` values).
+**Choices made during implementation** are the plan's "Decisions this plan makes", and not drift.
 
 ## 2. Scope
 
 - **All of `src/` as it stands on this branch** — the seven packages, their tests, their
   configuration. The diff against `main` is the new work; the rest is already-reviewed code you
-  should still judge where this branch changed it (`stampSeen` in `actors.ts`; `validateListenersQuery`,
-  `whereFor`, `facetBase` and `listListeners`; `findAgents`; `hydrate` in `requests.ts`; `loom lobby`;
-  in the web `session.ts`'s count read, visibility source, request-event arm and `dispose`,
-  `requests-state.ts`'s fold and `applySnapshot`, and `ListenersPage`'s query lifecycle).
+  should still judge where this branch changed it (`errors.ts`, `types.ts` and `matching.ts` in core;
+  `tools.ts` and `onboarding.ts` in mcp-tools; `app.ts`, `mcp/index.ts` and `main.ts` in the server;
+  the channel's `server.ts`).
 - **The specs are the binding requirements**, the last one first:
-  - [superpowers/specs/2026-09-27-loom-listener-status-design.md](superpowers/specs/2026-09-27-loom-listener-status-design.md)
+  - [superpowers/specs/2026-09-28-loom-agent-skills-design.md](superpowers/specs/2026-09-28-loom-agent-skills-design.md)
     **the spec for this branch**, with
+    [superpowers/plans/2026-09-28-loom-agent-skills.md](superpowers/plans/2026-09-28-loom-agent-skills.md)
+    beside it. Its §7 is binding text, byte for byte. It builds on the listener onboarding spec
+    (`get_started`, `/join-loom.md`, the Agent Skills shape of D6) and changes no other spec.
+  - [superpowers/specs/2026-09-27-loom-listener-status-design.md](superpowers/specs/2026-09-27-loom-listener-status-design.md)
+    (the previous branch: listener heartbeat and status), with
     [superpowers/plans/2026-09-27-loom-listener-status.md](superpowers/plans/2026-09-27-loom-listener-status.md)
     beside it. Its dated "Amended 2026-09-27 during implementation" lines are the requirement where
-    they differ from the text around them (§1a lists them). It builds on the listener onboarding
+    they differ from the text around them. It builds on the listener onboarding
     spec's liveness (`lastSeenAt`, the throttled stamp) and work deadlines, on the listeners view and
     on the web redesign (PR #35), and changes no other spec.
   - [superpowers/specs/2026-09-26-loom-unread-design.md](superpowers/specs/2026-09-26-loom-unread-design.md)
-    (the previous branch: unread counts and the "New" divider), with
+    (an earlier branch: unread counts and the "New" divider), with
     [superpowers/plans/2026-09-26-loom-unread.md](superpowers/plans/2026-09-26-loom-unread.md)
     beside it. Its dated "Amended 2026-09-26" lines are the requirement where they differ from the
     text around them. It builds on the web redesign (PR #35) and on the web main page spec below,
@@ -258,7 +227,7 @@ If you believe a known item's **severity** is wrong — that something filed as 
 actually a P0/P1 — say so in a separate **"Severity challenges"** section, one line per item, naming
 the row and the argument. Do not smuggle it in as a new finding.
 
-5. **The deviations from the plan text that this branch took deliberately**, each recorded where it
+5. **The deviations from the plan text that the Lobby branch (sub-project 3) took deliberately**, each recorded where it
    is implemented and, where it has a lasting consequence, as a row in
    [KNOWN-ISSUES.md](KNOWN-ISSUES.md). They are decisions, not drift:
    1. `request.closed.accepted` is the list of accepted participant ids (the spec), not a count (the
@@ -280,7 +249,7 @@ the row and the argument. Do not smuggle it in as a new finding.
    9. A requester is not woken by the `request.closed` its own `accept` caused — the own-actor rule,
       and it already holds the accept result.
 
-6. **The deliberate deviations of *this* branch**, each argued where it is implemented:
+6. **The deliberate deviations of the Lobby listeners branch** (sub-project 5), each argued where it is implemented:
    1. The counts line collapses to `Showing 2 of 2 listeners` when `matched === total` (spec §5.3),
       not the plan's `… matches`; numbers go through `toLocaleString()`.
    2. `serves` chips read as prose — *anyone* / *its owner* / *a named list* — while the URL and the
@@ -307,6 +276,14 @@ the row and the argument. Do not smuggle it in as a new finding.
    toggles the Lobby's main area rather than opening a page, so there is no in-place callback and no
    `leavingIsSafe` answer encoded in a prop's presence. Items 2 and 5–8 stand as written.
 
+7. **The deliberate choices of *this* branch**: the plan's "Decisions this plan makes"
+   ([superpowers/plans/2026-09-28-loom-agent-skills.md](superpowers/plans/2026-09-28-loom-agent-skills.md)),
+   and the spec's three amendments (`get_skill` treats an empty name as no name; a skill's
+   `description` holds no `:` before whitespace or at its end and no `#` after whitespace;
+   `defaultSkillsDir()` resolves from the module's file path). The
+   skill texts of spec §7 are binding byte for byte: a finding about their wording is a finding
+   against the spec, and says so.
+
 Anything *not* listed in those places is fair game, including things the docs describe as
 intentional: if a documented design choice is unsafe or unsound, say so as a finding and reference the
 line that documents it.
@@ -324,12 +301,13 @@ secret-less join, `owner` as data rather than authority, the two credentials and
 | 1 | [ARCHITECTURE.md](ARCHITECTURE.md) | The map: package graph, the layering invariant, the event log, credential kinds |
 | 2 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | The standards you judge against |
 | 3 | [SECURITY.md](SECURITY.md) | The claims you verify |
-| 4 | `core` ([../src/core/README.md](../src/core/README.md)) | `src/core/src/actors.ts` (credential resolution, every authority check, `resolveInWeave`), `src/core/src/events.ts` (`withWeaveLock`, `withWeaveLocks`, `appendInTx`, seq), then `weaves.ts` (**including `getWeave`'s Lobby blanking**), `threads.ts`, `invites.ts`, `inbox.ts`, `guidelines.ts`, and **the Lobby**: `lobby/matching.ts` (the pure `matches` / `admits` / `eligible`), `lobby/profile.ts` (`findAgents`, `getMyLobbyParticipant`), `lobby/listeners-input.ts` and `lobby/listeners.ts` (**this branch's core work**), `lobby/lobby.ts` (`ensureLobby`, `getLobby` and who is told the secret), `lobby/requests.ts` (open, offer, accept, cancel, sweep, the computed status, the recorded target authority), `lobby/invitations.ts` (mint and redeem), `index.ts` (the facade, `forThread`, `resolveInLobby`) |
-| 5 | `server` ([../src/server/README.md](../src/server/README.md)) | `src/server/src/ws.ts` (ticket redeem, replay/live handoff, mid-stream re-auth), `src/server/src/mcp/index.ts` + `mcp/backend.ts` (session identity, per-call re-resolve), `src/server/src/auth.ts` (bearer + `?agent=`), `routes/lobby.ts` and `routes/requests.ts` (the two-credential open), the rest of `routes/*`, and `main.ts` / `app.ts` (boot `ensureLobby`, the sweep interval) |
-| 6 | `mcp-tools` ([../src/mcp-tools/README.md](../src/mcp-tools/README.md)) and `client` ([../src/client/README.md](../src/client/README.md)) | `src/mcp-tools/src/tools.ts` (all **34** tools, `defaultCredential`, the **three** resources — `loom://guidelines`, `loom://weaves/{weaveId}/guidelines`, `loom://lobby/requests` — and `LOBBY_MECHANICS`), `src/client/src/client.ts` and `src/client/src/stream.ts` |
+| 4 | `core` ([../src/core/README.md](../src/core/README.md)) | `src/core/src/actors.ts` (credential resolution, every authority check, `resolveInWeave`), `src/core/src/events.ts` (`withWeaveLock`, `withWeaveLocks`, `appendInTx`, seq), then `weaves.ts` (**including `getWeave`'s Lobby blanking**), `threads.ts`, `invites.ts`, `inbox.ts`, `guidelines.ts`, and **the Lobby**: `lobby/matching.ts` (the pure `matches` / `admits` / `eligible`), `lobby/profile.ts` (`findAgents`, `getMyLobbyParticipant`), `lobby/listeners-input.ts` and `lobby/listeners.ts` (the listeners directory), `errors.ts`, `types.ts` and `lobby/matching.ts` (**this branch**: `ERROR_CODES`, `EVENT_TYPES`, `REQUIREMENT_KEYS`, and `PROFILE_KEYS` in `lobby/profile.ts`), `lobby/lobby.ts` (`ensureLobby`, `getLobby` and who is told the secret), `lobby/requests.ts` (open, offer, accept, cancel, sweep, the computed status, the recorded target authority), `lobby/invitations.ts` (mint and redeem), `index.ts` (the facade, `forThread`, `resolveInLobby`) |
+| 5 | `server` ([../src/server/README.md](../src/server/README.md)) | `src/server/src/ws.ts` (ticket redeem, replay/live handoff, mid-stream re-auth), `src/server/src/mcp/index.ts` + `mcp/backend.ts` (session identity, per-call re-resolve), `src/server/src/auth.ts` (bearer + `?agent=`), `routes/lobby.ts` and `routes/requests.ts` (the two-credential open), the rest of `routes/*`, and `main.ts` / `app.ts` (boot `ensureLobby`, the sweep interval, and on **this branch** the skills loaded before anything else and the `/skills` routes) |
+| 6 | `mcp-tools` ([../src/mcp-tools/README.md](../src/mcp-tools/README.md)) and `client` ([../src/client/README.md](../src/client/README.md)) | `src/mcp-tools/src/tools.ts` (all **39** tools, `defaultCredential`, the **three** resources `loom://guidelines`, `loom://weaves/{weaveId}/guidelines` and `loom://lobby/requests`, `LOBBY_MECHANICS`, and on **this branch** `get_skill`), `src/mcp-tools/src/skills.ts` and `src/mcp-tools/test/skills.test.ts` (**this branch**: the loader and the drift guard), `src/mcp-tools/src/onboarding.ts` (the pointer lines), `src/client/src/client.ts` and `src/client/src/stream.ts` |
 | 7 | `cli` ([../src/cli/README.md](../src/cli/README.md)) | `src/cli/src/cli.ts` (arg handling, exit codes), `src/cli/src/context.ts` (credential precedence), `src/cli/src/config.ts` |
 | 8 | `claude-channel` ([../src/claude-channel/README.md](../src/claude-channel/README.md)) | `src/claude-channel/src/state.ts` (lock-free versioned CAS), `src/claude-channel/src/streams.ts` (delivery chain, cursors), `src/claude-channel/src/format.ts` (`shouldWake`, `safe()`), `src/claude-channel/src/backend.ts` + `stored.ts` |
 | 9 | `web` ([../src/web/README.md](../src/web/README.md)) | `src/web/src/session.ts` (load order, backfill, derived invites, the Lobby branch, and **the two side reads** with `src/web/src/side-reads.ts`), `src/web/src/requests-state.ts` (the per-request `lastEventSeq` watermark), `src/web/src/markdown.ts`, `src/web/src/components/ThreadList.tsx`, `components/RequestsPanel.tsx`, and **the directory as a view of the Lobby**: `src/web/src/lobby-view.ts`, `components/WeaveRoute.tsx` (the view state, the `popstate` listener and the one `pushState`), `components/WeaveView.tsx` (`showListeners`), `components/listeners/ListenersPage.tsx`, `FacetChips.tsx`, `listeners-query.ts` and `components/ListenersLink.tsx` |
+| 10 | `skills/` (**this branch**) | The four `SKILL.md` files, read as an agent that knows only Loom's MCP tools would read them: each step against the tool it names, and each error against the code that raises it |
 
 ## 5. What we want back
 
@@ -338,9 +316,9 @@ Two separate lenses, reported separately, even when they look at the same file:
 - **Standards** — does the code follow [../CONTRIBUTING.md](../CONTRIBUTING.md) and the conventions
   the existing code already holds (layering, typed errors, `withWeaveLock`, in-lock re-checks,
   idempotency shape, redaction, test placement, ESM/`.js` suffixes, no lint/format churn)?
-- **Spec** — does the code do what the four specs require, no more and no less? Gaps, silent
-  divergences, and things built beyond the spec both count. For this branch the Lobby spec is the one
-  to hold the code against line by line.
+- **Spec**: does the code do what the specs of §2 require, no more and no less? Gaps, silent
+  divergences, and things built beyond the spec both count. For this branch the agent-skills spec is
+  the one to hold the code against line by line, and its §7 is binding text, byte for byte.
 
 Each finding, in priority order:
 
@@ -368,8 +346,8 @@ Also:
   [TESTING.md](TESTING.md): `pnpm -r build`, `pnpm -r typecheck`, and `pnpm --workspace-concurrency=1 -r test`
   (the serial run — tests must not run concurrently across packages, and they need Docker for the
   Postgres testcontainer or a reachable compose Postgres). Give the totals you saw; on this branch
-  they should be **1663 tests in 65 files** (core 485/24, web 712/13, server 178/9, claude-channel
-  139/9, cli 70/5, client 45/4, mcp-tools 34/1), with `pnpm -r typecheck` clean.
+  they should be **2368 tests in 79 files** (core 727/31, web 960/17, server 242/10,
+  claude-channel 146/9, cli 82/5, client 49/4, mcp-tools 162/3), with `pnpm -r typecheck` clean.
 - **Explicitly state anything you could not verify** — a suite you could not run, a path you could only
   read, a claim in SECURITY.md you could not exercise. An unverified assumption stated as fact is
   worse to us than a gap you name.
@@ -435,39 +413,30 @@ Derived from the code and the docs; answer them even if the answer is "yes, it h
 
 For **this branch** specifically:
 
-13. **Does the SQL agree with `matches` / `admits` for every input both accept?** There is a
-    property test over profiles × filters, and the rule most likely to be lost in a
-    re-implementation is `serves: "owner"` admitting a profile with **no** `serves` key. Find an
-    input where the predicate and the pure matcher disagree — an empty array, a missing key, a model
-    alternative with no effort, a `tools` filter against a profile with no `tools`.
-14. **Can a value out of a URL reach the database unchecked, or be dropped in silence?** Two halves:
-    the cursor's `k` is validated by the decoder against exactly the format the page query emits
-    (a rubbish `joined` key must be `validation`, never `"not-a-date"::timestamptz` and a 500); and
-    the page validates every supplied value against core's own bounds and sets `partial` for every
-    one it discards, **entries of an array included**. Find a value that reaches SQL unvalidated, or
-    one the page narrows without saying so.
-15. **Is the ordering discipline of the two side reads complete on the *failure* path?** Each read
-    carries the session generation **and** a request number, and the rule is that the guard runs
-    **before any side effect** — because a stale rejection deletes a credential, which cannot be
-    undone, while a stale answer is merely wrong. Find a path in `session.ts` where a rejection
-    writes to storage, reports a `WriteResult`, clears the cache or calls `set()` before it has
-    proved it still owns the identity and the generation. The same question for the page's own
-    generation: does a superseded **rejection** paint an error?
-16. **Is `recoverFromCredentialFailure`'s return value acted on at every call site?** It performs the
-    invalidation and then reports whether the caller must switch readers. A caller that takes it for
-    its side effect alone keeps reading with a credential the helper has just retired.
-17. **Is the blanking complete, and is anything still relying on the old shape?** `getWeave` on the
-    Lobby must blank **every** participant, the caller's own included, as `capabilities: null` and
-    never as an absent key. Find a consumer — in any package, tests included — that still reads a
-    Lobby profile off Weave metadata, or a fixture that pretends one is there.
-18. **Are the facet rules right at the edges?** Each facet is computed over the result **minus its
-    own filter**; a selected value is always present, with its true count under the *other* filters,
-    which may be `0`; models are ranked one row per model before efforts are ranked within them. Find
-    a filter combination where a selected chip vanishes, a count is wrong, or one many-effort model
-    pushes another past the top-20 cut.
-19. **Is the promise of §1a kept in the text?** Search the branch's comments, docs and commit
-    messages for any sentence claiming profiles no longer reach clients, or that the event log was
-    slimmed. Only the metadata **snapshot** was removed.
+13. **Is the drift guard sound?** Every code span in a skill must be a registered tool with only
+    that tool's arguments and every required one but `credential`, a skill, one of core's error
+    codes, event types, requirement keys or profile keys, or a `FIELD_NAMES` entry. Find a span that
+    passes and names nothing real, a rename in code (a tool, an argument, a code, an event type, a
+    requirement key, a profile key, a skill) the guard would miss, or a
+    `FIELD_NAMES` entry whose recorded place no longer holds that field.
+14. **Can a request reach the filesystem, or a file other than a loaded skill?** `/skills/*`
+    compares the request path with `/skills/<name>.md` for each skill loaded at boot. Find a path
+    (percent-encoding, case, dot segments, a doubled or trailing slash, a query) that answers
+    anything but a loaded skill's text, the index or the JSON 404 `No such skill`.
+15. **Are the surfaces the same bytes?** `GET /skills`, `GET /skills/<name>.md`, `get_skill` over
+    `/mcp` with and without an agent key, and `get_skill` over the channel. Find an origin
+    (`X-Forwarded-Proto`, `Host`), a checkout (CRLF, `core.autocrlf`) or an image layout where they
+    differ, or where `/app/skills` is not the folder `defaultSkillsDir()` resolves.
+16. **Does a missing or broken skill stop both the server and the channel at boot**, before
+    anything is served, and is there any path that loads the skills per request and could fail there
+    instead?
+17. **Do the skills tell any agent the truth?** Walk each skill's steps against the tools as they
+    behave: the arguments, the order of invite and @mention (a mention reaches participants only),
+    the direct-invitation branch (`requestId` null, no `complete`), the two positions (inbox cursor
+    and Thread position), and the error each step names. Is anything in them specific to one AI
+    product, or to one instance, Weave or participant?
+18. **Is `get_skill` credential-free and backend-free on both surfaces**, and does anything
+    request-derived besides the origin reach what it or `/skills` answers?
 
 ## 7. How findings will be handled
 

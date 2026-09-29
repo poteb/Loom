@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { LoomClient } from "@loom/client";
-import { LOBBY_MECHANICS, LoomToolError, registerLoomTools } from "@loom/mcp-tools";
+import { LOBBY_MECHANICS, LoomToolError, defaultSkills, registerLoomTools } from "@loom/mcp-tools";
 import { ChannelState } from "./state.js";
 import { buildInstructions, fetchInstanceGuidelines } from "./guidelines.js";
 import { ClientToolBackend } from "./backend.js";
@@ -42,6 +42,10 @@ export async function main(): Promise<void> {
   const cfg = state.get();
   const baseUrl = process.env.LOOM_URL ?? cfg.url;
   if (!baseUrl) { log("LOOM_URL is required (or url in the channel config)"); process.exit(1); }
+  // Loom's skills, read from disk once (spec 2026-09-28 §5.1): a missing or broken one stops the
+  // channel here, through main().catch, before anything connects. `get_skill` links with this Loom's origin.
+  const skills = defaultSkills();
+  const origin = new URL(baseUrl).origin;
   const client = new LoomClient({ baseUrl, allowInsecure: process.env.LOOM_ALLOW_INSECURE === "1" || cfg.allowInsecure === true });
 
   // The instructions are fixed when the server is constructed, so the one fetch that can carry the
@@ -62,6 +66,8 @@ export async function main(): Promise<void> {
   });
   registerLoomTools(server, withStoredCredential(backend, state, (t) => streams.threadOwner(t)), {
     credentialHint: 'Your participant token, or the literal word "stored" to use the token this channel saved when you joined/created the Weave.',
+    skills,
+    origin,
     // A resource read carries no credential argument: the channel answers with the token it stored
     // for that Weave, the same resolution credential="stored" performs for tools. Not joined means
     // there is no token to read with — `forbidden`, not the bare `invalid_token` the shared default

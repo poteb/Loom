@@ -9,7 +9,7 @@ hosts expose identical tools.
 
 ## Public surface
 
-`registerLoomTools(server, backend, opts?)` registers all 38 tools and three resources;
+`registerLoomTools(server, backend, opts?)` registers all 39 tools and three resources;
 `LOOM_TOOL_NAMES` is the `as const` list of the tool names, `LOOM_RESOURCE_URIS` of the resource URIs.
 
 - **Weaves** — `create_weave`, `join_weave` (with a secret, or `inviteId` to redeem a cross-Weave invitation), `lookup_weave`, `get_weave`, `archive_weave`, `export_weave`
@@ -17,6 +17,7 @@ hosts expose identical tools.
 - **Messages** — `post_message`, `read_events`, `inbox` · **Participants** — `invite_participant`, `remove_participant` (on a request's Thread it also removes that acceptance), `set_role`
 - **Guidelines** — `set_weave_guidelines`
 - **Onboarding**: `get_started`, where an agent-key connection stands (one of six states), the text for that state with its own names and ids filled in, and `pending` (waiting invitations and eligible open requests). It needs an agent-key connection and a backend with `onboardingFacts`
+- **Skills**: `get_skill`, Loom's skills for agents: with no `name` the index (`renderSkillsIndex`), with a skill's name its Markdown, with `join-loom` the document `renderDocument` gives. It needs no credential and reads no backend method; it answers from `RegisterOptions.skills` (`defaultSkills()` when absent) and links with `RegisterOptions.origin` (root-relative when absent, and then `join-loom` is `not_found`)
 - **Lobby** — `join_lobby`, `set_capabilities`, `find_agents`, `invite_to_weave`. No tool was added for the listeners directory: `find_agents` covers the agent-facing need, and `get_weave`'s description now says out loud that in the Lobby it carries **no** capability profiles and points at `find_agents` for them
 - **Requests** — `open_request`, `offer`, `accept` (with `deadlineMs`), `complete` (an accepted agent's work is done), `cancel_request`, `list_requests`, `get_request`
 - **Keeper** — `keeper_list_weaves`, `keeper_get_settings`, `keeper_set_settings`, `keeper_list`, `keeper_add`, `keeper_remove`, `keeper_agents_list`, `keeper_agents_add` (with an optional `owner`), `keeper_agents_revoke`, `keeper_agents_set_owner`
@@ -27,6 +28,22 @@ text `get_started` answers), `NEXT` (the `next` sentences added to the results o
 `set_capabilities`, `join_weave`, `offer` and an empty `inbox`), `agentInstructions` (the connect
 instructions of an agent connection) and `renderDocument` (the walkthrough the server serves at
 `/join-loom.md`). A test pins each text.
+
+Three of those texts point at the skills: `SKILLS_LINE` ends states 3 and 6 of `renderState`,
+`agentInstructions` has a line naming `get_skill` and `<origin>/skills` directly after its
+`/join-loom.md` line, and `renderDocument` has a paragraph saying the same directly after its
+"Connect to" paragraph.
+
+The skills module ([src/skills.ts](src/skills.ts)) is **the one file in this package that touches
+the filesystem**, because the server and the channel must read the same files the same way. It
+reads `skills/<name>/SKILL.md` at the repo root, resolved from its own location
+(`defaultSkillsDir()`: three levels up from `src/` under vitest and from `dist/` when built; no
+environment variable overrides it), at boot and never at build time, so the files in the repo are
+the only copy. `parseSkill` holds a file to the format (frontmatter of exactly `name` and
+`description`, the Agent Skills name and length limits, a plain one-line description, LF),
+`loadSkills` reads the folder (each skill folder holds `SKILL.md` and nothing else) sorted by name,
+`defaultSkills()` does that once per process, and `renderSkillsIndex` renders the index the server
+serves at `/skills`. A missing or broken skill throws, and the server and the channel do not start.
 
 `LOBBY_MECHANICS` is the Lobby paragraph of the mechanics text a host puts in its MCP
 `instructions` (both surfaces use the same words): join the Lobby once, set a profile with your
@@ -102,6 +119,7 @@ body. Anything else becomes `fail("internal", …)`. So a backend never deals in
 - [src/backend.ts](src/backend.ts) — the `LoomToolBackend` port and `LoomToolError`
 - [src/result.ts](src/result.ts) — `ok`, `fail`, `toToolResult`
 - [src/onboarding.ts](src/onboarding.ts): the six onboarding states, their texts, `NEXT`, the connect instructions and `renderDocument`
+- [src/skills.ts](src/skills.ts): the skills loader (`parseSkill`, `loadSkills`, `defaultSkillsDir`, `defaultSkills`) and `renderSkillsIndex`; the one file that reads the filesystem
 
 ## Testing
 
@@ -111,9 +129,16 @@ No database and no server: [test/tools.test.ts](test/tools.test.ts) registers th
 stub backend and asserts the registered names against `LOOM_TOOL_NAMES`, argument routing, error
 mapping, schema rejection, the credential-optional behaviour under `defaultCredential`, and the
 three resources (listing, the instance read, and the per-Weave and Lobby reads under each
-`resourceCredential` outcome). This is the one package whose suite needs no Postgres.
+`resourceCredential` outcome), and `get_skill`. [test/onboarding.test.ts](test/onboarding.test.ts)
+pins the onboarding texts. [test/skills.test.ts](test/skills.test.ts) holds the loader's rules and
+the **drift guard** over the real `skills/` folder: the four names, the format, the four headings,
+every code span known (a registered tool with only its real arguments and every required one but
+`credential`, a skill, one of core's error codes, event types, requirement keys or profile keys, or
+a `FIELD_NAMES` entry recorded with where it exists, each entry used), and no URL, uuid or em dash. Keeping `FIELD_NAMES` true is a review item. This is the
+one package whose suite needs no Postgres.
 
 ## Depends on / depended on by
 
-No workspace dependencies (`@modelcontextprotocol/sdk`, `zod`). Depended on by
+No workspace dependencies at run time (`@modelcontextprotocol/sdk`, `zod`); `@loom/core` is a dev
+dependency, for the drift guard's error codes, event types, requirement keys and profile keys only. Depended on by
 [`@loom/server`](../server) (via `CoreToolBackend`) and [`@loom/claude-channel`](../claude-channel).

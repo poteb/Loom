@@ -8,9 +8,15 @@ import { buildApp } from "./app.js";
 import { TicketStore } from "./tickets.js";
 import { logError, redact } from "./log.js";
 import { attachWebSocket } from "./ws.js";
+import { defaultSkills } from "@loom/mcp-tools";
 
 async function main() {
   const config = loadConfig(process.env);
+  // Loom's skills, read from disk before anything else (spec 2026-09-28 §4.1): a missing or broken
+  // one throws out of main(), so the existing main().catch path logs it and exits 1 before any
+  // database work. The same array reaches the routes and every MCP session.
+  const skills = defaultSkills();
+  console.log(`skills: ${skills.map((s) => s.name).join(", ")}`);
   const db = createDb(config.databaseUrl);
   if (config.migrateOnBoot) {
     await runMigrations(db);
@@ -49,7 +55,7 @@ async function main() {
   console.log(webDist
     ? `serving web UI from ${webDist}`
     : "web UI not built; /, /lobby, /lobby/listeners, /weave/<id> and /w/<secret> are disabled");
-  const { app, stop: stopSweep } = buildApp({ core, tickets, webDist });
+  const { app, stop: stopSweep } = buildApp({ core, tickets, webDist, skills });
   const server = serve({ fetch: app.fetch, port: config.port, hostname: config.host }, (info) => {
     console.log(`loom server listening on http://${config.host}:${info.port}`);
   });

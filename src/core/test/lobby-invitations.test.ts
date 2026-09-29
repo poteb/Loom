@@ -280,6 +280,9 @@ describe("redeemInvitation", () => {
     const invited = (await targetEvents(f, f.prThread.id)).filter((e) => e.type === "thread.invited");
     expect(invited).toHaveLength(1);
     expect(invited[0]!.payload).toMatchObject({ participantId: first.participant.id });
+    // The skills' join signal (spec 2026-09-28 §7.2 step 4, §7.3 step 6): a returning agent brings
+    // only the thread.invited into the work Thread, never a participant.joined.
+    expect((await targetEvents(f, f.prThread.id)).filter((e) => e.type === "participant.joined")).toEqual([]);
     expect((await invitationRow(invitationId)).redeemedAt).toBeInstanceOf(Date);
   });
 

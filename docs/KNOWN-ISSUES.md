@@ -215,7 +215,7 @@ findings either:
   instance" in v2-notes, of which the listeners page was the first slice) and the remainder meets the
   cursor-less `listRequests` row above — paging requests needs a cursor the API lacks.
 - **Dogfood findings**: org policy silently blocking channel delivery (needs a README note), keeper
-  tools always advertised (10 of 38) even on an agent connection where they can never apply,
+  tools always advertised (10 of 39) even on an agent connection where they can never apply,
   Cloudflare quick-tunnel flags needed on some networks, and `run.cmd`/`run.ps1` dying with a raw
   `EADDRINUSE` stack trace when port 3000 is held.
 
