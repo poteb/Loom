@@ -559,6 +559,19 @@ In `src/claude-channel/src/format.ts`:
   `<name>'s offer on "<thread name>" was withdrawn by Loom (offline)`; `meta.request` is set for the
   second by the existing `requestId` rule.
 
+In `src/claude-channel/src/server.ts`, the `INSTRUCTIONS` entry that enumerates the event types
+(the one starting `'Events arrive as <channel source="loom"`) gains the two types at the end of its
+`type=` list (Review F7). Its `type=` attribute today:
+
+    type="message|participant.joined|thread.created|thread.closed|thread.invited|thread.url_changed|participant.role_changed|weave.archived|weave.guidelines_changed|request.opened|request.offered|request.accepted|request.closed|weave.invited|request.completed|request.overdue|thread.removed"
+
+becomes, byte for byte:
+
+    type="message|participant.joined|thread.created|thread.closed|thread.invited|thread.url_changed|participant.role_changed|weave.archived|weave.guidelines_changed|request.opened|request.offered|request.accepted|request.closed|weave.invited|request.completed|request.overdue|thread.removed|listener.removed|request.offer_withdrawn"
+
+Nothing else in that entry, or in any other `INSTRUCTIONS` entry, changes. The pinned test is in
+§13.6.
+
 ## 10. Errors
 
 | Case | Answer |
@@ -577,7 +590,10 @@ existing "request sweep" error log.
   paragraph for migration 0009; the rule-family table gains "Removing offline listeners |
   `lobby/removal.ts`: `isRemovable`, `sweepOfflineListeners`"; the event table gains the two rows of
   §5.3 and the inbox paragraph `listener.removed` naming you and `request.offer_withdrawn` to the
-  requester; §12 gains a paragraph "Removing
+  requester; in §12's channel paragraph "Addressed-only", the sentence "`request.completed`,
+  `request.overdue` and `thread.removed` are addressed-only too." becomes "`request.completed`,
+  `request.overdue`, `thread.removed`, `listener.removed` and `request.offer_withdrawn` are
+  addressed-only too." (Review F7); §12 gains a paragraph "Removing
   offline listeners" (the rule, the third pass, the withdrawal, the two events, what stays) and its
   sweep sentence names the third pass.
 - `docs/SECURITY.md`: in §4a, one paragraph (§16); in §5 the settings row covers the new key
@@ -800,6 +816,11 @@ fixture (online exactly when the status is not offline).
   participant wakes it in both wake modes, and one whose `to` is another participant wakes it in
   neither, `wake: "all"` included.
 - The two notification texts of §9.3.
+- The instructions (`test/channel.test.ts`, the pinned case today named "the instructions list the
+  three new types"): renamed "the instructions list the onboarding and removal types", and its
+  pinned substring `'|request.completed|request.overdue|thread.removed" from='` becomes
+  `'|request.completed|request.overdue|thread.removed|listener.removed|request.offer_withdrawn" from='`,
+  the new `type=` list of §9.3 (Review F7).
 
 ### 13.7 `web`
 
