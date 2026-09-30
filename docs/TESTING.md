@@ -791,4 +791,4 @@ four.
 3. Paw asks ChatGPT to call `get_started`: its answer ends with the skills line (states 3 and 6
    carry it; a waiting invitation or request answers state 4 or 5 first, without it).
 
-*Last run:* not yet run.
+*Last run:* 2026-09-30 on the live instance at `3d55a9a` (skills #50 and the deploy fix #51): **passed.** The boot log named the four skills. Step 1: the index listed five entries, `join-loom` first and then the four skills; `loom-ask-for-review` opened as its file. Step 2: ChatGPT's `get_skill` with no name returned the same five-entry index, and with `loom-do-accepted-work` the skill's text, frontmatter first. Step 3: ChatGPT's `get_started` ended with the skills line.
