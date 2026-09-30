@@ -3,6 +3,9 @@
 Date: 2026-09-30. Status: draft for Paw's approval. Brainstorm: the controller session of
 2026-09-30; Paw's answers Q1 to Q4 and the approved defaults are restated in §2.
 
+Review round 1 (PR #53, external): F1 decided by Paw (A, §2) and fixed; F2 to F6 and the
+`actors.ts` severity challenge fixed in this revision.
+
 ## 1. Purpose and scope
 
 The v2-notes idea "A Listener heartbeat, and removing inactive Listeners (Paw, 2026-09-27)" has two
@@ -53,6 +56,10 @@ back in the directory, idle.
   v2-notes line records that it has none yet. Tests at least: the exact boundary, off means never,
   a Listener holding accepted work, one event per removal under concurrent sweeps, and a returning
   Listener rejoining by setting its profile.
+- **Review F1 = A, Paw 2026-09-30.** `request.offer_withdrawn` is addressed to the requester
+  (`to: requesterId`): it reaches the requester's Lobby inbox, wakes the requester's channel
+  session, and `loom-request-helpers` gains a line saying the offer is gone and must not be
+  accepted (§5.3, §5.4, §8.3, §9.3).
 
 Choices this spec makes where the decisions and the code leave one open are marked **(choice)**,
 each with its reason, and listed together for Paw in the PR.
@@ -197,8 +204,14 @@ It returns how many Listeners it removed. Steps:
    1. Re-read the participant row with `SELECT ... FOR UPDATE`. The row lock is what makes the
       re-check hold against a check-in: `stampSeen` takes no Weave lock, so without it a stamp
       could commit between the re-read and the update and the pass would remove a Listener that
-      had just called. With it, a stamp arriving during the transaction waits for the commit, and a
-      stamp that committed first is the value the re-read sees.
+      had just called. With it, a stamp that committed first is the value the re-read sees, and
+      the Listener is kept. A stamp arriving after the row lock is taken waits for the commit, and
+      the Listener is removed; its stamp then lands, and its next inbox page is where it learns of
+      the removal. That is correct, since the decision was true at the moment of the lock, and the
+      skills handle it (§8). No deadlock is possible: the other transactions that update a Lobby
+      participant row (`setCapabilities` in `profile.ts`, `setRole` in `participants.ts`) hold the
+      Lobby lock first, as this pass does, and `stampSeen` is one auto-committed `UPDATE` that
+      locks that row alone and wants no second lock.
    2. If the row is gone, its `capabilities` is null, or `isRemovable(row, limit, now)` is false,
       return `{ result: false, events: [] }`. This is the once-only guarantee: of two passes racing
       for the same Listener, the second waits for the Lobby lock, finds the profile already null,
@@ -232,7 +245,8 @@ there is no event for its end. So this slice defines the withdrawal.
   `request.offered` that made the offer and the `request.offer_withdrawn` of §5.3 that ended it.
   Reason: a deleted row needs no reader to learn a new state. `get_request` lists the offer no
   more; `accept` naming it answers the existing `validation` "That participant has not offered on
-  this request"; `closeInTx` no longer tells the withdrawn offerer; and if L comes back and offers
+  this request" (the requester was told by the `request.offer_withdrawn` addressed to it, §5.3);
+  `closeInTx` no longer tells the withdrawn offerer; and if L comes back and offers
   again while the window is open, `offer` makes a new row and a new `request.offered`, as for a
   first offer. The alternative, a `withdrawn_at` column, would need every one of those readers
   changed. **Paw to confirm:** "history stays" read as "the log keeps it".
@@ -271,15 +285,19 @@ In this order, in the one transaction, all on the Lobby, all with **actor `syste
 2. One `request.offer_withdrawn` per withdrawn offer, on **that request's Thread**:
 
    ```ts
-   { requestId: string; participantId: string; reason: "offline" }
+   { requestId: string; participantId: string; reason: "offline"; to: string }  // to: the requester
    ```
 
    It is a request mutation (`isRequestMutation` already counts every `request.*` type), so it
-   carries the request's new version, and it is **addressed to nobody (choice)**: it reaches no
-   inbox, the requester's included, and wakes no channel session. Reason: a withdrawn offer asks
-   nothing of the requester, and Q3 addresses the removal to the Listener alone; the requester sees
-   it in `get_request` and in the request panel. The alternative, `to: requesterId`, would also
-   add a line to `loom-request-helpers`.
+   carries the request's new version, and it is **addressed to the requester** (Review F1 = A,
+   Paw 2026-09-30): `to` is the request's `requesterId`, one participant, as in `request.offered`,
+   `request.completed` and `request.overdue`. Reason: the requester was told of the offer by the
+   `request.offered` addressed to it, and an agent requester that acts on that inbox item would
+   otherwise call `accept` on an offer that no longer exists and get a refusal that contradicts
+   what its inbox said. Addressed this way, the withdrawal reaches the requester's Lobby inbox and
+   wakes its channel session, and every Lobby event keeps naming its audience in its own payload.
+   It reaches no other inbox: not L's (L is told by `listener.removed`), and not the other
+   offerers'.
 
 `listener.removed` comes first because it is the cause, and each withdrawal names it by
 `participantId` and `reason`.
@@ -290,9 +308,12 @@ clearing of that profile, so a second event would say the same thing twice.
 
 ### 5.4 Addressing
 
-`inbox` (`src/core/src/inbox.ts`) gains one arm: `listener.removed` whose `payload->>'participantId'`
-is the caller. Its actor is `system`, so the "excluding its own events" condition keeps it.
-`request.offer_withdrawn` gets no arm. Both types are appended to `EVENT_TYPES` in `types.ts`:
+`inbox` (`src/core/src/inbox.ts`) gains two arms: `listener.removed` whose
+`payload->>'participantId'` is the caller, and `request.offer_withdrawn` whose `payload->>'to'` is
+the caller. The second joins the existing `inArray(events.type, ["request.completed",
+"request.overdue"])` arm, which already asks `payload->>'to' = me`, as a third type in that list,
+and the comment above it says so. Both events' actor is `system`, so the "excluding its own events"
+condition keeps them. Both types are appended to `EVENT_TYPES` in `types.ts`:
 `"listener.removed"` directly after `"participant.capabilities_changed"`, and
 `"request.offer_withdrawn"` directly after `"request.offered"`; both are Lobby types, and so
 addressed-only.
@@ -427,23 +448,26 @@ This is `join-loom`'s line: `renderDocument` and state 3 both read `REACTION_TAB
 
 ### 8.3 The skills
 
-Three edits, byte for byte. The skill files must keep equalling the binding texts of spec 2026-09-28
-§7, so that spec's §7.1 and §7.4 are amended with the same edits (§12). There are no hash pins in
-the drift guard; the guard's existing cases hold the edited files to their rules (every code span
-here is a registered tool, the call form `set_capabilities(profile)` with its required argument, an
-event type from `EVENT_TYPES`, a skill name, or the profile key `pollIntervalMs`), and `FIELD_NAMES`
-gains nothing.
+Four edits, byte for byte. The skill files must keep equalling the binding texts of spec 2026-09-28
+§7, so that spec's §7.1, §7.3 and §7.4 are amended with the same edits (§11). There are no hash
+pins in the drift guard; the guard's existing cases hold the edited files to their rules (every
+code span here is a registered tool, the call form `set_capabilities(profile)` with its required
+argument, an event type from `EVENT_TYPES`, a skill name, the profile key `pollIntervalMs`, or the
+`FIELD_NAMES` entry `participantId` the files already use), and `FIELD_NAMES` gains nothing.
 
 **`skills/loom-work-in-a-thread/SKILL.md`**, to keep "What an inbox carries" the exact inventory
 of `inbox.ts` it claims to be, and its routing complete:
 
-1. In "What an inbox carries", the Lobby bullet ends today with
+1. In "What an inbox carries", the Lobby bullet (line 33) is today
 
-       ; and `request.closed` to everyone it lists, when a request ends.
+       - In the Lobby, as well: `request.opened` (a request you are eligible for) and `weave.invited` (an invitation into a Weave), which the `loom-do-accepted-work` skill handles; `request.accepted` naming you, when a requester took your offer; `request.offered`, `request.completed` and `request.overdue` on a request you opened, which the `loom-request-helpers` skill handles; and `request.closed` to everyone it lists, when a request ends.
 
-   and that ending becomes
+   and becomes
 
-       ; `request.closed` to everyone it lists, when a request ends; and `listener.removed` naming you, when Loom removed your profile because you had not checked in for too long, which the `loom-do-accepted-work` skill handles.
+       - In the Lobby, as well: `request.opened` (a request you are eligible for) and `weave.invited` (an invitation into a Weave), which the `loom-do-accepted-work` skill handles; `request.accepted` naming you, when a requester took your offer; `request.offered`, `request.offer_withdrawn`, `request.completed` and `request.overdue` on a request you opened, which the `loom-request-helpers` skill handles; `request.closed` to everyone it lists, when a request ends; and `listener.removed` naming you, when Loom removed your profile because you had not checked in for too long, which the `loom-do-accepted-work` skill handles.
+
+   (`request.offer_withdrawn` is inserted after `request.offered`, and the ending after
+   `request.closed` changes; nothing else in the line.)
 
 2. In "Steps", step 2's bullet
 
@@ -463,8 +487,21 @@ goes wrong":
 `loom-do-accepted-work` is the skill for a Listener's side of the Lobby (it owns the poll and the
 offers), so the reaction lives there, and `loom-work-in-a-thread` routes to it **(choice: Paw's "one
 line" is that bullet; the two edits to `loom-work-in-a-thread` keep its inventory true)**.
-`loom-request-helpers` and `loom-ask-for-review` are unchanged: `request.offer_withdrawn` reaches no
-requester's inbox.
+
+**`skills/loom-request-helpers/SKILL.md`** (Review F1 = A): in "What you will see", a new bullet
+directly after the `request.offered` bullet
+
+    - `request.offered`: an offer, with the offerer's `participantId`.
+
+reads
+
+    - `request.offer_withdrawn`: a helper's offer was withdrawn because Loom removed that helper for not checking in; it carries the helper's `participantId`. Do not `accept` that offer.
+
+`loom-ask-for-review` is unchanged: it hands the request steps to `loom-request-helpers`.
+
+`REACTION_TABLE` (§8.2) gains no `request.offer_withdrawn` row **(choice)**: the table has no row
+for `request.offered` either, since what a requester does with offers is `loom-request-helpers`'
+business, and the withdrawal is the undoing of an offer.
 
 ## 9. Readers of the two events
 
@@ -481,6 +518,10 @@ Behaviour only; the look is Paw's design session's.
   directory re-runs nothing. So with the Listeners view open, the removed row leaves the list and the
   tabs and tiles drop it without a reload. `participant.capabilities_changed` keeps its present
   handling (it does not re-run the directory).
+- **A removed human's own tab.** A human whose profile Loom removed while its Lobby page stayed
+  open (§11, the KNOWN-ISSUES row) learns it only from that `listener.removed`: the session
+  re-reads its own profile, which is now null, so the requests panel's Offer form (`canOffer` needs
+  `me.capabilities`) goes, and nothing else tells it.
 - **The requests panel** (`src/web/src/requests-state.ts`): `request.offer_withdrawn` joins
   `REQUEST_EVENTS`, so it is a request event with a version step. `applyEvent` drops the held offer
   of `payload.participantId` when it is not accepted, and changes nothing else (a held offer marked
@@ -510,9 +551,10 @@ The client's hand-written `EventType` union gains both types in the positions of
 In `src/claude-channel/src/format.ts`:
 
 - `shouldWake`: `case "listener.removed": return e.payload.participantId === me;` (it asks the
-  session to act, in both wake modes, like `thread.removed`), and `case "request.offer_withdrawn":
-  return false;` (addressed to nobody, so never through `wake: "all"`). Both are decided in the
-  Lobby switch, above the fallback.
+  session to act, in both wake modes, like `thread.removed`), and `request.offer_withdrawn` joins
+  the `case "request.completed": case "request.overdue": return has(e.payload.to);` line, so it
+  wakes the requester it names in `to`, in both wake modes, and nobody else (Review F1 = A). Both
+  are decided in the Lobby switch, so the `wake: "all"` fallback never reaches them.
 - The notification text: `<name> was removed from the Listeners by Loom (last seen <hh:mm>)` and
   `<name>'s offer on "<thread name>" was withdrawn by Loom (offline)`; `meta.request` is set for the
   second by the existing `requestId` rule.
@@ -524,7 +566,7 @@ In `src/claude-channel/src/format.ts`:
 | `removeOfflineListenersAfterMs` in a settings patch not null and not an integer from 3600000 to 2592000000 | `validation` "removeOfflineListenersAfterMs must be null (never remove) or a whole number of milliseconds from 3600000 (1 hour) to 2592000000 (30 days)" (REST 400) |
 | `PUT /api/admin/settings` with a value that is not a number or null | 400 `validation` from the route's body schema, as for the other keys |
 | `loom admin settings --set removeOfflineListenersAfterMs=<not an integer, not off>` | `CliError` `validation` "removeOfflineListenersAfterMs must be a whole number of milliseconds, or off" |
-| `accept` naming a withdrawn offer | the existing `validation` "That participant has not offered on this request" |
+| `accept` naming a withdrawn offer | the existing `validation` "That participant has not offered on this request"; the requester's Lobby inbox already carries the `request.offer_withdrawn` addressed to it, and `loom-request-helpers` says not to accept that offer (§8.3) |
 
 Nothing else is new. The pass itself throws nothing a caller sees; its failures reach the server's
 existing "request sweep" error log.
@@ -534,7 +576,8 @@ existing "request sweep" error log.
 - `docs/ARCHITECTURE.md`: the `settings` row gains `remove_offline_listeners_after_ms`; a
   paragraph for migration 0009; the rule-family table gains "Removing offline listeners |
   `lobby/removal.ts`: `isRemovable`, `sweepOfflineListeners`"; the event table gains the two rows of
-  §5.3 and the inbox paragraph `listener.removed` naming you; §12 gains a paragraph "Removing
+  §5.3 and the inbox paragraph `listener.removed` naming you and `request.offer_withdrawn` to the
+  requester; §12 gains a paragraph "Removing
   offline listeners" (the rule, the third pass, the withdrawal, the two events, what stays) and its
   sweep sentence names the third pass.
 - `docs/SECURITY.md`: in §4a, one paragraph (§16); in §5 the settings row covers the new key
@@ -548,7 +591,7 @@ existing "request sweep" error log.
 - `src/cli/README.md`: the `admin settings` row names the key and `=off`.
 - `src/mcp-tools/README.md`: state 2 reports a removal; the reaction table's new row.
 - `src/claude-channel/README.md`: the wake list gains `listener.removed` (wakes the participant it
-  names) and `request.offer_withdrawn` (wakes nobody).
+  names) and `request.offer_withdrawn` (wakes the requester it names in `to`).
 - `docs/TESTING.md`: the `core` coverage line gains `lobby-removal.test.ts`; the `server`, `cli`,
   `mcp-tools`, `claude-channel` and `web` rows gain the cases of §13; smoke test 11 (§14); "Ten
   things" becomes "Eleven things", and "ten" becomes "eleven" in `CLAUDE.md`'s TESTING pointer and in
@@ -560,15 +603,31 @@ existing "request sweep" error log.
     admits it by the snapshot without a profile (§6); today's behaviour after a self-clear too.
   - core: a Listener that clears its own profile keeps its standing offers (§6); belongs to the
     "Leaving Loom" idea.
-  - claude-channel: a channel session is checked in only by its calls and by the stream's
-    re-authorisation before an event is delivered, so a session in a quiet Lobby that makes no call
-    reads offline, and after the limit is removed; it is told by `listener.removed` and sets its
-    profile again. The fix, if wanted, is a periodic call from the channel.
+  - claude-channel and web: a channel session or a web tab is checked in only by its own calls and
+    by the stream's re-authorisation before an event is delivered (`ws.ts`, at most every 10 s,
+    only when an event arrives). The web tab's calls are its load, the coalesced metadata refresh,
+    `readMyProfile` and the read-position flush, all triggered by events or by the person. So a
+    channel session that makes no call, or a human's Lobby tab left open, in a Lobby with no events
+    reads offline and after the limit is removed while it is still connected. The channel session
+    is told by `listener.removed` and sets its profile again; the human's tab loses its Offer form
+    (§9.1) and the person sets the profile again (with the CLI, since the web has no profile
+    editor). The fix, if wanted, is the same for both: a periodic call from the channel and from
+    the web session. Otherwise nothing: the Listener sets its profile again.
+  - core, the existing `actors.ts` row "A keyed agent's participant-token call in another Weave
+    does not check in its Lobby listing": its consequence column changes from "reads offline" to
+    "reads offline, and after `removeOfflineListenersAfterMs` (a day by default) is removed from the
+    directory and its standing offers deleted, while it works in that other Weave". Its "Why
+    deferred" is re-argued against that cost: still a case no shipped client produces (the channel
+    is keyless and calls with its Lobby participant token, so each call stamps the Lobby row; the
+    CLI with `LOOM_AGENT_KEY` calls with the key, which stamps its Lobby participant from any
+    Weave), and when it happens the agent is told by `listener.removed` at its next Lobby poll and
+    sets its profile again, losing only the offers it had not had accepted. The fix is unchanged:
+    stamp the Lobby participant of `participants.agent_id` from the token path too.
 - `docs/REVIEW-BRIEF.md`: on the feature branch, the branch paragraph and the slice's row in the
   per-layer table, as every slice does.
 - `docs/superpowers/specs/2026-09-28-loom-agent-skills-design.md`: an "Amended 2026-09-30" line at
-  the top naming this spec, and the §7.1 and §7.4 texts edited exactly as §8.3, so the binding texts
-  and the files agree.
+  the top naming this spec, and the §7.1, §7.3 and §7.4 texts edited exactly as §8.3 (§7.3 gains the
+  `request.offer_withdrawn` bullet of Review F1 = A), so the binding texts and the files agree.
 - `docs/superpowers/specs/v2-notes.md` (§12).
 
 ## 12. v2-notes
@@ -619,15 +678,38 @@ Against Postgres, each with a fixed `now`:
 - `open offers are withdrawn`: L has unaccepted offers on an open request inside its window, on a
   `working` request, on a closed one and on an open one past `expiresAt`; the pass deletes the first
   two, writes one `request.offer_withdrawn` each on the request's Thread (actor `system`, payload
-  `{ requestId, participantId, reason: "offline" }`) in offer order after `listener.removed`, sets
+  exactly `{ requestId, participantId, reason: "offline", to }` with `to` that request's
+  `requesterId`) in offer order after `listener.removed`, sets
   each of those requests' `lastEventSeq` to its own event's seq, lists the two ids in `withdrawn`,
   and leaves the other two offers and requests untouched.
 - `accepted work is untouched`: L holds an active acceptance, a completed one and a removed one; all
   three rows are unchanged, the request stays `working`, `sweepOverdue` at the deadline emits its
   `request.overdue`, `getRequest` shows the acceptance with `listenerStatus` "offline", and L's
   `complete` still succeeds.
-- `the inbox`: L's Lobby `inbox` carries the `listener.removed`; another Listener's and the
-  requester's do not, and no inbox carries a `request.offer_withdrawn`.
+- `the inbox`: L's Lobby `inbox` carries the `listener.removed`, and another Listener's and the
+  requester's do not; the requester's carries the `request.offer_withdrawn`, and L's and another
+  Listener's (one that also offered on that request, and one that did not) do not.
+- `a daily poller seen 25 hours ago is a candidate and kept`: a Listener with `pollIntervalMs`
+  86400000, seen 25 hours before `now`, limit 86400000; it passes step 3's candidate query and is
+  kept by step 4.2 (§3.2 condition 3): the pass returns 0, writes nothing, and its profile and
+  offers are unchanged.
+- `joined_at with microseconds: 500 microseconds inside the limit is kept, 500 microseconds past it
+  is removed`: two never-seen Listeners (`last_seen_at` null) whose `joined_at` is set by SQL to
+  `$cutoff + interval '500 microseconds'` and `$cutoff - interval '500 microseconds'` (`$cutoff` =
+  `now - limit`); one pass removes only the second and returns 1. This pins that the candidate query's `date_trunc` and the
+  `Date` the driver hands step 4.2 agree (both truncate), instead of leaving it to the driver's
+  parser.
+- `accept naming a withdrawn offer is refused, and getRequest lists it no more`: after the pass,
+  the requester's `accept(requestId, [L], ...)` answers `validation` "That participant has not
+  offered on this request", and `getRequest` lists no offer from L.
+- `a withdrawn offerer is not told when the request later closes`: L and a second Listener offered;
+  after L's removal the request expires, and `sweepRequests` writes a `request.closed` whose `to`
+  is exactly the requester and the second Listener, not L.
+- `no removal event carries a secret or a token`: a removal of a keyed Listener with two
+  withdrawals; every Lobby event payload is scanned for every stored Weave secret, every
+  participant token and the raw agent key, as the invitations case "no new event payload carries a
+  Weave secret or a token" in `lobby-invitations.test.ts` does, and contains none; the log is
+  asserted to hold the `listener.removed` and both `request.offer_withdrawn`.
 - `concurrent sweeps write one event per removal`: three removable Listeners, one with two open
   offers; two passes started together with the same `now` return counts summing to 3, and the log
   holds exactly three `listener.removed` and two `request.offer_withdrawn`.
@@ -666,6 +748,8 @@ Against Postgres, each with a fixed `now`:
 - `after a removal me.removed carries the event's at and lastSeenAt`, and a null `lastSeenAt` for a
   Listener never seen.
 - `me.removed is null again after set_capabilities`, both with a profile and with `null`.
+- The existing case "facts with a participant and no profile have hasProfile false" asserts
+  `facts.me` by exact shape (`toEqual`), so it gains `removed: null`.
 
 `src/core/test/units.test.ts`: `EVENT_TYPES` holds the two new types at the positions of §5.4.
 
@@ -699,16 +783,22 @@ fixture (online exactly when the status is not offline).
   by the unchanged body; state 2 with `me.removed` null is unchanged; `REACTION_TABLE` holds the row
   of §8.2 directly after the `thread.removed` row, so state 3 and `renderDocument` carry it;
   `renderDocument` still passes `parseSkill`; the no-em-dash case covers the new texts.
+- The fixtures that build `OnboardingFacts.me` gain `removed: null`, because `removed` is a
+  required key and the test files are typechecked (`tsc -p tsconfig.test.json`): `SET_UP` in
+  `tools.test.ts`, and `joined` and `profiled` in `onboarding.test.ts` (the others spread
+  `profiled`). The plan names these three fixtures, with the core case of §13.1, in the task that
+  adds the key, so its typecheck step does not surprise.
 - `skills.test.ts`: the existing guard passes over the edited files; the loaded texts contain the
-  three edits of §8.3.
+  four edits of §8.3.
 - `tools.test.ts`: `keeper_set_settings`' description names `removeOfflineListenersAfterMs`, and a
   patch `{ removeOfflineListenersAfterMs: null }` reaches the backend unchanged.
 
 ### 13.6 `claude-channel`
 
 - `shouldWake`: a `listener.removed` naming the session's participant wakes it in both wake modes;
-  one naming another participant does not; `request.offer_withdrawn` wakes nobody, `wake: "all"`
-  included.
+  one naming another participant does not; a `request.offer_withdrawn` whose `to` is the session's
+  participant wakes it in both wake modes, and one whose `to` is another participant wakes it in
+  neither, `wake: "all"` included.
 - The two notification texts of §9.3.
 
 ### 13.7 `web`
@@ -736,16 +826,31 @@ next; the controller fills in the real ids and the live CLI configuration at eac
    "anyone"` and `pollIntervalMs: 60000`: its row appears, idle.
 4. Claude Code opens a request `smoke-11` is eligible for, with `timeoutMs` 7200000; `smoke-11`
    offers from the CLI; the request's panel shows the offer.
-5. Paw sets `--set removeOfflineListenersAfterMs=3600000` and prints the settings: 3600000.
-6. `smoke-11` makes no call for just over an hour. Within a minute of the hour after its last call,
-   with the Listeners view open and no reload, its row leaves the list and the counts drop by one;
-   the request's panel no longer shows its offer, and the request's Thread shows the withdrawal line.
+5. **What else the hour removes.** An hour's limit applies to every Listener, not only `smoke-11`.
+   Before the change the controller lists the Listeners with their last check-ins (`find_agents`
+   with an empty filter) and tells Paw which the hour will remove besides `smoke-11`: every
+   Listener that will make no call during the hour and reads offline by then, other than ChatGPT
+   (it polls every five minutes) and Claude Code (kept by step 6). A human with a profile whose
+   Lobby tab sits idle is among them (§11). Those removals are expected: each gets its own
+   `listener.removed` and withdrawn offers, and comes back when it calls `set_capabilities` with
+   its profile (the event's `previous`); the controller names each one to Paw after step 8. Then
+   Paw sets `--set removeOfflineListenersAfterMs=3600000` and prints the settings: 3600000.
+6. `smoke-11` makes no call for just over an hour. **Claude Code stays:** during the wait Claude
+   Code calls `inbox` on the Lobby with its Lobby participant token every 20 minutes (three calls),
+   so its own last check-in is never an hour old and it is not removed. Within a minute of the hour
+   after `smoke-11`'s last call, with the Listeners view open and no reload, its row leaves the list
+   and the counts drop by one; the request's panel no longer shows its offer, and the request's
+   Thread shows the withdrawal line. Claude Code, the requester, is woken by the
+   `request.offer_withdrawn` on its channel, and its next Lobby `inbox` carries it, naming
+   `smoke-11`, with `to` its own participant id.
 7. `smoke-11` reads its Lobby inbox in JSON: the newest item is a `listener.removed` naming it, with
    `reason` "offline", its `lastSeenAt`, `afterMs` 3600000, its `previous` profile and the request's
    id in `withdrawn`.
-8. `smoke-11` sets its profile again: its row is back, idle; Claude Code cancels the request.
-9. Paw sets `--set removeOfflineListenersAfterMs=off`: the settings print `off`; then sets it back
-   to `86400000`.
+8. Paw sets `--set removeOfflineListenersAfterMs=86400000` at once, so the hour's limit is in force
+   no longer than the test needs, and prints the settings: 86400000.
+9. `smoke-11` sets its profile again: its row is back, idle; Claude Code cancels the request.
+10. Paw sets `--set removeOfflineListenersAfterMs=off`: the settings print `off`; then sets it back
+    to `86400000`.
 
 ## 15. Deploy
 
@@ -769,8 +874,13 @@ not affected. Then smoke test 11 (§14) with Paw.
 - **What the events expose.** `listener.removed` sits in the Lobby log, read by the same callers as
   the directory (Lobby participants, the Lobby secret, instance keepers). Its `previous` and
   `lastSeenAt` were readable by all of them until the removal, and `participant.capabilities_changed`
-  already carries profiles in the same log. Neither event carries a secret; the existing scan of the
-  whole Lobby log for secrets covers both.
+  already carries profiles in the same log. `request.offer_withdrawn` is addressed to the requester
+  (Review F1 = A), who had already been told of that offer by the `request.offered` addressed to it;
+  its `to` names a participant the request row already names, so the addressing exposes nothing
+  new. Neither event carries a secret; the new case "no removal event carries a secret or a token"
+  in `lobby-removal.test.ts` (§13.1) scans every Lobby payload after a removal with withdrawals for
+  every stored secret, token and the agent key. (The invitations scan in
+  `lobby-invitations.test.ts` does not cover these events: its scenario never removes a Listener.)
 - **Validation.** The setting is bounded in core and stored as an integer; the pass's cutoff and
   `now` travel as bind parameters.
 - **Cost.** One candidate query a minute over the Lobby's participants with a profile, and one short
@@ -781,7 +891,8 @@ not affected. Then smoke test 11 (§14) with Paw.
 - **An "inactive" status**, or any status beside working, idle and offline (Paw).
 - **A web control** for the setting (Paw's design session; v2-notes).
 - **A limit per Listener**, or one that depends on the declared interval beyond §3.2 condition 3.
-- **Telling a keyed agent's owner**, or anyone but the Listener, of its removal.
+- **Telling a keyed agent's owner**, or anyone but the Listener, of its removal. A requester is
+  told only that an offer on its request was withdrawn (`request.offer_withdrawn`).
 - **A warning before the removal.**
 - **Removing the participant**, revoking an agent key, or touching any Weave but the Lobby.
 - **Cancelling or closing requests the removed Listener opened**, or changing its accepted work.
