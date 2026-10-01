@@ -1934,7 +1934,7 @@ and in `applyEvent`'s `switch`, directly after the `request.offered` case, add:
       break;
 ```
 
-- [ ] **Step 6: The session.** In `src/web/src/session.ts`, in `onEvent`, replace the first branch (from `if (e.type === "thread.created" || e.type === "thread.closed"` through its `scheduleRefresh();` and closing brace before `} else if (e.type === "weave.guidelines_changed")`) with:
+- [ ] **Step 6: The session.** In `src/web/src/session.ts`, in `onEvent`, replace the lines from `    if (e.type === "thread.created" || e.type === "thread.closed" || e.type === "thread.url_changed"` up to and including the line `      scheduleRefresh();` that closes that branch (lines 795 to 802 today); the line `    } else if (e.type === "weave.guidelines_changed") {` and everything after it stay as they are, its leading `}` included, because the replacement below ends with no closing brace of its own. Replace them with:
 
 ```ts
     if (e.type === "thread.created" || e.type === "thread.closed" || e.type === "thread.url_changed"
@@ -2022,7 +2022,7 @@ migration `drizzle/0002_workable_doctor_doom.sql`), plus `lobby_weave_id`
 migration `drizzle/0002_workable_doctor_doom.sql`), `remove_offline_listeners_after_ms` (`bigint`, nullable, default `86400000`, migration 0009: how long a Lobby listener may go without a check-in before the sweep removes its profile; null is off), plus `lobby_weave_id`
 ```
 
-  - After the paragraph that begins `Migration 0008 adds` (it ends `listeners with one indexed lookup each.`), add, with an empty line on each side:
+  - After the paragraph that begins `Migration 0008 adds` (lines 125 to 129 today; its last line is, whole, `listeners with one indexed lookup each.`), add, with an empty line on each side:
 
 ```markdown
 Migration 0009 adds `settings.remove_offline_listeners_after_ms` (`bigint`, nullable, default
@@ -2324,6 +2324,12 @@ live CLI configuration at each step.
 | [lobby/profile.ts](../src/core/src/lobby/profile.ts) | A listener that clears its own profile (`set_capabilities(null)`) keeps its standing offers | spec 2026-09-30 §6: a listener present and choosing to clear is not one that is gone; withdrawing offers on leaving belongs to the "Leaving Loom" idea (v2-notes) | a Leave function that withdraws them |
 ```
 
+  - In "## server", replace the row that begins ``| [app.ts](../src/server/src/app.ts) | A throwing `sweepRequests` skips `sweepOverdue` for that tick`` (after Task 3 `sweepNow` runs three passes, so the two-pass text is false) with:
+
+```markdown
+| [app.ts](../src/server/src/app.ts) | A throwing earlier pass skips the later ones for that tick: `sweepNow` runs `sweepRequests`, `sweepOverdue` and `sweepOfflineListeners` in sequence with no per-pass `catch`, and the interval logs the first failure | the next tick, a minute later, runs all three again; a later pass is at most a tick late | run each pass under its own `catch`, logging each failure |
+```
+
   - At the end of the "## claude-channel" table add:
 
 ```markdown
@@ -2487,7 +2493,7 @@ withdraw offers must do it itself.
 git add docs/ARCHITECTURE.md docs/SECURITY.md README.md src/server/README.md src/cli/README.md src/mcp-tools/README.md src/claude-channel/README.md docs/TESTING.md CLAUDE.md docs/HANDBOOK.md docs/KNOWN-ISSUES.md docs/REVIEW-BRIEF.md docs/superpowers/specs/v2-notes.md
 git diff --cached --stat
 git diff --cached | node -e "const bad = [String.fromCharCode(0xc2), String.fromCharCode(0xe2, 0x20ac), String.fromCharCode(0x2014)]; let s = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', (c) => { s += c; }).on('end', () => { const hits = s.split('\n').filter((l) => l.startsWith('+') && bad.some((b) => l.includes(b))); console.log(hits.length ? 'FOUND:\n' + hits.join('\n') : 'scan clean'); });"
-git commit -m "docs: removing offline Listeners; smoke test 11" -m "README, the server, cli, mcp-tools and channel READMEs, ARCHITECTURE, SECURITY, KNOWN-ISSUES, v2-notes and the review brief as spec section 11 and 12 list; TESTING gains smoke test 11 and the coverage lines, and CLAUDE.md and HANDBOOK count eleven smoke tests. The totals follow in Task 8." -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git commit -m "docs: removing offline Listeners; smoke test 11" -m "README, the server, cli, mcp-tools and channel READMEs, ARCHITECTURE, SECURITY, KNOWN-ISSUES, v2-notes and the review brief as spec section 11 and 12 list; KNOWN-ISSUES also rewrites the server app.ts row on sweepNow for its three passes (sweepRequests, sweepOverdue, sweepOfflineListeners), from plan review round 1 F2; TESTING gains smoke test 11 and the coverage lines, and CLAUDE.md and HANDBOOK count eleven smoke tests. The totals follow in Task 8." -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 Expected: the stat shows no `Bin` row, and the scan prints `scan clean`.
