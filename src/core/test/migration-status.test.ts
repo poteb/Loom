@@ -233,8 +233,11 @@ describe("migrationStatus against the real migrations", () => {
 
   it("migration 0009 gives an existing settings row the 1 day default (spec 2026-09-30 §4.2)", async () => {
     const db = await freshDatabase();
-    // Every migration but the last (0009), then a settings row as an instance that existed before it holds one.
-    await runMigrations(db, writeTruncatedRealFolder(1));
+    // Every migration before 0009, then a settings row as an instance that existed before it holds one.
+    // The count comes from 0009's position, so a later migration does not move what this case drops.
+    const at0009 = JOURNAL_ENTRIES.findIndex((e) => e.tag.startsWith("0009_"));
+    expect(at0009).toBeGreaterThan(0);
+    await runMigrations(db, writeTruncatedRealFolder(JOURNAL_ENTRIES.length - at0009));
     await db.execute(sql`insert into settings (id) values (1)`);
     // The second run meets drizzle's bookkeeping schema and table already there, and postgres-js's
     // default notice handler is console.log: two "already exists, skipping" NOTICEs, the ones every

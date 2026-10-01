@@ -393,3 +393,15 @@ describe("read positions (spec 2026-09-26 §5)", () => {
     expect((await me.readPositions(r.weave.id)).threads).toEqual({ [r.generalThread.id]: 3 });
   });
 });
+
+describe("the offline-removal setting (spec 2026-09-30 §7)", () => {
+  it("getSettings and updateSettings round-trip removeOfflineListenersAfterMs, a number and null", async () => {
+    const k = anon.withToken(keeperToken("k1"));
+    expect((await k.admin.getSettings()).removeOfflineListenersAfterMs).toBe(86_400_000);
+    expect((await k.admin.updateSettings({ removeOfflineListenersAfterMs: 3_600_000 })).removeOfflineListenersAfterMs).toBe(3_600_000);
+    expect((await k.admin.getSettings()).removeOfflineListenersAfterMs).toBe(3_600_000);
+    expect((await k.admin.updateSettings({ removeOfflineListenersAfterMs: null })).removeOfflineListenersAfterMs).toBeNull();
+    expect((await k.admin.getSettings()).removeOfflineListenersAfterMs).toBeNull();
+    expect((await k.admin.updateSettings({ removeOfflineListenersAfterMs: 86_400_000 })).removeOfflineListenersAfterMs).toBe(86_400_000);
+  });
+});

@@ -839,7 +839,7 @@ describe("the request sweep", () => {
     expect(closedNows.length).toBe(after);
   });
 
-  it("sweepNow runs the expiry pass and the overdue pass with one now and resolves to { closed, overdue }", async () => {
+  it("sweepNow runs the expiry, overdue and offline-removal passes with one now and resolves to { closed, overdue, removed }", async () => {
     const f = await scenario();
     const expiring = await openRequest(f, { timeoutMs: 60_000 });
     const working = await acceptedRequest(f, { title: "Review PR 15" });
@@ -848,6 +848,7 @@ describe("the request sweep", () => {
       ...s.core,
       sweepRequests: (now?: Date) => { seen.push(now!); return s.core.sweepRequests(now); },
       sweepOverdue: (now?: Date) => { seen.push(now!); return s.core.sweepOverdue(now); },
+      sweepOfflineListeners: (now?: Date) => { seen.push(now!); return s.core.sweepOfflineListeners(now); },
     } as Core;
     const tickets = new TicketStore();
     const { sweepNow, stop } = buildApp({ core, tickets });
@@ -856,12 +857,29 @@ describe("the request sweep", () => {
       const out = await sweepNow(at);
       expect(out.closed).toBeGreaterThanOrEqual(1);
       expect(out.overdue).toBeGreaterThanOrEqual(1);
-      expect(seen).toEqual([at, at]);
+      // Two hours ahead, a day's limit removes nobody this file has made: all of them checked in during the run.
+      expect(out.removed).toBe(0);
+      expect(seen).toEqual([at, at, at]);
     } finally { stop(); tickets.stop(); }
     expect((await api(s.baseUrl, "GET", `/api/requests/${expiring.id}`, undefined, f.claude.token)).json.status).toBe("expired");
     const w = (await api(s.baseUrl, "GET", `/api/requests/${working.id}`, undefined, f.claude.token)).json;
     expect(w.status).toBe("working");
     expect(w.acceptances[0].overdueNotifiedAt).toEqual(expect.any(String));
+  });
+
+  it("for a Listener holding an overdue acceptance and past the limit, one sweepNow writes request.overdue before listener.removed (spec 2026-09-30 §5.5)", async () => {
+    const f = await scenario();
+    await acceptedRequest(f);                                  // Pawbot accepted, due in an hour
+    // Seen 23 hours ago: inside the day's limit for this server's own real-time sweep, past it at `at`.
+    await sqlUnsafe("update participants set last_seen_at = now() - interval '23 hours' where id = $1", [f.pawbot.id]);
+    const at = new Date(Date.now() + 2 * 3_600_000);
+    const out = await s.sweepNow(at);
+    expect([out.overdue >= 1, out.removed >= 1]).toEqual([true, true]);
+    const lobbyId = (await s.core.getLobby()).weaveId;
+    const order = await sqlUnsafe<{ type: string }>(
+      "select type from events where weave_id = $1 and type in ('request.overdue', 'listener.removed') and payload->>'participantId' = $2 order by seq",
+      [lobbyId, f.pawbot.id]);
+    expect(order.map((r) => r.type)).toEqual(["request.overdue", "listener.removed"]);
   });
 });
 

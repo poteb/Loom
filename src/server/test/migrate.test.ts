@@ -170,9 +170,15 @@ async function migrateToPrefix(db: Db, count: number): Promise<string[]> {
   return journal.entries.slice(count).map((e) => e.tag);
 }
 
-async function regclass(db: Db, name: string): Promise<string | null> {
-  const rows = await pg(db)`select to_regclass(${name}) as present`;
-  return (rows as Array<{ present: string | null }>)[0]?.present ?? null;
+/**
+ * Whether the newest migration's effect is in the schema: 0009's column on `settings`. The probe
+ * must follow the last migration in the journal, or the cases below that use it prove nothing.
+ */
+async function newestMigrationApplied(db: Db): Promise<boolean> {
+  const rows = await pg(db)`
+    select count(*)::int as n from information_schema.columns
+    where table_schema = 'public' and table_name = 'settings' and column_name = 'remove_offline_listeners_after_ms'`;
+  return (rows as Array<{ n: number }>)[0]!.n === 1;
 }
 
 async function migrationRowCount(db: Db): Promise<number> {
@@ -260,14 +266,15 @@ describe("the migrate entry as a process", () => {
     expect(after.pending).toEqual([]);
     expect(after.applied).toEqual(JOURNAL_TAGS);
     // The pending migration really ran, rather than the entry merely printing that it had.
-    expect(await regclass(db, "public.participants_capabilities_idx")).not.toBeNull();
+    expect(await newestMigrationApplied(db)).toBe(true);
   }, 60_000);
 
   it("--check lists the pending set in the shape live-update.sh parses, applies nothing, and exits 0", async () => {
     const { db, url } = await freshDatabase("check");
     const pending = await migrateToPrefix(db, JOURNAL_TAGS.length - 1);
     const rowsBefore = await migrationRowCount(db);
-    const indexBefore = await regclass(db, "public.participants_capabilities_idx");
+    const newestBefore = await newestMigrationApplied(db);
+    expect(newestBefore).toBe(false);
 
     const withPending = await runMigrate(["--check"], { DATABASE_URL: url });
     expect(withPending.stderr).toBe("");
@@ -280,7 +287,7 @@ describe("the migrate entry as a process", () => {
     expect(out.slice(0, marker)).toEqual([`migrations: ${JOURNAL_TAGS.length - pending.length} applied`]);
     // It applied nothing: the table and the schema are exactly as it found them.
     expect(await migrationRowCount(db)).toBe(rowsBefore);
-    expect(await regclass(db, "public.participants_capabilities_idx")).toBe(indexBefore);
+    expect(await newestMigrationApplied(db)).toBe(newestBefore);
 
     const { db: upToDate, url: upToDateUrl } = await freshDatabase("checkclean");
     await runMigrations(upToDate);

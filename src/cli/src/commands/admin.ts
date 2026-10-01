@@ -32,7 +32,16 @@ const SETTING_PARSERS: Record<keyof Settings, (v: string) => unknown> = {
   guidelines: (v) => v,
   maxMessageLength: (v) => { const n = Number(v); if (!Number.isInteger(n)) throw new CliError("validation", "maxMessageLength must be an integer"); return n; },
   openWeaveCreation: (v) => { if (v !== "true" && v !== "false") throw new CliError("validation", "openWeaveCreation must be true or false"); return v === "true"; },
+  // "off" is null, a run of digits is that integer (core checks its range); no duration syntax.
+  removeOfflineListenersAfterMs: (v) => {
+    if (v === "off") return null;
+    if (!/^-?\d+$/.test(v)) throw new CliError("validation", "removeOfflineListenersAfterMs must be a whole number of milliseconds, or off");
+    return Number(v);
+  },
 };
+
+/** A setting as a person reads it: the off limit prints as the word they type (spec 2026-09-30 §7). */
+const shown = (key: string, v: unknown): string => (key === "removeOfflineListenersAfterMs" && v === null ? "off" : String(v));
 
 /**
  * Substitutes stdin for a `guidelines=-` value before the patch is parsed: the instance guidelines
@@ -67,14 +76,14 @@ export function registerAdminCommands(program: Command, ctx: () => CliContext): 
 
   admin.command("settings")
     .description("Show or update settings")
-    .option("--set <pair...>", "key=value (instanceName, maxMessageLength, openWeaveCreation, guidelines; guidelines=- reads stdin)")
+    .option("--set <pair...>", "key=value (instanceName, maxMessageLength, openWeaveCreation, guidelines, removeOfflineListenersAfterMs; guidelines=- reads stdin; removeOfflineListenersAfterMs=off never removes)")
     .action(async (o: { set?: string[] }) => {
       const c = ctx();
       const k = c.keeperClient();
       const settings = o.set && o.set.length > 0
         ? await k.admin.updateSettings(parseSettingsPatch(await readStdinValues(o.set, c.io)))
         : await k.admin.getSettings();
-      emit(c, settings, Object.entries(settings).map(([key, v]) => `${key}: ${String(v)}`).join("\n"));
+      emit(c, settings, Object.entries(settings).map(([key, v]) => `${key}: ${shown(key, v)}`).join("\n"));
     });
 
   const keepers = admin.command("keepers").description("Manage instance keepers");

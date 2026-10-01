@@ -311,6 +311,20 @@ describe("admin", () => {
     const rm = await run(["admin", "keepers", "remove", add.json().keeper.id], K);
     expect(rm.code).toBe(0);
   });
+
+  it("admin settings --set removeOfflineListenersAfterMs takes off and a whole number, and refuses anything else (spec 2026-09-30 §7)", async () => {
+    const K = { LOOM_KEEPER_TOKEN: keeperToken("k1") };
+    const off = await run(["admin", "settings", "--set", "removeOfflineListenersAfterMs=off"], K);
+    expect(off.code).toBe(0);
+    expect(off.out).toContain("removeOfflineListenersAfterMs: off");
+    expect((await run(["admin", "settings", "--json"], K)).json().removeOfflineListenersAfterMs).toBeNull();
+    const hour = await run(["admin", "settings", "--set", "removeOfflineListenersAfterMs=3600000", "--json"], K);
+    expect([hour.code, hour.json().removeOfflineListenersAfterMs]).toEqual([0, 3_600_000]);
+    const bad = await run(["admin", "settings", "--set", "removeOfflineListenersAfterMs=1h", "--json"], K);
+    expect(bad.code).toBe(1);
+    expect(JSON.parse(bad.err)).toEqual({ code: "validation", message: "removeOfflineListenersAfterMs must be a whole number of milliseconds, or off" });
+    expect((await run(["admin", "settings", "--set", "removeOfflineListenersAfterMs=86400000"], K)).code).toBe(0);
+  });
 });
 
 describe("v2: thread url, invite, inbox, agents", () => {

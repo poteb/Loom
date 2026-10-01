@@ -46,6 +46,12 @@ export function formatEvent(e: LoomEvent, threads: Thread[], participants: Parti
     const by = str(e.payload.removedBy).startsWith("keeper:") ? "Keeper" : name(e.payload.removedBy);
     return `${head} ${name(e.payload.participantId)} was removed from this Thread by ${by}`;
   }
+  // The offline sweep (spec 2026-09-30 §9.2), in the style of the request.overdue line.
+  if (e.type === "listener.removed") {
+    const seen = typeof e.payload.lastSeenAt === "string" ? hhmm(e.payload.lastSeenAt) : "never";
+    return `${head} ${name(e.payload.participantId)} removed from the Listeners by Loom (last seen ${seen})`;
+  }
+  if (e.type === "request.offer_withdrawn") return `${head} offer by ${name(e.payload.participantId)} withdrawn by Loom (offline)`;
   if (e.type === "participant.capabilities_changed") {
     return `${head} profile ${e.payload.capabilities ? "set" : "cleared"} by ${name(e.payload.participantId)}`;
   }
