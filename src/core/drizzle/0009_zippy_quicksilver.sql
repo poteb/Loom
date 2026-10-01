@@ -1,0 +1,1 @@
+ALTER TABLE "settings" ADD COLUMN "remove_offline_listeners_after_ms" bigint DEFAULT 86400000;

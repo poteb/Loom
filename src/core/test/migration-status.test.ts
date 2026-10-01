@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { sql } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import {
   assertPendingTransactionSafe, assertTransactionSafe, closeDb, createDb, migrationStatus,
@@ -229,6 +229,28 @@ describe("migrationStatus against the real migrations", () => {
     expect(message).toContain(JOURNAL_TAGS[1]!);
     // What the row at that position actually held: entry 2's stamp, now sitting at position 1.
     expect(message).toContain(String(rows[2]!.created_at));
+  });
+
+  it("migration 0009 gives an existing settings row the 1 day default (spec 2026-09-30 §4.2)", async () => {
+    const db = await freshDatabase();
+    // Every migration but the last (0009), then a settings row as an instance that existed before it holds one.
+    await runMigrations(db, writeTruncatedRealFolder(1));
+    await db.execute(sql`insert into settings (id) values (1)`);
+    // The second run meets drizzle's bookkeeping schema and table already there, and postgres-js's
+    // default notice handler is console.log: two "already exists, skipping" NOTICEs, the ones every
+    // server boot prints (src/server/test/migrate.test.ts says so). Swallowed here and asserted
+    // exactly, so the output stays pristine and nothing else can hide behind the spy.
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    let notices: unknown[] = [];
+    try {
+      await runMigrations(db);
+    } finally {
+      notices = log.mock.calls.map(([n]) => (n as { code?: unknown }).code);
+      log.mockRestore();
+    }
+    expect(notices).toEqual(["42P06", "42P07"]);
+    const rows = (await db.execute(sql`select remove_offline_listeners_after_ms::text as v from settings where id = 1`)) as unknown as Array<{ v: string }>;
+    expect(rows.map((r) => r.v)).toEqual(["86400000"]);
   });
 
   it("a database ahead of the journal is drift, and the message carries the remedy", async () => {

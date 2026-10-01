@@ -7,16 +7,35 @@ import { assertInstanceKeeperFresh } from "./actors.js";
 import { validateGuidelines } from "./guidelines.js";
 import type { Actor, Settings } from "./types.js";
 
+/** The offline-removal limit's bounds and default (spec 2026-09-30 §4.1). */
+export const MIN_REMOVE_OFFLINE_MS = 3_600_000;       // 1 hour
+export const MAX_REMOVE_OFFLINE_MS = 2_592_000_000;   // 30 days
+export const DEFAULT_REMOVE_OFFLINE_MS = 86_400_000;  // 1 day
+
+/**
+ * The one rule for `removeOfflineListenersAfterMs`: `null` is off, a whole number from 1 hour to
+ * 30 days inclusive is a limit, anything else (a fraction, a number out of range, a string, a
+ * boolean, an object) is refused with one message.
+ */
+export function validateRemoveOfflineListenersAfterMs(v: unknown): number | null {
+  if (v === null) return null;
+  if (typeof v === "number" && Number.isInteger(v) && v >= MIN_REMOVE_OFFLINE_MS && v <= MAX_REMOVE_OFFLINE_MS) return v;
+  throw errors.validation("removeOfflineListenersAfterMs must be null (never remove) or a whole number of milliseconds from 3600000 (1 hour) to 2592000000 (30 days)");
+}
+
 const patchSchema = z.object({
   instanceName: z.string().trim().min(1).max(64).optional(),
   maxMessageLength: z.number().int().min(1).max(1_000_000).optional(),
   openWeaveCreation: z.boolean().optional(),
   guidelines: z.string().transform(validateGuidelines).optional(),
+  // z.unknown(), so the refusal is the rule's own message and not zod's; .optional() keeps an absent
+  // key out of the patch, and `updateSettings` keeps a null, which writes "off".
+  removeOfflineListenersAfterMs: z.unknown().transform(validateRemoveOfflineListenersAfterMs).optional(),
 }).strict();
 
 function toSettings(r: typeof settings.$inferSelect): Settings {
   return { instanceName: r.instanceName, maxMessageLength: r.maxMessageLength, openWeaveCreation: r.openWeaveCreation,
-    guidelines: r.guidelines };
+    guidelines: r.guidelines, removeOfflineListenersAfterMs: r.removeOfflineListenersAfterMs };
 }
 
 export async function getSettings(db: Queryable): Promise<Settings> {

@@ -63,4 +63,6 @@ export type Actor =
  * accepted it — carrying it on this shape only made `updateSettings({ lobbyTitle })` type-check and
  * then throw. Renaming the Lobby means renaming its Weave row.
  */
-export type Settings = { instanceName: string; maxMessageLength: number; openWeaveCreation: boolean; guidelines: string };
+export type Settings = { instanceName: string; maxMessageLength: number; openWeaveCreation: boolean; guidelines: string;
+  /** How long a Lobby Listener may go without a check-in before Loom removes its profile, once it also reads offline; null never removes (spec 2026-09-30 §4.1). */
+  removeOfflineListenersAfterMs: number | null };
