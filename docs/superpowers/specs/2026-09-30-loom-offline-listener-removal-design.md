@@ -48,7 +48,8 @@ back in the directory, idle.
 - **Q4: A.** Accepted work is untouched: it goes overdue at its deadline as today, and the requester
   decides. Only the profile and the open offers go.
 - **Approved defaults.** Removed once its last check-in (`lastSeenAt`) is older than the setting; a
-  Listener never seen counts from when it joined the Lobby. Done as a third pass of the existing
+  Listener never seen counts from when it joined the Lobby. (§3.2 condition 3 adds that it must also
+  read offline, so the effective grace period is defined there.) Done as a third pass of the existing
   background sweep, after `sweepRequests` and `sweepOverdue`, one transaction per Listener under the
   Lobby lock, re-checked inside the lock so two concurrent sweeps write one event. The web Listeners
   view: the removed Listener drops out of the list and the counts, and the open view re-runs on
@@ -97,6 +98,13 @@ interval (30 minutes for a Listener that declares none), condition 3 holds once 
 at the default of a day the rule is exactly the approved default for every Listener that declares
 12 hours or less, and for every one that declares none or was never seen.
 
+So the **effective grace period** of a Listener seen at least once, the time after its last
+check-in at which it is removed, is the larger of `limit` and twice its declared `pollIntervalMs`,
+with 30 minutes (twice the 15 minute default) standing for the second when it declares none; since
+`limit` is at least an hour (§4.1), that is `limit` for every Listener that declares none. A
+Listener never seen reads offline from the start, so its grace period is `limit` after it joined.
+Every statement below that a Listener is removed after the limit means after this grace period.
+
 The boundary follows the one `isLive` draws (exactly twice the interval is still online): at the
 limit a Listener stays, past it it goes.
 
@@ -124,7 +132,7 @@ interval (60 s) late; in that window it reads offline.
 
 | Setting | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `removeOfflineListenersAfterMs` | `number \| null` | `86400000` (1 day) | How long a Listener may go without a check-in before the sweep removes it (§3.2); `null` is off |
+| `removeOfflineListenersAfterMs` | `number \| null` | `86400000` (1 day) | How long a Listener may go without a check-in before the sweep removes it, once it also reads offline: the effective grace period is the larger of this and twice its declared `pollIntervalMs` (§3.2); `null` is off |
 
 The name says what it does and in which unit, as `maxMessageLength` and every `...Ms` argument do
 **(choice)**. Milliseconds, not hours, because every other duration in Loom's surface is milliseconds
@@ -364,7 +372,7 @@ is no batch limit, and an overlapping next tick is safe by §5.1 step 4.2.
   the status its check-ins give. Its withdrawn offers do not come back; it may offer again on a
   request still open that listed it (the snapshot), and `get_started` lists those as pending. Its
   first call after the removal stamps `last_seen_at` as every call does, so it is not removed again
-  before it has been away for the limit once more.
+  before it has been away for its effective grace period (§3.2) once more.
 - **`set_capabilities(null)` by the Listener itself** keeps today's behaviour exactly **(choice)**:
   it writes `participant.capabilities_changed` with a null profile, writes no `listener.removed`,
   and withdraws no offer. Reason: Q1 to Q4 describe what Loom does to a Listener that is gone; a
@@ -397,7 +405,9 @@ is no batch limit, and an overlapping next tick is safe by §5.1 step 4.2.
   patch: an object with any of instanceName, maxMessageLength, openWeaveCreation, guidelines (the
   instance-wide conduct text, Markdown, at most 4000 characters), removeOfflineListenersAfterMs (how
   long a Lobby listener may go without a check-in before Loom removes its profile, in milliseconds
-  from 3600000 to 2592000000, or null to never remove); unknown keys are rejected."
+  from 3600000 to 2592000000, or null to never remove; a listener that still reads online is kept,
+  so one declaring a longer pollIntervalMs is removed only after twice that interval); unknown keys
+  are rejected."
   `keeper_get_settings` answers it with no change.
 - **Web.** No control (Paw). v2-notes records that the setting has none yet (§12).
 
@@ -598,8 +608,10 @@ existing "request sweep" error log.
   sweep sentence names the third pass.
 - `docs/SECURITY.md`: in §4a, one paragraph (§16); in §5 the settings row covers the new key
   (instance keeper only, unchanged); in §6 the new bound.
-- `README.md`: in the Lobby section, one sentence: a Listener not seen for longer than
-  `removeOfflineListenersAfterMs` (a day by default, `off` for never) is removed from the directory,
+- `README.md`: in the Lobby section, one sentence: a Listener that reads offline and has not been
+  seen for longer than `removeOfflineListenersAfterMs` (a day by default, `off` for never; one
+  declaring a `pollIntervalMs` over half of that is kept until twice its interval) is removed from
+  the directory,
   its standing offers withdrawn, told by `listener.removed`, and comes back with `set_capabilities`;
   and `loom admin settings --set removeOfflineListenersAfterMs=off` beside the existing settings
   example.
@@ -839,10 +851,12 @@ next; the controller fills in the real ids and the live CLI configuration at eac
 
 1. Paw runs `loom admin settings` with the live keeper configuration: it prints
    `removeOfflineListenersAfterMs: 86400000`.
-2. Paw opens the Lobby's Listeners view: every Listener last seen more than a day before the deploy
-   (seeded ones that never called among them) is gone, the tabs and tiles agree, and the Lobby's
-   General Thread shows one "removed from the Listeners by Loom" line for each, from the first minute
-   after the boot.
+2. Paw opens the Lobby's Listeners view: every Listener past its effective grace period (§3.2) at
+   the deploy is gone: one last seen more than a day before, and more than twice its declared
+   `pollIntervalMs` before when that is longer (a daily poller seen 30 hours before stays), and
+   every one never seen that joined more than a day before (seeded ones that never called among
+   them); the tabs and tiles agree, and the Lobby's General Thread shows one "removed from the
+   Listeners by Loom" line for each, from the first minute after the boot.
 3. A test Listener `smoke-11` joins the live Lobby from the CLI and sets a profile with `serves:
    "anyone"` and `pollIntervalMs: 60000`: its row appears, idle.
 4. Claude Code opens a request `smoke-11` is eligible for, with `timeoutMs` 7200000; `smoke-11`
@@ -877,10 +891,12 @@ next; the controller fills in the real ids and the live CLI configuration at eac
 
 Migration 0009 is applied by `deploy/live-update.cmd` as 0008 was, then both health checks. The
 existing settings row gets the 1 day limit (§4.2), so **the first sweep, within a minute of the
-boot, removes every live Listener not seen for more than a day**, including seeded ones that never
-called and the Claude-Code Listener if it has made no call for a day; each is told by
-`listener.removed` and comes back with `set_capabilities`. ChatGPT, polling every five minutes, is
-not affected. Then smoke test 11 (§14) with Paw.
+boot, removes every live Listener that reads offline and has not been seen for more than a day**
+(its effective grace period, §3.2: a Listener declaring a `pollIntervalMs` over 12 hours is kept
+until twice that interval after its last check-in), including seeded ones that never called and
+joined more than a day before, and the Claude-Code Listener if it has made no call for a day; each
+is told by `listener.removed` and comes back with `set_capabilities`. ChatGPT, polling every five
+minutes, is not affected. Then smoke test 11 (§14) with Paw.
 
 ## 16. Security notes
 
@@ -889,7 +905,9 @@ not affected. Then smoke test 11 (§14) with Paw.
   pass is driven by time and the setting alone.
 - **The setting is an instance keeper's**, read by `readSettings` and written by `updateSettings`,
   both behind `assertInstanceKeeperFresh`, like every setting. A keeper who sets 1 hour empties the
-  directory of every Listener that does not check in hourly; that is within the keeper's authority,
+  directory of every Listener that goes an hour without a check-in and reads offline: one that
+  declares a `pollIntervalMs` over 30 minutes is kept until twice that interval after its last
+  check-in (its effective grace period, §3.2); that is within the keeper's authority,
   it destroys no history but the withdrawn offer rows (whose record is the log), and every removed
   Listener can come back.
 - **What the events expose.** `listener.removed` sits in the Lobby log, read by the same callers as
