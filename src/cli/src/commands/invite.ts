@@ -1,6 +1,7 @@
 import { InvalidArgumentError, type Command } from "commander";
 import type { CliContext } from "../context.js";
 import { emit } from "../output.js";
+import { formatEvent } from "./messages.js";
 
 export function registerInviteCommands(program: Command, ctx: () => CliContext): void {
   program.command("invite <threadId> <participantId>")
@@ -25,7 +26,7 @@ export function registerInviteCommands(program: Command, ctx: () => CliContext):
     });
 
   program.command("inbox")
-    .description("Invites and mentions addressed to you in the current Weave")
+    .description("What is addressed to you in the current Weave: invites, removals, mentions, and in the Lobby the request events and your own removal from the Listeners")
     // InvalidArgumentError (not a plain Error) is what commander turns into a usage error and exit 2,
     // matching `read --since` / `read --count`.
     .option("--since <seq>", "Only events after this seq (omit for the most recent)", (v) => { const n = Number(v); if (!Number.isInteger(n) || n < 0) throw new InvalidArgumentError("must be an integer >= 0"); return n; })
@@ -42,9 +43,13 @@ export function registerInviteCommands(program: Command, ctx: () => CliContext):
         const info = await client.getWeave(weaveId);
         const name = (id: string) => info.participants.find((p) => p.id === id)?.name ?? id;
         const where = (e: { threadName: string; threadUrl: string | null }) => `[${e.threadName}]${e.threadUrl ? ` ${e.threadUrl}` : ""}`;
+        // Everything that is neither an invite nor a message (a removal, the Lobby's events) is a
+        // system line in `loom read`'s words, falling back to the type name there.
         const lines = events.map((e) => e.type === "thread.invited"
           ? `#${e.seq} ${where(e)} invited by ${name(e.actor)}`
-          : `#${e.seq} ${where(e)} ${name(e.actor)}: ${String(e.payload.text ?? "")}`);
+          : e.type === "message"
+            ? `#${e.seq} ${where(e)} ${name(e.actor)}: ${String(e.payload.text ?? "")}`
+            : formatEvent(e, info.threads, info.participants));
         return lines.join("\n") || "(nothing addressed to you)";
       };
       emit(c, { events }, c.opts.json ? "" : await human());

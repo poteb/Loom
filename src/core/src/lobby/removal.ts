@@ -6,7 +6,7 @@ import { withWeaveLock, type NewEvent } from "../events.js";
 import { getSettings } from "../settings.js";
 import { getLobby, lobbyGeneralThreadId } from "./lobby.js";
 import { stillRunning } from "./requests.js";
-import { isOnline } from "./status.js";
+import { isOnline, offlineSql } from "./status.js";
 import type { Profile } from "./matching.js";
 
 /*
@@ -41,10 +41,12 @@ export type RemovalOptions = {
 
 /**
  * §5.1. Reads the setting once (off: nothing else is read), then the candidates in one query without
- * a lock (conditions 1 and 2 of §3.2 on the millisecond value a JavaScript `Date` holds, a superset
- * of the removable set), then decides each one again in its own transaction under the Lobby lock,
- * on its participant row re-read `FOR UPDATE`: a check-in that committed first is what the re-read
- * sees, and of two passes racing the second finds the profile already gone and writes nothing.
+ * a lock (all three conditions of §3.2 on the millisecond value a JavaScript `Date` holds, condition
+ * 3 as `offlineSql`, so a Listener past the limit but still online is no candidate and costs no
+ * Lobby-lock transaction: external review round 1, S3), then decides each one again with
+ * `isRemovable` in its own transaction under the Lobby lock, on its participant row re-read
+ * `FOR UPDATE`, which is the deciding check: a check-in that committed after the query is what the
+ * re-read sees, and of two passes racing the second finds the profile already gone and writes nothing.
  * `stampSeen` takes no Weave lock and locks that one row, so no lock cycle exists. Returns how many
  * Listeners it removed.
  */
@@ -54,12 +56,12 @@ export async function sweepOfflineListeners(db: Db, bus: EventBus, now = new Dat
   const { weaveId: lobbyId } = await getLobby(db);
   const generalThreadId = await lobbyGeneralThreadId(db, lobbyId);
   const cutoff = new Date(now.getTime() - limit);
-  // The truncation `statusSql` uses, so the candidate test and the `Date` the re-read hands
-  // `isRemovable` agree on a stored microsecond.
+  // The truncation `statusSql` and `offlineSql` use, so the candidate test and the `Date` the
+  // re-read hands `isRemovable` agree on a stored microsecond.
   const reference = sql`date_trunc('milliseconds', coalesce(${participants.lastSeenAt}, ${participants.joinedAt}))`;
   const candidates = await db.select({ id: participants.id }).from(participants)
     .where(and(eq(participants.weaveId, lobbyId), isNotNull(participants.capabilities),
-      sql`${reference} < ${cutoff.toISOString()}::timestamptz`))
+      sql`${reference} < ${cutoff.toISOString()}::timestamptz`, offlineSql(now)))
     .orderBy(asc(reference), asc(participants.id));
   let removed = 0;
   for (const { id } of candidates) {

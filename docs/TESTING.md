@@ -181,11 +181,11 @@ guarded by `typeof document !== "undefined"` because the package runs Vitest wit
 
 ## Current totals
 
-As of **the offline-removal slice** on `feat/offline-listener-removal` (measured at `3901e2c`,
-after its Task 7; this commit changes only docs): **2421 tests in 80 files**: core 760 in 32, web
-968 in 17, server 244 in 10, claude-channel 149 in 9, cli 84 in 5, client 50 in 4, mcp-tools 166
-in 3, from `pnpm -r build`, `pnpm -r typecheck` (clean) and
-`pnpm --workspace-concurrency=1 -r test`, every suite passing. The baseline recorded by the plan's
+As of **the offline-removal slice** on `feat/offline-listener-removal` (measured after its fix wave
+for external review round 1): **2423 tests in 80 files**: core 761 in 32, web 968 in 17, server 244
+in 10, claude-channel 149 in 9, cli 85 in 5, client 50 in 4, mcp-tools 166 in 3, from
+`pnpm -r build`, `pnpm -r typecheck` (clean) and `pnpm --workspace-concurrency=1 -r test`, every
+suite passing. The baseline recorded by the plan's
 Task 0 was `main` at `787f40a`, 2368 in 79, so the slice added **53 tests and one file**: the new
 `src/core/test/lobby-removal.test.ts` holds 25, and core gained 8 more in existing files
 (`lobby-onboarding.test.ts` 3, `settings-keepers.test.ts` 2, `migration-status.test.ts` 1,
@@ -193,7 +193,10 @@ Task 0 was `main` at `787f40a`, 2368 in 79, so the slice added **53 tests and on
 `components.test.tsx` 1, `fold.test.ts` 1); server +2 (`routes.test.ts` 1, `lobby-routes.test.ts`
 1); claude-channel +3 (`format.test.ts` 3); cli +2 (`cli-more.test.ts` 1, `lobby.test.ts` 1);
 client +1 (`client.test.ts` 1); mcp-tools +4 (`onboarding.test.ts` 2, `tools.test.ts` 1,
-`skills.test.ts` 1). The repaired and renamed cases added none.
+`skills.test.ts` 1). The repaired and renamed cases added none. The fix wave for external review
+round 1 added two more: core +1 (`export.test.ts` 1, the two events' Markdown lines) and cli +1
+(`lobby.test.ts` 1, `loom inbox`'s human lines); its rewritten daily-poller case in
+`lobby-removal.test.ts` (no longer a candidate) added none.
 
 Before it, as of **the agent-skills slice** on `feat/agent-skills` (measured after its final-fix wave of
 2026-09-29, which added the `PROFILE_KEYS` case and four classifier cases): **2368 tests in 79

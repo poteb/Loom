@@ -277,19 +277,26 @@ describe("sweepOfflineListeners against Postgres (spec 2026-09-30 §5, §6)", ()
     expect(await types(bystander.actor)).toEqual([]);
   });
 
-  it("a daily poller seen 25 hours ago is a candidate and kept: the pass returns 0, writes nothing, and its profile and offers are unchanged", async () => {
+  // External review round 1, S3: the candidate query applies the offline condition too, so a
+  // Listener past the limit but still online costs no Lobby-lock transaction. The offline control
+  // shows the seam is reached for a real candidate in the same pass.
+  it("a daily poller seen 25 hours ago is not a candidate and is kept: beforeLock is never called for it, its profile and offers are unchanged", async () => {
     const w = await world();
     const l = await listener("Daily", { pollIntervalMs: DAY });
+    const gone = await listener("Gone");
     const r = await w.ask("Review PR 14");
     await offer(db, bus, l.actor, r.id, {});
     const now = new Date();
     await seenAt(l.id, ago(now, 25 * HOUR));
-    const state = async () => ({ row: await row(l.id), offers: await db.select().from(requestOffers).where(eq(requestOffers.participantId, l.id)), log: await log(w) });
+    await seenAt(gone.id, ago(now, DAY + 1));
+    const state = async () => ({ row: await row(l.id), offers: await db.select().from(requestOffers).where(eq(requestOffers.participantId, l.id)) });
     const before = await state();
+    const since = await lastSeq(w);
     const candidates: string[] = [];
-    expect(await sweepOfflineListeners(db, bus, now, { beforeLock: async (id) => { candidates.push(id); } })).toBe(0);
-    expect(candidates).toEqual([l.id]);
+    expect(await sweepOfflineListeners(db, bus, now, { beforeLock: async (id) => { candidates.push(id); } })).toBe(1);
+    expect(candidates).toEqual([gone.id]);
     expect(await state()).toEqual(before);
+    expect((await after(w, since)).map((e) => [e.type, e.payload.participantId])).toEqual([["listener.removed", gone.id]]);
   });
 
   it("joined_at with microseconds: 500 microseconds inside the limit is kept, 500 microseconds past it is removed", async () => {

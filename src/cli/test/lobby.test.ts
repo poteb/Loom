@@ -573,4 +573,25 @@ describe("offline removal in loom read (spec 2026-09-30 §9.2)", () => {
     const thread = await run(["read", "--weave", lobbyWeaveId, "--thread", r.threadId], { cfg: seenOne.req });
     expect(thread.out).toContain(`* offer by ${seenOne.botName} withdrawn by Loom (offline)`);
   });
+
+  // External review round 1, S1: an inbox's Lobby items in the `loom read` words, not `system: `.
+  it("inbox renders listener.removed, request.opened and request.offer_withdrawn in the read lines, never as an empty system line", async () => {
+    const sc = await scenario();
+    const title = uniq("Review PR 14");
+    const r = (await run(["request", "open", "--title", title, "--require", JSON.stringify(REQUIRE),
+      "--wanted", "1", "--weave", sc.weaveId, "--thread", sc.threadId, "--json"], { cfg: sc.req })).json();
+    expect((await run(["request", "offer", r.id, "--json"], { cfg: sc.bot })).code).toBe(0);
+    const seen = new Date(Date.now() - 2 * 86_400_000);
+    await sqlUnsafe("update participants set last_seen_at = $2::timestamptz where id = $1", [sc.botId, seen.toISOString()]);
+    await s.core.sweepOfflineListeners();
+    const mine = await run(["inbox", "--weave", lobbyWeaveId], { cfg: sc.bot });
+    expect(mine.code).toBe(0);
+    expect(mine.out).toContain(`* ${sc.botName} removed from the Listeners by Loom (last seen ${hhmm(seen.toISOString())})`);
+    expect(mine.out).toContain(`* request opened: ${title} (wants 1, expires ${hhmm(r.expiresAt)})`);
+    expect(mine.out).not.toContain("system: ");
+    const theirs = await run(["inbox", "--weave", lobbyWeaveId], { cfg: sc.req });
+    expect(theirs.code).toBe(0);
+    expect(theirs.out).toContain(`* offer by ${sc.botName} withdrawn by Loom (offline)`);
+    expect(theirs.out).not.toContain("system: ");
+  });
 });

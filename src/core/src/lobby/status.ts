@@ -73,17 +73,23 @@ const holdsWorkSql = sql`EXISTS (SELECT 1 FROM ${requestOffers}
     AND ${requests.status} = 'working')`;
 
 /**
- * §4.2, in SQL: a CASE over one `participants` row yielding `'offline'`, `'working'` or `'idle'`.
- * `now` is the same `Date` the TypeScript side of the read uses, as a bind parameter, never
- * Postgres's `now()`. The elapsed time is compared in exact milliseconds, on the millisecond value a
- * JavaScript `Date` holds (`date_trunc`), so the boundary is the one `isLive` draws.
+ * `!isOnline` in SQL, over one `participants` row: never seen, or seen more than twice the interval
+ * before `now`. `now` is the same `Date` the TypeScript side of the read uses, as a bind parameter,
+ * never Postgres's `now()`. The elapsed time is compared in exact milliseconds, on the millisecond
+ * value a JavaScript `Date` holds (`date_trunc`), so the boundary is the one `isLive` draws. The
+ * status rule's offline arm, and the offline-removal candidate query's condition 3 (spec 2026-09-30
+ * §3.2; external review round 1, S3).
  */
-export function statusSql(now: Date): SQL {
+export function offlineSql(now: Date): SQL {
   const at = sql`${now.toISOString()}::timestamptz`;
+  return sql`(${participants.lastSeenAt} IS NULL
+    OR EXTRACT(EPOCH FROM (${at} - date_trunc('milliseconds', ${participants.lastSeenAt}))) * 1000 > 2 * ${intervalSql})`;
+}
+
+/** §4.2, in SQL: a CASE over one `participants` row yielding `'offline'`, `'working'` or `'idle'`. */
+export function statusSql(now: Date): SQL {
   return sql`(CASE
-    WHEN ${participants.lastSeenAt} IS NULL
-      OR EXTRACT(EPOCH FROM (${at} - date_trunc('milliseconds', ${participants.lastSeenAt}))) * 1000 > 2 * ${intervalSql}
-      THEN 'offline'
+    WHEN ${offlineSql(now)} THEN 'offline'
     WHEN ${holdsWorkSql} THEN 'working'
     ELSE 'idle' END)`;
 }

@@ -9,6 +9,12 @@ import { resolveCredential } from "../src/actors.js";
 import { setWeaveGuidelines } from "../src/guidelines.js";
 import { inviteParticipant } from "../src/invites.js";
 import { removeParticipant } from "../src/removals.js";
+import { ensureLobby, joinLobby } from "../src/lobby/lobby.js";
+import { setCapabilities } from "../src/lobby/profile.js";
+import { offer, openRequest } from "../src/lobby/requests.js";
+import { sweepOfflineListeners } from "../src/lobby/removal.js";
+import { participants } from "../src/db/schema.js";
+import { eq } from "drizzle-orm";
 import type { Db } from "../src/db/index.js";
 
 afterAll(closeTestDb);
@@ -100,6 +106,39 @@ describe("exportWeave", () => {
     const md = await exportWeave(db, me, r.weave.id, "md");
     expect(md).toContain("_system: ChatGPT removed from the Thread by Paw_");
     expect(md).not.toContain("_system: thread.removed_");
+  });
+
+  // External review round 1, S2: the offline sweep's two events in the web's words, not their type.
+  it("renders listener.removed (last seen, or never) and request.offer_withdrawn as system lines in the web's words", async () => {
+    const lobby = await ensureLobby(db);
+    const reader = await resolveCredential(db, lobby.secret);
+    const target = await createWeave(db, bus, { title: "Session", opener: "hi", creator: { name: "Paw", kind: "human" } });
+    const keeper = await resolveCredential(db, target.token);
+    const thread = await createThread(db, bus, keeper, target.weave.id, "PR 14");
+    const requester = await resolveCredential(db, (await joinLobby(db, bus, { name: "Asker", kind: "human" })).token);
+    const bot = async (name: string) => {
+      const j = await joinLobby(db, bus, { name, kind: "agent" });
+      const actor = await resolveCredential(db, j.token);
+      await setCapabilities(db, bus, actor, { owner: `${name}-owner`, serves: "anyone" });
+      return { id: j.participant.id, actor };
+    };
+    const seenOne = await bot("Seen");
+    const neverSeen = await bot("Never");
+    const r = await openRequest(db, bus, requester, keeper, {
+      title: "Review PR 14", requirements: {}, wanted: 1, targetWeaveId: target.weave.id, targetThreadId: thread.id, url: null,
+    });
+    await offer(db, bus, seenOne.actor, r.id, {});
+    const now = new Date();
+    const seen = new Date(now.getTime() - 2 * 86_400_000);
+    await db.update(participants).set({ lastSeenAt: seen }).where(eq(participants.id, seenOne.id));
+    await db.update(participants).set({ lastSeenAt: null, joinedAt: seen }).where(eq(participants.id, neverSeen.id));
+    expect(await sweepOfflineListeners(db, bus, now)).toBe(2);
+    const md = await exportWeave(db, reader, lobby.weaveId, "md");
+    expect(md).toContain(`_system: Seen was removed from the Listeners by Loom (last seen ${seen.toISOString()})_`);
+    expect(md).toContain("_system: Never was removed from the Listeners by Loom (last seen never)_");
+    expect(md).toContain("_system: Seen's offer was withdrawn by Loom (offline)_");
+    expect(md).not.toContain("_system: listener.removed_");
+    expect(md).not.toContain("_system: request.offer_withdrawn_");
   });
 
   it("rejects bad format and foreign credential", async () => {
