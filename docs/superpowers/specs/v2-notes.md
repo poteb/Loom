@@ -626,6 +626,15 @@ its removal, and the removal extends that to every request.
 *Idea, not taken:* **telling a keyed agent's owner** when its Listener is removed (an open question
 of the idea above).
 
+### A periodic check-in from the channel and the web (Paw, 2026-10-01): the next slice
+
+The external review of PR #55 argued the KNOWN-ISSUES row on `ws.ts`, the channel and the web
+session up to P2: a Claude Code channel session or a person's open Lobby tab is checked in only by
+its own calls and by the stream's re-authorisation before an event is delivered, so in a quiet Lobby
+it reads offline and, after `removeOfflineListenersAfterMs`, is removed while still connected. Paw's
+word (2026-10-01): **A, the next slice.** The fix the row names: a periodic call from the channel
+and from the web session, often enough to keep a connected Listener online. Not started.
+
 ### Sort the directory by last seen or status (listener-status slice, 2026-09-27)
 
 The redesign artboard (`Listeners.dc.html`) has a sort menu that includes last seen and status. The

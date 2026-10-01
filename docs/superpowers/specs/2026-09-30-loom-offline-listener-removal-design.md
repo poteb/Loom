@@ -5,6 +5,11 @@ Date: 2026-09-30. Status: approved by Paw 2026-10-01 (PR #53); the implementatio
 Brainstorm: the controller session of
 2026-09-30; Paw's answers Q1 to Q4 and the approved defaults are restated in §2.
 
+Amended 2026-10-01 (PR #55, external review round 1, S3): the candidate query of §5.1 step 3
+also checks condition 3 of §3.2 (reads offline), so a Listener past the limit but still online is
+no longer a candidate; the lock re-check with `isRemovable` still decides. The §13.1 test "a daily
+poller seen 25 hours ago is a candidate and kept" now asserts it is not a candidate and is kept.
+
 Review round 1 (PR #53, external): F1 decided by Paw (A, §2) and fixed; F2 to F6 and the
 `actors.ts` severity challenge fixed in this revision.
 
