@@ -47,11 +47,17 @@ const intervalOf = (profile: Profile | null): number =>
   profile !== null && typeof profile.pollIntervalMs === "number" ? profile.pollIntervalMs : DEFAULT_POLL_INTERVAL_MS;
 
 /**
- * §4.2, in TypeScript. Online is exactly `isLive` with the interval above (so exactly twice the
- * interval is still online), never seen is offline, offline wins over working.
+ * Online by §4.2 step 1: seen within twice the declared `pollIntervalMs`, the 15 minute default when
+ * none is declared (so exactly twice is still online); never seen is not online. The status rule's
+ * first step, shared with the offline-removal rule (spec 2026-09-30 §3.2 condition 3).
  */
+export function isOnline(profile: Profile | null, lastSeenAt: Date | null, now: Date): boolean {
+  return isLive({ pollIntervalMs: intervalOf(profile) }, { lastSeenAt, now });
+}
+
+/** §4.2, in TypeScript: offline unless `isOnline`, and offline wins over working. */
 export function listenerStatus(profile: Profile | null, lastSeenAt: Date | null, holdsWork: boolean, now: Date): ListenerStatus {
-  if (!isLive({ pollIntervalMs: intervalOf(profile) }, { lastSeenAt, now })) return "offline";
+  if (!isOnline(profile, lastSeenAt, now)) return "offline";
   return holdsWork ? "working" : "idle";
 }
 

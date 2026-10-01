@@ -9,8 +9,8 @@ export const EVENT_TYPES = [
   "thread.created", "thread.closed", "thread.invited", "thread.removed", "thread.url_changed",
   "weave.archived", "weave.guidelines_changed",
   // Lobby. All of these are addressed-only: they never wake anyone through a Weave's "all events" mode.
-  "participant.capabilities_changed",
-  "request.opened", "request.offered", "request.accepted", "request.closed", "request.completed", "request.overdue",
+  "participant.capabilities_changed", "listener.removed",
+  "request.opened", "request.offered", "request.offer_withdrawn", "request.accepted", "request.closed", "request.completed", "request.overdue",
   "weave.invited",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];

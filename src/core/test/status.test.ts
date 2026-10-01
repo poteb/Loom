@@ -11,7 +11,7 @@ import { ensureLobby, joinLobby } from "../src/lobby/lobby.js";
 import { setCapabilities, findAgents } from "../src/lobby/profile.js";
 import { accept, getRequest, offer, openRequest } from "../src/lobby/requests.js";
 import { listListeners } from "../src/lobby/listeners.js";
-import { cadenceOf, listenerStatus, workFor, DEFAULT_POLL_INTERVAL_MS, type ListenerStatus } from "../src/lobby/status.js";
+import { cadenceOf, isOnline, listenerStatus, workFor, DEFAULT_POLL_INTERVAL_MS, type ListenerStatus } from "../src/lobby/status.js";
 import { randomUUID } from "node:crypto";
 import type { Listener, ListenersPage, ListenersQuery } from "../src/lobby/listeners-input.js";
 import type { Profile } from "../src/lobby/matching.js";
@@ -80,6 +80,14 @@ describe("listenerStatus (spec 2026-09-27 §4.2)", () => {
   it("online with work is working; online without is idle", () => {
     const p = P({ pollIntervalMs: 300_000 });
     expect([listenerStatus(p, ago(60_000), true, NOW), listenerStatus(p, ago(60_000), false, NOW)]).toEqual(["working", "idle"]);
+  });
+
+  it("isOnline agrees with listenerStatus across the boundary fixture: online exactly when the status is not offline (spec 2026-09-30 §3.2)", () => {
+    const profiles = [null, P(), P({ pollIntervalMs: "5 min" }), P({ pollIntervalMs: 300_000 })];
+    const seen = [null, ago(60_000), ago(600_000), ago(600_001), ago(1_800_000), ago(1_800_001)];
+    for (const p of profiles) for (const s of seen) for (const work of [false, true]) {
+      expect({ p, s, work, online: isOnline(p, s, NOW) }).toEqual({ p, s, work, online: listenerStatus(p, s, work, NOW) !== "offline" });
+    }
   });
 });
 
