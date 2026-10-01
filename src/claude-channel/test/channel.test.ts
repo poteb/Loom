@@ -214,9 +214,9 @@ describe("channel tools", () => {
     });
   });
 
-  it("the instructions list the three new types", async () => {
+  it("the instructions list the onboarding and removal types", async () => {
     await withChannel(stateDir, async (c) => {
-      expect(c.getInstructions()).toContain('|request.completed|request.overdue|thread.removed" from=');
+      expect(c.getInstructions()).toContain('|request.completed|request.overdue|thread.removed|listener.removed|request.offer_withdrawn" from=');
     });
   });
 });

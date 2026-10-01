@@ -89,6 +89,13 @@ export function formatEvent(e: LoomEvent, weave: { id: string; title: string }, 
       break;
     }
     case "thread.removed": content = `${who(e.payload.participantId).name} was removed from this Thread by ${who(e.payload.removedBy).name}`; break;
+    // The offline sweep (spec 2026-09-30 §9.3); `never` for a Listener never seen, as on request.overdue.
+    case "listener.removed": {
+      const seen = typeof e.payload.lastSeenAt === "string" ? hhmm(e.payload.lastSeenAt) : "never";
+      content = `${who(e.payload.participantId).name} was removed from the Listeners by Loom (last seen ${seen})`;
+      break;
+    }
+    case "request.offer_withdrawn": content = `${who(e.payload.participantId).name}'s offer on "${threadName}" was withdrawn by Loom (offline)`; break;
     case "participant.capabilities_changed":
       content = `${who(e.payload.participantId).name} ${e.payload.capabilities ? "updated" : "cleared"} their Lobby profile`;
       break;
@@ -125,10 +132,13 @@ export function shouldWake(e: LoomEvent, w: Prefs & { participantId: string }): 
       case "request.accepted": return has(e.payload.participantIds);
       case "weave.invited": return w.invites && e.payload.participantId === me;
       // Addressed-only, like the rest of the Lobby's (spec §6.10): the requester is woken by its work
-      // finishing or missing its deadline, and a participant by being taken off a Thread. Undoing an
-      // invite is not an invite, so the invites preference does not silence it.
-      case "request.completed": case "request.overdue": return has(e.payload.to);
+      // finishing or missing its deadline, or by an offer the offline sweep withdrew (spec 2026-09-30
+      // §9.3), and a participant by being taken off a Thread. Undoing an invite is not an invite, so
+      // the invites preference does not silence it.
+      case "request.completed": case "request.overdue": case "request.offer_withdrawn": return has(e.payload.to);
       case "thread.removed": return e.payload.participantId === me;
+      // Loom removed this session's own profile for not checking in: it asks the session to act.
+      case "listener.removed": return e.payload.participantId === me;
       // A request Thread's companions: its addressed request.opened / request.closed is what wakes.
       case "thread.created": case "thread.closed": if (typeof e.payload.requestId === "string") return false; break;
     }

@@ -248,3 +248,34 @@ describe("deadlines and removals", () => {
       .toBe("Claude was removed from this Thread by Paw");
   });
 });
+
+describe("offline removal (spec 2026-09-30 §9.3)", () => {
+  const removed = (participantId: string, lastSeenAt: string | null) => ev({ type: "listener.removed", actor: "system",
+    payload: { participantId, reason: "offline", lastSeenAt, afterMs: 86_400_000, previous: { owner: "paw" }, withdrawn: [] } });
+  const withdrawn = (to: string) => ev({ type: "request.offer_withdrawn", actor: "system", threadId: "d",
+    payload: { requestId: "r1", participantId: "p2", reason: "offline", to } });
+
+  it("shouldWake: a listener.removed naming the session's participant wakes it in both wake modes, one naming another does not", () => {
+    for (const wake of ["all", "mentions"] as const) {
+      const w = { participantId: "p1", wake, invites: true, requests: true };
+      expect([shouldWake(removed("p1", null), w), shouldWake(removed("p3", null), w)]).toEqual([true, false]);
+    }
+  });
+
+  it("shouldWake: a request.offer_withdrawn whose to is the session's participant wakes it in both wake modes, and one to another participant in neither, wake all included", () => {
+    for (const wake of ["all", "mentions"] as const) {
+      const w = { participantId: "p1", wake, invites: true, requests: true };
+      expect([shouldWake(withdrawn("p1"), w), shouldWake(withdrawn("p3"), w)]).toEqual([true, false]);
+    }
+  });
+
+  it("formatEvent renders both in one line each, and the withdrawal carries its request in meta", () => {
+    const seen = "2026-09-29T18:00:00.000Z";
+    const d = new Date(seen);
+    const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    expect(formatEvent(removed("p1", seen), weave, names, "p1").content).toBe(`Claude was removed from the Listeners by Loom (last seen ${hm})`);
+    expect(formatEvent(removed("p1", null), weave, names, "p1").content).toBe("Claude was removed from the Listeners by Loom (last seen never)");
+    const w = formatEvent(withdrawn("p1"), weave, names, "p1");
+    expect([w.content, w.meta.request]).toEqual(["Paw's offer on \"Design\" was withdrawn by Loom (offline)", "r1"]);
+  });
+});
