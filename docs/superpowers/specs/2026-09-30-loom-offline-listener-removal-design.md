@@ -1,6 +1,8 @@
 # Loom: removing offline Listeners
 
-Date: 2026-09-30. Status: draft for Paw's approval. Brainstorm: the controller session of
+Date: 2026-09-30. Status: approved by Paw 2026-10-01 (PR #53); the implementation plan is
+[2026-09-30-loom-offline-listener-removal.md](../plans/2026-09-30-loom-offline-listener-removal.md).
+Brainstorm: the controller session of
 2026-09-30; Paw's answers Q1 to Q4 and the approved defaults are restated in §2.
 
 Review round 1 (PR #53, external): F1 decided by Paw (A, §2) and fixed; F2 to F6 and the
