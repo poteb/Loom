@@ -3738,3 +3738,73 @@ describe("Mark all read, and the Lobby page (spec 2026-09-26 §6.5, §6.6)", () 
     } finally { session.dispose(); }
   });
 });
+
+describe("listener.removed (spec 2026-09-30 §9.1)", () => {
+  /**
+   * Ages one Listener two days and runs the server's pass. Nobody else in this file's Lobby has gone
+   * a day without a check-in, so only it is removed; the server's own one-minute sweep may get there
+   * first, which writes the same event.
+   */
+  const removeByTheSweep = async (participantId: string) => {
+    await s.core.db.$client.unsafe("update participants set last_seen_at = now() - interval '2 days' where id = $1", [participantId] as never);
+    await s.core.sweepOfflineListeners();
+  };
+  const sawRemoval = (session: Session, participantId: string) => () =>
+    session.getState().events.some((e) => e.type === "listener.removed" && e.payload.participantId === participantId);
+
+  it("a listener.removed naming this session's participant schedules a refresh, re-reads its profile (now null) and tells the open directory", async () => {
+    const f = await lobbyFixture();
+    const id = await lobbyId();
+    const gate = makeGate();
+    const c = sideReadClient({}, onCall(2, parks(gate)));   // read 1 is the load's; park the refresh's
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: id }, storage: await asListener(f) });
+    await session.load();
+    try {
+      await waitFor(() => c.calls(MY_PROFILE) > 0);
+      const reads = c.calls(MY_PROFILE);
+      await waitFor(() => session.getState().connection === "open");
+      let directory = 0;
+      const off = session.onWorkChanged(() => { directory++; });
+      await removeByTheSweep(f.helper.participant.id);
+      await gate.entered;                                   // the refresh that event scheduled is parked
+      await waitFor(() => c.calls(MY_PROFILE) > reads);
+      await waitFor(() => session.getState().me?.participant.capabilities === null);
+      expect(directory).toBe(1);
+      off();
+    } finally { gate.release(); session.dispose(); }
+  });
+
+  it("one naming someone else re-reads no profile and still tells the open directory; with the directory closed nothing re-runs", async () => {
+    const f = await lobbyFixture();
+    const id = await lobbyId();
+    const gate = makeGate();
+    // Every refresh also re-reads my own profile (the backstop), so the first one is parked and the
+    // later ones coalesce behind it: what is counted is the events' own doing.
+    const c = sideReadClient({}, onCall(2, parks(gate)));
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: id }, storage: await asListener(f) });
+    await session.load();
+    try {
+      await waitFor(() => c.calls(MY_PROFILE) > 0);
+      await waitFor(() => session.getState().connection === "open");
+      const listenerOf = async () => {
+        const j = await anon.joinLobby({ name: `Other-${++fixtureN}`, kind: "agent" });
+        await anon.withToken(j.token).setCapabilities(aProfile());
+        await waitFor(() => session.getState().events.some((e) => e.type === "participant.capabilities_changed" && e.payload.participantId === j.participant.id));
+        return j.participant.id;
+      };
+      const other = await listenerOf();
+      await gate.entered;                                   // that event's refresh is parked
+      const reads = c.calls(MY_PROFILE);
+      let directory = 0;
+      const off = session.onWorkChanged(() => { directory++; });
+      await removeByTheSweep(other);
+      await waitFor(sawRemoval(session, other));
+      expect([c.calls(MY_PROFILE), directory]).toEqual([reads, 1]);
+      off();                                                // the directory closes
+      const third = await listenerOf();
+      await removeByTheSweep(third);
+      await waitFor(sawRemoval(session, third));
+      expect([c.calls(MY_PROFILE), directory]).toEqual([reads, 1]);
+    } finally { gate.release(); session.dispose(); }
+  });
+});

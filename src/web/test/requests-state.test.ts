@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { LoomEvent, LoomRequest, Offer, RequestStatus } from "@loom/client";
-import { acceptedIds, applyEvent, applySnapshot, displayStatus, type Requests } from "../src/requests-state.js";
+import { acceptedIds, applyEvent, applySnapshot, changesWork, displayStatus, isRequestEvent, type Requests } from "../src/requests-state.js";
 
 const EXPIRES = "2026-09-16T14:00:00.000Z";
 const BEFORE = Date.parse("2026-09-16T13:30:00.000Z");
@@ -182,5 +182,29 @@ describe("deadlines, completion and removal", () => {
       participantId: "p2", dueAt: EXPIRES, completedAt: null, note: null, removed: false, removedAt: null,
       overdue: false, overdueNotifiedAt: null, lastSeenAt: null, listenerStatus: "offline" }] }));
     expect(read.r1!.acceptances.map((a) => a.listenerStatus)).toEqual(["offline"]);
+  });
+});
+
+describe("request.offer_withdrawn (spec 2026-09-30 §9.1)", () => {
+  const withdrawn = (seq: number, participantId: string) =>
+    ev(seq, "request.offer_withdrawn", { requestId: "r1", participantId, reason: "offline", to: "p1" });
+
+  it("applyEvent removes that unaccepted offer and steps the version", () => {
+    const r = applyEvent(two(), withdrawn(6, "p2"));
+    expect([r.r1!.offers.map((o) => o.participantId), r.r1!.version]).toEqual([["p3"], 6]);
+  });
+
+  it("an older replay changes nothing", () => {
+    const held = two();
+    expect(applyEvent(held, withdrawn(5, "p2"))).toBe(held);
+  });
+
+  it("a held offer marked accepted is kept", () => {
+    const r = applyEvent(accept(two(), 6, ["p2"]), withdrawn(7, "p2"));
+    expect([r.r1!.offers.find((o) => o.participantId === "p2")?.accepted, r.r1!.version]).toEqual([true, 7]);
+  });
+
+  it("it is a request event and not a work event", () => {
+    expect([isRequestEvent(withdrawn(6, "p2")), changesWork(withdrawn(6, "p2"))]).toEqual([true, false]);
   });
 });
