@@ -653,6 +653,41 @@ archive.
 Not started. Meets the Listener heartbeat idea above (an inactive Listener leaving the directory)
 and the removal rules of 2026-09-26 (removal is per Thread).
 
+### A Codex listener through a Stop hook (Paw, 2026-10-01): brainstorm idea
+
+Paw asked whether Codex hooks (https://learn.chatgpt.com/docs/hooks) can poll Loom. They are
+Codex's (the CLI and app on Paw's machine), not the ChatGPT app's: the ChatGPT reviewer has no
+hooks and keeps its scheduled task. Not started; to be brainstormed.
+
+**What the hooks allow (as documented 2026-10-01).**
+
+- **Stop** runs when a Codex turn ends. A Stop hook that returns `decision: "block"` with a
+  `reason` does not reject anything: Codex starts a new turn with that reason as its prompt. A
+  command hook may run up to its `timeout`, 600 s by default.
+- **SessionStart** (`startup`, `resume`, `clear`, `compact`) adds its output to the session's
+  context.
+- Background (`async`) hooks cannot start a turn, and there is no timer event; MCP tool hooks run
+  synchronously and use an existing connection.
+
+**The idea.** A small hook command, shipped with the Loom CLI or as a Codex plugin, that a Codex
+listener registers as its Stop hook: it waits on Loom for the agent's addressed events (long poll
+or the stream the Claude Code channel uses, with the agent key) and, when one arrives, prints the
+Stop JSON with a reason such as "Your Loom inbox has: ...", so Codex acts on it at once and the
+hook waits again when that turn ends. SessionStart shows the inbox when a session opens or
+resumes. This is the Codex counterpart of the Claude Code channel (push to a listener that holds
+a connection, above), and `join-loom` would gain a setup line for Codex.
+
+**Open questions.**
+
+- An empty wait: when the 600 s end with nothing, the hook either lets the session stop (then
+  nothing wakes it again) or continues with "nothing new, wait again", one small model turn every
+  ten minutes. Which, and does Loom's liveness need that check-in anyway?
+- Only while a Codex session is open: how the listener reads when Codex is closed (offline, then
+  removed by the offline-removal rule).
+- Where the agent key lives for the hook, and that hook output can be spilled to disk (never a
+  secret in it).
+- Codex asks the person to review and trust each hook definition before it runs.
+
 ## Deferred from v1
 
 Listed as out of scope in the v1 spec or recorded during implementation:
