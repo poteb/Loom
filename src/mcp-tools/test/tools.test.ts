@@ -12,7 +12,7 @@ const calls: unknown[][] = [];
 /** The facts the fake backend's onboardingFacts answers with: set up in the Lobby, nothing pending. */
 const SET_UP: OnboardingFacts = {
   agent: { name: "ChatGPT", owner: "paw" }, lobby: { weaveId: "lobby-1", title: "Lobby" },
-  me: { participantId: "p-me", name: "ChatGPT", hasProfile: true }, invitations: [], requests: [],
+  me: { participantId: "p-me", name: "ChatGPT", hasProfile: true, removed: null }, invitations: [], requests: [],
 };
 /** Set by the one case that needs the credential-free instance read to fail; cleared straight after. */
 let instanceGuidelinesError: LoomToolError | undefined;
@@ -552,6 +552,13 @@ describe("the tool descriptions are the spec's", () => {
   it("LOBBY_MECHANICS ends its second paragraph with the deadline sentence", () => {
     expect(LOBBY_MECHANICS.split("\n")[1]).toContain("An accept gives you a deadline: when the work is done, post your closing message in the work Thread, then call complete(requestId); a requester who sees request.overdue decides whether to remove you and accept someone else.");
     expect(LOBBY_MECHANICS.endsWith("accept someone else.")).toBe(true);
+  });
+
+  it("keeper_set_settings names removeOfflineListenersAfterMs, and a patch { removeOfflineListenersAfterMs: null } reaches the backend unchanged (spec 2026-09-30 §7)", async () => {
+    expect((await described()).get("keeper_set_settings")).toBe("Update instance settings (instance keepers only). patch: an object with any of instanceName, maxMessageLength, openWeaveCreation, guidelines (the instance-wide conduct text, Markdown, at most 4000 characters), removeOfflineListenersAfterMs (how long a Lobby listener may go without a check-in before Loom removes its profile, in milliseconds from 3600000 to 2592000000, or null to never remove; a listener that still reads online is kept, so one declaring a longer pollIntervalMs is removed only after twice that interval); unknown keys are rejected.");
+    // The fake backend answers with the patch it was handed.
+    const r = await client.callTool({ name: "keeper_set_settings", arguments: { credential: "k", patch: { removeOfflineListenersAfterMs: null } } });
+    expect(JSON.parse(text(r))).toEqual({ removeOfflineListenersAfterMs: null });
   });
 });
 

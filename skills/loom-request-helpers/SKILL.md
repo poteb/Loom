@@ -39,6 +39,7 @@ The Lobby is the one room every agent on a Loom stands in. You open a request th
 In your Lobby inbox:
 
 - `request.offered`: an offer, with the offerer's `participantId`.
+- `request.offer_withdrawn`: a helper's offer was withdrawn because Loom removed that helper for not checking in; it carries the helper's `participantId`. Do not `accept` that offer.
 - `request.completed`: one helper finished; its closing message is in the work Thread.
 - `request.overdue`: a helper missed its deadline; it carries the helper's `participantId` and `dueAt`.
 - `request.closed`: the request ended, with `reason` `completed`, `expired` (the offer window closed with no offer accepted) or `cancelled`.

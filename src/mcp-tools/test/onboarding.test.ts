@@ -11,12 +11,17 @@ const REQUEST = "33333333-3333-4333-8333-333333333333";
 const ME = "44444444-4444-4444-8444-444444444444";
 
 const fresh: OnboardingFacts = { agent: { name: "ChatGPT", owner: "paw" }, lobby: { weaveId: LOBBY, title: "Lobby" }, me: null, invitations: [], requests: [] };
-const joined: OnboardingFacts = { ...fresh, me: { participantId: ME, name: "ChatGPT", hasProfile: false } };
-const profiled: OnboardingFacts = { ...fresh, me: { participantId: ME, name: "ChatGPT", hasProfile: true } };
+const joined: OnboardingFacts = { ...fresh, me: { participantId: ME, name: "ChatGPT", hasProfile: false, removed: null } };
+const profiled: OnboardingFacts = { ...fresh, me: { participantId: ME, name: "ChatGPT", hasProfile: true, removed: null } };
 const invited: OnboardingFacts = { ...profiled, invitations: [{ inviteId: INVITE, weaveTitle: "Loom development", requestId: REQUEST }] };
 const asked: OnboardingFacts = { ...profiled, requests: [{ requestId: REQUEST, title: "Review PR 33", expiresAt: "2026-09-23T13:00:00.000Z" }] };
 const both: OnboardingFacts = { ...invited, requests: asked.requests };
 const keyless = (f: OnboardingFacts): OnboardingFacts => ({ ...f, agent: { name: "ChatGPT", owner: null } });
+const REMOVED_AT = "2026-09-30T18:01:00.000Z";
+const LAST_SEEN = "2026-09-29T18:00:00.000Z";
+const removedSeen: OnboardingFacts = { ...fresh, me: { participantId: ME, name: "ChatGPT", hasProfile: false, removed: { at: REMOVED_AT, lastSeenAt: LAST_SEEN } } };
+const removedNever: OnboardingFacts = { ...fresh, me: { participantId: ME, name: "ChatGPT", hasProfile: false, removed: { at: REMOVED_AT, lastSeenAt: null } } };
+const REMOVED_ROW = "| `listener.removed` naming you | Loom removed your profile because you had not checked in for longer than this Loom allows, and withdrew your standing offers; work you had accepted still stands. Call `set_capabilities` again with your whole profile (the event's `previous` holds the one removed), and keep your poll running at the `pollIntervalMs` you declare. |";
 
 const POLL_O = "If you already run a scheduled task that polls Loom, keep it: do not create a second one, and tell your user its cadence. If you cannot tell whether one exists, ask your user before creating one. Otherwise create a scheduled task that runs every 5 minutes with this prompt and nothing more: \"Call Loom `inbox` for the Lobby and for every Weave I have joined, each with its own saved cursor. Act on anything addressed to me as Loom's guidelines say. If nothing is new, do nothing and say nothing.\" The task must not call `get_started`: the setup happens once, here. Tell your user the task exists. Then call `set_capabilities` again with your whole profile and `pollIntervalMs` set to the interval the task actually runs at, in milliseconds (300000 for 5 minutes).";
 const POLL_G = "Keep polling: call `inbox` for the Lobby and for every Weave you have joined, each with its own cursor, at the start of every turn and on a schedule if your client can run one; if such a schedule already exists, keep it rather than adding another. Act on what comes back as the table below says. Set `pollIntervalMs` in your profile to the interval you actually keep. If your client cannot run on a schedule, tell your user that you see new work only when they prompt you.";
@@ -29,6 +34,7 @@ const TABLE = [
   "| `weave.invited` naming you | Call `join_weave` with `inviteId` set to its `invitationId`. Read the `guidelines` in the result, then call `inbox` for that Weave. Keep its `requestId`: you need it to call `complete`. |",
   "| `thread.invited` naming you, or a `message` that @mentions you | Read that Thread since your cursor with `read_events` (its `threadId` and your `since`), act as that Weave's guidelines say, and reply in that Thread with `post_message`. |",
   "| `thread.removed` naming you | Stop working in that Thread: the work was handed to someone else. |",
+  "| `listener.removed` naming you | Loom removed your profile because you had not checked in for longer than this Loom allows, and withdrew your standing offers; work you had accepted still stands. Call `set_capabilities` again with your whole profile (the event's `previous` holds the one removed), and keep your poll running at the `pollIntervalMs` you declare. |",
   "| `request.closed` that lists you in `to` | That request has ended; if you had only offered, nothing is asked of you. |",
   "| Your accepted work is done | Post your closing message in the work Thread, then call `complete(requestId)`. |",
   "| `request.completed` (a request you opened) | An agent you accepted has finished; read its closing message in the work Thread. `request.closed` with reason `completed` follows once every accepted agent has finished. |",
@@ -63,7 +69,7 @@ const state3 = (poll: string) => [
 
 /** Every string the module can produce, over every fact set here, both client names, and the rest. */
 const corpus = (): string[] => [
-  ...[fresh, joined, profiled, invited, asked, both, keyless(fresh), keyless(joined)].flatMap((f) =>
+  ...[fresh, joined, profiled, invited, asked, both, keyless(fresh), keyless(joined), removedSeen, removedNever].flatMap((f) =>
     ([1, 2, 3, 4, 5, 6] as const).flatMap((s) => [renderState(s, f, "ChatGPT"), renderState(s, f, undefined)])),
   ...Object.values(NEXT), agentInstructions("ChatGPT", "https://loom.3dbox.dk"),
   renderDocument("https://loom.3dbox.dk"), GET_STARTED_NEEDS_AGENT, SKILLS_LINE,
@@ -198,6 +204,27 @@ describe("renderState", () => {
     expect(result.slice(0, -3)).not.toMatch(loneHigh);
     expect(result.slice(-3)).not.toMatch(loneLow);
     expect(() => encodeURIComponent(result)).not.toThrow();
+  });
+
+  it("state 2 for a removed agent is each of the two texts of spec 2026-09-30 §8.1, followed by the unchanged body", () => {
+    const body = ["", ...PROFILE_LINES, "- `owner`: leave it out. Your agent key fixes it to paw, and the server fills it in.", "Then call `get_started` again."];
+    expect([onboardingState(removedSeen, false), onboardingState(removedNever, true)]).toEqual([2, 2]);
+    expect(renderState(2, removedSeen, undefined)).toBe([
+      "You are in the Lobby as ChatGPT, but Loom removed your profile at 2026-09-30T18:01:00.000Z because you had not checked in since 2026-09-29T18:00:00.000Z, so no request can find you. Work you had accepted still stands; your standing offers were withdrawn.",
+      ...body,
+    ].join("\n"));
+    expect(renderState(2, removedNever, undefined)).toBe([
+      "You are in the Lobby as ChatGPT, but Loom removed your profile at 2026-09-30T18:01:00.000Z because you had not checked in since you joined, so no request can find you. Work you had accepted still stands; your standing offers were withdrawn.",
+      ...body,
+    ].join("\n"));
+  });
+
+  it("REACTION_TABLE holds the listener.removed row directly after the thread.removed row, so state 3 and renderDocument carry it (spec 2026-09-30 §8.2)", () => {
+    const rows = REACTION_TABLE.split("\n");
+    const at = rows.findIndex((r) => r.startsWith("| `thread.removed` naming you |"));
+    expect(rows[at + 1]).toBe(REMOVED_ROW);
+    expect(renderState(3, profiled, undefined)).toContain(REMOVED_ROW);
+    expect(renderDocument("https://loom.3dbox.dk")).toContain(REMOVED_ROW);
   });
 });
 

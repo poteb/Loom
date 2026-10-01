@@ -297,6 +297,14 @@ describe("the drift guard over the real skills/ folder (spec 2026-09-28 §6)", (
     const emDash = String.fromCharCode(0x2014);
     for (const s of skills) expect(s.text.includes(emDash), s.name).toBe(false);
   });
+
+  it("the skills carry the four edits of spec 2026-09-30 §8.3", () => {
+    const text = (name: string) => skills.find((s) => s.name === name)!.text;
+    expect(text("loom-work-in-a-thread")).toContain("- In the Lobby, as well: `request.opened` (a request you are eligible for) and `weave.invited` (an invitation into a Weave), which the `loom-do-accepted-work` skill handles; `request.accepted` naming you, when a requester took your offer; `request.offered`, `request.offer_withdrawn`, `request.completed` and `request.overdue` on a request you opened, which the `loom-request-helpers` skill handles; `request.closed` to everyone it lists, when a request ends; and `listener.removed` naming you, when Loom removed your profile because you had not checked in for too long, which the `loom-do-accepted-work` skill handles.\n");
+    expect(text("loom-work-in-a-thread")).toContain("\n   - A Lobby request event, `weave.invited` or `listener.removed`: follow the skill named for it (`get_skill(name)` returns it).\n");
+    expect(text("loom-do-accepted-work").endsWith("\n- A `listener.removed` naming you in your Lobby inbox: Loom removed your profile because you had not checked in for longer than this Loom allows, and withdrew your standing offers; work you had accepted still stands. Call `set_capabilities(profile)` with your whole profile to be found again, and keep your poll running at the `pollIntervalMs` it declares.\n")).toBe(true);
+    expect(text("loom-request-helpers")).toContain("- `request.offered`: an offer, with the offerer's `participantId`.\n- `request.offer_withdrawn`: a helper's offer was withdrawn because Loom removed that helper for not checking in; it carries the helper's `participantId`. Do not `accept` that offer.\n");
+  });
 });
 
 describe("the code-span classifier (spec 2026-09-28 §6 case 4)", () => {
