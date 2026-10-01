@@ -93,12 +93,12 @@ authorisation.
 
 | Layer | What this branch changed |
 | --- | --- |
-| core | migration `0009` (`settings.remove_offline_listeners_after_ms`); `settings.ts` (`validateRemoveOfflineListenersAfterMs` and its three bounds, the patch key); `lobby/removal.ts` (new: `isRemovable`, `sweepOfflineListeners`); `isOnline` in `lobby/status.ts`; `listener.removed` and `request.offer_withdrawn` in `EVENT_TYPES` and two `inbox` arms; `me.removed` in `lobby/onboarding.ts`; the facade's `sweepOfflineListeners` |
+| core | migration `0009` (`settings.remove_offline_listeners_after_ms`); `settings.ts` (`validateRemoveOfflineListenersAfterMs` and its three bounds, the patch key); `lobby/removal.ts` (new: `isRemovable`, `sweepOfflineListeners`); `isOnline` in `lobby/status.ts`; `listener.removed` and `request.offer_withdrawn` in `EVENT_TYPES` and two `inbox` arms; `me.removed` in `lobby/onboarding.ts`; the facade's `sweepOfflineListeners`; `offlineSql` in `lobby/status.ts`, shared by the status rule and the removal's candidate query; the Markdown export's lines for both events (`export.ts`) |
 | server | the sweep's third pass and `SweepResult.removed` (`app.ts`); the settings body schema's new key (`routes/admin.ts`) |
 | mcp-tools | state 2's removal texts and the `listener.removed` row of `REACTION_TABLE` (`onboarding.ts`); `keeper_set_settings`' description |
 | client | `Settings.removeOfflineListenersAfterMs`; the two event types in `EventType` |
 | claude-channel | `shouldWake` and the one-line texts of both events (`format.ts`); the instructions' `type=` list (`server.ts`) |
-| cli | `admin settings --set removeOfflineListenersAfterMs=` with a number or `off`, printed `off`; how `read` renders both events |
+| cli | `admin settings --set removeOfflineListenersAfterMs=` with a number or `off`, printed `off`; how `read` renders both events; `inbox` prints every item that is not an invite or a message in `read`'s words (`commands/invite.ts`) |
 | web | `listener.removed` in the session (refresh, own profile, the open directory); `request.offer_withdrawn` in the request reducer; both Thread lines and folded words; no CSS |
 | repo | three skills (`loom-work-in-a-thread`, `loom-do-accepted-work`, `loom-request-helpers`) and spec 2026-09-28 §7 amended with the same bytes |
 | docs | README, the server, cli, mcp-tools and channel READMEs, ARCHITECTURE, SECURITY (a §4a paragraph, the §5 row, a §6 bound), TESTING (smoke test 11, the coverage lines, the totals, "eleven"), CLAUDE.md and HANDBOOK ("eleven"), KNOWN-ISSUES (the `actors.ts` row re-argued, three core rows, one channel and web row), v2-notes, this brief |
@@ -122,9 +122,9 @@ makes", and not drift.
   configuration. The diff against `main` is the new work; the rest is already-reviewed code you
   should still judge where this branch changed it (`settings.ts`, `types.ts`, `inbox.ts`, `lobby/status.ts`,
   `lobby/onboarding.ts`, `index.ts` (the facade's `sweepOfflineListeners`), `db/schema.ts` (the
-  `remove_offline_listeners_after_ms` column) and `drizzle/meta/_journal.json` (the 0009 entry) in core;
+  `remove_offline_listeners_after_ms` column) and `drizzle/meta/_journal.json` (the 0009 entry) and `export.ts` (the two events' lines) in core;
   `app.ts` and `routes/admin.ts` in the server; `onboarding.ts` and `tools.ts` in mcp-tools; the
-  client's `types.ts` (the `Settings` field and the two `EventType`s); the channel's `format.ts` and `server.ts`; the CLI's `admin.ts` and `messages.ts`;
+  client's `types.ts` (the `Settings` field and the two `EventType`s); the channel's `format.ts` and `server.ts`; the CLI's `admin.ts`, `messages.ts` and `invite.ts`;
   the web's `session.ts`, `requests-state.ts`, `MessageList.tsx` and `fold.ts`).
 - **The specs are the binding requirements**, the last one first:
   - [superpowers/specs/2026-09-30-loom-offline-listener-removal-design.md](superpowers/specs/2026-09-30-loom-offline-listener-removal-design.md)
