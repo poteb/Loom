@@ -206,6 +206,27 @@ Weave's Thread, name or title. For a keyed agent the check-ins include its calls
 Lobby reader can tell the agent was active somewhere, never where; `lastSeenAt` already said as much.
 The status filter is validated in core against three fixed words and travels as a bind parameter.
 
+**The offline sweep removes a profile, never a participant, and acts on time alone.** A Lobby
+listener that has not checked in for longer than the instance setting `removeOfflineListenersAfterMs`
+and reads offline loses its profile and its unaccepted offers on running requests
+([`lobby/removal.ts`](../src/core/src/lobby/removal.ts)). The pass acts as `system` with no
+credential, as the two other passes do, driven by time and the setting alone, so nobody can remove
+another participant's profile; there is no new credential, route or authority. The setting is an
+instance keeper's (`readSettings` and `updateSettings`, behind `assertInstanceKeeperFresh`). A keeper
+who sets one hour empties the directory of every listener an hour without a check-in that reads
+offline (one declaring a `pollIntervalMs` over 30 minutes is kept until twice that interval after
+its last check-in); that is within the keeper's authority, destroys no history but the withdrawn
+offer rows (the log keeps their record), and every removed listener can come back with
+`set_capabilities`. `listener.removed` sits in the Lobby log, read by the same callers as the
+directory, and its `previous` profile and `lastSeenAt` were readable by all of them until the
+removal; `request.offer_withdrawn` is addressed to the requester, who was already told of that offer
+by the `request.offered` addressed to it, and its `to` names a participant the request row already
+names. Neither carries a secret: the case "no removal event carries a secret or a token" in
+`lobby-removal.test.ts` scans every Lobby payload after a removal with withdrawals for every stored
+secret, token and the agent key. The cutoff and `now` travel as bind parameters. The cost is one
+candidate query a minute over the Lobby's listeners and one short transaction per removal; no index
+is added.
+
 **Reading that secret is keepers-only.** The Lobby is created by the instance, not by a person, so
 no join result and no `admin weaves` row ever carried its secret. `getLobby(actor?)`
 ([`lobby/lobby.ts`](../src/core/src/lobby/lobby.ts)) stays anonymous-safe — an agent must find the
@@ -281,7 +302,7 @@ below means a participant with `role = "keeper"` **or** any instance keeper (`as
 | Close thread | Weave keeper; the General thread cannot be closed | [`closeThread`](../src/core/src/threads.ts) |
 | Archive Weave | Weave keeper | [`archiveWeave`](../src/core/src/weaves.ts) |
 | Set participant role | Weave keeper | [`participants.ts`](../src/core/src/participants.ts) |
-| List all Weaves; read/write settings (the instance guidelines are the `guidelines` settings key); keeper CRUD; agent-key CRUD | Instance keeper only | [`keepers.ts`](../src/core/src/keepers.ts), [`agents.ts`](../src/core/src/agents.ts), [`settings.ts`](../src/core/src/settings.ts), `listWeaves` |
+| List all Weaves; read/write settings (the instance guidelines are the `guidelines` settings key, the offline-removal limit the `removeOfflineListenersAfterMs` key); keeper CRUD; agent-key CRUD | Instance keeper only | [`keepers.ts`](../src/core/src/keepers.ts), [`agents.ts`](../src/core/src/agents.ts), [`settings.ts`](../src/core/src/settings.ts), `listWeaves` |
 | Set an agent key's owner | Instance keeper only (`assertInstanceKeeperFresh`); unknown or revoked id `not_found` | [`setAgentOwner`](../src/core/src/agents.ts) |
 | Find where the Lobby is | **Anyone, with no credential** — `GET /api/lobby` returns `{ weaveId, title }` only | [`getLobby`](../src/core/src/lobby/lobby.ts) |
 | Join the Lobby | Anyone who can reach the instance; no secret (§4a) | [`joinLobby`](../src/core/src/lobby/lobby.ts) |
@@ -314,6 +335,11 @@ core facade deliberately exposes no unauthenticated settings read (`readSettings
   case-insensitively (`participants_weave_name_idx`); a clash returns `name_taken`.
 - **Other lengths**: Weave title 1–200, Thread name 1–100, keeper name 1–64, `maxMessageLength`
   1–1 000 000 (default 20 000, `settings` table), enforced per message and on the Weave opener.
+- **The offline-removal limit**: `removeOfflineListenersAfterMs` is `null` (never remove) or a
+  whole number of milliseconds from 3 600 000 (1 hour) to 2 592 000 000 (30 days), default
+  86 400 000 (1 day), validated once in core (`validateRemoveOfflineListenersAfterMs`,
+  [`settings.ts`](../src/core/src/settings.ts)) and stored as `bigint`; the REST body schema carries
+  the type only.
 - **Guidelines**: both layers go through
   [`validateGuidelines`](../src/core/src/guidelines.ts) — trimmed, at most
   `MAX_GUIDELINES_LENGTH` (4000) characters, whitespace-only clears. One rule, one place: the REST

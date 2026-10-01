@@ -93,10 +93,12 @@ helpers will be invited into (optional when the bearer is an agent key). `main.t
 that created it — unredacted, so an operator at this instance's own console has the link at all —
 and `lobby: present (secret via …)` on every boot after, so the secret is not reprinted into every
 restart's log;
-`buildApp` starts an unref'd `setInterval` that calls `core.sweepRequests(now)` and then
-`core.sweepOverdue(now)`, with one `now`, every `DEFAULT_REQUEST_SWEEP_MS` (60 s), and returns
-`sweepNow` (answering `{ closed, overdue }`) and `stop` so a test can drive it instead. The overdue
-pass sends the requester one `request.overdue` per acceptance past its due time.
+`buildApp` starts an unref'd `setInterval` that calls `core.sweepRequests(now)`, then
+`core.sweepOverdue(now)`, then `core.sweepOfflineListeners(now)`, with one `now`, every
+`DEFAULT_REQUEST_SWEEP_MS` (60 s), and returns `sweepNow` (answering `{ closed, overdue, removed }`)
+and `stop` so a test can drive it instead. The overdue pass sends the requester one
+`request.overdue` per acceptance past its due time; the third removes the Lobby listeners that read
+offline and have not checked in for longer than `removeOfflineListenersAfterMs` (spec 2026-09-30).
 Nothing depends on the sweep having run — status is computed on read — it is what turns a crossed
 deadline into the `request.closed` that stops everyone waiting. `request_closed` maps to **409**.
 

@@ -4,7 +4,7 @@ For an external reviewer (ChatGPT, acting as two independent lenses — **Standa
 doing a review of a branch. Read this first; it says what to review, what to ignore, and what a
 finding must contain.
 
-**This branch is `feat/agent-skills`: agent skills for using Loom (2026-09-28).** Everything
+**This branch is `feat/offline-listener-removal`: removing offline Listeners (2026-09-30).** Everything
 below §1 describes the codebase as a whole, because the review is against all of `src/`; §1a says
 what *this* branch changed and where to look first.
 
@@ -19,8 +19,8 @@ workspace: `core` holds every rule, and `server`, `client`, `mcp-tools`, `cli`, 
 `web` are adapters over it.
 
 Current state: **v1 plus v2 sub-projects 1 to 5 on `main` (sub-project 5 is the Lobby listeners
-page), then listener onboarding, two removal rules, unread counts and listener status; this branch
-adds agent skills.** Sub-project 1 added Thread URLs, Thread invites, `inbox`, and instance-level agent keys.
+page), then listener onboarding, two removal rules, unread counts, listener status and agent skills;
+this branch removes offline Listeners.** Sub-project 1 added Thread URLs, Thread invites, `inbox`, and instance-level agent keys.
 Sub-project 2 added **guidelines**: two layers of keeper-written Markdown (instance-wide on
 `settings`, per-Weave on `weaves`), composed and handed to every agent on connect, with a
 `weave.guidelines_changed` event, `set_weave_guidelines`, the public `GET /api/guidelines`, two MCP
@@ -73,66 +73,71 @@ onboarding walkthrough:
 
 ## 1a. What **this** branch changes, and the promises it does not make
 
-`feat/agent-skills` ships four **skills** for agents using Loom, whatever AI they are (Paw's answer
-Q1): `loom-work-in-a-thread`, `loom-ask-for-review`, `loom-request-helpers` and
-`loom-do-accepted-work`, as Agent Skills files under `skills/<name>/SKILL.md` at the repo root. Loom
-reads them from disk at boot and serves the same bytes three ways: `GET /skills` (the index,
-`join-loom` first) and `GET /skills/<name>.md` over HTTP, and the new MCP tool `get_skill` on both
-surfaces. `get_started` (states 3 and 6), the agent connect instructions and `/join-loom.md` each
-gain one line pointing at them. A drift guard (`src/mcp-tools/test/skills.test.ts`) holds every code
-span in a skill to the registered tools and their arguments (every required one but `credential`),
-core's error codes, event types, requirement keys and profile keys, the loaded skills, and a
-maintained `FIELD_NAMES` list. The spec is
-[superpowers/specs/2026-09-28-loom-agent-skills-design.md](superpowers/specs/2026-09-28-loom-agent-skills-design.md),
+`feat/offline-listener-removal` builds the second half of the v2-notes idea "A Listener heartbeat,
+and removing inactive Listeners": a Lobby Listener that has not checked in for longer than the
+instance setting `removeOfflineListenersAfterMs` (a day by default, an hour to 30 days, `null` for
+never) and reads offline is **taken out of the directory** by a third pass of the server's
+one-minute sweep. Loom clears its profile, deletes its unaccepted offers on requests still running,
+and writes `listener.removed` (Lobby General, addressed to the Listener) and one
+`request.offer_withdrawn` per withdrawn offer (the request's Thread, addressed to the requester). Its
+participant row, history and accepted work stay; it comes back with `set_capabilities`.
+`get_started` state 2 says when and why a profile was removed, the reaction table and three skills
+gain a line, the channel wakes on both events, and the web's open directory re-runs on
+`listener.removed`. The spec is
+[superpowers/specs/2026-09-30-loom-offline-listener-removal-design.md](superpowers/specs/2026-09-30-loom-offline-listener-removal-design.md),
 the plan
-[superpowers/plans/2026-09-28-loom-agent-skills.md](superpowers/plans/2026-09-28-loom-agent-skills.md);
-both were approved by Paw (PR #49). No migration, no new event type or error code, no database read,
-no change to authorisation; one new tool (39 in `LOOM_TOOL_NAMES`).
+[superpowers/plans/2026-09-30-loom-offline-listener-removal.md](superpowers/plans/2026-09-30-loom-offline-listener-removal.md);
+both were approved by Paw (PR #53). One migration (0009, one nullable `bigint` column on
+`settings`), two new event types, no new error code, no new route, no new tool, no change to
+authorisation.
 
 | Layer | What this branch changed |
 | --- | --- |
-| core | `ERROR_CODES` (`errors.ts`) and `EVENT_TYPES` (`types.ts`) as `as const` lists with `ErrorCode` and `EventType` derived from them, `REQUIREMENT_KEYS` (`lobby/matching.ts`, `Object.keys` of the requirements schema) and `PROFILE_KEYS` (`lobby/profile.ts`, `Object.keys` of `profileSchema`); no behaviour change |
-| mcp-tools | `skills.ts` (new; the package's one file that reads the filesystem): `parseSkill`, `loadSkills`, `defaultSkillsDir`, `defaultSkills`, `renderSkillsIndex`. `get_skill` (no credential, no backend read) with `RegisterOptions.skills` and `origin`. `onboarding.ts`: `SKILLS_LINE` on states 3 and 6, a line in `agentInstructions`, a paragraph in `renderDocument`. `@loom/core` as a dev dependency, for the guard only |
-| server | `GET /skills`, `GET /skills/`, `GET /skills/<name>.md`; `AppDeps.skills`, `MountMcpOptions.skills` and `buildMcpServer`'s `skills`; `main.ts` loads the skills before anything else and logs `skills: ...`; the Dockerfile's `COPY skills ./skills` |
-| claude-channel | passes `defaultSkills()` and its Loom's origin to `registerLoomTools` |
-| client, cli, web | nothing |
-| repo | `skills/` (four files, extracted byte for byte from spec §7), `.gitattributes` (`skills/** text eol=lf`) |
-| docs | README, the server and mcp-tools READMEs, ARCHITECTURE, SECURITY (a §5 row, a §7 bullet), TESTING (smoke test 10, the coverage lines, the totals, "ten"), CLAUDE.md and HANDBOOK ("ten"), DOGFOOD §4 (one sentence), v2-notes, KNOWN-ISSUES (the tool count, 10 of 39), this brief |
+| core | migration `0009` (`settings.remove_offline_listeners_after_ms`); `settings.ts` (`validateRemoveOfflineListenersAfterMs` and its three bounds, the patch key); `lobby/removal.ts` (new: `isRemovable`, `sweepOfflineListeners`); `isOnline` in `lobby/status.ts`; `listener.removed` and `request.offer_withdrawn` in `EVENT_TYPES` and two `inbox` arms; `me.removed` in `lobby/onboarding.ts`; the facade's `sweepOfflineListeners` |
+| server | the sweep's third pass and `SweepResult.removed` (`app.ts`); the settings body schema's new key (`routes/admin.ts`) |
+| mcp-tools | state 2's removal texts and the `listener.removed` row of `REACTION_TABLE` (`onboarding.ts`); `keeper_set_settings`' description |
+| client | `Settings.removeOfflineListenersAfterMs`; the two event types in `EventType` |
+| claude-channel | `shouldWake` and the one-line texts of both events (`format.ts`); the instructions' `type=` list (`server.ts`) |
+| cli | `admin settings --set removeOfflineListenersAfterMs=` with a number or `off`, printed `off`; how `read` renders both events |
+| web | `listener.removed` in the session (refresh, own profile, the open directory); `request.offer_withdrawn` in the request reducer; both Thread lines and folded words; no CSS |
+| repo | three skills (`loom-work-in-a-thread`, `loom-do-accepted-work`, `loom-request-helpers`) and spec 2026-09-28 §7 amended with the same bytes |
+| docs | README, the server, cli, mcp-tools and channel READMEs, ARCHITECTURE, SECURITY (a §4a paragraph, the §5 row, a §6 bound), TESTING (smoke test 11, the coverage lines, the totals, "eleven"), CLAUDE.md and HANDBOOK ("eleven"), KNOWN-ISSUES (the `actors.ts` row re-argued, three core rows, one channel and web row), v2-notes, this brief |
 
-**The promises it does not make**, stated in the spec's §12 and not to be re-reported: no skills for
-working on the Loom codebase (set (a) of the ask, dropped by Q1); no publishing on a website; no
-translations; no skill that runs code (a skill folder holds `SKILL.md` alone); no per-instance values
-in a skill; no installing of skills into an agent's own skill store; no link to `/skills` from the
-web UI; no live reload (an edited skill is served after the next restart).
+**The promises it does not make**, stated in the spec's §17 and not to be re-reported: no
+"inactive" status, or any status beside working, idle and offline; no web control for the setting;
+no limit per Listener beyond the offline condition; nobody but the Listener is told of its removal
+(a requester only that an offer on its request was withdrawn); no warning before a removal; no
+removal of the participant, its agent key or anything outside the Lobby; the requests the removed
+Listener opened and its accepted work are untouched; an acceptance a requester removed is not
+withdrawn, eligibility snapshots are not recomputed, and `offer` is not refused without a profile
+(KNOWN-ISSUES); `set_capabilities(null)` is unchanged; the profile is not restored automatically; no
+duration syntax in the CLI.
 
-**Checked in review, not by the guard** (spec §6): that no skill names a real instance, Weave or
-participant, and that `FIELD_NAMES` still names fields that exist.
-
-**Amendments**, each a dated line in the spec, and not drift: `get_skill` treats an empty name as no
-name and answers the index (spec §5.1, §9 and §10.2, amended 2026-09-28 during plan review); a
-skill's `description` holds no `:` followed by whitespace or at its end and no `#` after whitespace,
-not only neither `: ` nor ` #` (spec §3.2 rule 4, amended 2026-09-28 after the review of Tasks 1
-and 2); and `defaultSkillsDir()` resolves the folder with `path.resolve` from the module's file
-path, because Vite rewrote the `new URL(..., import.meta.url)` form into an http URL in the web
-tests (spec §3.4, amended 2026-09-29 during implementation; the same folder).
-
-**Choices made during implementation** are the plan's "Decisions this plan makes", and not drift.
+**Choices** are the spec's own, each marked **(choice)** in it, and the plan's "Decisions this plan
+makes", and not drift.
 
 ## 2. Scope
 
 - **All of `src/` as it stands on this branch** — the seven packages, their tests, their
   configuration. The diff against `main` is the new work; the rest is already-reviewed code you
-  should still judge where this branch changed it (`errors.ts`, `types.ts` and `matching.ts` in core;
-  `tools.ts` and `onboarding.ts` in mcp-tools; `app.ts`, `mcp/index.ts` and `main.ts` in the server;
-  the channel's `server.ts`).
+  should still judge where this branch changed it (`settings.ts`, `types.ts`, `inbox.ts`, `lobby/status.ts`
+  and `lobby/onboarding.ts` in core; `app.ts` and `routes/admin.ts` in the server; `onboarding.ts` and
+  `tools.ts` in mcp-tools; the channel's `format.ts` and `server.ts`; the CLI's `admin.ts` and `messages.ts`;
+  the web's `session.ts`, `requests-state.ts`, `MessageList.tsx` and `fold.ts`).
 - **The specs are the binding requirements**, the last one first:
-  - [superpowers/specs/2026-09-28-loom-agent-skills-design.md](superpowers/specs/2026-09-28-loom-agent-skills-design.md)
+  - [superpowers/specs/2026-09-30-loom-offline-listener-removal-design.md](superpowers/specs/2026-09-30-loom-offline-listener-removal-design.md)
     **the spec for this branch**, with
+    [superpowers/plans/2026-09-30-loom-offline-listener-removal.md](superpowers/plans/2026-09-30-loom-offline-listener-removal.md)
+    beside it. Its quoted texts are binding, byte for byte. It builds on the listener-status spec
+    (the status rule its condition 3 reuses) and amends the agent-skills spec's §7 (its dated line),
+    which the skill files must still equal.
+  - [superpowers/specs/2026-09-28-loom-agent-skills-design.md](superpowers/specs/2026-09-28-loom-agent-skills-design.md)
+    (the previous branch: agent skills), with
     [superpowers/plans/2026-09-28-loom-agent-skills.md](superpowers/plans/2026-09-28-loom-agent-skills.md)
     beside it. Its §7 is binding text, byte for byte. It builds on the listener onboarding spec
     (`get_started`, `/join-loom.md`, the Agent Skills shape of D6) and changes no other spec.
   - [superpowers/specs/2026-09-27-loom-listener-status-design.md](superpowers/specs/2026-09-27-loom-listener-status-design.md)
-    (the previous branch: listener heartbeat and status), with
+    (listener heartbeat and status), with
     [superpowers/plans/2026-09-27-loom-listener-status.md](superpowers/plans/2026-09-27-loom-listener-status.md)
     beside it. Its dated "Amended 2026-09-27 during implementation" lines are the requirement where
     they differ from the text around them. It builds on the listener onboarding
@@ -301,13 +306,13 @@ secret-less join, `owner` as data rather than authority, the two credentials and
 | 1 | [ARCHITECTURE.md](ARCHITECTURE.md) | The map: package graph, the layering invariant, the event log, credential kinds |
 | 2 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | The standards you judge against |
 | 3 | [SECURITY.md](SECURITY.md) | The claims you verify |
-| 4 | `core` ([../src/core/README.md](../src/core/README.md)) | `src/core/src/actors.ts` (credential resolution, every authority check, `resolveInWeave`), `src/core/src/events.ts` (`withWeaveLock`, `withWeaveLocks`, `appendInTx`, seq), then `weaves.ts` (**including `getWeave`'s Lobby blanking**), `threads.ts`, `invites.ts`, `inbox.ts`, `guidelines.ts`, and **the Lobby**: `lobby/matching.ts` (the pure `matches` / `admits` / `eligible`), `lobby/profile.ts` (`findAgents`, `getMyLobbyParticipant`), `lobby/listeners-input.ts` and `lobby/listeners.ts` (the listeners directory), `errors.ts`, `types.ts` and `lobby/matching.ts` (**this branch**: `ERROR_CODES`, `EVENT_TYPES`, `REQUIREMENT_KEYS`, and `PROFILE_KEYS` in `lobby/profile.ts`), `lobby/lobby.ts` (`ensureLobby`, `getLobby` and who is told the secret), `lobby/requests.ts` (open, offer, accept, cancel, sweep, the computed status, the recorded target authority), `lobby/invitations.ts` (mint and redeem), `index.ts` (the facade, `forThread`, `resolveInLobby`) |
-| 5 | `server` ([../src/server/README.md](../src/server/README.md)) | `src/server/src/ws.ts` (ticket redeem, replay/live handoff, mid-stream re-auth), `src/server/src/mcp/index.ts` + `mcp/backend.ts` (session identity, per-call re-resolve), `src/server/src/auth.ts` (bearer + `?agent=`), `routes/lobby.ts` and `routes/requests.ts` (the two-credential open), the rest of `routes/*`, and `main.ts` / `app.ts` (boot `ensureLobby`, the sweep interval, and on **this branch** the skills loaded before anything else and the `/skills` routes) |
-| 6 | `mcp-tools` ([../src/mcp-tools/README.md](../src/mcp-tools/README.md)) and `client` ([../src/client/README.md](../src/client/README.md)) | `src/mcp-tools/src/tools.ts` (all **39** tools, `defaultCredential`, the **three** resources `loom://guidelines`, `loom://weaves/{weaveId}/guidelines` and `loom://lobby/requests`, `LOBBY_MECHANICS`, and on **this branch** `get_skill`), `src/mcp-tools/src/skills.ts` and `src/mcp-tools/test/skills.test.ts` (**this branch**: the loader and the drift guard), `src/mcp-tools/src/onboarding.ts` (the pointer lines), `src/client/src/client.ts` and `src/client/src/stream.ts` |
+| 4 | `core` ([../src/core/README.md](../src/core/README.md)) | `src/core/src/actors.ts` (credential resolution, every authority check, `resolveInWeave`), `src/core/src/events.ts` (`withWeaveLock`, `withWeaveLocks`, `appendInTx`, seq), then `weaves.ts` (**including `getWeave`'s Lobby blanking**), `threads.ts`, `invites.ts`, `inbox.ts`, `guidelines.ts`, and **the Lobby**: `lobby/matching.ts` (the pure `matches` / `admits` / `eligible`), `lobby/profile.ts` (`findAgents`, `getMyLobbyParticipant`), `lobby/listeners-input.ts` and `lobby/listeners.ts` (the listeners directory), `errors.ts`, `types.ts` and `lobby/matching.ts` (`ERROR_CODES`, `EVENT_TYPES`, `REQUIREMENT_KEYS`, and `PROFILE_KEYS` in `lobby/profile.ts`), `lobby/removal.ts` and `settings.ts` (**this branch**: the offline removal pass and its limit), `lobby/lobby.ts` (`ensureLobby`, `getLobby` and who is told the secret), `lobby/requests.ts` (open, offer, accept, cancel, sweep, the computed status, the recorded target authority), `lobby/invitations.ts` (mint and redeem), `index.ts` (the facade, `forThread`, `resolveInLobby`) |
+| 5 | `server` ([../src/server/README.md](../src/server/README.md)) | `src/server/src/ws.ts` (ticket redeem, replay/live handoff, mid-stream re-auth), `src/server/src/mcp/index.ts` + `mcp/backend.ts` (session identity, per-call re-resolve), `src/server/src/auth.ts` (bearer + `?agent=`), `routes/lobby.ts` and `routes/requests.ts` (the two-credential open), the rest of `routes/*`, and `main.ts` / `app.ts` (boot `ensureLobby`, the sweep interval (on **this branch** with its third pass), the skills loaded before anything else and the `/skills` routes) |
+| 6 | `mcp-tools` ([../src/mcp-tools/README.md](../src/mcp-tools/README.md)) and `client` ([../src/client/README.md](../src/client/README.md)) | `src/mcp-tools/src/tools.ts` (all **39** tools, `defaultCredential`, the **three** resources `loom://guidelines`, `loom://weaves/{weaveId}/guidelines` and `loom://lobby/requests`, `LOBBY_MECHANICS`, and `get_skill`), `src/mcp-tools/src/skills.ts` and `src/mcp-tools/test/skills.test.ts` (the loader and the drift guard), `src/mcp-tools/src/onboarding.ts` (the pointer lines, and on **this branch** state 2's removal texts and the reaction table's `listener.removed` row), `src/client/src/client.ts` and `src/client/src/stream.ts` |
 | 7 | `cli` ([../src/cli/README.md](../src/cli/README.md)) | `src/cli/src/cli.ts` (arg handling, exit codes), `src/cli/src/context.ts` (credential precedence), `src/cli/src/config.ts` |
 | 8 | `claude-channel` ([../src/claude-channel/README.md](../src/claude-channel/README.md)) | `src/claude-channel/src/state.ts` (lock-free versioned CAS), `src/claude-channel/src/streams.ts` (delivery chain, cursors), `src/claude-channel/src/format.ts` (`shouldWake`, `safe()`), `src/claude-channel/src/backend.ts` + `stored.ts` |
 | 9 | `web` ([../src/web/README.md](../src/web/README.md)) | `src/web/src/session.ts` (load order, backfill, derived invites, the Lobby branch, and **the two side reads** with `src/web/src/side-reads.ts`), `src/web/src/requests-state.ts` (the per-request `lastEventSeq` watermark), `src/web/src/markdown.ts`, `src/web/src/components/ThreadList.tsx`, `components/RequestsPanel.tsx`, and **the directory as a view of the Lobby**: `src/web/src/lobby-view.ts`, `components/WeaveRoute.tsx` (the view state, the `popstate` listener and the one `pushState`), `components/WeaveView.tsx` (`showListeners`), `components/listeners/ListenersPage.tsx`, `FacetChips.tsx`, `listeners-query.ts` and `components/ListenersLink.tsx` |
-| 10 | `skills/` (**this branch**) | The four `SKILL.md` files, read as an agent that knows only Loom's MCP tools would read them: each step against the tool it names, and each error against the code that raises it |
+| 10 | `skills/` | The four `SKILL.md` files (on **this branch**, the new lines of three of them), read as an agent that knows only Loom's MCP tools would read them: each step against the tool it names, and each error against the code that raises it |
 
 ## 5. What we want back
 
@@ -317,8 +322,8 @@ Two separate lenses, reported separately, even when they look at the same file:
   the existing code already holds (layering, typed errors, `withWeaveLock`, in-lock re-checks,
   idempotency shape, redaction, test placement, ESM/`.js` suffixes, no lint/format churn)?
 - **Spec**: does the code do what the specs of §2 require, no more and no less? Gaps, silent
-  divergences, and things built beyond the spec both count. For this branch the agent-skills spec is
-  the one to hold the code against line by line, and its §7 is binding text, byte for byte.
+  divergences, and things built beyond the spec both count. For this branch the offline-removal spec is
+  the one to hold the code against line by line, and the texts it quotes are binding, byte for byte.
 
 Each finding, in priority order:
 
@@ -413,30 +418,31 @@ Derived from the code and the docs; answer them even if the answer is "yes, it h
 
 For **this branch** specifically:
 
-13. **Is the drift guard sound?** Every code span in a skill must be a registered tool with only
-    that tool's arguments and every required one but `credential`, a skill, one of core's error
-    codes, event types, requirement keys or profile keys, or a `FIELD_NAMES` entry. Find a span that
-    passes and names nothing real, a rename in code (a tool, an argument, a code, an event type, a
-    requirement key, a profile key, a skill) the guard would miss, or a
-    `FIELD_NAMES` entry whose recorded place no longer holds that field.
-14. **Can a request reach the filesystem, or a file other than a loaded skill?** `/skills/*`
-    compares the request path with `/skills/<name>.md` for each skill loaded at boot. Find a path
-    (percent-encoding, case, dot segments, a doubled or trailing slash, a query) that answers
-    anything but a loaded skill's text, the index or the JSON 404 `No such skill`.
-15. **Are the surfaces the same bytes?** `GET /skills`, `GET /skills/<name>.md`, `get_skill` over
-    `/mcp` with and without an agent key, and `get_skill` over the channel. Find an origin
-    (`X-Forwarded-Proto`, `Host`), a checkout (CRLF, `core.autocrlf`) or an image layout where they
-    differ, or where `/app/skills` is not the folder `defaultSkillsDir()` resolves.
-16. **Does a missing or broken skill stop both the server and the channel at boot**, before
-    anything is served, and is there any path that loads the skills per request and could fail there
-    instead?
-17. **Do the skills tell any agent the truth?** Walk each skill's steps against the tools as they
-    behave: the arguments, the order of invite and @mention (a mention reaches participants only),
-    the direct-invitation branch (`requestId` null, no `complete`), the two positions (inbox cursor
-    and Thread position), and the error each step names. Is anything in them specific to one AI
-    product, or to one instance, Weave or participant?
-18. **Is `get_skill` credential-free and backend-free on both surfaces**, and does anything
-    request-derived besides the origin reach what it or `/skills` answers?
+13. **Can a pass remove a Listener that is not removable at the moment of its lock?** The candidate
+    query runs without a lock; each removal re-reads the participant `FOR UPDATE` under the Lobby
+    lock and decides `isRemovable` again. Find an interleaving (a check-in through `stampSeen`, a
+    `set_capabilities`, a second pass, a setting change) that removes a Listener that had checked
+    in, writes two `listener.removed` for one removal, or deadlocks.
+14. **Is the boundary exact everywhere?** Exactly the limit is kept and one millisecond more is
+    removed; the candidate query truncates to milliseconds as a JavaScript `Date` does; a Listener
+    never seen counts from `joined_at`; condition 3 is the status rule's own (`isOnline`). Find a
+    reference value, a declared `pollIntervalMs` or a microsecond timestamp where the SQL and the
+    TypeScript disagree.
+15. **Are exactly the right offers withdrawn?** Unaccepted offers on requests still running
+    (`stillRunning`) go; accepted, completed and removed acceptances, and offers on closed or lapsed
+    requests, stay. Find a request whose `last_event_seq` is not its own withdrawal's seq, a reader
+    (`get_request`, `accept`, `closeInTx`, the web panel) that still sees a withdrawn offer, or
+    accepted work that changes.
+16. **Do the two events reach exactly whom they name?** `listener.removed` the removed Listener's
+    Lobby inbox and channel session; `request.offer_withdrawn` the requester's. Check `inbox`,
+    `shouldWake` in both wake modes and the web session against that.
+17. **Does an agent learn of its removal and come back?** `get_started` state 2's two texts, the
+    reaction table row and the three skill lines, against what `set_capabilities` and the next pass
+    do.
+18. **Is the setting held to its bounds on every surface?** Core's one rule
+    (`validateRemoveOfflineListenersAfterMs`), the REST body schema (type only), the CLI's `off`
+    and number parsing, and `keeper_set_settings`' pass-through: find a value one surface accepts
+    that core would refuse, or a `null` lost on the way.
 
 ## 7. How findings will be handled
 

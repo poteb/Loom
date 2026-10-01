@@ -612,12 +612,32 @@ current work and the cadence beside the declared interval, and `get_request` eac
 status. **Still open, the next slice:** removing or hiding inactive Listeners, with the open
 questions of "Inactive Listeners leave the directory" above.
 
+**Built: removing offline Listeners**, by the offline-removal slice
+([spec](2026-09-30-loom-offline-listener-removal-design.md), [plan](../plans/2026-09-30-loom-offline-listener-removal.md)),
+which answers the "Still open" line above as Paw did on 2026-09-30: removed, not hidden (the
+profile is cleared and the standing offers withdrawn; history stays, and the Listener comes back by
+setting its profile again); one limit per instance, `removeOfflineListenersAfterMs`, a day by
+default, 1 hour to 30 days or off; not marked "inactive" (offline stays the only status: "I think
+it's misleading to have both offline and inactive"); the Listener itself is told (`listener.removed`
+in its Lobby inbox, and `get_started`), its owner is not; and `maxResponseMs` is unchanged: a
+removable Listener already reads offline, so a request asking `maxResponseMs` passed it over before
+its removal, and the removal extends that to every request.
+
+*Idea, not taken:* **telling a keyed agent's owner** when its Listener is removed (an open question
+of the idea above).
+
 ### Sort the directory by last seen or status (listener-status slice, 2026-09-27)
 
 The redesign artboard (`Listeners.dc.html`) has a sort menu that includes last seen and status. The
 directory sorts by name, owner and joined only; a status is computed at read time while the cursor is
 keyed on stored columns, so either sort needs a cursor design of its own. Not part of the
 listener-status slice (spec 2026-09-27 §11).
+
+### A web control for the offline-removal setting (2026-09-30)
+
+The setting `removeOfflineListenersAfterMs` has no web control yet, like every instance setting (the
+web has no settings page); it is changed with `loom admin settings`, `PUT /api/admin/settings` or
+`keeper_set_settings`. Placing a control belongs to Paw's design session.
 
 ### Leaving Loom, and archiving a Weave for oneself (Paw, 2026-09-27)
 
@@ -652,6 +672,10 @@ archive.
 
 Not started. Meets the Listener heartbeat idea above (an inactive Listener leaving the directory)
 and the removal rules of 2026-09-26 (removal is per Thread).
+
+The offline removal (2026-09-30) clears a profile and withdraws standing offers for a Listener that
+is gone, but `set_capabilities(null)` still withdraws nothing, so a Leave function that should
+withdraw offers must do it itself.
 
 ### A Codex listener through a Stop hook (Paw, 2026-10-01): brainstorm idea
 
