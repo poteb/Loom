@@ -120,9 +120,11 @@ makes", and not drift.
 
 - **All of `src/` as it stands on this branch** — the seven packages, their tests, their
   configuration. The diff against `main` is the new work; the rest is already-reviewed code you
-  should still judge where this branch changed it (`settings.ts`, `types.ts`, `inbox.ts`, `lobby/status.ts`
-  and `lobby/onboarding.ts` in core; `app.ts` and `routes/admin.ts` in the server; `onboarding.ts` and
-  `tools.ts` in mcp-tools; the channel's `format.ts` and `server.ts`; the CLI's `admin.ts` and `messages.ts`;
+  should still judge where this branch changed it (`settings.ts`, `types.ts`, `inbox.ts`, `lobby/status.ts`,
+  `lobby/onboarding.ts`, `index.ts` (the facade's `sweepOfflineListeners`), `db/schema.ts` (the
+  `remove_offline_listeners_after_ms` column) and `drizzle/meta/_journal.json` (the 0009 entry) in core;
+  `app.ts` and `routes/admin.ts` in the server; `onboarding.ts` and `tools.ts` in mcp-tools; the
+  client's `types.ts` (the `Settings` field and the two `EventType`s); the channel's `format.ts` and `server.ts`; the CLI's `admin.ts` and `messages.ts`;
   the web's `session.ts`, `requests-state.ts`, `MessageList.tsx` and `fold.ts`).
 - **The specs are the binding requirements**, the last one first:
   - [superpowers/specs/2026-09-30-loom-offline-listener-removal-design.md](superpowers/specs/2026-09-30-loom-offline-listener-removal-design.md)

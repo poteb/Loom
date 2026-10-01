@@ -17,7 +17,7 @@ export type HeldRequest = Omit<LoomRequest, "acceptances"> & { acceptances: Held
 export type VersionedRequest = HeldRequest & { version: number };
 export type Requests = Record<string, VersionedRequest>;
 
-const REQUEST_EVENTS = ["request.opened", "request.offered", "request.offer_withdrawn", "request.accepted","request.closed", "request.completed", "request.overdue"] as const;
+const REQUEST_EVENTS = ["request.opened", "request.offered", "request.offer_withdrawn", "request.accepted", "request.closed", "request.completed", "request.overdue"] as const;
 
 /**
  * The Lobby events that carry a request's own mutations: every `request.*`, and a `thread.removed`
