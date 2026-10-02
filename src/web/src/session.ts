@@ -794,12 +794,17 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
     // from its own side read, one source of truth for one small request (spec §3.3).
     if (e.type === "thread.created" || e.type === "thread.closed" || e.type === "thread.url_changed"
       || e.type === "participant.joined" || e.type === "participant.role_changed"
-      || e.type === "participant.capabilities_changed") {
+      || e.type === "participant.capabilities_changed" || e.type === "listener.removed") {
       // …and when that event names *me*, the own-profile read is the mechanism rather than the
-      // backstop: one edit, one event, no fan-out to coalesce.
-      if (e.type === "participant.capabilities_changed"
+      // backstop: one edit, one event, no fan-out to coalesce. A removal by the offline sweep is the
+      // clearing of a profile too (spec 2026-09-30 §9.1): it is how a human's open tab learns its
+      // profile is gone, and the Offer form with it.
+      if ((e.type === "participant.capabilities_changed" || e.type === "listener.removed")
         && String(e.payload.participantId ?? "") === state.me?.participant.id) readMyProfile();
       scheduleRefresh();
+      // A removal also takes a row out of the directory and its tabs: the open directory re-runs its
+      // view, quietly, as on a work event. A profile change keeps its present handling.
+      if (e.type === "listener.removed") for (const fn of [...workFns]) fn();
     } else if (e.type === "weave.guidelines_changed") {
       // An older change can still be replayed after a newer snapshot was accepted (history, then
       // metadata, then the stream from the history cursor): it belongs in the log and in the thread

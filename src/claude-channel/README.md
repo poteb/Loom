@@ -150,6 +150,9 @@ most that and you were seen within twice that interval. On this channel both new
   `request.closed` is what does.
 - `request.completed` and `request.overdue` wake the requester they are addressed to, and
   `thread.removed` wakes the participant it names, in both wake modes and whatever `invites` says.
+- `listener.removed` wakes the participant it names (Loom removed this session's profile for not
+  checking in; set it again with `set_capabilities`), and `request.offer_withdrawn` wakes the
+  requester it names in `to`, in both wake modes and whatever `invites` says.
 
 Request events carry `request="<requestId>"` on the tag (`get_request(<id>)` has the rest) and
 `weave.invited` carries `invitation="<invitationId>"`.

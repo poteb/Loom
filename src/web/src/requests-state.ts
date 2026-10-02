@@ -17,7 +17,7 @@ export type HeldRequest = Omit<LoomRequest, "acceptances"> & { acceptances: Held
 export type VersionedRequest = HeldRequest & { version: number };
 export type Requests = Record<string, VersionedRequest>;
 
-const REQUEST_EVENTS = ["request.opened", "request.offered", "request.accepted", "request.closed", "request.completed", "request.overdue"] as const;
+const REQUEST_EVENTS = ["request.opened", "request.offered", "request.offer_withdrawn", "request.accepted", "request.closed", "request.completed", "request.overdue"] as const;
 
 /**
  * The Lobby events that carry a request's own mutations: every `request.*`, and a `thread.removed`
@@ -142,6 +142,12 @@ export function applyEvent(reqs: Requests, e: LoomEvent): Requests {
       next.offers = mergeOffers(held.offers, [...held.offers.filter((o) => o.participantId !== who), made]);
       break;
     }
+    // The offline sweep withdrew an offer (spec 2026-09-30 §9.1): the held offer goes unless it is
+    // accepted, which is kept as `mergeOffers` keeps every accepted one. Like an offer, it changes
+    // no acceptance, so it is not a work event and re-reads nothing for a held request.
+    case "request.offer_withdrawn":
+      next.offers = held.offers.filter((o) => o.participantId !== who || o.accepted);
+      break;
     case "request.accepted": {
       const ids = list(e.payload.participantIds);
       next.offers = held.offers.map((o) => (ids.includes(o.participantId) ? { ...o, accepted: true } : o));

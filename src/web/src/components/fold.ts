@@ -52,6 +52,8 @@ const WORDS: Partial<Record<string, Words>> = {
   "request.closed": ["request closed", "requests closed"],
   "request.completed": "finished",
   "request.overdue": "overdue",
+  "listener.removed": ["listener removed", "listeners removed"],
+  "request.offer_withdrawn": ["offer withdrawn", "offers withdrawn"],
 };
 
 /**

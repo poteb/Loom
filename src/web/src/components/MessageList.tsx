@@ -58,6 +58,12 @@ function systemLine(e: LoomEvent, state: SessionState): string {
       const by = str(e.payload.removedBy).startsWith("keeper:") ? "Keeper" : name(e.payload.removedBy);
       return `${name(e.payload.participantId)} was removed from this Thread by ${by}`;
     }
+    // The offline sweep (spec 2026-09-30 §9.1).
+    case "listener.removed": {
+      const seen = typeof e.payload.lastSeenAt === "string" ? clock(e.payload.lastSeenAt) : "never";
+      return `${name(e.payload.participantId)} was removed from the Listeners by Loom (last seen ${seen})`;
+    }
+    case "request.offer_withdrawn": return `${name(e.payload.participantId)}'s offer was withdrawn by Loom (offline)`;
     case "weave.invited": return `${name(e.payload.participantId)} invited to "${str(e.payload.targetWeaveTitle)}"`;
     case "participant.capabilities_changed":
       return `${name(e.payload.participantId)} ${e.payload.capabilities ? "updated" : "cleared"} their Lobby profile`;

@@ -9,8 +9,8 @@ export const EVENT_TYPES = [
   "thread.created", "thread.closed", "thread.invited", "thread.removed", "thread.url_changed",
   "weave.archived", "weave.guidelines_changed",
   // Lobby. All of these are addressed-only: they never wake anyone through a Weave's "all events" mode.
-  "participant.capabilities_changed",
-  "request.opened", "request.offered", "request.accepted", "request.closed", "request.completed", "request.overdue",
+  "participant.capabilities_changed", "listener.removed",
+  "request.opened", "request.offered", "request.offer_withdrawn", "request.accepted", "request.closed", "request.completed", "request.overdue",
   "weave.invited",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
@@ -63,4 +63,6 @@ export type Actor =
  * accepted it — carrying it on this shape only made `updateSettings({ lobbyTitle })` type-check and
  * then throw. Renaming the Lobby means renaming its Weave row.
  */
-export type Settings = { instanceName: string; maxMessageLength: number; openWeaveCreation: boolean; guidelines: string };
+export type Settings = { instanceName: string; maxMessageLength: number; openWeaveCreation: boolean; guidelines: string;
+  /** How long a Lobby Listener may go without a check-in before Loom removes its profile, once it also reads offline; null never removes (spec 2026-09-30 §4.1). */
+  removeOfflineListenersAfterMs: number | null };

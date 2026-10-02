@@ -42,6 +42,11 @@ function hhmm(iso: string): string {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
+/** Raw SQL against the test server's database, for the one thing no command can do: age a check-in. */
+async function sqlUnsafe<T>(query: string, params: unknown[] = []): Promise<T[]> {
+  return (await s.core.db.$client.unsafe(query, params as never)) as unknown as T[];
+}
+
 type Scenario = {
   owner: string; req: string; bot: string; botName: string;
   weaveId: string; threadId: string; requesterId: string; botId: string; lobbyGeneralThreadId: string;
@@ -546,5 +551,47 @@ describe("loom read renders the Lobby events", () => {
     expect((await run(["lobby", "me", "--clear", "--json"], { cfg })).code).toBe(0);
     const cleared = await run(["read", "--weave", lobbyWeaveId, "--thread", joined.generalThreadId, "--since", since], { cfg });
     expect(cleared.out).toContain(`* profile cleared by ${name}`);
+  });
+});
+
+describe("offline removal in loom read (spec 2026-09-30 §9.2)", () => {
+  it("read renders listener.removed, with the last check-in or never, and request.offer_withdrawn as system lines", async () => {
+    const seenOne = await scenario();
+    const neverSeen = await scenario();
+    const r = await open(seenOne);
+    expect((await run(["request", "offer", r.id, "--json"], { cfg: seenOne.bot })).code).toBe(0);
+    const since = String((await sqlUnsafe<{ last_seq: number }>("select last_seq from weaves where id = $1", [lobbyWeaveId]))[0]!.last_seq);
+    // Only these two bots are made removable: everyone else in this file's Lobby checked in during the run.
+    const seen = new Date(Date.now() - 2 * 86_400_000);
+    await sqlUnsafe("update participants set last_seen_at = $2::timestamptz where id = $1", [seenOne.botId, seen.toISOString()]);
+    await sqlUnsafe("update participants set last_seen_at = null, joined_at = now() - interval '2 days' where id = $1", [neverSeen.botId]);
+    await s.core.sweepOfflineListeners();
+    const general = await run(["read", "--weave", lobbyWeaveId, "--thread", seenOne.lobbyGeneralThreadId, "--since", since], { cfg: seenOne.req });
+    expect(general.code).toBe(0);
+    expect(general.out).toContain(`* ${seenOne.botName} removed from the Listeners by Loom (last seen ${hhmm(seen.toISOString())})`);
+    expect(general.out).toContain(`* ${neverSeen.botName} removed from the Listeners by Loom (last seen never)`);
+    const thread = await run(["read", "--weave", lobbyWeaveId, "--thread", r.threadId], { cfg: seenOne.req });
+    expect(thread.out).toContain(`* offer by ${seenOne.botName} withdrawn by Loom (offline)`);
+  });
+
+  // External review round 1, S1: an inbox's Lobby items in the `loom read` words, not `system: `.
+  it("inbox renders listener.removed, request.opened and request.offer_withdrawn in the read lines, never as an empty system line", async () => {
+    const sc = await scenario();
+    const title = uniq("Review PR 14");
+    const r = (await run(["request", "open", "--title", title, "--require", JSON.stringify(REQUIRE),
+      "--wanted", "1", "--weave", sc.weaveId, "--thread", sc.threadId, "--json"], { cfg: sc.req })).json();
+    expect((await run(["request", "offer", r.id, "--json"], { cfg: sc.bot })).code).toBe(0);
+    const seen = new Date(Date.now() - 2 * 86_400_000);
+    await sqlUnsafe("update participants set last_seen_at = $2::timestamptz where id = $1", [sc.botId, seen.toISOString()]);
+    await s.core.sweepOfflineListeners();
+    const mine = await run(["inbox", "--weave", lobbyWeaveId], { cfg: sc.bot });
+    expect(mine.code).toBe(0);
+    expect(mine.out).toContain(`* ${sc.botName} removed from the Listeners by Loom (last seen ${hhmm(seen.toISOString())})`);
+    expect(mine.out).toContain(`* request opened: ${title} (wants 1, expires ${hhmm(r.expiresAt)})`);
+    expect(mine.out).not.toContain("system: ");
+    const theirs = await run(["inbox", "--weave", lobbyWeaveId], { cfg: sc.req });
+    expect(theirs.code).toBe(0);
+    expect(theirs.out).toContain(`* offer by ${sc.botName} withdrawn by Loom (offline)`);
+    expect(theirs.out).not.toContain("system: ");
   });
 });

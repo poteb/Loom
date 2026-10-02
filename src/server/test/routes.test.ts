@@ -394,3 +394,23 @@ describe("read positions over REST (spec 2026-09-26 §5)", () => {
     expect([noWeaveGet.status, noWeaveGet.json.code]).toEqual([404, "weave_not_found"]);
   });
 });
+
+describe("the offline-removal setting over REST (spec 2026-09-30 §7)", () => {
+  it("GET /api/admin/settings carries removeOfflineListenersAfterMs; PUT takes 3600000 and null; 1000 and the string 1h are 400; a non-keeper is refused", async () => {
+    const put = (body: unknown, token = KEEPER) => api(s.baseUrl, "PUT", "/api/admin/settings", body, token);
+    const got = await api(s.baseUrl, "GET", "/api/admin/settings", undefined, KEEPER);
+    expect([got.status, got.json.removeOfflineListenersAfterMs]).toEqual([200, 86_400_000]);
+    const hour = await put({ removeOfflineListenersAfterMs: 3_600_000 });
+    expect([hour.status, hour.json.removeOfflineListenersAfterMs]).toEqual([200, 3_600_000]);
+    const off = await put({ removeOfflineListenersAfterMs: null });
+    expect([off.status, off.json.removeOfflineListenersAfterMs]).toEqual([200, null]);
+    const small = await put({ removeOfflineListenersAfterMs: 1000 });
+    expect([small.status, small.json.code, small.json.message]).toEqual([400, "validation",
+      "removeOfflineListenersAfterMs must be null (never remove) or a whole number of milliseconds from 3600000 (1 hour) to 2592000000 (30 days)"]);
+    const word = await put({ removeOfflineListenersAfterMs: "1h" });
+    expect([word.status, word.json.code]).toEqual([400, "validation"]);
+    const member = await api(s.baseUrl, "POST", "/api/weaves", creator);
+    expect((await put({ removeOfflineListenersAfterMs: null }, member.json.token)).status).toBe(403);
+    expect((await put({ removeOfflineListenersAfterMs: 86_400_000 })).status).toBe(200);
+  });
+});

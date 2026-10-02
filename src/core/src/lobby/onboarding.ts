@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import type { Db } from "../db/index.js";
 import { events, requestOffers, requests, threads, weaveInvitations, weaves } from "../db/schema.js";
 import { errors } from "../errors.js";
@@ -15,7 +15,9 @@ export type OnboardingFacts = {
   agent: { name: string; owner: string | null };
   lobby: { weaveId: string; title: string };
   /** The agent's own Lobby participant, or null before join_lobby. */
-  me: { participantId: string; name: string; hasProfile: boolean } | null;
+  me: { participantId: string; name: string; hasProfile: boolean;
+    /** Set when the profile is null because Loom removed it, and no profile change by the agent came since. */
+    removed: { at: string; lastSeenAt: string | null } | null } | null;
   /** Unredeemed, unrevoked invitations addressed to this agent that can still be redeemed. */
   invitations: { inviteId: string; weaveTitle: string; requestId: string | null }[];
   /** Requests whose offer window is open, that list me in `eligible`, that I did not open and have not offered on. */
@@ -36,10 +38,27 @@ export async function onboardingFacts(db: Db, actor: Actor, now: Date = new Date
   return {
     agent: { name: actor.agent.name, owner: actor.agent.owner },
     lobby: { weaveId: lobby.weaveId, title: lobby.title },
-    me: me ? { participantId: me.id, name: me.name, hasProfile: me.capabilities !== null } : null,
+    me: me ? { participantId: me.id, name: me.name, hasProfile: me.capabilities !== null,
+      removed: me.capabilities === null ? await removalOf(db, lobby.weaveId, me.id) : null } : null,
     invitations: await pendingInvitations(db, actor.agent.id, me?.id ?? null),
     requests: me ? await eligibleRequests(db, lobby.weaveId, me.id, now) : [],
   };
+}
+
+/**
+ * Spec 2026-09-30 §8.1: the newest of the agent's own `listener.removed` and
+ * `participant.capabilities_changed` in the Lobby, by seq. A removal when it is the first kind;
+ * null when it is a profile change of the agent's own (set or cleared since) or there is none. One
+ * read, made only for an agent without a profile.
+ */
+async function removalOf(db: Db, lobbyId: string, meId: string): Promise<{ at: string; lastSeenAt: string | null } | null> {
+  const [last] = await db.select({ type: events.type, at: events.at, payload: events.payload }).from(events)
+    .where(and(eq(events.weaveId, lobbyId), inArray(events.type, ["listener.removed", "participant.capabilities_changed"]),
+      sql`${events.payload}->>'participantId' = ${meId}`))
+    .orderBy(desc(events.seq)).limit(1);
+  if (!last || last.type !== "listener.removed") return null;
+  const lastSeenAt = (last.payload as { lastSeenAt?: unknown }).lastSeenAt;
+  return { at: last.at.toISOString(), lastSeenAt: typeof lastSeenAt === "string" ? lastSeenAt : null };
 }
 
 /** Oldest first. Addressed by the agent id or by its Lobby participant, whichever the issuer recorded. */

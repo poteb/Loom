@@ -480,6 +480,24 @@ describe("MessageList", () => {
     ]);
   });
 
+  it("renders listener.removed, with the last check-in or never, and request.offer_withdrawn as system lines (spec 2026-09-30 §9.1)", () => {
+    const base = { weaveId: "w1", threadId: "th1", actor: "system", at: new Date().toISOString() };
+    const seen = "2026-09-29T18:00:00.000Z";
+    const events = [
+      { ...base, seq: 1, type: "listener.removed" as const, payload: { participantId: "p2", reason: "offline", lastSeenAt: seen, afterMs: 86_400_000, previous: PROFILE, withdrawn: ["r1"] } },
+      { ...base, seq: 2, type: "listener.removed" as const, payload: { participantId: "p2", reason: "offline", lastSeenAt: null, afterMs: 86_400_000, previous: PROFILE, withdrawn: [] } },
+      { ...base, seq: 3, type: "request.offer_withdrawn" as const, payload: { requestId: "r1", participantId: "p2", reason: "offline", to: "p1" } },
+    ];
+    const { container } = render(<MessageList state={lobbyState({ currentThreadId: "th1", events })} fold={false} />);
+    const lines = [...container.querySelectorAll(".sysrow .sys-text")].map((d) => d.textContent);
+    const clock = (iso: string) => new Date(iso).toLocaleTimeString();
+    expect(lines).toEqual([
+      `Helper was removed from the Listeners by Loom (last seen ${clock(seen)})`,
+      "Helper was removed from the Listeners by Loom (last seen never)",
+      "Helper's offer was withdrawn by Loom (offline)",
+    ]);
+  });
+
   describe("a message", () => {
     const at = "2026-09-24T13:12:04.000Z";
     const said = (actor: string, seq = 1) => ({ weaveId: "w1", seq, threadId: "g1", type: "message" as const, actor, at, payload: { text: "hi **there**" } });

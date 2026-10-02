@@ -64,6 +64,10 @@ export async function exportWeave(db: Db, actor: Actor, weaveId: string, format:
         e.type === "thread.url_changed" ? (e.payload.url ? `Thread now links to ${String(e.payload.url)}` : "Thread no longer links to an artefact") :
         e.type === "thread.invited" ? `${nameOf(e.payload.participantId)} invited by ${who(e.actor)}` :
         e.type === "thread.removed" ? `${nameOf(e.payload.participantId)} removed from the Thread by ${who(String(e.payload.removedBy ?? e.actor))}` :
+        // The offline sweep (spec 2026-09-30), in the web's words; the last check-in as the ISO
+        // instant the rest of the export uses for times.
+        e.type === "listener.removed" ? `${nameOf(e.payload.participantId)} was removed from the Listeners by Loom (last seen ${typeof e.payload.lastSeenAt === "string" ? e.payload.lastSeenAt : "never"})` :
+        e.type === "request.offer_withdrawn" ? `${nameOf(e.payload.participantId)}'s offer was withdrawn by Loom (offline)` :
         e.type === "weave.archived" ? "Weave archived" : e.type;
       lines.push(`_system: ${sys}_ · ${e.at}`, "");
     }

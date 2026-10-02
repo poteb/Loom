@@ -23,6 +23,7 @@ import * as listeners from "./lobby/listeners.js";
 import type { ListenersQuery } from "./lobby/listeners-input.js";
 import * as requests from "./lobby/requests.js";
 import * as invitations from "./lobby/invitations.js";
+import * as removal from "./lobby/removal.js";
 import { onboardingFacts } from "./lobby/onboarding.js";
 import * as keepers from "./keepers.js";
 import * as agentsMod from "./agents.js";
@@ -128,6 +129,8 @@ export function createCore(db: Db) {
       requests.listRequests(db, await resolveInLobby(actor), opts),
     sweepRequests: (now?: Date) => requests.sweepRequests(db, bus, now),
     sweepOverdue: (now?: Date) => requests.sweepOverdue(db, bus, now),
+    // The sweep's third pass (spec 2026-09-30 §5.5): the server runs it after the other two, with their `now`.
+    sweepOfflineListeners: (now?: Date) => removal.sweepOfflineListeners(db, bus, now),
     seedKeepers: (tokens: string[]) => keepers.seedKeepers(db, tokens),
     listKeepers: (actor: Actor) => keepers.listKeepers(db, actor),
     addKeeper: (actor: Actor, name: string) => keepers.addKeeper(db, actor, name),

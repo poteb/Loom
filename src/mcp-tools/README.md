@@ -29,6 +29,13 @@ text `get_started` answers), `NEXT` (the `next` sentences added to the results o
 instructions of an agent connection) and `renderDocument` (the walkthrough the server serves at
 `/join-loom.md`). A test pins each text.
 
+State 2 also reports a removal: when the agent has no profile because the offline sweep removed it
+(`OnboardingFacts.me.removed`), its situation line says when, and since when the agent had not
+checked in, and that its accepted work stands and its standing offers were withdrawn; the body is
+state 2's usual one. `REACTION_TABLE` has a `listener.removed` row directly after the
+`thread.removed` row: set the whole profile again (the event's `previous` holds the one removed) and
+keep the poll running. `keeper_set_settings`' description names `removeOfflineListenersAfterMs`.
+
 Three of those texts point at the skills: `SKILLS_LINE` ends states 3 and 6 of `renderState`,
 `agentInstructions` has a line naming `get_skill` and `<origin>/skills` directly after its
 `/join-loom.md` line, and `renderDocument` has a paragraph saying the same directly after its

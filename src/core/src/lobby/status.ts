@@ -47,11 +47,17 @@ const intervalOf = (profile: Profile | null): number =>
   profile !== null && typeof profile.pollIntervalMs === "number" ? profile.pollIntervalMs : DEFAULT_POLL_INTERVAL_MS;
 
 /**
- * §4.2, in TypeScript. Online is exactly `isLive` with the interval above (so exactly twice the
- * interval is still online), never seen is offline, offline wins over working.
+ * Online by §4.2 step 1: seen within twice the declared `pollIntervalMs`, the 15 minute default when
+ * none is declared (so exactly twice is still online); never seen is not online. The status rule's
+ * first step, shared with the offline-removal rule (spec 2026-09-30 §3.2 condition 3).
  */
+export function isOnline(profile: Profile | null, lastSeenAt: Date | null, now: Date): boolean {
+  return isLive({ pollIntervalMs: intervalOf(profile) }, { lastSeenAt, now });
+}
+
+/** §4.2, in TypeScript: offline unless `isOnline`, and offline wins over working. */
 export function listenerStatus(profile: Profile | null, lastSeenAt: Date | null, holdsWork: boolean, now: Date): ListenerStatus {
-  if (!isLive({ pollIntervalMs: intervalOf(profile) }, { lastSeenAt, now })) return "offline";
+  if (!isOnline(profile, lastSeenAt, now)) return "offline";
   return holdsWork ? "working" : "idle";
 }
 
@@ -67,17 +73,23 @@ const holdsWorkSql = sql`EXISTS (SELECT 1 FROM ${requestOffers}
     AND ${requests.status} = 'working')`;
 
 /**
- * §4.2, in SQL: a CASE over one `participants` row yielding `'offline'`, `'working'` or `'idle'`.
- * `now` is the same `Date` the TypeScript side of the read uses, as a bind parameter, never
- * Postgres's `now()`. The elapsed time is compared in exact milliseconds, on the millisecond value a
- * JavaScript `Date` holds (`date_trunc`), so the boundary is the one `isLive` draws.
+ * `!isOnline` in SQL, over one `participants` row: never seen, or seen more than twice the interval
+ * before `now`. `now` is the same `Date` the TypeScript side of the read uses, as a bind parameter,
+ * never Postgres's `now()`. The elapsed time is compared in exact milliseconds, on the millisecond
+ * value a JavaScript `Date` holds (`date_trunc`), so the boundary is the one `isLive` draws. The
+ * status rule's offline arm, and the offline-removal candidate query's condition 3 (spec 2026-09-30
+ * §3.2; external review round 1, S3).
  */
-export function statusSql(now: Date): SQL {
+export function offlineSql(now: Date): SQL {
   const at = sql`${now.toISOString()}::timestamptz`;
+  return sql`(${participants.lastSeenAt} IS NULL
+    OR EXTRACT(EPOCH FROM (${at} - date_trunc('milliseconds', ${participants.lastSeenAt}))) * 1000 > 2 * ${intervalSql})`;
+}
+
+/** §4.2, in SQL: a CASE over one `participants` row yielding `'offline'`, `'working'` or `'idle'`. */
+export function statusSql(now: Date): SQL {
   return sql`(CASE
-    WHEN ${participants.lastSeenAt} IS NULL
-      OR EXTRACT(EPOCH FROM (${at} - date_trunc('milliseconds', ${participants.lastSeenAt}))) * 1000 > 2 * ${intervalSql}
-      THEN 'offline'
+    WHEN ${offlineSql(now)} THEN 'offline'
     WHEN ${holdsWorkSql} THEN 'working'
     ELSE 'idle' END)`;
 }

@@ -6,7 +6,7 @@ import { seedKeepers, listKeepers, addKeeper, removeKeeper } from "../src/keeper
 import { resolveCredential } from "../src/actors.js";
 import { keepers } from "../src/db/schema.js";
 import type { Db } from "../src/db/index.js";
-import type { Actor } from "../src/types.js";
+import type { Actor, Settings } from "../src/types.js";
 
 afterAll(closeTestDb);
 let db: Db;
@@ -21,7 +21,8 @@ describe("settings", () => {
   it("returns defaults on first read", async () => {
     // No `lobbyTitle`: the column exists and `ensureLobby` reads it, but it is not a setting a
     // keeper can read or patch, so it is not on the shape either.
-    expect(await getSettings(db)).toEqual({ instanceName: "Loom", maxMessageLength: 20000, openWeaveCreation: true, guidelines: DEFAULT_INSTANCE_GUIDELINES });
+    expect(await getSettings(db)).toEqual({ instanceName: "Loom", maxMessageLength: 20000, openWeaveCreation: true, guidelines: DEFAULT_INSTANCE_GUIDELINES,
+      removeOfflineListenersAfterMs: 86_400_000 });
   });
   it("keeper can update, others cannot", async () => {
     const k = await keeperActor();
@@ -44,6 +45,27 @@ describe("settings", () => {
     expect(s.instanceName).toBe("Before");
     const s2 = await updateSettings(db, k, { instanceName: undefined });
     expect(s2.instanceName).toBe("Before");
+  });
+});
+
+describe("the offline-removal limit (spec 2026-09-30 §4.1)", () => {
+  const MESSAGE = "removeOfflineListenersAfterMs must be null (never remove) or a whole number of milliseconds from 3600000 (1 hour) to 2592000000 (30 days)";
+
+  it("updateSettings accepts 3600000, 2592000000 and null, and each reads back", async () => {
+    const k = await keeperActor();
+    for (const v of [3_600_000, 2_592_000_000, null]) {
+      expect((await updateSettings(db, k, { removeOfflineListenersAfterMs: v })).removeOfflineListenersAfterMs).toBe(v);
+      expect((await getSettings(db)).removeOfflineListenersAfterMs).toBe(v);
+    }
+  });
+
+  it("updateSettings refuses 3599999, 2592000001, 1.5, the string 1h, true and {} with the exact message", async () => {
+    const k = await keeperActor();
+    for (const v of [3_599_999, 2_592_000_001, 1.5, "1h", true, {}]) {
+      await expect(updateSettings(db, k, { removeOfflineListenersAfterMs: v } as unknown as Partial<Settings>))
+        .rejects.toMatchObject({ code: "validation", message: MESSAGE });
+    }
+    expect((await getSettings(db)).removeOfflineListenersAfterMs).toBe(86_400_000);
   });
 });
 

@@ -1,7 +1,7 @@
 import { describe, it, expect, afterAll, beforeEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { freshDb, closeTestDb, keeperToken } from "./helpers.js";
-import { requests as requestsTable, weaveInvitations, weaves } from "../src/db/schema.js";
+import { participants, requests as requestsTable, weaveInvitations, weaves } from "../src/db/schema.js";
 import { createCore, type Core } from "../src/index.js";
 import type { Db } from "../src/db/index.js";
 import type { Actor } from "../src/types.js";
@@ -49,6 +49,20 @@ async function host(title: string) {
   return { actor, weaveId: w.weave.id, threadId: thread.id };
 }
 
+const DAY = 86_400_000;
+
+/**
+ * Ages a Lobby participant past the day's limit (with `seen` null: never seen, and joined two days
+ * ago) and runs the offline pass, which must remove exactly it.
+ */
+async function removeByTheSweep(participantId: string, seen: Date | null): Promise<void> {
+  const now = new Date();
+  await db.update(participants).set(seen === null ? { lastSeenAt: null, joinedAt: new Date(now.getTime() - 2 * DAY) } : { lastSeenAt: seen })
+    .where(eq(participants.id, participantId));
+  expect(await core.sweepOfflineListeners(now)).toBe(1);
+}
+const lastRemoval = async () => (await core.readEvents(await keeper(), lobbyId, {})).filter((e) => e.type === "listener.removed").at(-1)!;
+
 describe("onboardingFacts", () => {
   it("onboardingFacts refuses anything but an agent key", async () => {
     const w = await core.createWeave({ title: "T", opener: "", creator: { name: "P", kind: "human" } });
@@ -72,7 +86,7 @@ describe("onboardingFacts", () => {
     const joined = await core.joinLobby({ kind: "agent" }, agent);
     const facts = await core.onboardingFacts(agent);
     expect(facts.agent).toEqual({ name: "ChatGPT", owner: null });
-    expect(facts.me).toEqual({ participantId: joined.participant.id, name: "ChatGPT", hasProfile: false });
+    expect(facts.me).toEqual({ participantId: joined.participant.id, name: "ChatGPT", hasProfile: false, removed: null });
   });
 
   it("facts list unredeemed invitations with their Weave titles and request ids, and leave out redeemed, revoked, archived-target and closed-Thread ones", async () => {
@@ -136,5 +150,44 @@ describe("onboardingFacts", () => {
     const before = await lastSeq();
     await core.onboardingFacts(l.agent);
     expect(await lastSeq()).toBe(before);
+  });
+
+  it("me.removed is null with a profile, for a participant that never had one, and after it cleared its own", async () => {
+    const l = await listener();
+    expect((await core.onboardingFacts(l.agent)).me!.removed).toBeNull();
+    const bare = await agentKey("Bare");
+    await core.joinLobby({ kind: "agent" }, bare);
+    expect((await core.onboardingFacts(bare)).me).toMatchObject({ hasProfile: false, removed: null });
+    await core.setCapabilities(l.agent, null);
+    expect((await core.onboardingFacts(l.agent)).me).toMatchObject({ hasProfile: false, removed: null });
+  });
+
+  it("after a removal me.removed carries the event's at and lastSeenAt, and a null lastSeenAt for a Listener never seen (spec 2026-09-30 §8.1)", async () => {
+    const l = await listener();
+    const seen = new Date(Date.now() - 2 * DAY);
+    await removeByTheSweep(l.id, seen);
+    const first = await lastRemoval();
+    expect((await core.onboardingFacts(l.agent)).me).toEqual({ participantId: l.id, name: "ChatGPT", hasProfile: false,
+      removed: { at: first.at, lastSeenAt: seen.toISOString() } });
+    const never = await agentKey("Gemini", "paw");
+    const joined = await core.joinLobby({ kind: "agent" }, never);
+    await core.setCapabilities(never, { models: [MODEL], serves: "owner" });
+    await removeByTheSweep(joined.participant.id, null);
+    const second = await lastRemoval();
+    expect((await core.onboardingFacts(never)).me!.removed).toEqual({ at: second.at, lastSeenAt: null });
+  });
+
+  it("me.removed is null again after set_capabilities, both with a profile and with null", async () => {
+    const a = await listener();
+    await removeByTheSweep(a.id, new Date(Date.now() - 2 * DAY));
+    expect((await core.onboardingFacts(a.agent)).me!.removed).not.toBeNull();
+    await core.setCapabilities(a.agent, { models: [MODEL], serves: "owner" });
+    expect((await core.onboardingFacts(a.agent)).me).toMatchObject({ hasProfile: true, removed: null });
+    const b = await agentKey("Gemini", "paw");
+    const joined = await core.joinLobby({ kind: "agent" }, b);
+    await core.setCapabilities(b, { models: [MODEL], serves: "owner" });
+    await removeByTheSweep(joined.participant.id, new Date(Date.now() - 2 * DAY));
+    await core.setCapabilities(b, null);
+    expect((await core.onboardingFacts(b)).me).toMatchObject({ hasProfile: false, removed: null });
   });
 });

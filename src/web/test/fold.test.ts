@@ -63,6 +63,12 @@ describe("runSummary", () => {
   it("names a kind it has no word for by its event type", () => {
     expect(runSummary([ev("weave.archived"), ev("some.new_event" as EventType)])).toEqual(["1 weave archived", "1 some.new_event"]);
   });
+
+  it("counts listener removals and withdrawn offers in their words (spec 2026-09-30 §9.1)", () => {
+    expect(runSummary([ev("listener.removed"), ev("request.offer_withdrawn"), ev("request.offer_withdrawn"), ev("listener.removed"), ev("listener.removed")]))
+      .toEqual(["3 listeners removed", "2 offers withdrawn"]);
+    expect(runSummary([ev("listener.removed"), ev("request.offer_withdrawn")])).toEqual(["1 listener removed", "1 offer withdrawn"]);
+  });
 });
 
 describe("timeRange", () => {

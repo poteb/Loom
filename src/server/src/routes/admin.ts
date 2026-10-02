@@ -19,6 +19,8 @@ export function adminRoutes(core: Core) {
     const patch = await body(c, z.object({
       instanceName: z.string().optional(), maxMessageLength: z.number().optional(), openWeaveCreation: z.boolean().optional(),
       guidelines: z.string().optional(),
+      // A JSON null turns removal off; core judges the number (spec 2026-09-30 §7).
+      removeOfflineListenersAfterMs: z.number().nullable().optional(),
     }).strict());
     return c.json(await core.updateSettings(actor, patch));
   });

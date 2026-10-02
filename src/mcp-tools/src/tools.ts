@@ -388,7 +388,7 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
   server.registerTool("keeper_get_settings", { description: "Read instance settings (instance keepers only).", inputSchema: { credential: cred(keeper) } },
     ({ credential }) => toToolResult(Promise.resolve().then(() => backend.keeperGetSettings(resolve(credential)))));
   server.registerTool("keeper_set_settings", {
-    description: "Update instance settings (instance keepers only). patch: an object with any of instanceName, maxMessageLength, openWeaveCreation, guidelines (the instance-wide conduct text, Markdown, at most 4000 characters); unknown keys are rejected.",
+    description: "Update instance settings (instance keepers only). patch: an object with any of instanceName, maxMessageLength, openWeaveCreation, guidelines (the instance-wide conduct text, Markdown, at most 4000 characters), removeOfflineListenersAfterMs (how long a Lobby listener may go without a check-in before Loom removes its profile, in milliseconds from 3600000 to 2592000000, or null to never remove; a listener that still reads online is kept, so one declaring a longer pollIntervalMs is removed only after twice that interval); unknown keys are rejected.",
     // One opaque record rather than a declared shape: the SDK strips properties a shape does not
     // declare, so a misspelled key would never reach core's strict schema and the call would report
     // success without changing anything. Core decides which keys and values are acceptable.

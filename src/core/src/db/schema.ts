@@ -1,5 +1,5 @@
 import {
-  pgTable, text, timestamp, integer, jsonb, uuid, boolean, uniqueIndex, index, primaryKey,
+  pgTable, text, timestamp, integer, bigint, jsonb, uuid, boolean, uniqueIndex, index, primaryKey,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { DEFAULT_INSTANCE_GUIDELINES } from "../guidelines-default.js";
@@ -87,6 +87,10 @@ export const settings = pgTable("settings", {
   // The one Lobby of this instance, created at first boot by ensureLobby.
   lobbyWeaveId: uuid("lobby_weave_id"),
   lobbyTitle: text("lobby_title").notNull().default("Lobby"),
+  // How long a Lobby Listener may go without a check-in before the sweep removes its profile, once
+  // it also reads offline (spec 2026-09-30 §4); null is off. bigint, because 30 days in milliseconds
+  // (2 592 000 000) does not fit integer; mode "number" reads it as a JavaScript number, exact here.
+  removeOfflineListenersAfterMs: bigint("remove_offline_listeners_after_ms", { mode: "number" }).default(86_400_000),
 });
 
 export const events = pgTable("events", {

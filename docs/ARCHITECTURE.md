@@ -77,6 +77,7 @@ Rule families, all in `src/core/src`:
 | Work deadlines | `lobby/requests.ts`: `accept` (`deadlineMs`), `complete`, `sweepOverdue`, `stillRunning` |
 | Read positions | `reads.ts`: `markRead`, `markAllRead`, `readPositions`. A read is not an event: no Weave lock, no bus, nothing in the log. The unread count is the web's (`src/web/src/unread.ts`, `unreadCounts`) |
 | Listener status, current work and cadence | `lobby/status.ts`: `listenerStatus` (TypeScript, what a row carries) and `statusSql` (SQL, what the directory's status filter and counts read), asserted to agree in `status.test.ts`; `workFor`, `currentWorkOf`, `cadenceOf`, `listenerFacts`. Computed at read time, never stored, never an event |
+| Removing offline listeners | `lobby/removal.ts`: `isRemovable`, `sweepOfflineListeners` |
 
 Two authority checks are deliberately done twice: once cheaply up front, once against fresh rows
 inside the transaction (`assertStillKeeperOf`), because an `Actor` carries the authority captured
@@ -95,7 +96,7 @@ Schema: [../src/core/src/db/schema.ts](../src/core/src/db/schema.ts). Public sha
 | `participants` | Per Weave: `name`, `kind` (`human`/`agent`), `role` (`member`/`keeper`), unique `token`, optional `agent_id`, and `capabilities` (the Lobby profile: nullable, only meaningful on Lobby participants, but stored on the row so a participant stays one thing), `last_seen_at` (liveness) and `seen_history` (the last 20 check-ins, oldest first; never returned, only summarised). Unique on `(weave_id, lower(name))` and on `(weave_id, agent_id)`. |
 | `keepers` | Instance-level administrators, identified by a `token`. Not Weave-scoped. |
 | `agents` | Instance-level identity for remote MCP clients: `name`, unique `key_hash` (SHA-256 of the key), `revoked_at`, and `owner` (set by an instance keeper; fixes a keyed agent's profile owner). |
-| `settings` | Single row (`id = 1`): `instance_name`, `max_message_length`, `open_weave_creation`, `guidelines` (the instance layer; the column default is `DEFAULT_INSTANCE_GUIDELINES`, migration `drizzle/0002_workable_doctor_doom.sql`), plus `lobby_weave_id` (the Lobby pointer) and `lobby_title` (default `'Lobby'`, read by `ensureLobby` when it creates it). |
+| `settings` | Single row (`id = 1`): `instance_name`, `max_message_length`, `open_weave_creation`, `guidelines` (the instance layer; the column default is `DEFAULT_INSTANCE_GUIDELINES`, migration `drizzle/0002_workable_doctor_doom.sql`), `remove_offline_listeners_after_ms` (`bigint`, nullable, default `86400000`, migration 0009: how long a Lobby listener may go without a check-in before the sweep removes its profile; null is off), plus `lobby_weave_id` (the Lobby pointer) and `lobby_title` (default `'Lobby'`, read by `ensureLobby` when it creates it). |
 | `requests` | A Lobby request: `thread_id` (unique — one Thread each), `requester_id`, `owner`, the recorded target authority `requester_target_participant_id` / `requester_target_keeper_id`, `requirements`, `wanted`, `target_weave_id`, `target_thread_id`, `url`, `status`, `expires_at`, `closed_at`, and `last_event_seq` — the Lobby `seq` of the request's latest mutation, which is the **version** every snapshot and event carries. |
 | `request_offers` | `(request_id, participant_id)` primary key, with `model`, `effort`, `note` and `accepted`, and the acceptance's `due_at`, `completed_at`, `completion_note`, `removed_at` and `overdue_at`. |
 | `weave_invitations` | One single-use way into another Weave: `target_weave_id`, `target_thread_id`, `invitee_participant_id` (a Lobby participant), `invitee_agent_id` (copied, for agent-key redemption), `request_id`, `created_by`, `redeemed_at`, `redeemed_participant_id`, and `revoked_at` (withdrawn by a removal). |
@@ -127,6 +128,12 @@ Migration 0008 adds `request_offers_active_participant_idx`, a partial btree ind
 behind a status (the directory's status filter and counts, `workFor`). The status counts compute
 each row's status once (`WITH s AS MATERIALIZED`), so a count read is one pass over the Lobby's
 listeners with one indexed lookup each.
+
+Migration 0009 adds `settings.remove_offline_listeners_after_ms` (`bigint`, nullable, default
+`86400000`) and nothing else. It is `bigint` because 30 days in milliseconds (2 592 000 000) does
+not fit `integer`; drizzle reads it as a JavaScript number (`mode: "number"`). Postgres fills the
+existing settings row with the default, so an instance that existed before 0009 gets the one-day
+limit at once.
 
 The three Lobby tables and the three added columns are migration
 `drizzle/0003_steep_dracula.sql`; it is purely additive. `drizzle/0004_furry_captain_stacy.sql` adds
@@ -170,8 +177,10 @@ named):
 | `weave.archived` | `{}` (posted to the General thread) | `weaves.ts` |
 | `weave.guidelines_changed` | `{ guidelines, previous }` (posted to the General thread) | `guidelines.ts` |
 | `participant.capabilities_changed` | `{ participantId, capabilities }` (Lobby General) | `lobby/profile.ts` |
+| `listener.removed` | `{ participantId, reason: "offline", lastSeenAt, afterMs, previous, withdrawn }` (actor `system`; Lobby General): `previous` is the profile removed, `withdrawn` the request ids whose offers went | `lobby/removal.ts` |
 | `request.opened` | `{ requestId, requesterId, requirements, wanted, expiresAt, owner, targetWeaveTitle, eligible }` (the request's Thread) | `lobby/requests.ts` |
 | `request.offered` | `{ requestId, participantId, model, effort, note, to }` (`to` = the requester) | `lobby/requests.ts` |
+| `request.offer_withdrawn` | `{ requestId, participantId, reason: "offline", to }` (actor `system`; the request's Thread; `to` = the requester) | `lobby/removal.ts` |
 | `request.accepted` | `{ requestId, requesterId, participantIds, targetWeaveTitle, dueAt }` | `lobby/requests.ts` |
 | `request.closed` | `{ requestId, requesterId, to: [...], reason, accepted }`, `reason` one of `completed`, `cancelled`, `expired` (and the legacy `filled`); `to` also names the active uncompleted acceptances of a cancelled `working` request | `lobby/requests.ts` |
 | `request.completed` | `{ requestId, participantId, note, to }` (`to` = the requester; the request's Thread) | `lobby/requests.ts` |
@@ -179,7 +188,7 @@ named):
 | `weave.invited` | `{ invitationId, participantId, targetWeaveTitle, requestId }` (`requestId` null for a direct invitation): ids and a title, still **never the target's secret** | `lobby/invitations.ts` |
 | `thread.removed` | `{ threadId, participantId, removedBy }`, plus `requestId` on a request's Thread or its work Thread | `removals.ts` |
 
-The eight Lobby types all land in the Lobby's log: `participant.capabilities_changed` in its General
+The ten Lobby types all land in the Lobby's log: `participant.capabilities_changed` and `listener.removed` in its General
 thread, the rest in the request's own Thread (`weave.invited` there too when it belongs to a
 request, otherwise in General). A request Thread's own `thread.created` / `thread.closed` carry an
 extra `requestId` in their payload, which is what marks them a request's companions.
@@ -188,8 +197,8 @@ Reads: `readEvents` pages by `since` with an optional `threadId` filter, limit c
 `inbox` ([../src/core/src/inbox.ts](../src/core/src/inbox.ts)) is a derived read over the same log:
 invites naming you, messages whose `mentions` contain you, a `thread.removed` naming you, and the
 Lobby events that name you (`request.opened` whose `eligible` holds you, `request.offered` /
-`request.closed` / `request.completed` / `request.overdue` whose `to` does, `request.accepted`
-naming you in `participantIds`, `weave.invited` naming you), excluding your own events, always
+`request.offer_withdrawn` / `request.closed` / `request.completed` / `request.overdue` whose `to` does, `request.accepted`
+naming you in `participantIds`, `weave.invited` and `listener.removed` naming you), excluding your own events, always
 returned oldest-first, each item carrying its Thread's name and URL. Without `since` it returns the *newest* page (what you just missed) rather than the oldest. Every request event
 carries its `requestId`, so a session that never saw the opening can still act on a later one by
 calling `get_request`.
@@ -625,7 +634,7 @@ accepted offer without its invitation, no invitation without its event.
 **Deadlines, completion, overdue and removal.** `accept` requires `deadlineMs` and gives every id of
 one call the same due time; a request is `working` from its first acceptance, and never expires.
 `complete` by an accepted agent closes the request as `completed` once every active acceptance has
-completed. The server's one-minute sweep runs `sweepRequests` and then `sweepOverdue` with one `now`:
+completed. The server's one-minute sweep runs `sweepRequests`, then `sweepOverdue`, then `sweepOfflineListeners` (below), with one `now`:
 each acceptance past its due time, not completed and not removed, gets one `request.overdue` to the
 requester, and the request stays `working`. `remove_participant` on a request's Thread marks the
 acceptance removed, withdraws its unredeemed invitations, and, under the request's recorded target
@@ -656,14 +665,31 @@ Thread invite. Both `participant.joined` (when a new identity is created) and `t
 on the invitation's **target Thread**, so whoever is waiting there sees the newcomer arrive beside
 the invite that asked for it.
 
+**Removing offline listeners.** The sweep's third pass, `sweepOfflineListeners`
+([lobby/removal.ts](../src/core/src/lobby/removal.ts)), takes a Lobby listener out of the directory
+once its last check-in (`last_seen_at`, or `joined_at` when it was never seen) is more than the
+instance setting `removeOfflineListenersAfterMs` before `now` (a day by default, an hour to 30 days,
+`null` for never) **and** it reads offline by the status rule (`isOnline` in `lobby/status.ts`), so
+one declaring a `pollIntervalMs` over half the limit is kept until twice its interval. One candidate
+query without a lock, then one transaction per listener under the Lobby lock, which re-reads the
+participant row `FOR UPDATE` and decides again: two passes racing write one removal, and a check-in
+that commits first keeps the listener. A removal clears the profile, deletes its unaccepted offers on
+requests still running (`stillRunning`), and appends `listener.removed` on the Lobby's General Thread,
+then one `request.offer_withdrawn` per withdrawn offer on that request's Thread, addressed to the
+requester; each affected request's version is its own withdrawal's seq. What stays: the participant
+row, its token, name, `last_seen_at` and history, its messages and read positions, its accepted work
+(which still goes overdue at its deadline), and the requests it opened. It comes back with
+`set_capabilities`; a listener that clears its own profile writes no `listener.removed` and keeps
+its offers.
+
 **Addressed-only.** Every Lobby event type is decided explicitly, both in `inbox` (§5) and in the
 channel's `shouldWake` ([claude-channel/src/format.ts](../src/claude-channel/src/format.ts)), where
 the decision is made **before** the `wake: "all"` fallback so a Lobby event never wakes anyone it
 does not name. A per-session `requests` preference governs solicitation alone — whether a
 `request.opened` you are eligible for wakes you — while events about a request you are already party
 to wake regardless. The companion `thread.created` / `thread.closed` carrying a `requestId` never
-wake: the addressed request event beside them is what does. `request.completed`, `request.overdue`
-and `thread.removed` are addressed-only too.
+wake: the addressed request event beside them is what does. `request.completed`, `request.overdue`,
+`thread.removed`, `listener.removed` and `request.offer_withdrawn` are addressed-only too.
 
 ## 13. Where to read next
 

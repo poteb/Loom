@@ -30,8 +30,8 @@ describe("EVENT_TYPES (spec 2026-09-28 §10.0)", () => {
     "message", "participant.joined", "participant.role_changed",
     "thread.created", "thread.closed", "thread.invited", "thread.removed", "thread.url_changed",
     "weave.archived", "weave.guidelines_changed",
-    "participant.capabilities_changed",
-    "request.opened", "request.offered", "request.accepted", "request.closed", "request.completed", "request.overdue",
+    "participant.capabilities_changed", "listener.removed",
+    "request.opened", "request.offered", "request.offer_withdrawn", "request.accepted", "request.closed", "request.completed", "request.overdue",
     "weave.invited",
   ] as const;
 
@@ -40,6 +40,11 @@ describe("EVENT_TYPES (spec 2026-09-28 §10.0)", () => {
     expect(new Set(EVENT_TYPES).size).toBe(EVENT_TYPES.length);
     // A type-level assertion: `pnpm --filter @loom/core typecheck` (tsconfig.test.json) checks it, not the run.
     expectTypeOf<EventType>().toEqualTypeOf<(typeof NAMED)[number]>();
+  });
+
+  it("EVENT_TYPES holds listener.removed after participant.capabilities_changed and request.offer_withdrawn after request.offered (spec 2026-09-30 §5.4)", () => {
+    const at = (t: string) => (EVENT_TYPES as readonly string[]).indexOf(t);
+    expect([at("listener.removed") - at("participant.capabilities_changed"), at("request.offer_withdrawn") - at("request.offered")]).toEqual([1, 1]);
   });
 });
 

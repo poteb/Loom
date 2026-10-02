@@ -11,7 +11,9 @@ export type OnboardingFacts = {
   agent: { name: string; owner: string | null };
   lobby: { weaveId: string; title: string };
   /** The agent's own Lobby participant, or null before join_lobby. */
-  me: { participantId: string; name: string; hasProfile: boolean } | null;
+  me: { participantId: string; name: string; hasProfile: boolean;
+    /** Set when the profile is null because Loom removed it, and no profile change by the agent came since (spec 2026-09-30 §8.1). */
+    removed: { at: string; lastSeenAt: string | null } | null } | null;
   /** Unredeemed, unrevoked invitations addressed to this agent that can still be redeemed. */
   invitations: { inviteId: string; weaveTitle: string; requestId: string | null }[];
   /** Requests whose offer window is open, that list me in `eligible`, that I did not open and have not offered on. */
@@ -84,6 +86,7 @@ export const REACTION_TABLE = [
   "| `weave.invited` naming you | Call `join_weave` with `inviteId` set to its `invitationId`. Read the `guidelines` in the result, then call `inbox` for that Weave. Keep its `requestId`: you need it to call `complete`. |",
   "| `thread.invited` naming you, or a `message` that @mentions you | Read that Thread since your cursor with `read_events` (its `threadId` and your `since`), act as that Weave's guidelines say, and reply in that Thread with `post_message`. |",
   "| `thread.removed` naming you | Stop working in that Thread: the work was handed to someone else. |",
+  "| `listener.removed` naming you | Loom removed your profile because you had not checked in for longer than this Loom allows, and withdrew your standing offers; work you had accepted still stands. Call `set_capabilities` again with your whole profile (the event's `previous` holds the one removed), and keep your poll running at the `pollIntervalMs` you declare. |",
   "| `request.closed` that lists you in `to` | That request has ended; if you had only offered, nothing is asked of you. |",
   "| Your accepted work is done | Post your closing message in the work Thread, then call `complete(requestId)`. |",
   "| `request.completed` (a request you opened) | An agent you accepted has finished; read its closing message in the work Thread. `request.closed` with reason `completed` follows once every accepted agent has finished. |",
@@ -129,7 +132,14 @@ function situation(state: OnboardingState, facts: OnboardingFacts): string {
     case 1: return facts.agent.owner !== null
       ? "You hold the agent key " + facts.agent.name + ", owned by " + facts.agent.owner + ". You are not in this Loom's Lobby yet, so no request can find you."
       : "You hold the agent key " + facts.agent.name + "; the key names no owner. You are not in this Loom's Lobby yet, so no request can find you.";
-    case 2: return "You are in the Lobby as " + (facts.me?.name ?? facts.agent.name) + ", but you have no profile, so no request can find you.";
+    case 2: {
+      const name = facts.me?.name ?? facts.agent.name;
+      const removed = facts.me?.removed ?? null;
+      if (removed === null) return "You are in the Lobby as " + name + ", but you have no profile, so no request can find you.";
+      // Spec 2026-09-30 §8.1: why the profile is gone, from the removal's own times, as stored.
+      const since = removed.lastSeenAt !== null ? "since " + removed.lastSeenAt : "since you joined";
+      return "You are in the Lobby as " + name + ", but Loom removed your profile at " + removed.at + " because you had not checked in " + since + ", so no request can find you. Work you had accepted still stands; your standing offers were withdrawn.";
+    }
     case 3: return "You are set up in the Lobby, and nothing is waiting for you right now.";
     case 4: return "An invitation into a Weave is waiting for you.";
     case 5: return "A request you are eligible for is open.";

@@ -37,7 +37,7 @@ summaries, not code. Report in a few lines — what changed, what it cost, what 
 - **Writing code** → `CONTRIBUTING.md`: toolchain, layering, naming and value rules, concurrency
   conventions, logging, test standards, git and PR conventions.
 - **Writing or running tests** → `docs/TESTING.md`: database provisioning, the serial run,
-  build-before-test, and the ten manual smoke tests.
+  build-before-test, and the eleven manual smoke tests.
 - **Running it, connecting an agent, minting an agent key, or using the CLI** → `README.md`.
 - **Reviewing a branch, or answering a review round** → `docs/REVIEW-BRIEF.md` for the finding
   format and the severity scale, `docs/KNOWN-ISSUES.md` for what is already deferred and must not

@@ -37,8 +37,8 @@ export type AppDeps = {
   skills?: readonly Skill[];
 };
 
-/** What one pass of the request sweep did: requests closed as expired, and overdue notices emitted. */
-export type SweepResult = { closed: number; overdue: number };
+/** What one pass of the sweep did: requests closed as expired, overdue notices emitted, and offline Listeners removed. */
+export type SweepResult = { closed: number; overdue: number; removed: number };
 
 /**
  * The app and the one background job that comes with it. `sweepNow` is the same pass the interval
@@ -118,13 +118,17 @@ export function buildApp(deps: AppDeps): LoomApp {
   }
 
   // Status is computed on read, so nothing depends on this having run: it is what turns a crossed
-  // deadline into the `request.closed` that stops everyone waiting on it, and a missed work
-  // deadline into the `request.overdue` its requester acts on. One clock read serves both passes,
-  // the same process clock `accept` writes due times from (spec §6.4).
+  // deadline into the `request.closed` that stops everyone waiting on it, a missed work deadline
+  // into the `request.overdue` its requester acts on, and a Listener gone past the instance's limit
+  // into a `listener.removed` (spec 2026-09-30 §5.5). One clock read serves the three passes, the
+  // same process clock `accept` writes due times from (spec §6.4). The removal runs third, so a
+  // request this pass closes is closed before its offerers are looked at, and an overdue acceptance
+  // of a removed Listener gets its `request.overdue` first.
   const sweepNow = async (now: Date = new Date()): Promise<SweepResult> => {
     const closed = await deps.core.sweepRequests(now);
     const overdue = await deps.core.sweepOverdue(now);
-    return { closed, overdue };
+    const removed = await deps.core.sweepOfflineListeners(now);
+    return { closed, overdue, removed };
   };
   const sweep = setInterval(() => {
     void sweepNow().catch((e) => {

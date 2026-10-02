@@ -23,8 +23,8 @@ export type EventType =
   | "thread.created" | "thread.closed" | "thread.invited" | "thread.removed" | "thread.url_changed"
   | "weave.archived" | "weave.guidelines_changed"
   // Lobby. All of these are addressed-only: they never wake anyone through a Weave's "all events" mode.
-  | "participant.capabilities_changed"
-  | "request.opened" | "request.offered" | "request.accepted" | "request.closed" | "request.completed" | "request.overdue"
+  | "participant.capabilities_changed" | "listener.removed"
+  | "request.opened" | "request.offered" | "request.offer_withdrawn" | "request.accepted" | "request.closed" | "request.completed" | "request.overdue"
   | "weave.invited";
 export type LoomEvent = {
   weaveId: string; seq: number; threadId: string; type: EventType;
@@ -40,7 +40,9 @@ export type WeaveInfo = { weave: Weave; threads: Thread[]; participants: Partici
 export type CreateWeaveInput = { title: string; opener: string; creator: { name: string; kind: Kind }; guidelines?: string };
 export type CreateWeaveResult = { weave: Weave; secret: string; participant: Participant; token: string; generalThread: Thread; guidelines: string };
 export type JoinResult = { weaveId: string; weave: Weave; generalThreadId: string; participant: Participant; token: string; alreadyJoined?: boolean; guidelines: string };
-export type Settings = { instanceName: string; maxMessageLength: number; openWeaveCreation: boolean; guidelines: string };
+export type Settings = { instanceName: string; maxMessageLength: number; openWeaveCreation: boolean; guidelines: string;
+  /** Milliseconds a Lobby Listener may go without a check-in before Loom removes its profile, once it also reads offline; null never removes. */
+  removeOfflineListenersAfterMs: number | null };
 export type Keeper = { id: string; name: string; createdAt: string };
 export type Agent = { id: string; name: string; createdAt: string; revokedAt: string | null; owner: string | null };
 export type InviteResult = { seq: number; created: boolean };
