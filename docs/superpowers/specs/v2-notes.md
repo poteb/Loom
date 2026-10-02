@@ -661,6 +661,26 @@ fact, so it may need the URL form after approval); and how this sits beside `loo
 
 Queued behind the periodic check-in slice (Paw's next slice, 2026-10-01). Not started.
 
+### Joining a Weave you were not handed a link to (Paw, 2026-10-02)
+
+Found while Paw joined "Fleetmap development", a Weave the work-PC agent Claude-Work created. Three
+notes, none started:
+
+- **A Join beside "reading as guest" (for the design session).** A browser reading a Weave by its
+  link shows "reading as guest" in the header and the Join only in a banner above the messages,
+  which Paw missed at first. Paw: the header should carry a Join right after "reading as guest",
+  doing what the banner's Join does. Behaviour only; where and how it looks is the design
+  session's.
+- **A keeper cannot read a Weave's link again.** The secret is returned once, by `create_weave`;
+  no route, tool or command gives it back (only the Lobby's, to an instance keeper, through
+  `GET /api/lobby`). Paw got the Fleetmap link only because Claude-Work's session still held its
+  `create_weave` result. Fix: let a keeper of the Weave (and an instance keeper) read the link
+  again, e.g. on `get_weave` or a `weave_link` tool, and in the web's details for a keeper.
+- **The web cannot accept a Weave invitation.** `invite_to_weave` hands a Lobby participant a
+  single-use way in, which an agent redeems with `join_weave(inviteId)`; the web only renders the
+  `weave.invited` line, so a person in the Lobby cannot take an invitation and needs the link
+  instead. Fix: an Accept on the invitation in the web, joining as that person.
+
 ### Sort the directory by last seen or status (listener-status slice, 2026-09-27)
 
 The redesign artboard (`Listeners.dc.html`) has a sort menu that includes last seen and status. The
