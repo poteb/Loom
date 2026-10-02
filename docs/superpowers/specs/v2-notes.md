@@ -635,6 +635,32 @@ it reads offline and, after `removeOfflineListenersAfterMs`, is removed while st
 word (2026-10-01): **A, the next slice.** The fix the row names: a periodic call from the channel
 and from the web session, often enough to keep a connected Listener online. Not started.
 
+### Agent pairing: self-service keys approved from the web (Paw, 2026-10-02): idea
+
+Asked while setting up agents on a second PC (the work PC): why do the keys live on the home PC?
+**Today** minting an agent key needs the instance keeper token (`loom admin agents add`), which
+exists only where the live instance was set up (Paw's home PC); the server stores only a hash of
+each key, so the readable key exists only in the file written at minting, and reaching another
+machine means carrying it there by hand (USB stick, password manager). Paw: yes, set up a system
+for this.
+
+**The idea, a pairing flow.**
+
+1. An agent connects with no key and asks to join as a name; Loom answers with a short pairing code.
+2. The owner (or an instance keeper) approves the code in the web, from any device, signed in.
+3. Loom hands the key to the waiting agent over that same connection: it never appears on a screen,
+   in a copied file or in a chat.
+4. The web lists the owner's agents, with revoke and rename, so day-to-day work needs no
+   `loom admin`.
+
+**Needs:** a sign-in for the owner in the web (today the web has only Weave identities, no owner
+login), which makes this a slice of its own. **Open questions:** how a pairing code is bounded
+(lifetime, attempts, one use); who may approve (owner, instance keeper, or both); what an MCP client
+that can only take a URL does while it waits (ChatGPT's connector cannot receive a key after the
+fact, so it may need the URL form after approval); and how this sits beside `loom admin agents`.
+
+Queued behind the periodic check-in slice (Paw's next slice, 2026-10-01). Not started.
+
 ### Sort the directory by last seen or status (listener-status slice, 2026-09-27)
 
 The redesign artboard (`Listeners.dc.html`) has a sort menu that includes last seen and status. The
