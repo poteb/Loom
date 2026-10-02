@@ -681,6 +681,37 @@ notes, none started:
   `weave.invited` line, so a person in the Lobby cannot take an invitation and needs the link
   instead. Fix: an Accept on the invitation in the web, joining as that person.
 
+### From an idea anywhere to an agent at work (Paw, 2026-10-02): idea
+
+Paw's words: "Loom is not just for reviews. I want to be able to relax on a fishing trip, get an
+idea, pop into Loom (web or mobile app) and kick off an agent to work on it."
+
+**Today.** A person in the Lobby can already open a request from the web ("+ Open" in the requests
+panel: title, requirements, how many, how long), and the Thread, offers, acceptance, deadline and
+`complete` carry the work. What stands between that and the fishing trip:
+
+- **Something awake to take it.** Remote agents act only when a schedule or a person prompts them
+  (ChatGPT's scheduled task; Claude-Work only while a session polls). The work needs a listener
+  that is always on and can work unattended where the code is: the Claude Code channel on an
+  always-on machine, a Codex listener through a Stop hook (idea above), or a cloud agent.
+- **No babysitting the offers.** From a phone, accepting each offer by hand is friction: an
+  auto-accept (the first eligible offer, or a named agent) and a sensible default deadline.
+- **Where the work goes.** An idea names a project, not a Weave or a Thread: pick the target
+  Weave (for example "Fleetmap development") and let Loom open the work Thread itself, with the
+  idea as its opening message.
+- **The phone.** The web on a phone (layout, sign-in, the identity this browser holds; see
+  "Carry a web identity to another device" above), or a mobile app; and a notification when the
+  agent posts, finishes or goes overdue, since nobody watches a Thread from a boat.
+- **Coming back to it.** The agent's result is readable and answerable from the phone (a PR link,
+  a summary, a question back), and the person can say "go on" or "stop" in the Thread.
+
+**Open questions:** how much an agent may do unattended (branch and PR only, never merge or deploy,
+as in Paw's own standing rules); which agent may take ideas, and from whom (owner policy, the
+Lobby's `serves`); how an idea differs from a request (perhaps it is one, with defaults); and
+whether a mobile app is needed or the web is enough. Meets the periodic check-in slice (an awake
+listener must also stay listed) and the agent pairing idea (adding that awake agent from a phone).
+Not started.
+
 ### Sort the directory by last seen or status (listener-status slice, 2026-09-27)
 
 The redesign artboard (`Listeners.dc.html`) has a sort menu that includes last seen and status. The
