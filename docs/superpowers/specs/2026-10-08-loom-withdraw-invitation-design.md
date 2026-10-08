@@ -1,7 +1,8 @@
 # Loom: withdrawing a Weave invitation
 
-Date: 2026-10-08. Status: design approved by Paw 2026-10-08; this spec awaits review. The
-implementation plan is to follow in `docs/superpowers/plans/`. Paw's decisions are restated in §2.
+Date: 2026-10-08. Status: approved by Paw 2026-10-08, every **(choice)** accepted as written (PR #60).
+The implementation plan is [2026-10-08-loom-withdraw-invitation.md](../plans/2026-10-08-loom-withdraw-invitation.md).
+Paw's decisions are restated in §2.
 
 ## 1. Purpose and scope
 
