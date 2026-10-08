@@ -9,7 +9,7 @@ hosts expose identical tools.
 
 ## Public surface
 
-`registerLoomTools(server, backend, opts?)` registers all 39 tools and three resources;
+`registerLoomTools(server, backend, opts?)` registers all 41 tools and three resources;
 `LOOM_TOOL_NAMES` is the `as const` list of the tool names, `LOOM_RESOURCE_URIS` of the resource URIs.
 
 - **Weaves** — `create_weave`, `join_weave` (with a secret, or `inviteId` to redeem a cross-Weave invitation), `lookup_weave`, `get_weave`, `archive_weave`, `export_weave`
