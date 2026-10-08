@@ -1290,6 +1290,8 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
         scheduleRefresh();
         throw e;
       }
+      // Every read started before the withdrawal is now older than it.
+      invitationReads.markApplied(invitationReads.next());
       // Committed server-side: the row leaves at once, and the refresh brings the rest up to date.
       if (state.invitations) set({ invitations: state.invitations.filter((i) => i.invitationId !== invitationId) });
       scheduleRefresh();

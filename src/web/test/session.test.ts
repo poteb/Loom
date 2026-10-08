@@ -3926,6 +3926,27 @@ describe("pending invitations (spec 2026-10-08 §9)", () => {
     } finally { gate.release(); session.dispose(); }
   });
 
+  // Spec §9: a late read cannot bring back a withdrawn row. The withdrawal is itself the newest
+  // thing this tab knows, so every read started before it is older than it. The refresh's own read
+  // is parked too, so nothing newer than the load's read can land first and hide the rule.
+  it("an invitations answer started before this tab's own withdrawal never brings the row back", async () => {
+    const f = await invitedWeave();
+    const id = await f.invite((await f.guest("a")).id);
+    const gate = makeGate();
+    const later = makeGate();
+    const stale = delivering(parks(gate));
+    const c = sideReadClient({ [f.path]: (call) => (call === 1 ? stale.answer : parks(later)) });
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.r.secret }, storage: f.keeperStorage() });
+    await session.load();
+    try {
+      await gate.entered;                      // read A, the load's, is parked holding the invitation
+      await session.withdrawInvitation(id);    // this tab withdraws it, and the server commits
+      gate.release();                          // ...and only now A's answer, with the row in it, lands
+      await afterDelivery(stale.delivered);
+      expect(session.getState().invitations?.some((i) => i.invitationId === id)).not.toBe(true);
+    } finally { gate.release(); later.release(); session.dispose(); }
+  });
+
   it("withdrawInvitation drops the row at once and schedules a refresh; a refused one keeps the row and re-reads the list", async () => {
     const f = await invitedWeave();
     const first = await f.invite((await f.guest("a")).id);
