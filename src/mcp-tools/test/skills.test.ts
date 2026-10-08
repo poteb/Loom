@@ -180,7 +180,8 @@ const FIELD_NAMES = new Map<string, string>([
   ...group(["dueAt", "completedAt", "removed", "overdue", "lastSeenAt", "listenerStatus"], "PublicAcceptance, src/core/src/lobby/requests.ts"),
   ...group(["participant.lastSeenAt"], "a find_agents result's participant, PublicParticipant in src/core/src/types.ts"),
   ...group(["currentWork", "cadence"], "a find_agents result, src/core/src/lobby/status.ts"),
-  ...group(["invitationId", "targetWeaveTitle"], "the weave.invited payload, invitationRowAndEvent in src/core/src/lobby/invitations.ts"),
+  ...group(["invitationId"], "the weave.invited and weave.invitation_withdrawn payloads, src/core/src/lobby/invitations.ts; the argument of withdraw_invitation, tools.ts"),
+  ...group(["targetWeaveTitle"], "the weave.invited payload, invitationRowAndEvent in src/core/src/lobby/invitations.ts"),
   ...group(["reason"], "the request.closed payload, closeInTx in src/core/src/lobby/requests.ts"),
   ...group(["completed", "expired", "cancelled"], "the close reasons, CloseReason in src/core/src/lobby/requests.ts"),
 ]);
@@ -300,10 +301,23 @@ describe("the drift guard over the real skills/ folder (spec 2026-09-28 §6)", (
 
   it("the skills carry the four edits of spec 2026-09-30 §8.3", () => {
     const text = (name: string) => skills.find((s) => s.name === name)!.text;
-    expect(text("loom-work-in-a-thread")).toContain("- In the Lobby, as well: `request.opened` (a request you are eligible for) and `weave.invited` (an invitation into a Weave), which the `loom-do-accepted-work` skill handles; `request.accepted` naming you, when a requester took your offer; `request.offered`, `request.offer_withdrawn`, `request.completed` and `request.overdue` on a request you opened, which the `loom-request-helpers` skill handles; `request.closed` to everyone it lists, when a request ends; and `listener.removed` naming you, when Loom removed your profile because you had not checked in for too long, which the `loom-do-accepted-work` skill handles.\n");
-    expect(text("loom-work-in-a-thread")).toContain("\n   - A Lobby request event, `weave.invited` or `listener.removed`: follow the skill named for it (`get_skill(name)` returns it).\n");
-    expect(text("loom-do-accepted-work").endsWith("\n- A `listener.removed` naming you in your Lobby inbox: Loom removed your profile because you had not checked in for longer than this Loom allows, and withdrew your standing offers; work you had accepted still stands. Call `set_capabilities(profile)` with your whole profile to be found again, and keep your poll running at the `pollIntervalMs` it declares.\n")).toBe(true);
+    // As amended by spec 2026-10-08 §10, which adds weave.invitation_withdrawn beside weave.invited.
+    expect(text("loom-work-in-a-thread")).toContain("- In the Lobby, as well: `request.opened` (a request you are eligible for), `weave.invited` (an invitation into a Weave) and `weave.invitation_withdrawn` (a keeper withdrew an invitation it had sent you), which the `loom-do-accepted-work` skill handles; `request.accepted` naming you, when a requester took your offer; `request.offered`, `request.offer_withdrawn`, `request.completed` and `request.overdue` on a request you opened, which the `loom-request-helpers` skill handles; `request.closed` to everyone it lists, when a request ends; and `listener.removed` naming you, when Loom removed your profile because you had not checked in for too long, which the `loom-do-accepted-work` skill handles.\n");
+    expect(text("loom-work-in-a-thread")).toContain("\n   - A Lobby request event, `weave.invited`, `weave.invitation_withdrawn` or `listener.removed`: follow the skill named for it (`get_skill(name)` returns it).\n");
+    expect(text("loom-do-accepted-work").endsWith("\n- A `listener.removed` naming you in your Lobby inbox: Loom removed your profile because you had not checked in for longer than this Loom allows, and withdrew your standing offers; work you had accepted still stands. Call `set_capabilities(profile)` with your whole profile to be found again, and keep your poll running at the `pollIntervalMs` it declares.\n- A `weave.invitation_withdrawn` naming you: a keeper of that Weave withdrew the invitation. Do not redeem it; `join_weave` refuses it, and nothing else is asked of you.\n")).toBe(true);
     expect(text("loom-request-helpers")).toContain("- `request.offered`: an offer, with the offerer's `participantId`.\n- `request.offer_withdrawn`: a helper's offer was withdrawn because Loom removed that helper for not checking in; it carries the helper's `participantId`. Do not `accept` that offer.\n");
+  });
+
+  it("the skills carry the edits of spec 2026-10-08 §10, and none says revoked", () => {
+    const text = (name: string) => skills.find((s) => s.name === name)!.text;
+    expect(text("loom-work-in-a-thread")).toContain(" `invite_to_weave`, `list_invitations` and `withdraw_invitation` act in the target Weave, so they take your token there, not your Lobby token.\n");
+    expect(text("loom-work-in-a-thread")).toContain("\n- In the Lobby, as well: `request.opened` (a request you are eligible for), `weave.invited` (an invitation into a Weave) and `weave.invitation_withdrawn` (a keeper withdrew an invitation it had sent you), which the `loom-do-accepted-work` skill handles;");
+    expect(text("loom-work-in-a-thread")).toContain("\n   - A Lobby request event, `weave.invited`, `weave.invitation_withdrawn` or `listener.removed`: follow the skill named for it (`get_skill(name)` returns it).\n");
+    expect(text("loom-ask-for-review")).toContain("Pass that token, ask a keeper, or use a Weave you keep.\n- You invited the wrong agent from the Lobby, or the review no longer needs it: `withdraw_invitation(targetWeaveId, invitationId)`, with the `invitationId` that `invite_to_weave` returned or that `list_invitations(targetWeaveId)` lists, before it is redeemed; the agent is told with `weave.invitation_withdrawn`. Once it has joined, take it off the Thread with `remove_participant(threadId, participantId)` instead.\n");
+    expect(text("loom-do-accepted-work")).toContain("null for a direct invitation.\n- `weave.invitation_withdrawn` in your Lobby inbox: a keeper withdrew an invitation it had sent you; it carries the `invitationId` and `targetWeaveTitle`.\n");
+    expect(text("loom-do-accepted-work")).toContain("\n- `join_weave` refuses the invitation: it was used or withdrawn. On an agent-key connection,");
+    expect(text("loom-do-accepted-work").endsWith("\n- A `weave.invitation_withdrawn` naming you: a keeper of that Weave withdrew the invitation. Do not redeem it; `join_weave` refuses it, and nothing else is asked of you.\n")).toBe(true);
+    for (const s of skills) expect(s.text.includes("revoked"), s.name).toBe(false);
   });
 });
 
