@@ -13,11 +13,12 @@ import { GuidelinesPanel, GUIDELINES_MAX } from "../src/components/GuidelinesPan
 import { RequestsPanel } from "../src/components/RequestsPanel.js";
 import { ProfileCard } from "../src/components/ProfileCard.js";
 import { WeaveView } from "../src/components/WeaveView.js";
+import { InvitationsPanel } from "../src/components/InvitationsPanel.js";
 import { ListenersPage } from "../src/components/listeners/ListenersPage.js";
 import { App, routeOf } from "../src/app.js";
 import { MAX_GUIDELINES_LENGTH } from "@loom/core";
-import { LoomClient, type Acceptance, type Listener, type ListenersPage as DirectoryPage, type ListenersQuery, type LoomRequest, type Offer, type Thread } from "@loom/client";
-import { CLOSED_REQUESTS_PAGE, type Session, type SessionState } from "../src/session.js";
+import { LoomClient, type Acceptance, type Listener, type ListenersPage as DirectoryPage, type ListenersQuery, type LoomRequest, type Offer, type PendingInvitation, type Thread } from "@loom/client";
+import { CLOSED_REQUESTS_PAGE, mayManageInvitations, type Session, type SessionState } from "../src/session.js";
 import { applyEvent, applySnapshot, type VersionedRequest } from "../src/requests-state.js";
 import { memoryStorage, type KeyValueStorage } from "../src/storage.js";
 import { createPersistenceNotice } from "../src/persistence.js";
@@ -44,6 +45,7 @@ function session(over: Partial<Session> = {}): Session {
     listListeners: vi.fn(() => ({ issue: { generation: 0 }, page: Promise.resolve({ total: 0, matched: 0, listeners: [], statusCounts: { working: 0, idle: 0, offline: 0 } }) })),
     reportCredentialFailure: vi.fn(), markAllRead: vi.fn(async () => {}),
     onVisible: () => () => {}, onWorkChanged: () => () => {},
+    canManageInvitations: () => false, withdrawInvitation: vi.fn(async () => {}),
     ...over };
 }
 
@@ -496,6 +498,15 @@ describe("MessageList", () => {
       "Helper was removed from the Listeners by Loom (last seen never)",
       "Helper's offer was withdrawn by Loom (offline)",
     ]);
+  });
+
+  it("renders weave.invitation_withdrawn as a system line naming the Weave, the invitee and the keeper (spec 2026-10-08 §8.2)", () => {
+    const base = { weaveId: "w1", threadId: "g1", actor: "kp9", at: new Date().toISOString() };
+    const events = [{ ...base, seq: 1, type: "weave.invitation_withdrawn" as const,
+      payload: { invitationId: "i1", participantId: "p2", targetWeaveTitle: "Loom development", withdrawnBy: "kp9", withdrawnByName: "Claude-Code" } }];
+    const { container } = render(<MessageList state={lobbyState({ currentThreadId: "g1", events })} fold={false} />);
+    expect([...container.querySelectorAll(".sysrow .sys-text")].map((d) => d.textContent))
+      .toEqual(['invitation to "Loom development" for Helper withdrawn by Claude-Code']);
   });
 
   describe("a message", () => {
@@ -1482,6 +1493,94 @@ describe("GuidelinesPanel", () => {
       expect(s.setGuidelines).not.toHaveBeenCalled();
     });
   }
+});
+
+describe("InvitationsPanel (spec 2026-10-08 §9)", () => {
+  const keeperMe = { ...me, role: "keeper" as const };
+  const INVITES: PendingInvitation[] = [
+    { invitationId: "i1", participantId: "lp1", inviteeName: "Claude-Work", targetThreadId: "t1", targetThreadName: "PR 12",
+      createdAt: "2026-10-02T08:00:00.000Z", createdBy: "p1", createdByName: "Paw", requestId: null },
+    { invitationId: "i2", participantId: "lp2", inviteeName: "ChatGPT-Work", targetThreadId: "t1", targetThreadName: "PR 12",
+      createdAt: "2026-10-02T08:05:00.000Z", createdBy: "lp9", createdByName: null, requestId: "r9" },
+  ];
+  const keeperState = (over: Partial<SessionState> = {}) => state({ me: { participant: keeperMe, token: "t" }, invitations: INVITES, ...over });
+  /** A fake session whose gate is the real rule, read from the state the view is drawn with. */
+  const gated = (st: SessionState, over: Partial<Session> = {}) => session({ canManageInvitations: () => mayManageInvitations(st), ...over });
+  const section = (container: Element) => container.querySelector(".nav-section.invitations");
+
+  it("the section is drawn for a keeper, and not for a member, a reader with the Weave link, or on the Lobby", () => {
+    const cases: [SessionState, boolean][] = [
+      [keeperState(), true],
+      [state({ invitations: INVITES }), false],
+      [keeperState({ me: undefined, readOnlyReason: "not-joined" }), false],
+      [keeperState({ lobby: { weaveId: "w1", title: "Lobby" } }), false],
+    ];
+    for (const [st, drawn] of cases) {
+      const { container, unmount } = render(<WeaveView session={gated(st)} state={st} />);
+      expect(!!section(container)).toBe(drawn);
+      unmount();
+    }
+  });
+
+  it("is drawn in an archived Weave, headed Pending invitations, with Withdraw", () => {
+    const st = keeperState({ weave: { ...state().weave!, archivedAt: "2026-10-08T10:00:00.000Z" } });
+    const { container } = render(<WeaveView session={gated(st)} state={st} />);
+    expect(section(container)!.querySelector(".sec")!.textContent).toBe("Pending invitations");
+    expect(screen.getAllByRole("button", { name: "Withdraw" })).toHaveLength(1);
+  });
+
+  it("a direct invitation has Withdraw; a request's has none and says how it is withdrawn", () => {
+    const st = keeperState();
+    const { container } = render(<InvitationsPanel state={st} session={gated(st)} onError={() => {}} />);
+    const rows = [...container.querySelectorAll(".invitation")];
+    expect(rows.map((r) => !!r.querySelector("button"))).toEqual([true, false]);
+    expect(rows[0]!.textContent).toContain("Claude-Work");
+    expect(rows[0]!.textContent).toContain(`thread "PR 12"`);
+    expect(rows[0]!.textContent).toContain("by Paw");
+    expect(rows[1]!.textContent).toContain("by someone");
+    expect(rows[1]!.textContent).toContain("remove the agent from the request's Thread to withdraw it");
+  });
+
+  it("pressing Withdraw calls the session once, disables the button while in flight, and removes the row on success", async () => {
+    let finish!: () => void;
+    const withdrawInvitation = vi.fn((_invitationId: string) => new Promise<void>((r) => { finish = r; }));
+    const st = keeperState();
+    const { container } = render(<InvitationsPanel state={st} session={gated(st, { withdrawInvitation })} onError={() => {}} />);
+    const button = screen.getByRole("button", { name: "Withdraw" }) as HTMLButtonElement;
+    fireEvent.click(button);
+    await vi.waitFor(() => expect(button.disabled).toBe(true));
+    fireEvent.click(button);
+    expect(withdrawInvitation).toHaveBeenCalledTimes(1);
+    expect(withdrawInvitation).toHaveBeenCalledWith("i1");
+    finish();
+    await vi.waitFor(() => expect(container.textContent).not.toContain("Claude-Work"));
+    expect(container.textContent).toContain("ChatGPT-Work");
+  });
+
+  it("a refused withdrawal shows its message on the Weave view's error bar and keeps the row", async () => {
+    const st = keeperState();
+    const refusal = "This invitation was already redeemed: take the participant off the Thread with remove_participant instead";
+    const { container } = render(<WeaveView session={gated(st, { withdrawInvitation: vi.fn(async () => { throw new Error(refusal); }) })} state={st} />);
+    fireEvent.click(screen.getByRole("button", { name: "Withdraw" }));
+    expect((await screen.findByText(refusal)).className).toContain("error-bar");
+    expect(section(container)!.textContent).toContain("Claude-Work");
+  });
+
+  it("a failed read shows the section's error, keeps the rows it had, and never says there are none; an empty list says so", () => {
+    const failed = keeperState({ invitations: undefined, invitationsError: "Could not reach Loom" });
+    const a = render(<InvitationsPanel state={failed} session={gated(failed)} onError={() => {}} />);
+    expect(section(a.container)!.textContent).toContain("Could not reach Loom");
+    expect(section(a.container)!.textContent).not.toContain("No pending invitations.");
+    a.unmount();
+    const kept = keeperState({ invitationsError: "Could not reach Loom" });
+    const b = render(<InvitationsPanel state={kept} session={gated(kept)} onError={() => {}} />);
+    expect(b.container.querySelectorAll(".invitation")).toHaveLength(2);
+    expect(section(b.container)!.textContent).toContain("Could not reach Loom");
+    b.unmount();
+    const empty = keeperState({ invitations: [] });
+    const c = render(<InvitationsPanel state={empty} session={gated(empty)} onError={() => {}} />);
+    expect(section(c.container)!.textContent).toContain("No pending invitations.");
+  });
 });
 
 describe("the directory on becoming visible (spec 2026-09-27 §6.6)", () => {

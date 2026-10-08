@@ -46,6 +46,7 @@ const WORDS: Partial<Record<string, Words>> = {
   "weave.archived": "weave archived",
   "weave.guidelines_changed": ["guidelines change", "guidelines changes"],
   "weave.invited": "invited to a Weave",
+  "weave.invitation_withdrawn": ["invitation withdrawn", "invitations withdrawn"],
   "request.opened": ["request opened", "requests opened"],
   "request.offered": ["offer", "offers"],
   "request.accepted": ["acceptance", "acceptances"],

@@ -69,6 +69,12 @@ describe("runSummary", () => {
       .toEqual(["3 listeners removed", "2 offers withdrawn"]);
     expect(runSummary([ev("listener.removed"), ev("request.offer_withdrawn")])).toEqual(["1 listener removed", "1 offer withdrawn"]);
   });
+
+  it("counts withdrawn invitations in their words (spec 2026-10-08 §8.2)", () => {
+    expect(runSummary([ev("weave.invitation_withdrawn")])).toEqual(["1 invitation withdrawn"]);
+    expect(runSummary([ev("weave.invited"), ev("weave.invitation_withdrawn"), ev("weave.invitation_withdrawn")]))
+      .toEqual(["1 invited to a Weave", "2 invitations withdrawn"]);
+  });
 });
 
 describe("timeRange", () => {

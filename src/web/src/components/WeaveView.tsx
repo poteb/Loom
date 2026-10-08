@@ -12,6 +12,7 @@ import { Composer } from "./Composer.js";
 import { NamePrompt } from "./NamePrompt.js";
 import { InviteBanner } from "./InviteBanner.js";
 import { GuidelinesPanel } from "./GuidelinesPanel.js";
+import { InvitationsPanel } from "./InvitationsPanel.js";
 import { RequestsPanel } from "./RequestsPanel.js";
 import { ListenersLink } from "./ListenersLink.js";
 import { ListenersPage, type InviteTarget } from "./listeners/ListenersPage.js";
@@ -164,6 +165,9 @@ export function WeaveView({ session, state, banner, noCredential, openMainInPlac
             onToggle={() => onView?.(showListeners ? "thread" : "listeners")} />
           <RequestsPanel state={state} session={session} onError={reportError} />
           <GuidelinesPanel state={state} session={session} onError={reportError} />
+          {/* A keeper's view of the ways into this Weave still open (spec 2026-10-08 §9); it renders
+              nothing for anyone else and on the Lobby. Its failures take the view's one error path. */}
+          <InvitationsPanel state={state} session={session} onError={reportError} />
           <div class="sidebar-foot muted">Weave <span class="mono">{state.weave?.title ?? ""}</span>{` · ${threadCount}`}{listenerCount}</div>
         </aside>
         {/* The page's one <main>: the center column, whichever of the two views it shows. */}
