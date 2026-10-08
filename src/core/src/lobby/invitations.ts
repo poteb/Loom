@@ -270,28 +270,28 @@ export async function redeemInvitation(
         ? await tx.select().from(participants)
           .where(and(eq(participants.weaveId, weave.id), eq(participants.agentId, agentId))).limit(1)
         : [undefined];
-      const events: NewEvent[] = [];
+      const out: NewEvent[] = [];
       let p = mine;
       if (!p) {
         const name = validateName(who.name ?? invitee.name);
         attempted = name;
         [p] = await tx.insert(participants).values({ id: newId(), weaveId: weave.id, name, kind: invitee.kind,
           role: "member", token: newSecret(), agentId }).returning();
-        events.push({ threadId: thread.id, type: "participant.joined", actor: p!.id,
+        out.push({ threadId: thread.id, type: "participant.joined", actor: p!.id,
           payload: { participantId: p!.id, name: p!.name, kind: p!.kind, role: p!.role } });
       }
-      events.push({ threadId: thread.id, type: "thread.invited", actor: inv.createdBy,
+      out.push({ threadId: thread.id, type: "thread.invited", actor: inv.createdBy,
         payload: { threadId: thread.id, invitedBy: inv.createdBy, participantId: p!.id } });
       await tx.update(weaveInvitations).set({ redeemedAt: new Date(), redeemedParticipantId: p!.id })
         .where(eq(weaveInvitations.id, inviteId));
       const general = await generalThreadOf(tx, weave.id);
       return {
         result: {
-          weaveId: weave.id, weave: toPublicWeave({ ...weave, lastSeq: weave.lastSeq + events.length }),
+          weaveId: weave.id, weave: toPublicWeave({ ...weave, lastSeq: weave.lastSeq + out.length }),
           generalThreadId: general.id, participant: toPublicParticipant(p!), token: p!.token,
           alreadyJoined: !!mine, guidelines: guidelinesFor(await getInstanceGuidelines(tx), weave),
         },
-        events,
+        events: out,
       };
     });
   } catch (e) {
