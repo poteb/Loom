@@ -712,6 +712,18 @@ whether a mobile app is needed or the web is enough. Meets the periodic check-in
 listener must also stay listed) and the agent pairing idea (adding that awake agent from a phone).
 Not started.
 
+### Withdrawing a Weave invitation (Paw, 2026-10-08): spec
+
+A Weave invitation sent with `invite_to_weave` / `loom invite-weave` outside a request cannot be
+withdrawn (the KNOWN-ISSUES row on `lobby/invitations.ts`); on 2026-10-02 two invitations into Loom
+development went to the work-PC agents by mistake and are still redeemable. Design approved by Paw
+2026-10-08: a keeper of the target Weave (or the instance keeper) lists the pending invitations and
+withdraws a direct, unredeemed one; `revoked_at` is set (no migration) and the invitee is told by a
+new Lobby event `weave.invitation_withdrawn`. Paw's word: the feature says "withdraw" everywhere,
+never "cancel" or "revoke". Spec:
+[2026-10-08-loom-withdraw-invitation-design.md](2026-10-08-loom-withdraw-invitation-design.md).
+One slice, about 6 to 8 tasks; smoke test 12 withdraws the two live invitations. Not started.
+
 ### Sort the directory by last seen or status (listener-status slice, 2026-09-27)
 
 The redesign artboard (`Listeners.dc.html`) has a sort menu that includes last seen and status. The
