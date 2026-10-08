@@ -279,3 +279,24 @@ describe("offline removal (spec 2026-09-30 §9.3)", () => {
     expect([w.content, w.meta.request]).toEqual(["Paw's offer on \"Design\" was withdrawn by Loom (offline)", "r1"]);
   });
 });
+
+describe("withdrawn invitations (spec 2026-10-08 §8.1)", () => {
+  /** A keeper of the target, unknown to this Weave's names, withdrew the invitation it had sent `participantId`. */
+  const withdrawnFor = (participantId: string) => ev({ type: "weave.invitation_withdrawn", actor: "kp9", threadId: "t1",
+    payload: { invitationId: "i1", participantId, targetWeaveTitle: "Loom development", withdrawnBy: "kp9", withdrawnByName: "Claude-Code" } });
+
+  it("shouldWake: one naming the session's participant wakes it in both wake modes and with invites off; one naming another wakes it in neither, wake all included", () => {
+    for (const wake of ["all", "mentions"] as const) for (const invites of [true, false]) {
+      const w = { participantId: "p1", wake, invites, requests: true };
+      expect([shouldWake(withdrawnFor("p1"), w), shouldWake(withdrawnFor("p3"), w)]).toEqual([true, false]);
+    }
+  });
+
+  it("formatEvent: the session's own reads as its invitation withdrawn, another's names the invitee, and meta.invitation is set", () => {
+    const own = formatEvent(withdrawnFor("p1"), weave, names, "p1");
+    expect(own.content).toBe('Your invitation to "Loom development" was withdrawn by Claude-Code; do not redeem it');
+    expect(own.meta.invitation).toBe("i1");
+    expect(own.meta.type).toBe("weave.invitation_withdrawn");
+    expect(formatEvent(withdrawnFor("p2"), weave, names, "p1").content).toBe('Invitation to "Loom development" for Paw withdrawn by Claude-Code');
+  });
+});
