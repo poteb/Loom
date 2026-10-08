@@ -95,6 +95,19 @@ export function weaveRoutes(core: Core) {
     return c.json(await core.inviteToWeave(actor, participantId, c.req.param("id"), threadId), 201);
   });
 
+  // A keeper's list of the ways into this Weave still open, and the withdrawal of a direct one, as
+  // an action route like POST /:id/archive (spec 2026-10-08 §7.2). The withdrawal reads no body and
+  // answers 200 on a repeat too: `created` says which.
+  r.get("/:id/invitations", async (c) => {
+    const actor = await requireActor(c, core);
+    return c.json({ invitations: await core.listInvitations(actor, c.req.param("id")) });
+  });
+
+  r.post("/:id/invitations/:invitationId/withdraw", async (c) => {
+    const actor = await requireActor(c, core);
+    return c.json(await core.withdrawInvitation(actor, c.req.param("id"), c.req.param("invitationId")));
+  });
+
   r.put("/:id/guidelines", async (c) => {
     const actor = await requireActor(c, core);
     const { guidelines } = await body(c, z.object({ guidelines: z.string() }));   // type only; core owns the length rule

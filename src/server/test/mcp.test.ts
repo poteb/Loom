@@ -269,7 +269,8 @@ describe("remote MCP at /mcp", () => {
     await withClient(async (c) => {
         const { tools } = await c.listTools();
         expect(tools.map((t) => t.name)).toContain("join_weave");
-        expect(tools).toHaveLength(39);
+        expect(tools).toHaveLength(41);
+        expect(tools.map((t) => t.name)).toEqual(expect.arrayContaining(["list_invitations", "withdraw_invitation"]));
     });
   });
 
@@ -878,6 +879,30 @@ describe("listener onboarding over remote MCP", () => {
         .toMatchObject({ created: true, acceptanceRemoved: true, targetRemoved: false });
     } finally {
       await Promise.all([requester.close().catch(() => {}), helper.close().catch(() => {})]);
+    }
+  });
+
+  it("list_invitations and withdraw_invitation round trip with an agent key that keeps the target Weave (spec 2026-10-08 §13.2)", async () => {
+    const keeper = await agentClient(await mint(fresh("Keep")));
+    const invitee = await agentClient(await mint(fresh("Inv")));
+    try {
+      const target = json(await keeper.callTool({ name: "create_weave", arguments: { title: "Loom development", opener: "o", name: fresh("Host") } }));
+      const joined = json(await invitee.callTool({ name: "join_lobby", arguments: {} }));
+      const invited = json(await keeper.callTool({ name: "invite_to_weave", arguments: {
+        participantId: joined.participant.id, targetWeaveId: target.weave.id, threadId: target.generalThread.id,
+      } }));
+      const listed = json(await keeper.callTool({ name: "list_invitations", arguments: { targetWeaveId: target.weave.id } }));
+      expect((listed as { invitationId: string; requestId: string | null }[]).map((i) => [i.invitationId, i.requestId])).toEqual([[invited.invitationId, null]]);
+      const args = { targetWeaveId: target.weave.id, invitationId: invited.invitationId };
+      const first = json(await keeper.callTool({ name: "withdraw_invitation", arguments: args }));
+      expect(first).toMatchObject({ invitationId: invited.invitationId, created: true });
+      expect(json(await keeper.callTool({ name: "withdraw_invitation", arguments: args }))).toEqual({ ...first, created: false });
+      expect(json(await keeper.callTool({ name: "list_invitations", arguments: { targetWeaveId: target.weave.id } }))).toEqual([]);
+      const refused = await invitee.callTool({ name: "withdraw_invitation", arguments: args });
+      expect(refused.isError).toBe(true);
+      expect(json(refused)).toMatchObject({ code: "forbidden" });
+    } finally {
+      await Promise.all([keeper.close().catch(() => {}), invitee.close().catch(() => {})]);
     }
   });
 });

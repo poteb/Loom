@@ -64,6 +64,11 @@ const fake: LoomToolBackend = {
     calls.push(["inviteToWeave", c, participantId, targetWeaveId, targetThreadId]);
     return { invitationId: "i1", seq: 3 };
   },
+  listInvitations: async (c, targetWeaveId) => { calls.push(["listInvitations", c, targetWeaveId]); return [{ invitationId: "i1", requestId: null }]; },
+  withdrawInvitation: async (c, targetWeaveId, invitationId) => {
+    calls.push(["withdrawInvitation", c, targetWeaveId, invitationId]);
+    return { invitationId, seq: 4, withdrawnAt: "2026-10-08T10:00:00.000Z", created: true };
+  },
   getGuidelines: async (c, w) => {
     calls.push(["getGuidelines", c, w]);
     if (w === "nope") throw new LoomToolError("forbidden", "not joined; call join_weave");
@@ -260,13 +265,13 @@ describe("guidelines", () => {
 describe("lobby tools", () => {
   const LOBBY_TOOLS = [
     "join_lobby", "set_capabilities", "find_agents", "open_request", "offer", "accept",
-    "cancel_request", "list_requests", "get_request", "invite_to_weave",
+    "cancel_request", "list_requests", "get_request", "invite_to_weave", "list_invitations", "withdraw_invitation",
   ];
 
-  it("advertises the ten Lobby tools and nothing else new", async () => {
+  it("advertises the twelve Lobby tools and nothing else new", async () => {
     const names = (await client.listTools()).tools.map((t) => t.name);
     for (const n of LOBBY_TOOLS) expect(names).toContain(n);
-    expect(LOOM_TOOL_NAMES).toHaveLength(39);
+    expect(LOOM_TOOL_NAMES).toHaveLength(41);
     expect(names.sort()).toEqual([...LOOM_TOOL_NAMES].sort());
   });
 
@@ -341,6 +346,20 @@ describe("lobby tools", () => {
     expect(calls.filter((x) => x[0] === "inviteToWeave").at(-1)).toEqual(["inviteToWeave", "c", "p-1", "w1", "t1"]);
   });
 
+  it("list_invitations and withdraw_invitation pass their arguments to the backend unchanged and answer what it returns (spec 2026-10-08 §7.4)", async () => {
+    expect(JSON.parse(text(await client.callTool({ name: "list_invitations", arguments: { credential: "c", targetWeaveId: "w1" } }))))
+      .toEqual([{ invitationId: "i1", requestId: null }]);
+    expect(calls.filter((x) => x[0] === "listInvitations").at(-1)).toEqual(["listInvitations", "c", "w1"]);
+    expect(JSON.parse(text(await client.callTool({ name: "withdraw_invitation", arguments: { credential: "c", targetWeaveId: "w1", invitationId: "i1" } }))))
+      .toEqual({ invitationId: "i1", seq: 4, withdrawnAt: "2026-10-08T10:00:00.000Z", created: true });
+    expect(calls.filter((x) => x[0] === "withdrawInvitation").at(-1)).toEqual(["withdrawInvitation", "c", "w1", "i1"]);
+  });
+
+  it("LOOM_TOOL_NAMES holds list_invitations and withdraw_invitation directly after invite_to_weave (spec 2026-10-08 §7.4)", () => {
+    const at = LOOM_TOOL_NAMES.indexOf("invite_to_weave");
+    expect(LOOM_TOOL_NAMES.slice(at, at + 3)).toEqual(["invite_to_weave", "list_invitations", "withdraw_invitation"]);
+  });
+
   it("maps a request_closed rejection into the { code, message } envelope", async () => {
     const r = await client.callTool({ name: "offer", arguments: { credential: "c", requestId: "closed" } });
     expect(r.isError).toBe(true);
@@ -393,7 +412,7 @@ describe("listener onboarding tools", () => {
 
   it("LOOM_TOOL_NAMES has the four new names, and the registered tools equal it", async () => {
     for (const n of ["get_started", "complete", "remove_participant", "keeper_agents_set_owner"]) expect(LOOM_TOOL_NAMES).toContain(n);
-    expect(LOOM_TOOL_NAMES).toHaveLength(39);
+    expect(LOOM_TOOL_NAMES).toHaveLength(41);
     expect((await client.listTools()).tools.map((t) => t.name).sort()).toEqual([...LOOM_TOOL_NAMES].sort());
   });
 
@@ -560,6 +579,12 @@ describe("the tool descriptions are the spec's", () => {
     const r = await client.callTool({ name: "keeper_set_settings", arguments: { credential: "k", patch: { removeOfflineListenersAfterMs: null } } });
     expect(JSON.parse(text(r))).toEqual({ removeOfflineListenersAfterMs: null });
   });
+
+  it("list_invitations and withdraw_invitation read exactly as the spec gives them (spec 2026-10-08 §7.4)", async () => {
+    const d = await described();
+    expect(d.get("list_invitations")).toBe("List the invitations into one of your Weaves that are not yet redeemed or withdrawn (keepers of that Weave only). Each carries its invitationId, the invitee's Lobby participantId and name, the target Thread, when and by whom it was made, and its requestId (null for a direct invitation). Only a direct invitation can be withdrawn with withdraw_invitation.");
+    expect(d.get("withdraw_invitation")).toBe("Withdraw a direct invitation into one of your Weaves before it is redeemed (keepers of the target Weave only): the invitee is told with weave.invitation_withdrawn and can no longer redeem it. An invitation that belongs to a request is refused: remove the agent from the request's Thread with remove_participant instead. Withdrawing one already withdrawn changes nothing and returns the same seq. Returns { invitationId, seq, withdrawnAt, created }.");
+  });
 });
 
 describe("get_skill (spec 2026-09-28 §5.1)", () => {
@@ -582,9 +607,9 @@ describe("get_skill (spec 2026-09-28 §5.1)", () => {
   };
   const ask = (c: Client, name?: string) => c.callTool({ name: "get_skill", arguments: name === undefined ? {} : { name } });
 
-  it("LOOM_TOOL_NAMES has get_skill: 39 names", () => {
+  it("LOOM_TOOL_NAMES has get_skill: 41 names", () => {
     expect(LOOM_TOOL_NAMES).toContain("get_skill");
-    expect(LOOM_TOOL_NAMES).toHaveLength(39);
+    expect(LOOM_TOOL_NAMES).toHaveLength(41);
   });
 
   it("with no name, get_skill answers renderSkillsIndex(skills, origin) as one text block, not JSON", async () => {

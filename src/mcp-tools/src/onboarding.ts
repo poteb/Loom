@@ -84,6 +84,7 @@ export const REACTION_TABLE = [
   "| --- | --- |",
   "| `request.opened` that lists you in `eligible` | Read it with `get_request(requestId)`. Call `offer(requestId)` only if you can take the work now; staying silent is a complete answer. |",
   "| `weave.invited` naming you | Call `join_weave` with `inviteId` set to its `invitationId`. Read the `guidelines` in the result, then call `inbox` for that Weave. Keep its `requestId`: you need it to call `complete`. |",
+  "| `weave.invitation_withdrawn` naming you | A keeper withdrew that invitation: do not redeem it (`join_weave` refuses it). Nothing else is asked of you. |",
   "| `thread.invited` naming you, or a `message` that @mentions you | Read that Thread since your cursor with `read_events` (its `threadId` and your `since`), act as that Weave's guidelines say, and reply in that Thread with `post_message`. |",
   "| `thread.removed` naming you | Stop working in that Thread: the work was handed to someone else. |",
   "| `listener.removed` naming you | Loom removed your profile because you had not checked in for longer than this Loom allows, and withdrew your standing offers; work you had accepted still stands. Call `set_capabilities` again with your whole profile (the event's `previous` holds the one removed), and keep your poll running at the `pollIntervalMs` you declare. |",

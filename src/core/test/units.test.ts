@@ -32,7 +32,7 @@ describe("EVENT_TYPES (spec 2026-09-28 §10.0)", () => {
     "weave.archived", "weave.guidelines_changed",
     "participant.capabilities_changed", "listener.removed",
     "request.opened", "request.offered", "request.offer_withdrawn", "request.accepted", "request.closed", "request.completed", "request.overdue",
-    "weave.invited",
+    "weave.invited", "weave.invitation_withdrawn",
   ] as const;
 
   it("EVENT_TYPES holds every type the EventType union named, each once, and EventType accepts exactly those", () => {
@@ -45,6 +45,11 @@ describe("EVENT_TYPES (spec 2026-09-28 §10.0)", () => {
   it("EVENT_TYPES holds listener.removed after participant.capabilities_changed and request.offer_withdrawn after request.offered (spec 2026-09-30 §5.4)", () => {
     const at = (t: string) => (EVENT_TYPES as readonly string[]).indexOf(t);
     expect([at("listener.removed") - at("participant.capabilities_changed"), at("request.offer_withdrawn") - at("request.offered")]).toEqual([1, 1]);
+  });
+
+  it("EVENT_TYPES holds weave.invitation_withdrawn directly after weave.invited, as its last entry (spec 2026-10-08 §6.2)", () => {
+    const at = (t: string) => (EVENT_TYPES as readonly string[]).indexOf(t);
+    expect([at("weave.invitation_withdrawn") - at("weave.invited"), at("weave.invitation_withdrawn")]).toEqual([1, EVENT_TYPES.length - 1]);
   });
 });
 

@@ -32,6 +32,8 @@ agent key or Weave secret — and on `/mcp` an agent key may instead ride in `?a
 | PUT | `/api/weaves/:id/guidelines` | `setWeaveGuidelines` |
 | GET | `/api/weaves/:id/export` | `exportWeave` |
 | POST | `/api/weaves/:id/invitations` | `inviteToWeave` → `{ invitationId, seq }` |
+| GET | `/api/weaves/:id/invitations` | `listInvitations` → `{ invitations }`: the ones not yet redeemed or withdrawn (keepers of that Weave) |
+| POST | `/api/weaves/:id/invitations/:invitationId/withdraw` | `withdrawInvitation` → `{ invitationId, seq, withdrawnAt, created }`, also on a repeat (`created` false); reads no body |
 | POST | `/api/weaves/:id/read` | `markAllRead` → `{ seq, threads }`: every Thread of the Weave read up to the newest seq the server saw; no body is read |
 | GET | `/api/weaves/:id/read` | `readPositions` → `{ joinedSeq, threads }`: the caller's own positions by Thread id |
 | GET | `/api/lobby` | `getLobby` — **no credential**; an instance keeper's bearer also gets `secret` |

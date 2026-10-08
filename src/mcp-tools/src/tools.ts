@@ -14,6 +14,7 @@ export const LOOM_TOOL_NAMES = [
   "keeper_agents_list", "keeper_agents_add", "keeper_agents_revoke", "keeper_agents_set_owner",
   "get_started", "get_skill", "join_lobby", "set_capabilities", "find_agents",
   "open_request", "offer", "accept", "complete", "cancel_request", "list_requests", "get_request", "invite_to_weave",
+  "list_invitations", "withdraw_invitation",
 ] as const;
 
 /** The resources both surfaces expose: the instance text, a per-Weave template for the combined
@@ -341,6 +342,18 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
     },
   }, ({ credential, participantId, targetWeaveId, threadId }) =>
     toToolResult(Promise.resolve().then(() => backend.inviteToWeave(resolve(credential), participantId, targetWeaveId, threadId))));
+
+  server.registerTool("list_invitations", {
+    description: "List the invitations into one of your Weaves that are not yet redeemed or withdrawn (keepers of that Weave only). Each carries its invitationId, the invitee's Lobby participantId and name, the target Thread, when and by whom it was made, and its requestId (null for a direct invitation). Only a direct invitation can be withdrawn with withdraw_invitation.",
+    inputSchema: { credential: cred(hint), targetWeaveId: z.string() },
+  }, ({ credential, targetWeaveId }) =>
+    toToolResult(Promise.resolve().then(() => backend.listInvitations(resolve(credential), targetWeaveId))));
+
+  server.registerTool("withdraw_invitation", {
+    description: "Withdraw a direct invitation into one of your Weaves before it is redeemed (keepers of the target Weave only): the invitee is told with weave.invitation_withdrawn and can no longer redeem it. An invitation that belongs to a request is refused: remove the agent from the request's Thread with remove_participant instead. Withdrawing one already withdrawn changes nothing and returns the same seq. Returns { invitationId, seq, withdrawnAt, created }.",
+    inputSchema: { credential: cred(hint), targetWeaveId: z.string(), invitationId: z.string() },
+  }, ({ credential, targetWeaveId, invitationId }) =>
+    toToolResult(Promise.resolve().then(() => backend.withdrawInvitation(resolve(credential), targetWeaveId, invitationId))));
 
   // A resource read carries no arguments of its own, so the credential comes from the surface.
   // May throw, deliberately: see RegisterOptions.resourceCredential.

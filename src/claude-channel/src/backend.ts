@@ -204,4 +204,6 @@ export class ClientToolBackend implements LoomToolBackend {
   inviteToWeave(c: string, participantId: string, targetWeaveId: string, targetThreadId: string) {
     return this.as(c).inviteToWeave(targetWeaveId, participantId, targetThreadId);
   }
+  listInvitations(c: string, targetWeaveId: string) { return this.as(c).listInvitations(targetWeaveId); }
+  withdrawInvitation(c: string, targetWeaveId: string, invitationId: string) { return this.as(c).withdrawInvitation(targetWeaveId, invitationId); }
 }

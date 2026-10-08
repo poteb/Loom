@@ -25,7 +25,7 @@ export type EventType =
   // Lobby. All of these are addressed-only: they never wake anyone through a Weave's "all events" mode.
   | "participant.capabilities_changed" | "listener.removed"
   | "request.opened" | "request.offered" | "request.offer_withdrawn" | "request.accepted" | "request.closed" | "request.completed" | "request.overdue"
-  | "weave.invited";
+  | "weave.invited" | "weave.invitation_withdrawn";
 export type LoomEvent = {
   weaveId: string; seq: number; threadId: string; type: EventType;
   actor: string; at: string; payload: Record<string, unknown>;
@@ -205,4 +205,11 @@ export type OpenRequestInput = {
 
 export type AcceptResult = { request: LoomRequest; invitationIds: string[] };
 export type InvitationResult = { invitationId: string; seq: number };
+/** One invitation into a Weave that is neither redeemed nor withdrawn (spec 2026-10-08 §5.1). */
+export type PendingInvitation = {
+  invitationId: string; participantId: string; inviteeName: string; targetThreadId: string; targetThreadName: string;
+  createdAt: string; createdBy: string; createdByName: string | null; requestId: string | null;
+};
+/** What a withdrawal answers (spec 2026-10-08 §4.1): `created` is false on a repeat, which carries the original seq. */
+export type WithdrawResult = { invitationId: string; seq: number; withdrawnAt: string; created: boolean };
 export type RemovalResult = { seq: number; created: boolean; acceptanceRemoved: boolean; targetRemoved: boolean };

@@ -1,5 +1,5 @@
 import { LoomClient, LoomClientError, type ListenersPage, type ListenersQuery, type Lobby, type LoomEvent,
-  type LoomRequest, type OpenRequestInput,
+  type LoomRequest, type OpenRequestInput, type PendingInvitation,
   type Participant, type StatusCounts, type StreamHandle, type Thread, type Weave } from "@loom/client";
 import type { KeyValueStorage, WriteResult } from "./storage.js";
 import {
@@ -68,6 +68,13 @@ export type SessionState = {
    * moment. Absent until read state has loaded; captured again only when a Thread is opened.
    */
   newAfter?: { threadId: string; seq: number; firstNew: number | null };
+  /**
+   * The invitations still pending into this Weave (spec 2026-10-08 §9), for a keeper of a Weave that
+   * is not the Lobby. Absent until a read has come back; a failed read keeps what is held.
+   */
+  invitations?: PendingInvitation[];
+  /** Why the last invitations read failed, cleared by the next success. Never shown as an empty list. */
+  invitationsError?: string;
 };
 
 /** A Weave this browser holds a token for: what an Open-request form's target pickers offer. */
@@ -86,6 +93,10 @@ export type Session = {
   dismissNamePrompt(): void; dispose(): void;
   /** Marks every Thread of the Weave read up to the newest event the server saw (spec 2026-09-26 §6.5). */
   markAllRead(): Promise<void>;
+  /** A keeper of this Weave, which is not the Lobby, archived or not (spec 2026-10-08 §9): who sees the pending invitations and may withdraw them. */
+  canManageInvitations(): boolean;
+  /** Withdraws a direct invitation into this Weave: on success its row leaves `invitations` at once and a refresh follows; a refusal re-reads the list and is thrown. */
+  withdrawInvitation(invitationId: string): Promise<void>;
   // --- Lobby requests. Thin wrappers: each applies the snapshot it gets back through the watermark.
   openRequest(input: OpenRequestInput): Promise<LoomRequest>;
   offer(requestId: string, input: { model?: string; effort?: string; note?: string }): Promise<void>;
@@ -107,6 +118,15 @@ export type Session = {
    */
   onWorkChanged(fn: () => void): () => void;
 };
+
+/**
+ * Whether this page shows the pending invitations into its Weave and may withdraw them (spec
+ * 2026-10-08 §9): its participant is a keeper there, and the Weave is not the Lobby, which no
+ * invitation can target. Archived or not, unlike `canModerate`: a withdrawal only removes access.
+ */
+export function mayManageInvitations(state: SessionState): boolean {
+  return state.me?.participant.role === "keeper" && !!state.weave && state.lobby?.weaveId !== state.weave.id;
+}
 
 /** The server's own page maximum (`MAX_PAGE_LIMIT`): what "everything" is asked for as. */
 const PAGE = 1000;
@@ -182,6 +202,8 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
   let ownProfile: OwnProfile | undefined;
   const profileReads = createCounter();
   const countReads = createCounter();
+  /** The invitations read's request numbers (spec 2026-10-08 §9), ordered as the listener count's are. */
+  const invitationReads = createCounter();
   /**
    * The read state of the identity in hand (spec 2026-09-26 §6.1): the positions its `readPositions`
    * answered, raised by every mark this tab has made since, and its `joinedSeq`. `floor` is the
@@ -584,6 +606,38 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
     );
   };
 
+  /**
+   * The pending invitations into this Weave (spec 2026-10-08 §9), read beside the page's metadata on
+   * the load and on every coalesced refresh, only while `mayManageInvitations` holds, with this
+   * browser's own token. Fenced like every read of the page: an answer for a generation, an identity
+   * or a Weave this tab has since left is dropped. And ordered, like `readListenerCount`: the load and
+   * every refresh each start one, so two can be in flight inside one generation, which the generation
+   * says nothing about. A failure keeps the rows held and says why.
+   */
+  const readInvitations = (myGeneration: number) => {
+    if (!weaveId || !state.me || !mayManageInvitations(state)) return;
+    const token = state.me.token;
+    const forWeave = weaveId;
+    const n = invitationReads.next();
+    const left = () => disposed || myGeneration !== generation || state.me?.token !== token || weaveId !== forWeave;
+    void client.withToken(token).listInvitations(forWeave).then(
+      (invitations) => {
+        // Re-checked immediately before publishing. An older read landing after a newer one must not
+        // bring back a row the newer one saw withdrawn (by another keeper, through the CLI or MCP).
+        if (left() || n <= invitationReads.applied()) return;
+        invitationReads.markApplied(n);
+        set({ invitations, invitationsError: undefined });
+      },
+      (e: unknown) => {
+        // The same guards as the success path. One watermark for answers and rejections alike: an
+        // older read's rejection must not replace a newer read's rows with an error.
+        if (left() || n <= invitationReads.applied()) return;
+        invitationReads.markApplied(n);
+        set({ invitationsError: messageOf(e) });
+      },
+    );
+  };
+
   const refreshInfo = async () => {
     if (!weaveId) return;
     // Neither the instance text nor the requests are part of the Weave, so a failure to read either
@@ -616,6 +670,8 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       me: state.me && info.participants.some((p) => p.id === state.me!.participant.id)
         ? { token: state.me.token, participant: withMyProfile(info.participants.find((p) => p.id === state.me!.participant.id)!, state.me.token) }
         : state.me });
+    // The pending invitations ride on every refresh, as the requests do, for a keeper only.
+    readInvitations(myGeneration);
     if (requests && "rs" in requests) {
       applyRequests(requests.rs);
       if (state.requestsError !== undefined || !state.requestsLoaded) set({ requestsLoaded: true, requestsError: undefined });
@@ -964,6 +1020,8 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       // `Promise.all` and never calls `refreshInfo`, so a count wired only into the refresh would
       // never appear on a Lobby where nothing happens to be changing (spec §5.1).
       if (onLobby()) readLobbySides(myGeneration);
+      // And the pending invitations, for a keeper of a Weave that is not the Lobby (spec 2026-10-08 §9).
+      readInvitations(myGeneration);
       // A load that ends with an identity fetches that identity's read state (§6.1). The Thread this
       // load landed on is opened for real when the answer arrives.
       if (me) loadReadState();
@@ -1221,6 +1279,23 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
     canModerate: () => state.me?.participant.role === "keeper" && !state.weave?.archivedAt,
     canEditThread: (t) => !!state.me && !state.weave?.archivedAt && !t.closedAt
       && (state.me.participant.role === "keeper" || t.createdBy === state.me.participant.id),
+    canManageInvitations: () => mayManageInvitations(state),
+    async withdrawInvitation(invitationId) {
+      const w = writer();
+      if (!weaveId) throw new LoomClientError("validation", "Weave not loaded");
+      try { await w.withdrawInvitation(weaveId, invitationId); }
+      catch (e) {
+        // Refused (redeemed meanwhile, or this keeper demoted): the row stays until the re-read this
+        // refresh makes, which drops one that was redeemed. The view's error path shows the message.
+        scheduleRefresh();
+        throw e;
+      }
+      // Every read started before the withdrawal is now older than it.
+      invitationReads.markApplied(invitationReads.next());
+      // Committed server-side: the row leaves at once, and the refresh brings the rest up to date.
+      if (state.invitations) set({ invitations: state.invitations.filter((i) => i.invitationId !== invitationId) });
+      scheduleRefresh();
+    },
     dismissNamePrompt: () => { if (state.needsName) set({ needsName: false }); },
     dispose: () => {
       // Leaving the Weave flushes what was read while it was open (§6.2), under the identity in hand;

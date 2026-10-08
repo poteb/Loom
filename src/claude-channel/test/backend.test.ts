@@ -6,6 +6,7 @@ import path from "node:path";
 import type { JoinResult, LoomClient, Participant, WeaveInfo } from "@loom/client";
 import { ChannelState } from "../src/state.js";
 import { ClientToolBackend } from "../src/backend.js";
+import { withStoredCredential } from "../src/stored.js";
 
 const WEAVE_ID = "w1";
 const SECRET = "s".repeat(43);
@@ -249,5 +250,25 @@ describe("ClientToolBackend and the Lobby", () => {
     expect(joinLobby).not.toHaveBeenCalled();        // the reuse branch, which used to return unflagged
     expect(r).toMatchObject({ alreadyJoined: true, token: "stored-token" });
     expect(state.get().weaves[WEAVE_ID]).toMatchObject({ token: "stored-token", lastSeq: 7, isLobby: true });
+  });
+});
+
+describe("the two invitation tools with the stored credential (spec 2026-10-08 §7.4)", () => {
+  it("list_invitations and withdraw_invitation with credential stored reach the target Weave's own token", async () => {
+    const state = makeState();
+    await state.upsertWeave(WEAVE_ID, { title: "Design review", token: "stored-token", participantId: "p2", participantName: "Claude", generalThreadId: "g1", wake: "all", lastSeq: 7 });
+    const tokens: string[] = [];
+    const answer = { invitationId: "i1", seq: 5, withdrawnAt: "2026-10-08T10:00:00.000Z", created: true };
+    const fake = {
+      withToken: (t: string): unknown => { tokens.push(t); return fake; },
+      listInvitations: vi.fn(async () => []),
+      withdrawInvitation: vi.fn(async () => answer),
+    };
+    const backend = withStoredCredential(new ClientToolBackend(fake as unknown as LoomClient, state, { onJoined: vi.fn() }), state, () => undefined);
+    expect(await backend.listInvitations("stored", WEAVE_ID)).toEqual([]);
+    expect(await backend.withdrawInvitation("stored", WEAVE_ID, "i1")).toEqual(answer);
+    expect(tokens).toEqual(["stored-token", "stored-token"]);
+    expect(fake.listInvitations).toHaveBeenCalledWith(WEAVE_ID);
+    expect(fake.withdrawInvitation).toHaveBeenCalledWith(WEAVE_ID, "i1");
   });
 });

@@ -153,9 +153,10 @@ most that and you were seen within twice that interval. On this channel both new
 - `listener.removed` wakes the participant it names (Loom removed this session's profile for not
   checking in; set it again with `set_capabilities`), and `request.offer_withdrawn` wakes the
   requester it names in `to`, in both wake modes and whatever `invites` says.
+- `weave.invitation_withdrawn` wakes the participant it names, in both wake modes and whatever `invites` says.
 
 Request events carry `request="<requestId>"` on the tag (`get_request(<id>)` has the rest) and
-`weave.invited` carries `invitation="<invitationId>"`.
+`weave.invited` and `weave.invitation_withdrawn` carry `invitation="<invitationId>"`.
 
 **Leaving the Lobby clears the profile first.** `leave_weave(lobbyId)` is a two-step: the channel
 clears your profile on the server with the stored Lobby token, and only then stops the stream and

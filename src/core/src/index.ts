@@ -124,6 +124,12 @@ export function createCore(db: Db) {
     // keepership there, so an agent key stands for the participant it owns in the target.
     inviteToWeave: async (actor: Actor, participantId: string, targetWeaveId: string, targetThreadId: string) =>
       invitations.inviteToWeave(db, bus, await resolveInWeave(db, actor, targetWeaveId), participantId, targetWeaveId, targetThreadId),
+    // The same resolution as inviteToWeave (spec 2026-10-08 §7.1): listing and withdrawing need
+    // keepership in the target, so an agent key stands for the participant it owns there.
+    listInvitations: async (actor: Actor, targetWeaveId: string) =>
+      invitations.listInvitations(db, await resolveInWeave(db, actor, targetWeaveId), targetWeaveId),
+    withdrawInvitation: async (actor: Actor, targetWeaveId: string, invitationId: string) =>
+      invitations.withdrawInvitation(db, bus, await resolveInWeave(db, actor, targetWeaveId), targetWeaveId, invitationId),
     getRequest: async (actor: Actor, requestId: string) => requests.getRequest(db, await resolveInLobby(actor), requestId),
     listRequests: async (actor: Actor, opts: { status?: requests.RequestStatus; limit?: number } = {}) =>
       requests.listRequests(db, await resolveInLobby(actor), opts),
@@ -160,7 +166,7 @@ export { validateRequirements, matches, admits, eligible, isLive, REQUIREMENT_KE
 // The listeners query's types live beside its validation, so an adapter has one place to import from.
 export { type Listener, type ListenersFacets, type ListenersPage, type ListenersQuery, type ListenersSort, type ServesKind, type FacetValue, type ModelFacet } from "./lobby/listeners-input.js";
 export { type ListenerStatus, type CurrentWork, type Cadence, type StatusCounts } from "./lobby/status.js";
-export { type InvitationDraft } from "./lobby/invitations.js";
+export { type InvitationDraft, type PendingInvitation, type WithdrawResult, type WithdrawOptions } from "./lobby/invitations.js";
 export { GET_STARTED_NEEDS_AGENT, type OnboardingFacts } from "./lobby/onboarding.js";
 export { type RemovalResult } from "./removals.js";
 export { type MarkReadResult, type MarkAllReadResult, type ReadPositions } from "./reads.js";

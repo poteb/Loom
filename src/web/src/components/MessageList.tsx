@@ -65,6 +65,8 @@ function systemLine(e: LoomEvent, state: SessionState): string {
     }
     case "request.offer_withdrawn": return `${name(e.payload.participantId)}'s offer was withdrawn by Loom (offline)`;
     case "weave.invited": return `${name(e.payload.participantId)} invited to "${str(e.payload.targetWeaveTitle)}"`;
+    // A keeper took back a direct invitation (spec 2026-10-08 §8.2): on the Lobby's General, live.
+    case "weave.invitation_withdrawn": return `invitation to "${str(e.payload.targetWeaveTitle)}" for ${name(e.payload.participantId)} withdrawn by ${str(e.payload.withdrawnByName)}`;
     case "participant.capabilities_changed":
       return `${name(e.payload.participantId)} ${e.payload.capabilities ? "updated" : "cleared"} their Lobby profile`;
     default: return e.type;

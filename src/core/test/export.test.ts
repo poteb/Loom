@@ -13,6 +13,7 @@ import { ensureLobby, joinLobby } from "../src/lobby/lobby.js";
 import { setCapabilities } from "../src/lobby/profile.js";
 import { offer, openRequest } from "../src/lobby/requests.js";
 import { sweepOfflineListeners } from "../src/lobby/removal.js";
+import { inviteToWeave, withdrawInvitation } from "../src/lobby/invitations.js";
 import { participants } from "../src/db/schema.js";
 import { eq } from "drizzle-orm";
 import type { Db } from "../src/db/index.js";
@@ -139,6 +140,20 @@ describe("exportWeave", () => {
     expect(md).toContain("_system: Seen's offer was withdrawn by Loom (offline)_");
     expect(md).not.toContain("_system: listener.removed_");
     expect(md).not.toContain("_system: request.offer_withdrawn_");
+  });
+
+  it("renders weave.invitation_withdrawn as a system line in the web's words (spec 2026-10-08 §8.3)", async () => {
+    const lobby = await ensureLobby(db);
+    const reader = await resolveCredential(db, lobby.secret);
+    const target = await createWeave(db, bus, { title: "Loom development", opener: "hi", creator: { name: "Claude-Code", kind: "agent" } });
+    const keeper = await resolveCredential(db, target.token);
+    const thread = await createThread(db, bus, keeper, target.weave.id, "PR 14");
+    const invitee = await joinLobby(db, bus, { name: "Claude-Work", kind: "agent" });
+    const { invitationId } = await inviteToWeave(db, bus, keeper, invitee.participant.id, target.weave.id, thread.id);
+    await withdrawInvitation(db, bus, keeper, target.weave.id, invitationId);
+    const md = await exportWeave(db, reader, lobby.weaveId, "md");
+    expect(md).toContain('_system: invitation to "Loom development" for Claude-Work withdrawn by Claude-Code_');
+    expect(md).not.toContain("_system: weave.invitation_withdrawn_");
   });
 
   it("rejects bad format and foreign credential", async () => {

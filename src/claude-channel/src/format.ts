@@ -82,6 +82,14 @@ export function formatEvent(e: LoomEvent, weave: { id: string; title: string }, 
         : `${who(e.payload.participantId).name} was invited to "${title}"`;
       break;
     }
+    case "weave.invitation_withdrawn": {
+      const title = str(e.payload.targetWeaveTitle);
+      const by = str(e.payload.withdrawnByName);
+      content = e.payload.participantId === me
+        ? `Your invitation to "${title}" was withdrawn by ${by}; do not redeem it`
+        : `Invitation to "${title}" for ${who(e.payload.participantId).name} withdrawn by ${by}`;
+      break;
+    }
     case "request.completed": content = `${who(e.payload.participantId).name} finished "${threadName}"`; break;
     case "request.overdue": {
       const seen = typeof e.payload.lastSeenAt === "string" ? hhmm(e.payload.lastSeenAt) : "never";
@@ -131,6 +139,9 @@ export function shouldWake(e: LoomEvent, w: Prefs & { participantId: string }): 
       case "request.closed": return has(e.payload.to);
       case "request.accepted": return has(e.payload.participantIds);
       case "weave.invited": return w.invites && e.payload.participantId === me;
+      // A keeper took back an invitation it had sent this session (spec 2026-10-08 §8.1). Undoing an
+      // invite is not an invite, so the invites preference does not silence it either.
+      case "weave.invitation_withdrawn": return e.payload.participantId === me;
       // Addressed-only, like the rest of the Lobby's (spec §6.10): the requester is woken by its work
       // finishing or missing its deadline, or by an offer the offline sweep withdrew (spec 2026-09-30
       // §9.3), and a participant by being taken off a Thread. Undoing an invite is not an invite, so

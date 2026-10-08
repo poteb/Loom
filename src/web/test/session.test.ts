@@ -3808,3 +3808,164 @@ describe("listener.removed (spec 2026-09-30 §9.1)", () => {
     } finally { gate.release(); session.dispose(); }
   });
 });
+
+describe("pending invitations (spec 2026-10-08 §9)", () => {
+  let invN = 0;
+  /** A Weave this browser keeps, a Lobby participant to invite into it, and the keeper's stored identity. */
+  async function invitedWeave() {
+    const n = ++invN;
+    const r = await anon.createWeave({ title: `Invites ${n}`, opener: "hello", creator: { name: "Paw", kind: "human" } });
+    const keeper = await s.core.resolveCredential(r.token);
+    const guest = async (tag: string) => (await anon.joinLobby({ name: `Guest-${tag}-${n}`, kind: "agent" })).participant;
+    const invite = async (participantId: string) =>
+      (await s.core.inviteToWeave(keeper, participantId, r.weave.id, r.generalThread.id)).invitationId;
+    const keeperStorage = () => {
+      const st = memoryStorage();
+      st.set(`loom:${r.secret}`, JSON.stringify({ token: r.token, participantId: r.participant.id }));
+      return st;
+    };
+    return { r, keeper, guest, invite, keeperStorage, path: `/api/weaves/${r.weave.id}/invitations` };
+  }
+
+  it("the list is read on load and on each refresh for a keeper, and never for a member", async () => {
+    const f = await invitedWeave();
+    const a = await f.guest("a");
+    const first = await f.invite(a.id);
+    const keeper = createSession({ client: anon, target: { kind: "secret", secret: f.r.secret }, storage: f.keeperStorage() });
+    await keeper.load();
+    try {
+      expect(keeper.canManageInvitations()).toBe(true);
+      await waitFor(() => keeper.getState().invitations?.length === 1);
+      expect(keeper.getState().invitations![0]).toMatchObject({ invitationId: first, participantId: a.id, inviteeName: a.name, requestId: null });
+      const second = await f.invite((await f.guest("b")).id);
+      // A participant.joined in this Weave schedules the coalesced refresh that re-reads the list.
+      await waitFor(() => keeper.getState().connection === "open");
+      await anon.joinWeave(f.r.secret, { name: "Reader", kind: "human" });
+      await waitFor(() => keeper.getState().invitations?.length === 2);
+      expect(keeper.getState().invitations!.map((i) => i.invitationId).sort()).toEqual([first, second].sort());
+    } finally { keeper.dispose(); }
+
+    const m = sideReadClient();
+    const joined = await anon.joinWeave(f.r.secret, { name: "Member", kind: "human" });
+    const storage = memoryStorage();
+    storage.set(`loom:${f.r.secret}`, JSON.stringify({ token: joined.token, participantId: joined.participant.id }));
+    const member = createSession({ client: m.client, target: { kind: "secret", secret: f.r.secret }, storage });
+    await member.load();
+    try {
+      expect(member.canManageInvitations()).toBe(false);
+      await waitFor(() => member.getState().connection === "open");
+      await anon.joinWeave(f.r.secret, { name: "Reader2", kind: "human" });
+      await waitFor(() => member.getState().participants.some((p) => p.name === "Reader2"));
+      expect([m.calls(f.path), member.getState().invitations]).toEqual([0, undefined]);
+    } finally { member.dispose(); }
+  });
+
+  it("an invitations answer for a load this tab has since replaced is dropped", async () => {
+    const f = await invitedWeave();
+    const id = await f.invite((await f.guest("a")).id);
+    const gate = makeGate();
+    const held = delivering(parks(gate));
+    const c = sideReadClient({ [f.path]: onCall(1, held.answer) });
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.r.secret }, storage: f.keeperStorage() });
+    await session.load();
+    try {
+      await gate.entered;                      // the first read holds an answer with the invitation in it
+      await s.core.withdrawInvitation(f.keeper, f.r.weave.id, id);
+      await session.load();                    // a new generation, whose own read answers []
+      await waitFor(() => session.getState().invitations !== undefined);
+      expect(session.getState().invitations).toEqual([]);
+      gate.release();
+      await held.delivered;
+      await new Promise((r) => setTimeout(r, 50));
+      expect(session.getState().invitations).toEqual([]);
+    } finally { session.dispose(); }
+  });
+
+  // The generation orders nothing within a generation: the load and every refresh each start a read,
+  // so two can be in flight at once, and the one that lands last is not always the newest. Mirrors
+  // the listener count's "does not let an older count overwrite a newer one".
+  it("an older invitations answer never replaces a newer one within the same generation", async () => {
+    const f = await invitedWeave();
+    const id = await f.invite((await f.guest("a")).id);
+    const gate = makeGate();
+    const stale = delivering(parks(gate));
+    const c = sideReadClient({ [f.path]: onCall(1, stale.answer) });
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.r.secret }, storage: f.keeperStorage() });
+    await session.load();
+    try {
+      await gate.entered;                      // read A, the load's, is parked holding the invitation
+      await s.core.withdrawInvitation(f.keeper, f.r.weave.id, id);   // withdrawn outside this tab, as the CLI or MCP would
+      await waitFor(() => session.getState().connection === "open");
+      await anon.joinWeave(f.r.secret, { name: "Reader", kind: "human" });   // the refresh: read B answers []
+      await waitFor(() => session.getState().invitations?.length === 0);
+      gate.release();                          // ...and only now A's answer, with the row in it, lands
+      await afterDelivery(stale.delivered);
+      expect(session.getState().invitations).toEqual([]);
+    } finally { gate.release(); session.dispose(); }
+  });
+
+  // One watermark for answers and rejections alike: an older read's failure must not replace a newer
+  // read's rows with an error. Mirrors "drops a count rejection that a newer answer has already overtaken".
+  it("an older invitations rejection never replaces a newer answer within the same generation", async () => {
+    const f = await invitedWeave();
+    const id = await f.invite((await f.guest("a")).id);
+    const gate = makeGate();
+    const stale = delivering(parksThen(gate, BROKEN));
+    const c = sideReadClient({ [f.path]: onCall(1, stale.answer) });
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.r.secret }, storage: f.keeperStorage() });
+    await session.load();
+    try {
+      await gate.entered;                      // read A, the load's, is out and unanswered
+      await waitFor(() => session.getState().connection === "open");
+      await anon.joinWeave(f.r.secret, { name: "Reader", kind: "human" });   // the refresh: read B answers the row
+      await waitFor(() => session.getState().invitations?.length === 1);
+      gate.release();                          // ...and only now A's 500 lands
+      await afterDelivery(stale.delivered);
+      expect([session.getState().invitations!.map((i) => i.invitationId), session.getState().invitationsError])
+        .toEqual([[id], undefined]);
+    } finally { gate.release(); session.dispose(); }
+  });
+
+  // Spec §9: a late read cannot bring back a withdrawn row. The withdrawal is itself the newest
+  // thing this tab knows, so every read started before it is older than it. The refresh's own read
+  // is parked too, so nothing newer than the load's read can land first and hide the rule.
+  it("an invitations answer started before this tab's own withdrawal never brings the row back", async () => {
+    const f = await invitedWeave();
+    const id = await f.invite((await f.guest("a")).id);
+    const gate = makeGate();
+    const later = makeGate();
+    const stale = delivering(parks(gate));
+    const c = sideReadClient({ [f.path]: (call) => (call === 1 ? stale.answer : parks(later)) });
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.r.secret }, storage: f.keeperStorage() });
+    await session.load();
+    try {
+      await gate.entered;                      // read A, the load's, is parked holding the invitation
+      await session.withdrawInvitation(id);    // this tab withdraws it, and the server commits
+      gate.release();                          // ...and only now A's answer, with the row in it, lands
+      await afterDelivery(stale.delivered);
+      expect(session.getState().invitations?.some((i) => i.invitationId === id)).not.toBe(true);
+    } finally { gate.release(); later.release(); session.dispose(); }
+  });
+
+  it("withdrawInvitation drops the row at once and schedules a refresh; a refused one keeps the row and re-reads the list", async () => {
+    const f = await invitedWeave();
+    const first = await f.invite((await f.guest("a")).id);
+    const second = await f.invite((await f.guest("b")).id);
+    const c = sideReadClient({ [`${f.path}/${second}/withdraw`]: always(refuses("validation",
+      "This invitation was already redeemed: take the participant off the Thread with remove_participant instead", 400)) });
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.r.secret }, storage: f.keeperStorage() });
+    await session.load();
+    try {
+      await waitFor(() => session.getState().invitations?.length === 2);
+      const reads = c.weaveReads();
+      await session.withdrawInvitation(first);
+      expect(session.getState().invitations!.map((i) => i.invitationId)).toEqual([second]);
+      await waitFor(() => c.weaveReads() > reads);
+      await waitFor(() => session.getState().refreshError === undefined && c.calls(f.path) >= 2);
+      const lists = c.calls(f.path);
+      await expect(session.withdrawInvitation(second)).rejects.toMatchObject({ code: "validation" });
+      expect(session.getState().invitations!.map((i) => i.invitationId)).toEqual([second]);
+      await waitFor(() => c.calls(f.path) > lists);
+    } finally { session.dispose(); }
+  });
+});

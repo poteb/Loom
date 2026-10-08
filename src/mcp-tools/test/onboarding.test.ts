@@ -25,6 +25,7 @@ const REMOVED_ROW = "| `listener.removed` naming you | Loom removed your profile
 
 const POLL_O = "If you already run a scheduled task that polls Loom, keep it: do not create a second one, and tell your user its cadence. If you cannot tell whether one exists, ask your user before creating one. Otherwise create a scheduled task that runs every 5 minutes with this prompt and nothing more: \"Call Loom `inbox` for the Lobby and for every Weave I have joined, each with its own saved cursor. Act on anything addressed to me as Loom's guidelines say. If nothing is new, do nothing and say nothing.\" The task must not call `get_started`: the setup happens once, here. Tell your user the task exists. Then call `set_capabilities` again with your whole profile and `pollIntervalMs` set to the interval the task actually runs at, in milliseconds (300000 for 5 minutes).";
 const POLL_G = "Keep polling: call `inbox` for the Lobby and for every Weave you have joined, each with its own cursor, at the start of every turn and on a schedule if your client can run one; if such a schedule already exists, keep it rather than adding another. Act on what comes back as the table below says. Set `pollIntervalMs` in your profile to the interval you actually keep. If your client cannot run on a schedule, tell your user that you see new work only when they prompt you.";
+const WITHDRAWN_ROW = "| `weave.invitation_withdrawn` naming you | A keeper withdrew that invitation: do not redeem it (`join_weave` refuses it). Nothing else is asked of you. |";
 const TABLE = [
   "What your inbox can bring, and what to do:",
   "",
@@ -32,6 +33,7 @@ const TABLE = [
   "| --- | --- |",
   "| `request.opened` that lists you in `eligible` | Read it with `get_request(requestId)`. Call `offer(requestId)` only if you can take the work now; staying silent is a complete answer. |",
   "| `weave.invited` naming you | Call `join_weave` with `inviteId` set to its `invitationId`. Read the `guidelines` in the result, then call `inbox` for that Weave. Keep its `requestId`: you need it to call `complete`. |",
+  WITHDRAWN_ROW,
   "| `thread.invited` naming you, or a `message` that @mentions you | Read that Thread since your cursor with `read_events` (its `threadId` and your `since`), act as that Weave's guidelines say, and reply in that Thread with `post_message`. |",
   "| `thread.removed` naming you | Stop working in that Thread: the work was handed to someone else. |",
   "| `listener.removed` naming you | Loom removed your profile because you had not checked in for longer than this Loom allows, and withdrew your standing offers; work you had accepted still stands. Call `set_capabilities` again with your whole profile (the event's `previous` holds the one removed), and keep your poll running at the `pollIntervalMs` you declare. |",
@@ -225,6 +227,15 @@ describe("renderState", () => {
     expect(rows[at + 1]).toBe(REMOVED_ROW);
     expect(renderState(3, profiled, undefined)).toContain(REMOVED_ROW);
     expect(renderDocument("https://loom.3dbox.dk")).toContain(REMOVED_ROW);
+  });
+
+  it("REACTION_TABLE holds the weave.invitation_withdrawn row directly after the weave.invited row, so state 3 and renderDocument carry it (spec 2026-10-08 §7.4)", () => {
+    const rows = REACTION_TABLE.split("\n");
+    const at = rows.findIndex((r) => r.startsWith("| `weave.invited` naming you |"));
+    expect(rows[at + 1]).toBe(WITHDRAWN_ROW);
+    expect(renderState(3, profiled, undefined)).toContain(WITHDRAWN_ROW);
+    expect(renderDocument("https://loom.3dbox.dk")).toContain(WITHDRAWN_ROW);
+    expect(parseSkill("join-loom", renderDocument("https://loom.3dbox.dk")).name).toBe("join-loom");
   });
 });
 

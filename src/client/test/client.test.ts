@@ -241,6 +241,19 @@ describe("Lobby wrappers", () => {
     expect((await f.claude.joinByInvite(other.invitationId, `Helper-${f.t}`)).participant.name).toBe(`Helper-${f.t}`);
   });
 
+  it("listInvitations unwraps the array and withdrawInvitation round-trips both created values (spec 2026-10-08 §7.3)", async () => {
+    const f = await lobby();
+    const inv = await f.keeper.inviteToWeave(f.target.weave.id, f.botId, f.thread.id);
+    const listed = await f.keeper.listInvitations(f.target.weave.id);
+    expect(listed.map((i) => [i.invitationId, i.participantId, i.inviteeName, i.targetThreadName, i.requestId]))
+      .toEqual([[inv.invitationId, f.botId, `Pawbot-${f.t}`, "PR 14", null]]);
+    const first = await f.keeper.withdrawInvitation(f.target.weave.id, inv.invitationId);
+    expect(first).toMatchObject({ invitationId: inv.invitationId, created: true });
+    expect(await f.keeper.withdrawInvitation(f.target.weave.id, inv.invitationId)).toEqual({ ...first, created: false });
+    expect(await f.keeper.listInvitations(f.target.weave.id)).toEqual([]);
+    await expect(f.bot.listInvitations(f.target.weave.id)).rejects.toMatchObject({ code: "forbidden", status: 403 });
+  });
+
   it("completeRequest, removeParticipant, acceptRequest with deadlineMs, admin.addAgent with owner and admin.setAgentOwner round trip", async () => {
     const f = await lobby();
     const done = await f.claude.openRequest(f.input);

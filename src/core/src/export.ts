@@ -68,6 +68,8 @@ export async function exportWeave(db: Db, actor: Actor, weaveId: string, format:
         // instant the rest of the export uses for times.
         e.type === "listener.removed" ? `${nameOf(e.payload.participantId)} was removed from the Listeners by Loom (last seen ${typeof e.payload.lastSeenAt === "string" ? e.payload.lastSeenAt : "never"})` :
         e.type === "request.offer_withdrawn" ? `${nameOf(e.payload.participantId)}'s offer was withdrawn by Loom (offline)` :
+        // A keeper took back a direct invitation (spec 2026-10-08 §8.3), in the web's words.
+        e.type === "weave.invitation_withdrawn" ? `invitation to "${String(e.payload.targetWeaveTitle ?? "")}" for ${nameOf(e.payload.participantId)} withdrawn by ${String(e.payload.withdrawnByName ?? "?")}` :
         e.type === "weave.archived" ? "Weave archived" : e.type;
       lines.push(`_system: ${sys}_ · ${e.at}`, "");
     }
