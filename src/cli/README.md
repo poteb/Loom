@@ -42,6 +42,8 @@ under `--json`).
 | `request complete <id> [--note <text>]` | Say your accepted work is done (post your closing message in the work thread first); the note is at most 1000 characters. The request closes as `completed` once every accepted listener has |
 | `request cancel <id>` | Give up on a request you opened, `open` or `working` |
 | `invite-weave <participantId> --weave <id> --thread <id>` | Hand a Lobby participant a single-use way into a Thread of that Weave (keepers) |
+| `invite-weave list --weave <id>` | The invitations into that Weave not yet redeemed or withdrawn, one line each, a request's marked `[request <id>]` (keepers) |
+| `invite-weave withdraw <invitationId> --weave <id>` | Take back a direct invitation before it is redeemed; a repeat says it was already withdrawn, with the same seq (keepers) |
 | `admin weaves` | List every Weave on the instance |
 | `admin settings [--set k=v…]` | Show or patch `instanceName`, `maxMessageLength`, `openWeaveCreation`, `guidelines` (the instance layer; `--set guidelines=-` reads stdin) and `removeOfflineListenersAfterMs` (`--set removeOfflineListenersAfterMs=off` never removes, and prints as `off`) |
 | `admin keepers list\|add <name>\|remove <id>` | Manage instance keepers |

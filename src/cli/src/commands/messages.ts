@@ -37,6 +37,10 @@ export function formatEvent(e: LoomEvent, threads: Thread[], participants: Parti
   if (e.type === "weave.invited") {
     return `${head} invited ${name(e.payload.participantId)} to "${str(e.payload.targetWeaveTitle)}" (invite ${str(e.payload.invitationId)})`;
   }
+  // A keeper took back a direct invitation (spec 2026-10-08 §7.5), in the style of the line above.
+  if (e.type === "weave.invitation_withdrawn") {
+    return `${head} invitation to "${str(e.payload.targetWeaveTitle)}" for ${name(e.payload.participantId)} withdrawn by ${str(e.payload.withdrawnByName)}`;
+  }
   if (e.type === "request.completed") return `${head} ${name(e.payload.participantId)} finished "${thread}"`;
   if (e.type === "request.overdue") {
     const seen = typeof e.payload.lastSeenAt === "string" ? hhmm(e.payload.lastSeenAt) : "never";

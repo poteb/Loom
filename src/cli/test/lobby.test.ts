@@ -415,6 +415,53 @@ describe("loom request", () => {
     expect(typeof j.json().invitationId).toBe("string");
   });
 
+  it("invite-weave list prints one line per pending invitation, marks a request's, --json is { invitations }, and an empty list says so (spec 2026-10-08 §7.5)", async () => {
+    const sc = await scenario();
+    const direct = (await run(["invite-weave", sc.botId, "--weave", sc.weaveId, "--thread", sc.threadId, "--json"], { cfg: sc.req })).json();
+    const r = await open(sc);
+    await run(["request", "offer", r.id, "--json"], { cfg: sc.bot });
+    const accepted = (await run(["request", "accept", r.id, sc.botId, "--deadline", "30m", "--json"], { cfg: sc.req })).json();
+    const listed = await run(["invite-weave", "list", "--weave", sc.weaveId, "--json"], { cfg: sc.req });
+    expect(listed.code).toBe(0);
+    type Row = { invitationId: string; inviteeName: string; targetThreadName: string; createdAt: string; createdBy: string; createdByName: string | null; requestId: string | null };
+    const rows = listed.json().invitations as Row[];
+    expect(rows.map((i) => [i.invitationId, i.requestId]).sort()).toEqual([[direct.invitationId, null], [accepted.invitationIds[0], r.id]].sort());
+    expect(rows.every((i) => i.inviteeName === sc.botName && i.targetThreadName === "PR 14")).toBe(true);
+    expect(rows.find((i) => i.requestId === r.id)!.createdBy).toBe(sc.requesterId);
+    const line = (i: Row) => `${i.invitationId}  ${i.inviteeName}  thread "${i.targetThreadName}"  by ${i.createdByName ?? i.createdBy}  ${hhmm(i.createdAt)}${i.requestId !== null ? ` [request ${i.requestId}]` : ""}`;
+    const human = await run(["invite-weave", "list", "--weave", sc.weaveId], { cfg: sc.req });
+    expect(human.out).toBe(rows.map(line).join("\n") + "\n");
+    const cfg = newCfg();
+    const quiet = (await run(["create", "--title", "Quiet", "--name", uniq("Paw"), "--json"], { cfg })).json();
+    expect((await run(["invite-weave", "list", "--weave", quiet.weave.id], { cfg })).out).toBe("(no pending invitations)\n");
+  });
+
+  it("invite-weave withdraw prints the seq, a repeat says it was already withdrawn with the same seq, and a request's invitation exits 1 with the validation message", async () => {
+    const sc = await scenario();
+    const direct = (await run(["invite-weave", sc.botId, "--weave", sc.weaveId, "--thread", sc.threadId, "--json"], { cfg: sc.req })).json();
+    const first = await run(["invite-weave", "withdraw", direct.invitationId, "--weave", sc.weaveId], { cfg: sc.req });
+    expect(first.code).toBe(0);
+    const m = /^Withdrew invitation (\S+) \(seq (\d+)\)\n$/.exec(first.out);
+    expect(m?.[1]).toBe(direct.invitationId);
+    const again = await run(["invite-weave", "withdraw", direct.invitationId, "--weave", sc.weaveId], { cfg: sc.req });
+    expect(again.out).toBe(`Invitation ${direct.invitationId} was already withdrawn (seq ${m![2]})\n`);
+    const json = (await run(["invite-weave", "withdraw", direct.invitationId, "--weave", sc.weaveId, "--json"], { cfg: sc.req })).json();
+    expect(json).toMatchObject({ invitationId: direct.invitationId, seq: Number(m![2]), created: false });
+    const r = await open(sc);
+    await run(["request", "offer", r.id, "--json"], { cfg: sc.bot });
+    const accepted = (await run(["request", "accept", r.id, sc.botId, "--deadline", "30m", "--json"], { cfg: sc.req })).json();
+    const refused = await run(["invite-weave", "withdraw", accepted.invitationIds[0], "--weave", sc.weaveId], { cfg: sc.req });
+    expect(refused.code).toBe(1);
+    expect(refused.err).toContain("This invitation belongs to a request: remove the agent from the request's Thread instead (remove_participant)");
+  });
+
+  it("invite-weave <participantId> without --thread is a usage error with exit 2 (spec 2026-10-08 §11)", async () => {
+    const sc = await scenario();
+    const bad = await run(["invite-weave", sc.botId, "--weave", sc.weaveId], { cfg: sc.req });
+    expect(bad.code).toBe(2);
+    expect(bad.err).toContain("invite-weave <participantId> needs --thread <id>");
+  });
+
   it("request accept without --deadline is a usage error with exit 2, and --deadline 30m accepts", async () => {
     const sc = await scenario();
     const r = await open(sc);
@@ -551,6 +598,17 @@ describe("loom read renders the Lobby events", () => {
     expect((await run(["lobby", "me", "--clear", "--json"], { cfg })).code).toBe(0);
     const cleared = await run(["read", "--weave", lobbyWeaveId, "--thread", joined.generalThreadId, "--since", since], { cfg });
     expect(cleared.out).toContain(`* profile cleared by ${name}`);
+  });
+
+  it("renders weave.invitation_withdrawn as a system line naming the Weave, the invitee and the keeper (spec 2026-10-08 §7.5)", async () => {
+    const sc = await scenario();
+    const direct = (await run(["invite-weave", sc.botId, "--weave", sc.weaveId, "--thread", sc.threadId, "--json"], { cfg: sc.req })).json();
+    const keeperName = (await run(["invite-weave", "list", "--weave", sc.weaveId, "--json"], { cfg: sc.req })).json().invitations[0].createdByName as string;
+    const withdrawn = (await run(["invite-weave", "withdraw", direct.invitationId, "--weave", sc.weaveId, "--json"], { cfg: sc.req })).json();
+    // From just before the withdrawal: the Lobby's General is shared by the whole file and pages oldest first.
+    const read = await run(["read", "--weave", lobbyWeaveId, "--thread", sc.lobbyGeneralThreadId, "--since", String(withdrawn.seq - 1)], { cfg: sc.req });
+    expect(read.code).toBe(0);
+    expect(read.out).toContain(`* invitation to "Loom session" for ${sc.botName} withdrawn by ${keeperName}`);
   });
 });
 

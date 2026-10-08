@@ -1,5 +1,5 @@
 import { InvalidArgumentError, type Command } from "commander";
-import type { Acceptance, LoomRequest, Offer, Requirements, RequestStatus } from "@loom/client";
+import type { Acceptance, LoomRequest, Offer, PendingInvitation, Requirements, RequestStatus } from "@loom/client";
 import { CliError, textArg, type CliContext, type CliIo } from "../context.js";
 import { emit } from "../output.js";
 import { jsonArg, lobbyContext } from "./lobby.js";
@@ -55,6 +55,15 @@ const activeAccepted = (r: LoomRequest): number => r.acceptances.filter((a) => !
  */
 function requestLine(r: LoomRequest): string {
   return `${r.id}  ${r.status}  wants ${r.wanted} (${r.offers.length} offered, ${activeAccepted(r)} accepted)  offers until ${hhmm(r.expiresAt)}  → "${r.targetWeaveTitle}"`;
+}
+
+/**
+ * One pending invitation, as `invite-weave list` prints it (spec 2026-10-08 §7.5). A request's is
+ * marked, because only a direct one can be withdrawn; the time is the local clock's, the instant is
+ * in `--json`.
+ */
+function invitationLine(i: PendingInvitation): string {
+  return `${i.invitationId}  ${i.inviteeName}  thread "${i.targetThreadName}"  by ${i.createdByName ?? i.createdBy}  ${hhmm(i.createdAt)}${i.requestId !== null ? ` [request ${i.requestId}]` : ""}`;
 }
 
 function requestBlock(r: LoomRequest): string {
@@ -179,14 +188,37 @@ export function registerRequestCommands(program: Command, ctx: () => CliContext,
       emit(c, r, `Cancelled request ${r.id} [${r.status}]`);
     });
 
-  program.command("invite-weave <participantId>")
+  const inviteWeave = program.command("invite-weave <participantId>")
     .description("Hand a Lobby participant a single-use way into a Thread of the current Weave (keepers)")
-    .requiredOption("--thread <id>", "Thread of the target Weave they are invited into")
-    .addHelpText("after", "\nThe target Weave is the global --weave <id> (default: the last Weave created or joined).")
-    .action(async (participantId: string, o: { thread: string }) => {
+    // Not a requiredOption: commander checks the mandatory options of a command's ancestors too, so a
+    // required --thread here would refuse `invite-weave list` and `invite-weave withdraw` (spec §7.5).
+    .option("--thread <id>", "Thread of the target Weave they are invited into")
+    .addHelpText("after", "\nThe target Weave is the global --weave <id> (default: the last Weave created or joined).\nSubcommands: list (pending invitations into the Weave), withdraw <invitationId> (take back a direct one before it is redeemed).")
+    .action(async (participantId: string, o: { thread?: string }) => {
+      if (o.thread === undefined) throw new CliError("validation", "invite-weave <participantId> needs --thread <id>", { exitCode: 2 });
       const c = ctx();
       const { weaveId, entry } = c.resolveWeave();
       const r = await c.client(entry.token).inviteToWeave(weaveId, participantId, o.thread);
       emit(c, r, `Invited ${participantId} into thread ${o.thread} of ${weaveId} (invitation ${r.invitationId}, seq ${r.seq})`);
+    });
+
+  // commander dispatches to a subcommand when the first operand names one, and otherwise runs the
+  // command's own action: a participant id is a uuid, never `list` or `withdraw`.
+  inviteWeave.command("list")
+    .description("The invitations into the current Weave not yet redeemed or withdrawn, a request's marked (keepers)")
+    .action(async () => {
+      const c = ctx();
+      const { weaveId, entry } = c.resolveWeave();
+      const invitations = await c.client(entry.token).listInvitations(weaveId);
+      emit(c, { invitations }, invitations.map(invitationLine).join("\n") || "(no pending invitations)");
+    });
+
+  inviteWeave.command("withdraw <invitationId>")
+    .description("Take back a direct invitation into the current Weave before it is redeemed (keepers)")
+    .action(async (invitationId: string) => {
+      const c = ctx();
+      const { weaveId, entry } = c.resolveWeave();
+      const r = await c.client(entry.token).withdrawInvitation(weaveId, invitationId);
+      emit(c, r, r.created ? `Withdrew invitation ${r.invitationId} (seq ${r.seq})` : `Invitation ${r.invitationId} was already withdrawn (seq ${r.seq})`);
     });
 }
