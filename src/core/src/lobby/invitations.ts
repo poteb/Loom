@@ -1,6 +1,6 @@
-import { and, eq } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db, Tx } from "../db/index.js";
-import { participants, requests, threads, weaveInvitations } from "../db/schema.js";
+import { events, participants, requests, threads, weaveInvitations, weaves } from "../db/schema.js";
 import type { EventBus } from "../bus.js";
 import { errors } from "../errors.js";
 import { isUuid, newId, newSecret } from "../ids.js";
@@ -93,6 +93,133 @@ export async function inviteToWeave(
       requestId: requestId ?? null, createdBy: actorId(actor), threadId,
     });
     return { result: { invitationId, seq: lobby.lastSeq + 1 }, events: { [lobbyId]: [event] } };
+  });
+}
+
+/** One invitation into a Weave that is neither redeemed nor withdrawn (spec 2026-10-08 §5.1). */
+export type PendingInvitation = {
+  invitationId: string;
+  /** The invitee's Lobby participant. */
+  participantId: string;
+  /** Its Lobby name. */
+  inviteeName: string;
+  targetThreadId: string;
+  targetThreadName: string;
+  /** ISO. */
+  createdAt: string;
+  /** The recorded principal, as stored: a participant id or `keeper:<id>`. */
+  createdBy: string;
+  /** `Keeper` for an instance keeper, the participant's name for a uuid a row resolves, else null. */
+  createdByName: string | null;
+  /** Null for a direct invitation, the only kind that can be withdrawn. */
+  requestId: string | null;
+};
+
+/**
+ * The invitations into `targetWeaveId` still pending (spec 2026-10-08 §5): neither redeemed nor
+ * withdrawn, oldest first. Keepers of that Weave and the instance keeper only. A request's
+ * invitations are listed with their `requestId`, so a keeper sees every way in that is still open;
+ * an archived Weave or a closed Thread hides no row, since each is still withdrawable. A read: no
+ * lock, no event.
+ */
+export async function listInvitations(db: Db, actor: Actor, targetWeaveId: string): Promise<PendingInvitation[]> {
+  if (!isUuid(targetWeaveId)) throw errors.weaveNotFound();
+  assertIsKeeperOf(actor, targetWeaveId);
+  const [target] = await db.select({ id: weaves.id }).from(weaves).where(eq(weaves.id, targetWeaveId));
+  if (!target) throw errors.weaveNotFound();
+  const rows = await db.select({
+    invitationId: weaveInvitations.id, participantId: weaveInvitations.inviteeParticipantId, inviteeName: participants.name,
+    targetThreadId: weaveInvitations.targetThreadId, targetThreadName: threads.name, createdAt: weaveInvitations.createdAt,
+    createdBy: weaveInvitations.createdBy, requestId: weaveInvitations.requestId,
+  })
+    .from(weaveInvitations)
+    .innerJoin(threads, eq(threads.id, weaveInvitations.targetThreadId))
+    .innerJoin(participants, eq(participants.id, weaveInvitations.inviteeParticipantId))
+    .where(and(eq(weaveInvitations.targetWeaveId, targetWeaveId), isNull(weaveInvitations.redeemedAt), isNull(weaveInvitations.revokedAt)))
+    .orderBy(asc(weaveInvitations.createdAt), asc(weaveInvitations.id));
+  // One extra read for the page's distinct principals: an inviting keeper lives in the target, a
+  // request's requester in the Lobby, and `keeper:<id>` in no participants row at all.
+  const ids = [...new Set(rows.map((r) => r.createdBy).filter((id) => isUuid(id)))];
+  const named = ids.length > 0
+    ? await db.select({ id: participants.id, name: participants.name }).from(participants).where(inArray(participants.id, ids))
+    : [];
+  const nameOf = new Map(named.map((p) => [p.id, p.name]));
+  return rows.map((r) => ({
+    invitationId: r.invitationId, participantId: r.participantId, inviteeName: r.inviteeName,
+    targetThreadId: r.targetThreadId, targetThreadName: r.targetThreadName, createdAt: r.createdAt.toISOString(),
+    createdBy: r.createdBy, createdByName: r.createdBy.startsWith("keeper:") ? "Keeper" : (nameOf.get(r.createdBy) ?? null),
+    requestId: r.requestId ?? null,
+  }));
+}
+
+/** What a withdrawal answers (spec 2026-10-08 §4.1). `withdrawnAt` is the row's `revoked_at`, ISO. */
+export type WithdrawResult = { invitationId: string; seq: number; withdrawnAt: string; created: boolean };
+
+export type WithdrawOptions = {
+  /** Test seam: runs after the checks made outside the lock and before the locks are taken. */
+  beforeLock?: () => Promise<void>;
+};
+
+const NO_SUCH_INVITATION = "No such invitation in this Weave";
+const BELONGS_TO_REQUEST = "This invitation belongs to a request: remove the agent from the request's Thread instead (remove_participant)";
+const ALREADY_REDEEMED = "This invitation was already redeemed: take the participant off the Thread with remove_participant instead";
+
+/**
+ * Withdraws a direct invitation into `targetWeaveId` before it is redeemed (spec 2026-10-08 §4): the
+ * row's `revoked_at` is set and the invitee is told with `weave.invitation_withdrawn` on the Lobby's
+ * General Thread, beside the `weave.invited` it undoes; a later redemption answers "This invitation
+ * was withdrawn". The authority is `inviteToWeave`'s exactly, checked before anything about the
+ * invitation is read and again inside the target's lock. A request's invitation is refused (the
+ * removal from its Thread withdraws it), and so is a redeemed one; one already withdrawn answers
+ * the original withdrawal's seq with `created: false` and writes nothing. An archived target is no
+ * obstacle: a withdrawal only removes access.
+ *
+ * The Lobby's lock, then the target's, then the row `FOR UPDATE`: the order every cross-Weave flow
+ * uses. `redeemInvitation` takes the target's lock and then the row, never the Lobby's, so the two
+ * are serialised on the target and exactly one of them wins.
+ */
+export async function withdrawInvitation(
+  db: Db, bus: EventBus, actor: Actor, targetWeaveId: string, invitationId: string, opts: WithdrawOptions = {},
+): Promise<WithdrawResult> {
+  const { weaveId: lobbyId } = await getLobby(db);
+  if (!isUuid(targetWeaveId)) throw errors.weaveNotFound();
+  // The authority before anything is read about the invitation: a non-keeper learns nothing of the id.
+  assertIsKeeperOf(actor, targetWeaveId);
+  // No invitation can target the Lobby (inviteToWeave refuses it), and withWeaveLocks must not be
+  // asked for the same row twice.
+  if (targetWeaveId === lobbyId || !isUuid(invitationId)) throw errors.notFound(NO_SUCH_INVITATION);
+  if (opts.beforeLock) await opts.beforeLock();
+  return withWeaveLocks<WithdrawResult>(db, bus, [lobbyId, targetWeaveId], async (tx, byId) => {
+    const lobby = byId[lobbyId]!;
+    const target = byId[targetWeaveId]!;
+    // The role the actor carries was captured when its credential was resolved; it may have been
+    // taken away since. No archived check (spec §4.3).
+    await assertStillKeeperOf(tx, actor, targetWeaveId);
+    const [inv] = await tx.select().from(weaveInvitations).where(eq(weaveInvitations.id, invitationId)).for("update");
+    if (!inv || inv.targetWeaveId !== targetWeaveId) throw errors.notFound(NO_SUCH_INVITATION);
+    // Before the two state checks, so a request's invitation answers the same whatever its state.
+    if (inv.requestId !== null) throw errors.validation(BELONGS_TO_REQUEST);
+    if (inv.revokedAt) {
+      // Only this function withdraws a direct invitation, and always writes its event in the same
+      // transaction, so the newest event naming the id is that withdrawal (spec §4.4); 0 when none
+      // is found, the "none" value lastRemovalSeq uses.
+      const [withdrawal] = await tx.select({ seq: events.seq }).from(events)
+        .where(and(eq(events.weaveId, lobbyId), eq(events.type, "weave.invitation_withdrawn"),
+          sql`${events.payload}->>'invitationId' = ${invitationId}`))
+        .orderBy(desc(events.seq)).limit(1);
+      return { result: { invitationId, seq: withdrawal?.seq ?? 0, withdrawnAt: inv.revokedAt.toISOString(), created: false }, events: {} };
+    }
+    if (inv.redeemedAt) throw errors.validation(ALREADY_REDEEMED);
+    const now = new Date();
+    await tx.update(weaveInvitations).set({ revokedAt: now }).where(eq(weaveInvitations.id, invitationId));
+    const by = actorId(actor);
+    // A Lobby reader cannot resolve `by` (a target-Weave id, or keeper:<id>), so the name travels too.
+    const byName = actor.kind === "participant" ? actor.participant.name : "Keeper";
+    const event: NewEvent = {
+      threadId: await lobbyGeneralThreadId(tx, lobbyId), type: "weave.invitation_withdrawn", actor: by,
+      payload: { invitationId, participantId: inv.inviteeParticipantId, targetWeaveTitle: target.title, withdrawnBy: by, withdrawnByName: byName },
+    };
+    return { result: { invitationId, seq: lobby.lastSeq + 1, withdrawnAt: now.toISOString(), created: true }, events: { [lobbyId]: [event] } };
   });
 }
 

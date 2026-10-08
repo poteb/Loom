@@ -11,7 +11,7 @@ export const EVENT_TYPES = [
   // Lobby. All of these are addressed-only: they never wake anyone through a Weave's "all events" mode.
   "participant.capabilities_changed", "listener.removed",
   "request.opened", "request.offered", "request.offer_withdrawn", "request.accepted", "request.closed", "request.completed", "request.overdue",
-  "weave.invited",
+  "weave.invited", "weave.invitation_withdrawn",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 

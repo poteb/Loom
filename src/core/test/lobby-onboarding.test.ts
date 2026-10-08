@@ -190,4 +190,13 @@ describe("onboardingFacts", () => {
     await core.setCapabilities(b, null);
     expect((await core.onboardingFacts(b)).me).toMatchObject({ hasProfile: false, removed: null });
   });
+
+  it("get_started forgets a withdrawn invitation (spec 2026-10-08 §4.6)", async () => {
+    const l = await listener();
+    const kept = await host("Alpha");
+    const invited = await core.inviteToWeave(kept.actor, l.id, kept.weaveId, kept.threadId);
+    expect((await core.onboardingFacts(l.agent)).invitations).toEqual([{ inviteId: invited.invitationId, weaveTitle: "Alpha", requestId: null }]);
+    await core.withdrawInvitation(kept.actor, kept.weaveId, invited.invitationId);
+    expect((await core.onboardingFacts(l.agent)).invitations).toEqual([]);
+  });
 });

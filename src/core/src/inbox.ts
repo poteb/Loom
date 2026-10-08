@@ -12,8 +12,9 @@ const DEFAULT_INBOX_PAGE = 100;
 
 /**
  * What is addressed to the acting participant: invites naming it, messages mentioning it and the
- * Lobby events that name it — a request it is eligible for, an offer or a close addressed to it, an
- * acceptance or a cross-Weave invitation naming it — excluding its own events, always oldest-first.
+ * Lobby events that name it (a request it is eligible for, an offer or a close addressed to it, an
+ * acceptance naming it, a cross-Weave invitation naming it, or its withdrawal), excluding its own
+ * events, always oldest-first.
  *
  * Pure read with an explicit `since`: the caller keeps a dedicated inbox cursor per Weave — the seq
  * of the last inbox item it processed — and passes that. It is not the last seq the caller saw: a
@@ -44,7 +45,9 @@ export async function inbox(db: Db, actor: Actor, weaveId: string, opts: { since
       and(inArray(events.type, ["request.offered", "request.closed"]),
         sql`(${events.payload}->>'to' = ${me.id} OR ${events.payload}->'to' ? ${me.id})`),
       and(eq(events.type, "request.accepted"), sql`${events.payload}->'participantIds' ? ${me.id}`),
-      and(eq(events.type, "weave.invited"), sql`${events.payload}->>'participantId' = ${me.id}`),
+      // A cross-Weave invitation, or its withdrawal by a keeper of the target (spec 2026-10-08 §6.3):
+      // both name the invitee in `participantId`, and the actor is never its own Lobby id.
+      and(inArray(events.type, ["weave.invited", "weave.invitation_withdrawn"]), sql`${events.payload}->>'participantId' = ${me.id}`),
       // Work an accepted agent finished, a deadline it missed, or an offer the offline sweep withdrew
       // (spec 2026-09-30 §5.3): all addressed to the requester, the way request.offered is.
       and(inArray(events.type, ["request.completed", "request.overdue", "request.offer_withdrawn"]), sql`${events.payload}->>'to' = ${me.id}`),

@@ -169,8 +169,8 @@ export const weaveInvitations = pgTable("weave_invitations", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   redeemedAt: timestamp("redeemed_at", { withTimezone: true }),
   redeemedParticipantId: uuid("redeemed_participant_id"),
-  // Withdrawn by a removal from the request Thread (removals.ts). A revoked invitation cannot be
-  // redeemed.
+  // Withdrawn: by a removal from the request Thread (removals.ts) for a request's invitation, by
+  // `withdrawInvitation` (lobby/invitations.ts) for a direct one. Public shapes call it `withdrawnAt`.
   revokedAt: timestamp("revoked_at", { withTimezone: true }),
 });
 
