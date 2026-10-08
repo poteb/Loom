@@ -791,6 +791,50 @@ describe("POST /api/weaves/:id/invitations", () => {
   });
 });
 
+describe("pending invitations over REST (spec 2026-10-08 §7.2)", () => {
+  /** The target's keeper hands a Lobby participant a direct invitation. */
+  const invite = async (f: Scenario, participantId: string): Promise<string> => {
+    const r = await api(s.baseUrl, "POST", `/api/weaves/${f.target.weaveId}/invitations`, { participantId, threadId: f.target.threadId }, f.target.keeper);
+    expect(r.status).toBe(201);
+    return r.json.invitationId as string;
+  };
+  const withdrawPath = (f: Scenario, invitationId: string) => `/api/weaves/${f.target.weaveId}/invitations/${invitationId}/withdraw`;
+
+  it("GET /api/weaves/:id/invitations answers { invitations } to a keeper, and 403 to a member", async () => {
+    const f = await scenario();
+    const id = await invite(f, f.pawbot.id);
+    const r = await api(s.baseUrl, "GET", `/api/weaves/${f.target.weaveId}/invitations`, undefined, f.target.keeper);
+    expect(r.status).toBe(200);
+    expect((r.json.invitations as { invitationId: string; participantId: string; requestId: string | null }[])
+      .map((i) => [i.invitationId, i.participantId, i.requestId])).toEqual([[id, f.pawbot.id, null]]);
+    const member = await api(s.baseUrl, "GET", `/api/weaves/${f.target.weaveId}/invitations`, undefined, f.target.member);
+    expect([member.status, member.json.code]).toEqual([403, "forbidden"]);
+  });
+
+  it("POST .../withdraw answers 200 created true, then 200 created false with the same seq; a request's invitation 400; an unknown id 404; a non-keeper 403", async () => {
+    const f = await scenario();
+    const id = await invite(f, f.pawbot.id);
+    const first = await api(s.baseUrl, "POST", withdrawPath(f, id), undefined, f.target.keeper);
+    expect([first.status, first.json.invitationId, first.json.created]).toEqual([200, id, true]);
+    const again = await api(s.baseUrl, "POST", withdrawPath(f, id), undefined, f.target.keeper);
+    expect([again.status, again.json]).toEqual([200, { ...first.json, created: false }]);
+
+    const req = await openRequest(f);
+    await api(s.baseUrl, "POST", `/api/requests/${req.id}/offers`, { note: "ready" }, f.pawbot.token);
+    const accepted = await api(s.baseUrl, "POST", `/api/requests/${req.id}/accept`, { participantIds: [f.pawbot.id], deadlineMs: 3_600_000 }, f.claude.token);
+    expect(accepted.status).toBe(200);
+    const viaRequest = await api(s.baseUrl, "POST", withdrawPath(f, accepted.json.invitationIds[0] as string), undefined, f.target.keeper);
+    expect([viaRequest.status, viaRequest.json.code]).toEqual([400, "validation"]);
+
+    const unknown = await api(s.baseUrl, "POST", withdrawPath(f, "00000000-0000-4000-8000-000000000000"), undefined, f.target.keeper);
+    expect([unknown.status, unknown.json.code]).toEqual([404, "not_found"]);
+
+    const second = await invite(f, f.bobbot.id);
+    const member = await api(s.baseUrl, "POST", withdrawPath(f, second), undefined, f.target.member);
+    expect([member.status, member.json.code]).toEqual([403, "forbidden"]);
+  });
+});
+
 describe("POST /api/weaves/join", () => {
   it("redeems an invitation with the invitee's own credential, without a secret", async () => {
     const f = await scenario();

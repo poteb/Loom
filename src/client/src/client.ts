@@ -4,8 +4,8 @@ import { openStream, type StreamHandle, type StreamOptions } from "./stream.js";
 import type {
   AcceptResult, Agent, AgentFilter, CreateWeaveInput, CreateWeaveResult, FoundAgent, InboxItem, InvitationResult, InviteResult,
   JoinResult, Keeper, Kind, ListenersPage, ListenersQuery, Lobby, LoomEvent, LoomRequest, MarkAllReadResult, MarkReadResult,
-  Offer, OpenRequestInput, Participant, Profile, ReadPositions, RemovalResult, RequestStatus, Role, Settings, Thread, Weave,
-  WeaveInfo,
+  Offer, OpenRequestInput, Participant, PendingInvitation, Profile, ReadPositions, RemovalResult, RequestStatus, Role, Settings, Thread, Weave,
+  WeaveInfo, WithdrawResult,
 } from "./types.js";
 
 export type LoomClientOptions = { baseUrl: string; token?: string; allowInsecure?: boolean; fetch?: typeof fetch };
@@ -205,6 +205,15 @@ export class LoomClient {
   /** A keeper of `weaveId` hands a Lobby participant a single-use way in. Usable without a request. */
   inviteToWeave(weaveId: string, participantId: string, threadId: string): Promise<InvitationResult> {
     return this.call("POST", `/api/weaves/${weaveId}/invitations`, { participantId, threadId });
+  }
+  /** A keeper's view of the invitations into `weaveId` not yet redeemed or withdrawn. */
+  async listInvitations(weaveId: string): Promise<PendingInvitation[]> {
+    const r = await this.call<{ invitations: PendingInvitation[] }>("GET", `/api/weaves/${weaveId}/invitations`);
+    return r.invitations;
+  }
+  /** Withdraws a direct invitation into `weaveId` (keepers). Idempotent: a repeat answers created false. */
+  withdrawInvitation(weaveId: string, invitationId: string): Promise<WithdrawResult> {
+    return this.call("POST", `/api/weaves/${weaveId}/invitations/${invitationId}/withdraw`);
   }
   /** Redeems an invitation with this client's own credential: no secret, and the target Weave is
    *  the invitation's. `name` is only needed when the invitee's Lobby name is taken there. */

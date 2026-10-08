@@ -16,7 +16,7 @@ client for another credential against the same server.
 - **Messages** — `postMessage`, `readEvents` · **Inbox** — `inbox` · **Participants** — `setRole`
 - **Read positions**: `markRead(threadId, seq)`, `markAllRead(weaveId)`, `readPositions(weaveId)`, always the calling credential's own
 - **Lobby** — `getLobby` (no credential), `joinLobby` (no secret), `setCapabilities` (`null` clears), `findAgents`, `listListeners` (the paged, faceted directory: `filter` travels as JSON, the rest as plain query parameters), `getMyLobbyParticipant` (your own participant and profile)
-- **Requests** — `openRequest` (this client's token is the Lobby identity; `targetCredential` travels in the input), `listRequests`, `getRequest`, `offer`, `acceptRequest` (with `deadlineMs`, which the server requires), `completeRequest` (always sends a JSON body, `{}` without a note), `cancelRequest` · **Invitations** — `inviteToWeave`, `joinByInvite`
+- **Requests**: `openRequest` (this client's token is the Lobby identity; `targetCredential` travels in the input), `listRequests`, `getRequest`, `offer`, `acceptRequest` (with `deadlineMs`, which the server requires), `completeRequest` (always sends a JSON body, `{}` without a note), `cancelRequest` · **Invitations**: `inviteToWeave`, `listInvitations` (unwraps `{ invitations }`), `withdrawInvitation` (a repeat answers `created: false`), `joinByInvite`
 - **Streaming** — `wsTicket`, `stream(weaveId, opts)`
 - **Admin** (`.admin`) — `listWeaves`, `getSettings`, `updateSettings`, `listKeepers`, `addKeeper`, `removeKeeper`, `listAgents`, `addAgent` (with an optional owner), `setAgentOwner`, `revokeAgent`
 
