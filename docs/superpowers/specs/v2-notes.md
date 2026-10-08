@@ -725,7 +725,7 @@ never "cancel" or "revoke". Spec:
 Plan, for Paw's review beside the spec in PR #60:
 [2026-10-08-loom-withdraw-invitation.md](../plans/2026-10-08-loom-withdraw-invitation.md): nine tasks
 (0 to 8), each run by a fresh Opus subagent on `feat/withdraw-invitation`; no migration; smoke test
-12 withdraws the two live invitations after the deploy. Not started.
+12 withdraws the two live invitations after the deploy.
 
 **Built** by the withdraw-invitation slice on `feat/withdraw-invitation`
 ([spec](2026-10-08-loom-withdraw-invitation-design.md), [plan](../plans/2026-10-08-loom-withdraw-invitation.md)):

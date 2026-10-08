@@ -182,13 +182,13 @@ guarded by `typeof document !== "undefined"` because the package runs Vitest wit
 ## Current totals
 
 As of **the withdraw-invitation slice** on `feat/withdraw-invitation` (measured at `02762e3`, the
-head after its last code task, with only its docs commit to come): **2472 tests in 80 files**:
-core 781 in 32, web 981 in 17, server 247 in 10, claude-channel 152 in 9, cli 89 in 5, client 51
+head after its last code task, plus the one web test of the review fix `a626b8b`): **2473 tests in 80 files**:
+core 781 in 32, web 982 in 17, server 247 in 10, claude-channel 152 in 9, cli 89 in 5, client 51
 in 4, mcp-tools 171 in 3, from `pnpm -r build`, `pnpm -r typecheck` (clean) and
 `pnpm --workspace-concurrency=1 -r test`, every suite passing. The baseline recorded by the plan's
-Task 0 was `main` at `cc7d896`, 2423 in 80, so the slice added **49 tests and no file**: core +20
+Task 0 was `main` at `cc7d896`, 2423 in 80, so the slice added **50 tests and no file**: core +20
 (`lobby-invitations.test.ts` 17, `lobby-onboarding.test.ts` 1, `units.test.ts` 1, `export.test.ts`
-1); web +13 (`components.test.tsx` 7, `session.test.ts` 5, `fold.test.ts` 1); server +3
+1); web +14 (`components.test.tsx` 7, `session.test.ts` 6, `fold.test.ts` 1); server +3
 (`lobby-routes.test.ts` 2, `mcp.test.ts` 1); claude-channel +3 (`format.test.ts` 2,
 `backend.test.ts` 1); cli +4 (`lobby.test.ts` 4); client +1 (`client.test.ts` 1); mcp-tools +5
 (`tools.test.ts` 3, `onboarding.test.ts` 1, `skills.test.ts` 1). The repaired and renamed cases
