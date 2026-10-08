@@ -12,7 +12,7 @@
 
 **Execution:** subagent-driven, as Paw's standing rule says (HANDBOOK §4): the controller dispatches **one fresh Opus subagent per task** (`model: "opus"`, `run_in_background: true`) on the feature branch `feat/withdraw-invitation` in the worktree `D:/git/worktrees/Loom-withdraw-invitation`, then an Opus reviewer per task, and reads every diff itself before the next dispatch. Never inline.
 
-**Base:** branch `feat/withdraw-invitation` off `origin/main` **after the docs PR carrying the spec and this plan (PR #60) merges**. From `main` this plan consumes, unchanged unless a task says otherwise: `inviteToWeave`, `redeemInvitation`, `invitationRowAndEvent` (`src/core/src/lobby/invitations.ts`); `removeParticipant`, `lastRemovalSeq`, `RemovalResult` (`src/core/src/removals.ts`); `withWeaveLock`, `withWeaveLocks`, `NewEvent`, `readEvents` (`src/core/src/events.ts`); `actorId`, `assertIsKeeperOf`, `assertStillKeeperOf`, `resolveCredential`, `resolveInWeave` (`src/core/src/actors.ts`); `getLobby`, `lobbyGeneralThreadId`, `ensureLobby`, `joinLobby` (`src/core/src/lobby/lobby.ts`); `EVENT_TYPES`, `EventType`, `LoomEvent`, `Actor` (`src/core/src/types.ts`); `errors` (`src/core/src/errors.ts`); `isUuid` (`src/core/src/ids.ts`); `inbox` (`src/core/src/inbox.ts`); `exportWeave` (`src/core/src/export.ts`); `onboardingFacts` (`src/core/src/lobby/onboarding.ts`); `setRole` (`src/core/src/participants.ts`); `openRequest`, `offer`, `accept` (`src/core/src/lobby/requests.ts`); the facade `createCore` (`src/core/src/index.ts`); `freshDb`, `closeTestDb`, `keeperToken` (`src/core/test/helpers.ts`); in `src/core/test/lobby-invitations.test.ts` `setup`, `Fixture`, `TARGET_TITLE`, `invitationRow`, `lobbyEvents`, `targetEvents`, `targetParticipants`; in `src/core/test/lobby-onboarding.test.ts` `core`, `listener`, `host`; in `src/core/test/units.test.ts` `NAMED`; `weaveRoutes` (`src/server/src/routes/weaves.ts`); `CoreToolBackend` (`src/server/src/mcp/backend.ts`); `startTestServer`, `api` (`src/server/test/helpers.ts`); in `src/server/test/lobby-routes.test.ts` `scenario`, `Scenario`, `openRequest`, `s`; in `src/server/test/mcp.test.ts` `json`, `withClient`, and in `describe("listener onboarding over remote MCP")` `fresh`, `mint`, `agentClient`; `LoomClient` (`src/client/src/client.ts`), `EventType`, `InvitationResult` (`src/client/src/types.ts`); in `src/client/test/client.test.ts` `lobby` (inside `describe("Lobby wrappers")`); `LOOM_TOOL_NAMES`, `registerLoomTools` (`src/mcp-tools/src/tools.ts`); `LoomToolBackend` (`src/mcp-tools/src/backend.ts`); `REACTION_TABLE` (`src/mcp-tools/src/onboarding.ts`); in `src/mcp-tools/test/tools.test.ts` `fake`, `calls`, `client`, `text`, `described`, `LOBBY_TOOLS`; in `src/mcp-tools/test/onboarding.test.ts` `TABLE`, `profiled`, `corpus`; in `src/mcp-tools/test/skills.test.ts` `FIELD_NAMES`, `group`, the drift guard's `skills`; `ClientToolBackend` (`src/claude-channel/src/backend.ts`), `withStoredCredential` (`src/claude-channel/src/stored.ts`), `formatEvent`, `shouldWake` (`src/claude-channel/src/format.ts`), `INSTRUCTIONS` (`src/claude-channel/src/server.ts`); in `src/claude-channel/test/format.test.ts` `ev`, `weave`, `names`; in `src/claude-channel/test/backend.test.ts` `makeState`, `WEAVE_ID`; in `src/claude-channel/test/channel.test.ts` `withChannel`, `stateDir`; `registerRequestCommands`, `hhmm` (`src/cli/src/commands/request.ts`), `formatEvent` (`src/cli/src/commands/messages.ts`), `CliError` (`src/cli/src/context.ts`), `emit` (`src/cli/src/output.ts`); in `src/cli/test/lobby.test.ts` `run`, `scenario`, `open`, `hhmm`, `newCfg`, `uniq`, `lobbyWeaveId`; `createSession`, `Session`, `SessionState`, `scheduleRefresh`, `refreshInfo`, `doLoad`, `writer`, `messageOf` (`src/web/src/session.ts`); `WeaveView` (`src/web/src/components/WeaveView.tsx`); `systemLine` (`src/web/src/components/MessageList.tsx`); `WORDS`, `runSummary` (`src/web/src/components/fold.ts`); in `src/web/test/session.test.ts` `s`, `anon`, `waitFor`, `makeGate`, `sideReadClient`, `onCall`, `always`, `parks`, `delivering`, `refuses`; in `src/web/test/components.test.tsx` `me`, `state`, `session`, `lobbyState`; in `src/web/test/fold.test.ts` `ev`.
+**Base:** branch `feat/withdraw-invitation` off `origin/main` **after the docs PR carrying the spec and this plan (PR #60) merges**. From `main` this plan consumes, unchanged unless a task says otherwise: `inviteToWeave`, `redeemInvitation`, `invitationRowAndEvent` (`src/core/src/lobby/invitations.ts`); `removeParticipant`, `lastRemovalSeq`, `RemovalResult` (`src/core/src/removals.ts`); `withWeaveLock`, `withWeaveLocks`, `NewEvent`, `readEvents` (`src/core/src/events.ts`); `actorId`, `assertIsKeeperOf`, `assertStillKeeperOf`, `resolveCredential`, `resolveInWeave` (`src/core/src/actors.ts`); `getLobby`, `lobbyGeneralThreadId`, `ensureLobby`, `joinLobby` (`src/core/src/lobby/lobby.ts`); `EVENT_TYPES`, `EventType`, `LoomEvent`, `Actor` (`src/core/src/types.ts`); `errors` (`src/core/src/errors.ts`); `isUuid` (`src/core/src/ids.ts`); `inbox` (`src/core/src/inbox.ts`); `exportWeave` (`src/core/src/export.ts`); `onboardingFacts` (`src/core/src/lobby/onboarding.ts`); `setRole` (`src/core/src/participants.ts`); `openRequest`, `offer`, `accept` (`src/core/src/lobby/requests.ts`); the facade `createCore` (`src/core/src/index.ts`); `freshDb`, `closeTestDb`, `keeperToken` (`src/core/test/helpers.ts`); in `src/core/test/lobby-invitations.test.ts` `setup`, `Fixture`, `TARGET_TITLE`, `invitationRow`, `lobbyEvents`, `targetEvents`, `targetParticipants`; in `src/core/test/lobby-onboarding.test.ts` `core`, `listener`, `host`; in `src/core/test/units.test.ts` `NAMED`; `weaveRoutes` (`src/server/src/routes/weaves.ts`); `CoreToolBackend` (`src/server/src/mcp/backend.ts`); `startTestServer`, `api` (`src/server/test/helpers.ts`); in `src/server/test/lobby-routes.test.ts` `scenario`, `Scenario`, `openRequest`, `s`; in `src/server/test/mcp.test.ts` `json`, `withClient`, and in `describe("listener onboarding over remote MCP")` `fresh`, `mint`, `agentClient`; `LoomClient` (`src/client/src/client.ts`), `EventType`, `InvitationResult` (`src/client/src/types.ts`); in `src/client/test/client.test.ts` `lobby` (inside `describe("Lobby wrappers")`); `LOOM_TOOL_NAMES`, `registerLoomTools` (`src/mcp-tools/src/tools.ts`); `LoomToolBackend` (`src/mcp-tools/src/backend.ts`); `REACTION_TABLE` (`src/mcp-tools/src/onboarding.ts`); in `src/mcp-tools/test/tools.test.ts` `fake`, `calls`, `client`, `text`, `described`, `LOBBY_TOOLS`; in `src/mcp-tools/test/onboarding.test.ts` `TABLE`, `profiled`, `corpus`; in `src/mcp-tools/test/skills.test.ts` `FIELD_NAMES`, `group`, the drift guard's `skills`; `ClientToolBackend` (`src/claude-channel/src/backend.ts`), `withStoredCredential` (`src/claude-channel/src/stored.ts`), `formatEvent`, `shouldWake` (`src/claude-channel/src/format.ts`), `INSTRUCTIONS` (`src/claude-channel/src/server.ts`); in `src/claude-channel/test/format.test.ts` `ev`, `weave`, `names`; in `src/claude-channel/test/backend.test.ts` `makeState`, `WEAVE_ID`; in `src/claude-channel/test/channel.test.ts` `withChannel`, `stateDir`; `registerRequestCommands`, `hhmm` (`src/cli/src/commands/request.ts`), `formatEvent` (`src/cli/src/commands/messages.ts`), `CliError` (`src/cli/src/context.ts`), `emit` (`src/cli/src/output.ts`); in `src/cli/test/lobby.test.ts` `run`, `scenario`, `open`, `hhmm`, `newCfg`, `uniq`, `lobbyWeaveId`; `createSession`, `Session`, `SessionState`, `scheduleRefresh`, `refreshInfo`, `doLoad`, `writer`, `messageOf`, `countReads` (`src/web/src/session.ts`); `createCounter` (`src/web/src/side-reads.ts`, already imported by `session.ts`); `WeaveView` (`src/web/src/components/WeaveView.tsx`); `systemLine` (`src/web/src/components/MessageList.tsx`); `WORDS`, `runSummary` (`src/web/src/components/fold.ts`); in `src/web/test/session.test.ts` `s`, `anon`, `waitFor`, `makeGate`, `sideReadClient`, `onCall`, `always`, `parks`, `parksThen`, `delivering`, `afterDelivery`, `refuses`, `BROKEN`; in `src/web/test/components.test.tsx` `me`, `state`, `session`, `lobbyState`; in `src/web/test/fold.test.ts` `ev`.
 
 **Commit trailer.** Every implementer commit in this plan ends with exactly:
 
@@ -1471,10 +1471,10 @@ Expected: the stat shows no `Bin` row, and the scan prints `scan clean`.
 
 ### Task 6: web: the Thread line, the folded words, the session's read and action, the Pending invitations panel
 
-Spec §8.2, §9, §13.7. **This task carries the seven `components.test.tsx` cases, the three `session.test.ts` cases and the `fold.test.ts` case.**
+Spec §8.2, §9, §13.7. **This task carries the seven `components.test.tsx` cases, the five `session.test.ts` cases (spec §13.7's three, and the two that order the read within a generation) and the `fold.test.ts` case.**
 
 **Files:**
-- Modify: `src/web/src/session.ts` (the client import; `SessionState`; `Session`; `mayManageInvitations`; `readInvitations` and its two call sites; `canManageInvitations` and `withdrawInvitation` on the returned object)
+- Modify: `src/web/src/session.ts` (the client import; `SessionState`; `Session`; `mayManageInvitations`; the `invitationReads` counter; `readInvitations` and its two call sites; `canManageInvitations` and `withdrawInvitation` on the returned object)
 - Create: `src/web/src/components/InvitationsPanel.tsx`
 - Modify: `src/web/src/components/WeaveView.tsx` (the import; the panel after `GuidelinesPanel`)
 - Modify: `src/web/src/components/MessageList.tsx` (`systemLine`)
@@ -1624,7 +1624,7 @@ describe("InvitationsPanel (spec 2026-10-08 §9)", () => {
 });
 ```
 
-- [ ] **Step 3: Write the failing `session.test.ts` cases.** In `src/web/test/session.test.ts`, at the end of the file (after every helper it defines, so `sideReadClient`, `onCall`, `always`, `parks`, `delivering` and `refuses` are in scope), add:
+- [ ] **Step 3: Write the failing `session.test.ts` cases.** In `src/web/test/session.test.ts`, at the end of the file (after every helper it defines, so `sideReadClient`, `onCall`, `always`, `parks`, `parksThen`, `delivering`, `afterDelivery`, `refuses` and `BROKEN` are in scope), add:
 
 ```ts
 describe("pending invitations (spec 2026-10-08 §9)", () => {
@@ -1699,6 +1699,51 @@ describe("pending invitations (spec 2026-10-08 §9)", () => {
     } finally { session.dispose(); }
   });
 
+  // The generation orders nothing within a generation: the load and every refresh each start a read,
+  // so two can be in flight at once, and the one that lands last is not always the newest. Mirrors
+  // the listener count's "does not let an older count overwrite a newer one".
+  it("an older invitations answer never replaces a newer one within the same generation", async () => {
+    const f = await invitedWeave();
+    const id = await f.invite((await f.guest("a")).id);
+    const gate = makeGate();
+    const stale = delivering(parks(gate));
+    const c = sideReadClient({ [f.path]: onCall(1, stale.answer) });
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.r.secret }, storage: f.keeperStorage() });
+    await session.load();
+    try {
+      await gate.entered;                      // read A, the load's, is parked holding the invitation
+      await s.core.withdrawInvitation(f.keeper, f.r.weave.id, id);   // withdrawn outside this tab, as the CLI or MCP would
+      await waitFor(() => session.getState().connection === "open");
+      await anon.joinWeave(f.r.secret, { name: "Reader", kind: "human" });   // the refresh: read B answers []
+      await waitFor(() => session.getState().invitations?.length === 0);
+      gate.release();                          // ...and only now A's answer, with the row in it, lands
+      await afterDelivery(stale.delivered);
+      expect(session.getState().invitations).toEqual([]);
+    } finally { gate.release(); session.dispose(); }
+  });
+
+  // One watermark for answers and rejections alike: an older read's failure must not replace a newer
+  // read's rows with an error. Mirrors "drops a count rejection that a newer answer has already overtaken".
+  it("an older invitations rejection never replaces a newer answer within the same generation", async () => {
+    const f = await invitedWeave();
+    const id = await f.invite((await f.guest("a")).id);
+    const gate = makeGate();
+    const stale = delivering(parksThen(gate, BROKEN));
+    const c = sideReadClient({ [f.path]: onCall(1, stale.answer) });
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.r.secret }, storage: f.keeperStorage() });
+    await session.load();
+    try {
+      await gate.entered;                      // read A, the load's, is out and unanswered
+      await waitFor(() => session.getState().connection === "open");
+      await anon.joinWeave(f.r.secret, { name: "Reader", kind: "human" });   // the refresh: read B answers the row
+      await waitFor(() => session.getState().invitations?.length === 1);
+      gate.release();                          // ...and only now A's 500 lands
+      await afterDelivery(stale.delivered);
+      expect([session.getState().invitations!.map((i) => i.invitationId), session.getState().invitationsError])
+        .toEqual([[id], undefined]);
+    } finally { gate.release(); session.dispose(); }
+  });
+
   it("withdrawInvitation drops the row at once and schedules a refresh; a refused one keeps the row and re-reads the list", async () => {
     const f = await invitedWeave();
     const first = await f.invite((await f.guest("a")).id);
@@ -1726,7 +1771,7 @@ describe("pending invitations (spec 2026-10-08 §9)", () => {
 - [ ] **Step 4: Run them to verify they fail**
 
 Run: `pnpm -r build && cd src/web && npx vitest run test/fold.test.ts test/components.test.tsx test/session.test.ts`
-Expected: FAIL. `fold.test.ts`: the new case (`1 weave.invitation_withdrawn`, named by its type); `components.test.tsx`: the whole file, `Failed to resolve import "../src/components/InvitationsPanel.js"`; `session.test.ts`: the three new cases (`keeper.canManageInvitations is not a function`, and the generation case times out waiting for `invitations`). Capture this output for the report.
+Expected: FAIL. `fold.test.ts`: the new case (`1 weave.invitation_withdrawn`, named by its type); `components.test.tsx`: the whole file, `Failed to resolve import "../src/components/InvitationsPanel.js"`; `session.test.ts`: the five new cases (`keeper.canManageInvitations is not a function`; the generation case and the two ordering cases time out waiting for `invitations`). Capture this output for the report. The two ordering cases are what the watermark of Step 6 exists for: against a `readInvitations` with only the generation, identity and Weave guards they fail on the stale answer (`[]` expected, the withdrawn row received) and on the stale rejection (`invitationsError` set where `undefined` is expected).
 
 - [ ] **Step 5: The folded words and the Thread line.** In `src/web/src/components/fold.ts`, in `WORDS`, directly after the line `  "weave.invited": "invited to a Weave",` add:
 
@@ -1778,6 +1823,13 @@ export function mayManageInvitations(state: SessionState): boolean {
 
 ```
 
+  - Directly after the line `  const countReads = createCounter();` (the listener count's counter, after `profileReads`) add the invitations read's own counter. `createCounter` is already imported by `session.ts` (its import line from `./side-reads.js`), so no import changes:
+
+```ts
+  /** The invitations read's request numbers (spec 2026-10-08 §9), ordered as the listener count's are. */
+  const invitationReads = createCounter();
+```
+
   - Directly before the line `  const refreshInfo = async () => {` add:
 
 ```ts
@@ -1785,16 +1837,31 @@ export function mayManageInvitations(state: SessionState): boolean {
    * The pending invitations into this Weave (spec 2026-10-08 §9), read beside the page's metadata on
    * the load and on every coalesced refresh, only while `mayManageInvitations` holds, with this
    * browser's own token. Fenced like every read of the page: an answer for a generation, an identity
-   * or a Weave this tab has since left is dropped. A failure keeps the rows held and says why.
+   * or a Weave this tab has since left is dropped. And ordered, like `readListenerCount`: the load and
+   * every refresh each start one, so two can be in flight inside one generation, which the generation
+   * says nothing about. A failure keeps the rows held and says why.
    */
   const readInvitations = (myGeneration: number) => {
     if (!weaveId || !state.me || !mayManageInvitations(state)) return;
     const token = state.me.token;
     const forWeave = weaveId;
+    const n = invitationReads.next();
     const left = () => disposed || myGeneration !== generation || state.me?.token !== token || weaveId !== forWeave;
     void client.withToken(token).listInvitations(forWeave).then(
-      (invitations) => { if (!left()) set({ invitations, invitationsError: undefined }); },
-      (e: unknown) => { if (!left()) set({ invitationsError: messageOf(e) }); },
+      (invitations) => {
+        // Re-checked immediately before publishing. An older read landing after a newer one must not
+        // bring back a row the newer one saw withdrawn (by another keeper, through the CLI or MCP).
+        if (left() || n <= invitationReads.applied()) return;
+        invitationReads.markApplied(n);
+        set({ invitations, invitationsError: undefined });
+      },
+      (e: unknown) => {
+        // The same guards as the success path. One watermark for answers and rejections alike: an
+        // older read's rejection must not replace a newer read's rows with an error.
+        if (left() || n <= invitationReads.applied()) return;
+        invitationReads.markApplied(n);
+        set({ invitationsError: messageOf(e) });
+      },
     );
   };
 
@@ -1917,7 +1984,7 @@ Expected: all green, pristine. Then `git diff --stat -- src/web/src/styles.css` 
 git add src/web/src/session.ts src/web/src/components/InvitationsPanel.tsx src/web/src/components/WeaveView.tsx src/web/src/components/MessageList.tsx src/web/src/components/fold.ts src/web/test/components.test.tsx src/web/test/session.test.ts src/web/test/fold.test.ts
 git diff --cached --stat
 git diff --cached | node -e "const bad = [String.fromCharCode(0xc2), String.fromCharCode(0xe2, 0x20ac), String.fromCharCode(0x2014)]; let s = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', (c) => { s += c; }).on('end', () => { const hits = s.split('\n').filter((l) => l.startsWith('+') && bad.some((b) => l.includes(b))); console.log(hits.length ? 'FOUND:\n' + hits.join('\n') : 'scan clean'); });"
-git commit -m "feat(web): a keeper's Pending invitations panel with Withdraw, and the withdrawal's Thread line" -m "The session reads the pending invitations beside the metadata on the load and on each coalesced refresh, only for a keeper of a Weave that is not the Lobby (mayManageInvitations, archived or not), fenced by generation, identity and Weave; withdrawInvitation drops the row at once and refreshes, and a refusal re-reads. InvitationsPanel lists each row with Withdraw on a direct one and the way to withdraw a request's; a failed read is shown, never an empty list. The Lobby's Thread view and folded runs gain weave.invitation_withdrawn. No CSS. Ripple repaired: the session() fake of components.test.tsx." -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git commit -m "feat(web): a keeper's Pending invitations panel with Withdraw, and the withdrawal's Thread line" -m "The session reads the pending invitations beside the metadata on the load and on each coalesced refresh, only for a keeper of a Weave that is not the Lobby (mayManageInvitations, archived or not), fenced by generation, identity and Weave and ordered per read by its own watermark; withdrawInvitation drops the row at once and refreshes, and a refusal re-reads. InvitationsPanel lists each row with Withdraw on a direct one and the way to withdraw a request's; a failed read is shown, never an empty list. The Lobby's Thread view and folded runs gain weave.invitation_withdrawn. No CSS. Ripple repaired: the session() fake of components.test.tsx." -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 Expected: the stat shows no `Bin` row, and the scan prints `scan clean`.
@@ -2144,7 +2211,7 @@ secret is in it. `weave.invitation_withdrawn` (`withdrawInvitation`, the same fi
   - `mcp-tools`: in this row replace the substring `(39 tools)` with `(41 tools)`, and append: ``The withdraw-invitation slice: `list_invitations` and `withdraw_invitation` (their place after `invite_to_weave`, their descriptions, the pass-through), the `weave.invitation_withdrawn` row of `REACTION_TABLE`, and the skills' edits with no skill saying "revoked".``
   - `cli`: ``The withdraw-invitation slice: `invite-weave list` and `invite-weave withdraw`, `--thread` missing as exit 2, and the `read` line of `weave.invitation_withdrawn`.``
   - `claude-channel`: ``The withdraw-invitation slice: `weave.invitation_withdrawn` wakes the invitee in both modes whatever `invites` says and nobody else, its two texts, the instructions' `type=` list, and the stored credential reaching the target's token for the two invitation tools.``
-  - `web`: ``The withdraw-invitation slice: the Pending invitations panel (a keeper only, never the Lobby, archived too, Withdraw in flight and refused, a failed read never shown as empty), the session's invitation read fenced by generation and its `withdrawInvitation`, and the Thread line and folded words of `weave.invitation_withdrawn`.``
+  - `web`: ``The withdraw-invitation slice: the Pending invitations panel (a keeper only, never the Lobby, archived too, Withdraw in flight and refused, a failed read never shown as empty), the session's invitation read fenced by generation and ordered per read, and its `withdrawInvitation`, and the Thread line and folded words of `weave.invitation_withdrawn`.``
 
 - [ ] **Step 5: docs/TESTING.md, smoke test 12.** Replace the opening words `Eleven things the automated suites cannot cover` with `Twelve things the automated suites cannot cover`. At the end of the file, after smoke test 11's `*Last run:*` paragraph, add, with one empty line before it:
 
@@ -2293,7 +2360,7 @@ withdraws the two live invitations of 2026-10-02 after the deploy.
 - [ ] **Step 9: Build, typecheck and run everything, serially, from a clean build**
 
 Run: `pnpm -r build && pnpm -r typecheck && pnpm --workspace-concurrency=1 -r test`
-Expected: every package passes, with no stray output. If the Docker daemon does not answer, stop and report so Paw can start Docker Desktop. Record per package (tests and files) and overall in the ledger, beside Task 0's baseline. The expected movement, for the controller to check against (the run's figures are the record, not these): core +20 tests (`lobby-invitations.test.ts` 17, `lobby-onboarding.test.ts` 1, `units.test.ts` 1, `export.test.ts` 1), server +3 (`lobby-routes.test.ts` 2, `mcp.test.ts` 1; the repaired catalog case adds none), client +1, mcp-tools +5 (`tools.test.ts` 3, `onboarding.test.ts` 1, `skills.test.ts` 1; the repaired cases add none), claude-channel +3 (`format.test.ts` 2, `backend.test.ts` 1; the repaired `channel.test.ts` case adds none), cli +4, web +11 (`components.test.tsx` 7, `session.test.ts` 3, `fold.test.ts` 1): **+47 tests, no new test file**. A difference is reported in the ledger with its reason, never smoothed.
+Expected: every package passes, with no stray output. If the Docker daemon does not answer, stop and report so Paw can start Docker Desktop. Record per package (tests and files) and overall in the ledger, beside Task 0's baseline. The expected movement, for the controller to check against (the run's figures are the record, not these): core +20 tests (`lobby-invitations.test.ts` 17, `lobby-onboarding.test.ts` 1, `units.test.ts` 1, `export.test.ts` 1), server +3 (`lobby-routes.test.ts` 2, `mcp.test.ts` 1; the repaired catalog case adds none), client +1, mcp-tools +5 (`tools.test.ts` 3, `onboarding.test.ts` 1, `skills.test.ts` 1; the repaired cases add none), claude-channel +3 (`format.test.ts` 2, `backend.test.ts` 1; the repaired `channel.test.ts` case adds none), cli +4, web +13 (`components.test.tsx` 7, `session.test.ts` 5, `fold.test.ts` 1): **+49 tests, no new test file**. A difference is reported in the ledger with its reason, never smoothed.
 
 - [ ] **Step 10: The checks the branch must pass whole**
   - `git diff --stat origin/main -- src/web/src/styles.css src/core/drizzle` prints nothing.
@@ -2342,7 +2409,7 @@ Expected: the stat shows no `Bin` row, and the scan prints `scan clean`.
 7. **A row withdrawn from the panel is also hidden by the panel itself**, beside the session dropping it from `invitations`. Reason: spec §13.7 asks the DOM test to see the row leave on success with a fake session whose state is fixed, and a refresh already in flight when the withdrawal commits could otherwise bring the row back until the next one; a withdrawn invitation never becomes pending again, so hiding it for the mount is always right.
 8. **`mayManageInvitations(state)` is exported from `session.ts`** and `canManageInvitations()` is that function on the session's state. Reason: the DOM tests then gate on the real rule (keeper, not the Lobby, archived or not) rather than on a stub, which is what spec §13.7's "drawn for a keeper and not for a member, a link reader or in the Lobby; drawn in an archived Weave" can only test that way.
 9. **The panel's markup.** Spec §9 names the hook `nav-section invitations` and the heading; the plan adds `invitation-list` and `invitation` for the rows, and reuses `nav-head`, `sec`, `btn btn-xs`, `muted` and `error`. The time is `toLocaleString()` (the date too, since an invitation may be days old). No CSS.
-10. **The invitations read is fenced by generation, identity and Weave**: an answer is dropped when the load that asked has been replaced, when the token it asked with is no longer the session's (a `join()` changes identity without a new generation), or when the Weave changed. A refused withdrawal schedules a refresh, which is the spec's "the list is re-read".
+10. **The invitations read is fenced by generation, identity and Weave, and by a per-read watermark**: an answer is dropped when the load that asked has been replaced, when the token it asked with is no longer the session's (a `join()` changes identity without a new generation), or when the Weave changed; and, within one generation, when a newer read has already been acted on (`invitationReads`, a `createCounter()` like the listener count's `countReads`, one watermark for answers and rejections alike), so an older answer cannot bring back a row a newer read saw withdrawn and an older rejection cannot replace a newer read's rows with an error (external review round 1 on PR #60). A refused withdrawal schedules a refresh, which is the spec's "the list is re-read".
 11. **The CLI's `read` test passes `--since`** (the withdrawal's seq minus one). Reason: the CLI test file shares one Lobby, and `read` pages oldest first, 500 to a page; the Lobby's General could outgrow it.
 12. **The Lobby as a target is tested with the instance keeper.** Spec §4.2 checks the authority (step 2) before the Lobby rule (step 3), so Paw, who is not a keeper of the Lobby, is refused `forbidden` first; the instance keeper passes step 2 for any Weave and reaches `not_found`.
 13. **Sentences the plan rewrites lose their em dashes**: the `inbox` doc comment (spec §6.3 rewrites it) and the `**Invitations**` and `**Lobby**` lines of the core, client and mcp-tools READMEs. Reason: the no-em-dash rule; those sentences are rewritten anyway.
@@ -2402,6 +2469,7 @@ Expected: the stat shows no `Bin` row, and the scan prints `scan clean`.
 | §13.7 `components.test.tsx`: a failed read shows the section's error, never "No pending invitations" | 6 |
 | §13.7 `session.test.ts`: read on load and on a refresh only for a keeper | 6 |
 | §13.7 `session.test.ts`: an answer for a left Weave or identity is dropped | 6 |
+| §13.7 `session.test.ts`: an older answer or rejection within the same generation never replaces a newer one | 6 |
 | §13.7 `session.test.ts`: withdrawInvitation removes the row and schedules a refresh | 6 |
 | §13.7 `fold.test.ts`: runSummary counts the type in its words | 6 |
 | §14 smoke test 12 (written into TESTING.md; run with Paw after the deploy) | 8 |

@@ -499,7 +499,10 @@ detail belong to **Paw's separate design session**.
   string`. The list is read with the page's metadata, on the load and on each coalesced refresh
   (`scheduleRefresh`), only while `canManageInvitations()` holds, through the writer credential,
   and fenced by the load's generation like every read of the page (`stale()`), so an answer for a
-  Weave or an identity this tab has left is dropped. A failed read keeps the rows it had and sets
+  Weave or an identity this tab has left is dropped. Answers are also ordered per read, as the
+  Lobby's listener count is: within one generation an older answer or rejection never replaces a
+  newer one, so a read that lands late cannot bring back a row a newer read saw withdrawn, nor
+  replace a newer read's rows with an error. A failed read keeps the rows it had and sets
   `invitationsError`, shown in the section; it is never shown as an empty list.
 - **Withdraw.** `Session` gains `withdrawInvitation(invitationId: string): Promise<void>`. One press
   withdraws, **with no confirmation** **(choice)**: a withdrawal only removes a way in, and a mistaken
@@ -764,7 +767,8 @@ against the test server.
   shows its message on the error bar and keeps the row; a failed read shows the section's error and
   never "No pending invitations".
 - `session.test.ts`: the list is read on load and on a refresh only for a keeper; an answer for a
-  left Weave or identity is dropped; `withdrawInvitation` removes the row and schedules a refresh.
+  left Weave or identity is dropped; an older answer or rejection within the same generation never
+  replaces a newer one; `withdrawInvitation` removes the row and schedules a refresh.
 - `fold.test.ts`: `runSummary` counts the type in its words.
 
 ## 14. Smoke test 12: withdrawing the mistaken invitations on the live instance (TESTING.md)
