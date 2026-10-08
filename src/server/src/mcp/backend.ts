@@ -73,4 +73,8 @@ export class CoreToolBackend implements LoomToolBackend {
   async inviteToWeave(c: string, participantId: string, targetWeaveId: string, targetThreadId: string) {
     return this.core.inviteToWeave(await this.actor(c), participantId, targetWeaveId, targetThreadId);
   }
+  async listInvitations(c: string, targetWeaveId: string) { return this.core.listInvitations(await this.actor(c), targetWeaveId); }
+  async withdrawInvitation(c: string, targetWeaveId: string, invitationId: string) {
+    return this.core.withdrawInvitation(await this.actor(c), targetWeaveId, invitationId);
+  }
 }

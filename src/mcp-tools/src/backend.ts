@@ -76,6 +76,8 @@ export type LoomToolBackend = {
   completeRequest(credential: string, requestId: string, note?: string): Promise<unknown>;               // Request shape
   removeParticipant(credential: string, threadId: string, participantId: string): Promise<unknown>;      // { seq, created, acceptanceRemoved, targetRemoved }
   inviteToWeave(credential: string, participantId: string, targetWeaveId: string, targetThreadId: string): Promise<unknown>; // { invitationId, seq }
+  listInvitations(credential: string, targetWeaveId: string): Promise<unknown[]>;                        // PendingInvitation[]
+  withdrawInvitation(credential: string, targetWeaveId: string, invitationId: string): Promise<unknown>; // { invitationId, seq, withdrawnAt, created }
   /**
    * get_started's facts (spec §5.1). Optional: the remote `/mcp` backend implements it over core;
    * the Claude Code channel has no agent key and does not, so get_started refuses there.

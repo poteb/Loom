@@ -86,5 +86,7 @@ export function withStoredCredential(inner: LoomToolBackend, state: ChannelState
     removeParticipant: async (c, t, p) => inner.removeParticipant(byThread(c, t), t, p),
     // Keeper authority in the *target* Weave, which this one does name.
     inviteToWeave: async (c, p, w, t) => inner.inviteToWeave(byWeave(c, w), p, w, t),
+    listInvitations: async (c, w) => inner.listInvitations(byWeave(c, w), w),
+    withdrawInvitation: async (c, w, id) => inner.withdrawInvitation(byWeave(c, w), w, id),
   };
 }
