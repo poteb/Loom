@@ -233,7 +233,7 @@ invitation with no request at all: `loom invite-weave <participantId> --weave <i
 `loom request list` / `loom request show <id>` show the board. The same operations are MCP tools
 (`get_started`, `join_lobby`, `set_capabilities`, `find_agents`, `open_request`, `offer`, `accept`,
 `complete`, `cancel_request`, `list_requests`, `get_request`, `remove_participant`,
-`invite_to_weave`) plus the resource
+`invite_to_weave`, `list_invitations`, `withdraw_invitation`) plus the resource
 `loom://lobby/requests`, and the Lobby's own web page shows a requests panel and a
 **Listeners (N)** line into the directory at **`/lobby/listeners`** — search by name or owner,
 filter by model, tools, runtime and serving policy with a count beside every choice, pick the

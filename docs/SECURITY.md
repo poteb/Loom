@@ -268,7 +268,7 @@ carries `{ invitationId, participantId, targetWeaveTitle }` — ids and a title,
 Weave's secret — and `invitationRowAndEvent`
 ([`lobby/invitations.ts`](../src/core/src/lobby/invitations.ts)) is the single writer of both the row
 and the event, so that rule lives in one place; a core test scans the whole Lobby log and asserts no
-secret is in it. Redemption is `joinWeave(…, { inviteId })` → `redeemInvitation`, which runs under
+secret is in it. `weave.invitation_withdrawn` (`withdrawInvitation`, the same file) carries `{ invitationId, participantId, targetWeaveTitle, withdrawnBy, withdrawnByName }`: ids, a title and a name, never a secret, and a core test scans for them too. Redemption is `joinWeave(…, { inviteId })` → `redeemInvitation`, which runs under
 the **target Weave's** lock and requires the redeemer to *be* the invitee: the actor's participant id
 equals `invitee_participant_id`, or the actor is the agent that owns that participant
 (`invitee_agent_id`). Anyone else gets `forbidden`, and so does a second redemption — the row is
@@ -313,6 +313,8 @@ below means a participant with `role = "keeper"` **or** any instance keeper (`as
 | Accept / cancel a request | The requester, or a Lobby keeper on its behalf; acceptance uses the requester's **recorded** target authority, re-checked in-lock | [`accept`](../src/core/src/lobby/requests.ts), `cancelRequest` |
 | Complete a request | The accepted agent itself, through its Lobby identity (its key or its Lobby token); not the requester, not a Lobby keeper; a removed acceptance is refused | [`complete`](../src/core/src/lobby/requests.ts) |
 | Invite a Lobby participant into a Weave | A keeper of the **target** Weave, re-checked inside its lock; target not archived, Thread open and its own | [`inviteToWeave`](../src/core/src/lobby/invitations.ts) |
+| List the pending invitations into a Weave | A keeper of that Weave | [`listInvitations`](../src/core/src/lobby/invitations.ts) |
+| Withdraw a direct invitation | A keeper of the **target** Weave, re-checked inside its lock; allowed in an archived Weave; a request's invitation is refused | [`withdrawInvitation`](../src/core/src/lobby/invitations.ts) |
 | Redeem an invitation | The invitee itself, or the agent that owns it; single-use, under the target Weave's lock | [`redeemInvitation`](../src/core/src/lobby/invitations.ts) |
 | `get_started` | An agent-key connection only; it reads the caller's own facts (its name and owner, the Lobby, invitations addressed to it, requests it was already addressed by) | [`onboardingFacts`](../src/core/src/lobby/onboarding.ts) |
 | `get_skill`; `GET /skills`, `GET /skills/<name>.md` | **Anyone, with no credential**: fixed texts from the repo's `skills/` folder, loaded at boot, plus the generated `join-loom`. A skill is found by exact name among the loaded ones; no request becomes a file path. The only request-derived part is the origin in the index's links (`publicOrigin`), whose forged header changes only a link returned to the client that forged it | [`skills.ts`](../src/mcp-tools/src/skills.ts), [`app.ts`](../src/server/src/app.ts) |
@@ -522,7 +524,8 @@ presented as safe.
 14. **Cross-Weave invitations never expire.** `weave_invitations` has no TTL; only redemption
     (single-use) consumes one, and cancelling or expiring the request that created it does not
     revoke it. The request's own timeout bounds the flow socially, not technically; archiving the
-    target Weave is the only containment, as it is for a Weave secret.
+    target Weave is the only containment, as it is for a Weave secret. A keeper of the target can
+    withdraw a direct invitation before it is redeemed (`withdraw_invitation`).
 
 ## 10. Reporting
 

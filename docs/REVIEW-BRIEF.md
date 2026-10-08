@@ -4,7 +4,7 @@ For an external reviewer (ChatGPT, acting as two independent lenses — **Standa
 doing a review of a branch. Read this first; it says what to review, what to ignore, and what a
 finding must contain.
 
-**This branch is `feat/offline-listener-removal`: removing offline Listeners (2026-09-30).** Everything
+**This branch is `feat/withdraw-invitation`: withdrawing a Weave invitation (2026-10-08).** Everything
 below §1 describes the codebase as a whole, because the review is against all of `src/`; §1a says
 what *this* branch changed and where to look first.
 
@@ -19,8 +19,8 @@ workspace: `core` holds every rule, and `server`, `client`, `mcp-tools`, `cli`, 
 `web` are adapters over it.
 
 Current state: **v1 plus v2 sub-projects 1 to 5 on `main` (sub-project 5 is the Lobby listeners
-page), then listener onboarding, two removal rules, unread counts, listener status and agent skills;
-this branch removes offline Listeners.** Sub-project 1 added Thread URLs, Thread invites, `inbox`, and instance-level agent keys.
+page), then listener onboarding, two removal rules, unread counts, listener status, agent skills and removing offline Listeners;
+this branch lets a keeper withdraw a Weave invitation.** Sub-project 1 added Thread URLs, Thread invites, `inbox`, and instance-level agent keys.
 Sub-project 2 added **guidelines**: two layers of keeper-written Markdown (instance-wide on
 `settings`, per-Weave on `weaves`), composed and handed to every agent on connect, with a
 `weave.guidelines_changed` event, `set_weave_guidelines`, the public `GET /api/guidelines`, two MCP
@@ -73,45 +73,43 @@ onboarding walkthrough:
 
 ## 1a. What **this** branch changes, and the promises it does not make
 
-`feat/offline-listener-removal` builds the second half of the v2-notes idea "A Listener heartbeat,
-and removing inactive Listeners": a Lobby Listener that has not checked in for longer than the
-instance setting `removeOfflineListenersAfterMs` (a day by default, an hour to 30 days, `null` for
-never) and reads offline is **taken out of the directory** by a third pass of the server's
-one-minute sweep. Loom clears its profile, deletes its unaccepted offers on requests still running,
-and writes `listener.removed` (Lobby General, addressed to the Listener) and one
-`request.offer_withdrawn` per withdrawn offer (the request's Thread, addressed to the requester). Its
-participant row, history and accepted work stay; it comes back with `set_capabilities`.
-`get_started` state 2 says when and why a profile was removed, the reaction table and three skills
-gain a line, the channel wakes on both events, and the web's open directory re-runs on
-`listener.removed`. The spec is
-[superpowers/specs/2026-09-30-loom-offline-listener-removal-design.md](superpowers/specs/2026-09-30-loom-offline-listener-removal-design.md),
+`feat/withdraw-invitation` lets a keeper of a Weave **see the invitations still pending into it and
+withdraw a direct one** before it is redeemed, which closes the KNOWN-ISSUES row that said a Weave
+invitation handed out with `invite_to_weave` could not be withdrawn (two such invitations into Loom
+development were sent to the work-PC agents by mistake on 2026-10-02). `withdrawInvitation` has
+`inviteToWeave`'s authority exactly (a keeper of the target, or the instance keeper token, re-checked
+inside the target's lock), takes the Lobby's lock, then the target's, then the invitation row
+`FOR UPDATE`, sets the existing `revoked_at`, and writes `weave.invitation_withdrawn` on the Lobby's
+General Thread, addressed to the invitee; a later redemption answers `forbidden` "This invitation was
+withdrawn". A request's invitation is refused (the removal from its Thread withdraws it), a redeemed
+one too, and a repeat answers the original seq with `created: false`. `listInvitations` is a
+keeper's read of the rows neither redeemed nor withdrawn, a request's listed and marked. The spec is
+[superpowers/specs/2026-10-08-loom-withdraw-invitation-design.md](superpowers/specs/2026-10-08-loom-withdraw-invitation-design.md),
 the plan
-[superpowers/plans/2026-09-30-loom-offline-listener-removal.md](superpowers/plans/2026-09-30-loom-offline-listener-removal.md);
-both were approved by Paw (PR #53). One migration (0009, one nullable `bigint` column on
-`settings`), two new event types, no new error code, no new route, no new tool, no change to
-authorisation.
+[superpowers/plans/2026-10-08-loom-withdraw-invitation.md](superpowers/plans/2026-10-08-loom-withdraw-invitation.md);
+both were approved by Paw (PR #60). No migration, one new event type, no new error code, two new
+routes, two new tools (41 in all), and no authority beyond the new action's, which is
+`inviteToWeave`'s.
 
 | Layer | What this branch changed |
 | --- | --- |
-| core | migration `0009` (`settings.remove_offline_listeners_after_ms`); `settings.ts` (`validateRemoveOfflineListenersAfterMs` and its three bounds, the patch key); `lobby/removal.ts` (new: `isRemovable`, `sweepOfflineListeners`); `isOnline` in `lobby/status.ts`; `listener.removed` and `request.offer_withdrawn` in `EVENT_TYPES` and two `inbox` arms; `me.removed` in `lobby/onboarding.ts`; the facade's `sweepOfflineListeners`; `offlineSql` in `lobby/status.ts`, shared by the status rule and the removal's candidate query; the Markdown export's lines for both events (`export.ts`) |
-| server | the sweep's third pass and `SweepResult.removed` (`app.ts`); the settings body schema's new key (`routes/admin.ts`) |
-| mcp-tools | state 2's removal texts and the `listener.removed` row of `REACTION_TABLE` (`onboarding.ts`); `keeper_set_settings`' description |
-| client | `Settings.removeOfflineListenersAfterMs`; the two event types in `EventType` |
-| claude-channel | `shouldWake` and the one-line texts of both events (`format.ts`); the instructions' `type=` list (`server.ts`) |
-| cli | `admin settings --set removeOfflineListenersAfterMs=` with a number or `off`, printed `off`; how `read` renders both events; `inbox` prints every item that is not an invite or a message in `read`'s words (`commands/invite.ts`) |
-| web | `listener.removed` in the session (refresh, own profile, the open directory); `request.offer_withdrawn` in the request reducer; both Thread lines and folded words; no CSS |
-| repo | three skills (`loom-work-in-a-thread`, `loom-do-accepted-work`, `loom-request-helpers`) and spec 2026-09-28 §7 amended with the same bytes |
-| docs | README, the server, cli, mcp-tools and channel READMEs, ARCHITECTURE, SECURITY (a §4a paragraph, the §5 row, a §6 bound), TESTING (smoke test 11, the coverage lines, the totals, "eleven"), CLAUDE.md and HANDBOOK ("eleven"), KNOWN-ISSUES (the `actors.ts` row re-argued, three core rows, one channel and web row), v2-notes, this brief |
+| core | `listInvitations`, `withdrawInvitation` and their types (`lobby/invitations.ts`); `weave.invitation_withdrawn` at the end of `EVENT_TYPES`; the `inbox` arm it shares with `weave.invited`; the facade's two methods; the export line; the `revokedAt` comment (`db/schema.ts`) |
+| server | `GET /api/weaves/:id/invitations`, `POST /api/weaves/:id/invitations/:invitationId/withdraw` (`routes/weaves.ts`); the MCP backend's two methods (`mcp/backend.ts`) |
+| mcp-tools | `list_invitations` and `withdraw_invitation` after `invite_to_weave` (`tools.ts`); the two `LoomToolBackend` methods; the `weave.invitation_withdrawn` row of `REACTION_TABLE` (`onboarding.ts`) |
+| client | `listInvitations`, `withdrawInvitation`, `PendingInvitation`, `WithdrawResult`; the type in `EventType` |
+| claude-channel | `shouldWake` and the two texts (`format.ts`); the instructions' `type=` list and `invitation=` sentence (`server.ts`); the two backend methods over the client and with the stored credential (`backend.ts`, `stored.ts`) |
+| cli | `invite-weave list` and `invite-weave withdraw <invitationId>`, `--thread` checked by the invite action (`commands/request.ts`); the `read` line (`commands/messages.ts`) |
+| web | the session's invitation read, `mayManageInvitations`, `canManageInvitations` and `withdrawInvitation` (`session.ts`); `InvitationsPanel.tsx` (new) in the sidebar (`WeaveView.tsx`); the Thread line and folded words; no CSS |
+| repo | three skills (`loom-work-in-a-thread`, `loom-ask-for-review`, `loom-do-accepted-work`) and spec 2026-09-28 §7 amended with the same bytes |
+| docs | README, the core, server, client, mcp-tools, cli and channel READMEs, ARCHITECTURE, SECURITY (two authorization rows, the Lobby-event paragraph, item 14), TESTING (smoke test 12, the coverage lines, the totals, "twelve"), CLAUDE.md and HANDBOOK ("twelve"), KNOWN-ISSUES (the "cannot be withdrawn" row removed, three core rows amended, one web row), v2-notes, this brief |
 
-**The promises it does not make**, stated in the spec's §17 and not to be re-reported: no
-"inactive" status, or any status beside working, idle and offline; no web control for the setting;
-no limit per Listener beyond the offline condition; nobody but the Listener is told of its removal
-(a requester only that an offer on its request was withdrawn); no warning before a removal; no
-removal of the participant, its agent key or anything outside the Lobby; the requests the removed
-Listener opened and its accepted work are untouched; an acceptance a requester removed is not
-withdrawn, eligibility snapshots are not recomputed, and `offer` is not refused without a profile
-(KNOWN-ISSUES); `set_capabilities(null)` is unchanged; the profile is not restored automatically; no
-duration syntax in the CLI.
+**The promises it does not make**, stated in the spec's §17 and not to be re-reported: no expiry on
+invitations and no automatic withdrawal; a request's invitation is not withdrawn through this call
+(the removal from its Thread stays the one way); a redemption is not undone; nobody but the invitee
+is told, and the target Weave's log gets nothing; the target's web panel is not live on another
+client's withdrawal, invitation or redemption (KNOWN-ISSUES, the web row); no inviting or accepting
+an invitation from the web; `revoked_at` is not renamed (public shapes say `withdrawnAt`); no paging
+of `listInvitations`.
 
 **Choices** are the spec's own, each marked **(choice)** in it, and the plan's "Decisions this plan
 makes", and not drift.
@@ -120,15 +118,22 @@ makes", and not drift.
 
 - **All of `src/` as it stands on this branch** — the seven packages, their tests, their
   configuration. The diff against `main` is the new work; the rest is already-reviewed code you
-  should still judge where this branch changed it (`settings.ts`, `types.ts`, `inbox.ts`, `lobby/status.ts`,
-  `lobby/onboarding.ts`, `index.ts` (the facade's `sweepOfflineListeners`), `db/schema.ts` (the
-  `remove_offline_listeners_after_ms` column) and `drizzle/meta/_journal.json` (the 0009 entry) and `export.ts` (the two events' lines) in core;
-  `app.ts` and `routes/admin.ts` in the server; `onboarding.ts` and `tools.ts` in mcp-tools; the
-  client's `types.ts` (the `Settings` field and the two `EventType`s); the channel's `format.ts` and `server.ts`; the CLI's `admin.ts`, `messages.ts` and `invite.ts`;
-  the web's `session.ts`, `requests-state.ts`, `MessageList.tsx` and `fold.ts`).
+  should still judge where this branch changed it (`types.ts`, `inbox.ts`, `index.ts` (the facade's
+  `listInvitations` and `withdrawInvitation`), `db/schema.ts` (the `revokedAt` comment) and
+  `export.ts` (the new line) in core; `routes/weaves.ts` and `mcp/backend.ts` in the server;
+  `tools.ts`, `backend.ts` and `onboarding.ts` in mcp-tools; the client's `client.ts` and
+  `types.ts`; the channel's `format.ts`, `server.ts`, `backend.ts` and `stored.ts`; the CLI's
+  `request.ts` and `messages.ts`; the web's `session.ts`, `WeaveView.tsx`, `MessageList.tsx` and
+  `fold.ts`).
 - **The specs are the binding requirements**, the last one first:
-  - [superpowers/specs/2026-09-30-loom-offline-listener-removal-design.md](superpowers/specs/2026-09-30-loom-offline-listener-removal-design.md)
+  - [superpowers/specs/2026-10-08-loom-withdraw-invitation-design.md](superpowers/specs/2026-10-08-loom-withdraw-invitation-design.md)
     **the spec for this branch**, with
+    [superpowers/plans/2026-10-08-loom-withdraw-invitation.md](superpowers/plans/2026-10-08-loom-withdraw-invitation.md)
+    beside it. Its quoted texts are binding, byte for byte, and Paw accepted every **(choice)** in it
+    as written. It amends the agent-skills spec's §7 (its dated line), which the skill files must
+    still equal, and changes no other spec.
+  - [superpowers/specs/2026-09-30-loom-offline-listener-removal-design.md](superpowers/specs/2026-09-30-loom-offline-listener-removal-design.md)
+    (the previous branch: removing offline Listeners), with
     [superpowers/plans/2026-09-30-loom-offline-listener-removal.md](superpowers/plans/2026-09-30-loom-offline-listener-removal.md)
     beside it. Its quoted texts are binding, byte for byte. It builds on the listener-status spec
     (the status rule its condition 3 reuses) and amends the agent-skills spec's §7 (its dated line),
@@ -310,7 +315,7 @@ secret-less join, `owner` as data rather than authority, the two credentials and
 | 3 | [SECURITY.md](SECURITY.md) | The claims you verify |
 | 4 | `core` ([../src/core/README.md](../src/core/README.md)) | `src/core/src/actors.ts` (credential resolution, every authority check, `resolveInWeave`), `src/core/src/events.ts` (`withWeaveLock`, `withWeaveLocks`, `appendInTx`, seq), then `weaves.ts` (**including `getWeave`'s Lobby blanking**), `threads.ts`, `invites.ts`, `inbox.ts`, `guidelines.ts`, and **the Lobby**: `lobby/matching.ts` (the pure `matches` / `admits` / `eligible`), `lobby/profile.ts` (`findAgents`, `getMyLobbyParticipant`), `lobby/listeners-input.ts` and `lobby/listeners.ts` (the listeners directory), `errors.ts`, `types.ts` and `lobby/matching.ts` (`ERROR_CODES`, `EVENT_TYPES`, `REQUIREMENT_KEYS`, and `PROFILE_KEYS` in `lobby/profile.ts`), `lobby/removal.ts` and `settings.ts` (**this branch**: the offline removal pass and its limit), `lobby/lobby.ts` (`ensureLobby`, `getLobby` and who is told the secret), `lobby/requests.ts` (open, offer, accept, cancel, sweep, the computed status, the recorded target authority), `lobby/invitations.ts` (mint and redeem), `index.ts` (the facade, `forThread`, `resolveInLobby`) |
 | 5 | `server` ([../src/server/README.md](../src/server/README.md)) | `src/server/src/ws.ts` (ticket redeem, replay/live handoff, mid-stream re-auth), `src/server/src/mcp/index.ts` + `mcp/backend.ts` (session identity, per-call re-resolve), `src/server/src/auth.ts` (bearer + `?agent=`), `routes/lobby.ts` and `routes/requests.ts` (the two-credential open), the rest of `routes/*`, and `main.ts` / `app.ts` (boot `ensureLobby`, the sweep interval (on **this branch** with its third pass), the skills loaded before anything else and the `/skills` routes) |
-| 6 | `mcp-tools` ([../src/mcp-tools/README.md](../src/mcp-tools/README.md)) and `client` ([../src/client/README.md](../src/client/README.md)) | `src/mcp-tools/src/tools.ts` (all **39** tools, `defaultCredential`, the **three** resources `loom://guidelines`, `loom://weaves/{weaveId}/guidelines` and `loom://lobby/requests`, `LOBBY_MECHANICS`, and `get_skill`), `src/mcp-tools/src/skills.ts` and `src/mcp-tools/test/skills.test.ts` (the loader and the drift guard), `src/mcp-tools/src/onboarding.ts` (the pointer lines, and on **this branch** state 2's removal texts and the reaction table's `listener.removed` row), `src/client/src/client.ts` and `src/client/src/stream.ts` |
+| 6 | `mcp-tools` ([../src/mcp-tools/README.md](../src/mcp-tools/README.md)) and `client` ([../src/client/README.md](../src/client/README.md)) | `src/mcp-tools/src/tools.ts` (all **41** tools, `defaultCredential`, the **three** resources `loom://guidelines`, `loom://weaves/{weaveId}/guidelines` and `loom://lobby/requests`, `LOBBY_MECHANICS`, and `get_skill`), `src/mcp-tools/src/skills.ts` and `src/mcp-tools/test/skills.test.ts` (the loader and the drift guard), `src/mcp-tools/src/onboarding.ts` (the pointer lines, and on **this branch** state 2's removal texts and the reaction table's `listener.removed` row), `src/client/src/client.ts` and `src/client/src/stream.ts` |
 | 7 | `cli` ([../src/cli/README.md](../src/cli/README.md)) | `src/cli/src/cli.ts` (arg handling, exit codes), `src/cli/src/context.ts` (credential precedence), `src/cli/src/config.ts` |
 | 8 | `claude-channel` ([../src/claude-channel/README.md](../src/claude-channel/README.md)) | `src/claude-channel/src/state.ts` (lock-free versioned CAS), `src/claude-channel/src/streams.ts` (delivery chain, cursors), `src/claude-channel/src/format.ts` (`shouldWake`, `safe()`), `src/claude-channel/src/backend.ts` + `stored.ts` |
 | 9 | `web` ([../src/web/README.md](../src/web/README.md)) | `src/web/src/session.ts` (load order, backfill, derived invites, the Lobby branch, and **the two side reads** with `src/web/src/side-reads.ts`), `src/web/src/requests-state.ts` (the per-request `lastEventSeq` watermark), `src/web/src/markdown.ts`, `src/web/src/components/ThreadList.tsx`, `components/RequestsPanel.tsx`, and **the directory as a view of the Lobby**: `src/web/src/lobby-view.ts`, `components/WeaveRoute.tsx` (the view state, the `popstate` listener and the one `pushState`), `components/WeaveView.tsx` (`showListeners`), `components/listeners/ListenersPage.tsx`, `FacetChips.tsx`, `listeners-query.ts` and `components/ListenersLink.tsx` |
@@ -324,7 +329,7 @@ Two separate lenses, reported separately, even when they look at the same file:
   the existing code already holds (layering, typed errors, `withWeaveLock`, in-lock re-checks,
   idempotency shape, redaction, test placement, ESM/`.js` suffixes, no lint/format churn)?
 - **Spec**: does the code do what the specs of §2 require, no more and no less? Gaps, silent
-  divergences, and things built beyond the spec both count. For this branch the offline-removal spec is
+  divergences, and things built beyond the spec both count. For this branch the withdraw-invitation spec is
   the one to hold the code against line by line, and the texts it quotes are binding, byte for byte.
 
 Each finding, in priority order:
@@ -353,8 +358,8 @@ Also:
   [TESTING.md](TESTING.md): `pnpm -r build`, `pnpm -r typecheck`, and `pnpm --workspace-concurrency=1 -r test`
   (the serial run — tests must not run concurrently across packages, and they need Docker for the
   Postgres testcontainer or a reachable compose Postgres). Give the totals you saw; on this branch
-  they should be **2423 tests in 80 files** (core 761/32, web 968/17, server 244/10,
-  claude-channel 149/9, cli 85/5, client 50/4, mcp-tools 166/3), with `pnpm -r typecheck` clean.
+  they should be **2472 tests in 80 files** (core 781/32, web 981/17, server 247/10,
+  claude-channel 152/9, cli 89/5, client 51/4, mcp-tools 171/3), with `pnpm -r typecheck` clean.
 - **Explicitly state anything you could not verify** — a suite you could not run, a path you could only
   read, a claim in SECURITY.md you could not exercise. An unverified assumption stated as fact is
   worse to us than a gap you name.
@@ -404,8 +409,8 @@ Derived from the code and the docs; answer them even if the answer is "yes, it h
    mints an invitation into a Weave the requester is not (still) a keeper of — a demotion between
    open and accept, an archived target, a closed target Thread, a Lobby keeper accepting on the
    requester's behalf, an agent key standing for both credentials, a removed instance keeper.
-10. **Is the Lobby→target lock order really total?** `accept` is the only flow that takes two Weave
-    rows (`withWeaveLocks`, Lobby first). Is there any other path that can hold one Weave's row and
+10. **Is the Lobby→target lock order really total?** Four flows take two Weave
+    rows, Lobby first (`withWeaveLocks`): `accept`, `inviteToWeave`, a removal from a request's Thread, and `withdrawInvitation`. Is there any other path that can hold one Weave's row and
     wait for another's, and so close a cycle?
 11. **Is "addressed-only" complete?** Every Lobby event is supposed to reach exactly the participants
     named in its own payload, and never to wake a `wake: "all"` session standing in the Lobby. Check
@@ -420,31 +425,26 @@ Derived from the code and the docs; answer them even if the answer is "yes, it h
 
 For **this branch** specifically:
 
-13. **Can a pass remove a Listener that is not removable at the moment of its lock?** The candidate
-    query runs without a lock; each removal re-reads the participant `FOR UPDATE` under the Lobby
-    lock and decides `isRemovable` again. Find an interleaving (a check-in through `stampSeen`, a
-    `set_capabilities`, a second pass, a setting change) that removes a Listener that had checked
-    in, writes two `listener.removed` for one removal, or deadlocks.
-14. **Is the boundary exact everywhere?** Exactly the limit is kept and one millisecond more is
-    removed; the candidate query truncates to milliseconds as a JavaScript `Date` does; a Listener
-    never seen counts from `joined_at`; condition 3 is the status rule's own (`isOnline`). Find a
-    reference value, a declared `pollIntervalMs` or a microsecond timestamp where the SQL and the
-    TypeScript disagree.
-15. **Are exactly the right offers withdrawn?** Unaccepted offers on requests still running
-    (`stillRunning`) go; accepted, completed and removed acceptances, and offers on closed or lapsed
-    requests, stay. Find a request whose `last_event_seq` is not its own withdrawal's seq, a reader
-    (`get_request`, `accept`, `closeInTx`, the web panel) that still sees a withdrawn offer, or
-    accepted work that changes.
-16. **Do the two events reach exactly whom they name?** `listener.removed` the removed Listener's
-    Lobby inbox and channel session; `request.offer_withdrawn` the requester's. Check `inbox`,
-    `shouldWake` in both wake modes and the web session against that.
-17. **Does an agent learn of its removal and come back?** `get_started` state 2's two texts, the
-    reaction table row and the three skill lines, against what `set_capabilities` and the next pass
-    do.
-18. **Is the setting held to its bounds on every surface?** Core's one rule
-    (`validateRemoveOfflineListenersAfterMs`), the REST body schema (type only), the CLI's `off`
-    and number parsing, and `keeper_set_settings`' pass-through: find a value one surface accepts
-    that core would refuse, or a `null` lost on the way.
+13. **Can a withdrawal and a redemption both win?** `withdrawInvitation` takes the Lobby's lock, then
+    the target's, then the invitation row `FOR UPDATE`; `redeemInvitation` takes only the target's,
+    then the row. Find an interleaving that leaves a row both redeemed and withdrawn, a participant
+    created from a withdrawn invitation, a `weave.invitation_withdrawn` for a redeemed one, or a
+    deadlock between the two or with `accept` or a removal from a request's Thread.
+14. **Is the authority exactly `inviteToWeave`'s?** `assertIsKeeperOf` before anything about the
+    invitation is read, `assertStillKeeperOf` inside the target's lock. Find a caller other than a
+    keeper of the target or an instance keeper that lists or withdraws, a demotion that slips
+    between the two checks, or an answer that tells a non-keeper whether an invitation id exists.
+15. **Is the idempotent answer honest?** A repeat answers `created: false` with the original
+    withdrawal's seq, read from the Lobby log, and writes nothing. Find a direct row with
+    `revoked_at` set that no `weave.invitation_withdrawn` names, or a request's invitation, withdrawn
+    by a removal, that answers anything but the request refusal.
+16. **Does the event reach exactly the invitee?** `weave.invitation_withdrawn` names its invitee in
+    `participantId`: check `inbox`, `shouldWake` in both wake modes and with `invites` off, and the
+    web, and that no secret, token or key is in its payload.
+17. **Does every reader say the same thing?** The web line, the Markdown export, `loom read` and the
+    channel's two texts against spec §7.5 and §8.1 to §8.3; and the CLI's three forms of
+    `invite-weave` under commander's parsing (a participant id never taken for a subcommand,
+    `--thread` missing as exit 2).
 
 ## 7. How findings will be handled
 

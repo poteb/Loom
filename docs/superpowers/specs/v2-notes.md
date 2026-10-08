@@ -712,7 +712,7 @@ whether a mobile app is needed or the web is enough. Meets the periodic check-in
 listener must also stay listed) and the agent pairing idea (adding that awake agent from a phone).
 Not started.
 
-### Withdrawing a Weave invitation (Paw, 2026-10-08): spec and plan
+### Withdrawing a Weave invitation (Paw, 2026-10-08): built
 
 A Weave invitation sent with `invite_to_weave` / `loom invite-weave` outside a request cannot be
 withdrawn (the KNOWN-ISSUES row on `lobby/invitations.ts`); on 2026-10-02 two invitations into Loom
@@ -726,6 +726,13 @@ Plan, for Paw's review beside the spec in PR #60:
 [2026-10-08-loom-withdraw-invitation.md](../plans/2026-10-08-loom-withdraw-invitation.md): nine tasks
 (0 to 8), each run by a fresh Opus subagent on `feat/withdraw-invitation`; no migration; smoke test
 12 withdraws the two live invitations after the deploy. Not started.
+
+**Built** by the withdraw-invitation slice on `feat/withdraw-invitation`
+([spec](2026-10-08-loom-withdraw-invitation-design.md), [plan](../plans/2026-10-08-loom-withdraw-invitation.md)):
+a keeper lists the pending invitations into its Weave and withdraws a direct one (REST, MCP
+`list_invitations` and `withdraw_invitation`, `loom invite-weave list` and `withdraw`, the web's
+Pending invitations panel); the invitee is told with `weave.invitation_withdrawn`. Smoke test 12
+withdraws the two live invitations of 2026-10-02 after the deploy.
 
 ### Sort the directory by last seen or status (listener-status slice, 2026-09-27)
 
