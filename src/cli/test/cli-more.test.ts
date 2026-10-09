@@ -7,6 +7,7 @@ import { startTestServer, keeperToken, type TestServer } from "../../server/test
 import { runCli, type CliIo } from "../src/cli.js";
 import { ConfigStore } from "../src/config.js";
 import { stdinReader } from "../src/main.js";
+import { hhmm } from "../src/commands/request.js";
 import { Readable } from "node:stream";
 
 /** A one-shot rendezvous: the awaiter of `entered` learns the pauser has reached the gate, then
@@ -519,5 +520,61 @@ describe("stdinReader", () => {
     const reader = stdinReader(stream);
     await expect(reader.read()).rejects.toThrow("pipe broke");
     await expect(reader.read()).rejects.toThrow("pipe broke");
+  });
+});
+
+describe("kick (spec 2026-10-09 §9.5 to §9.7)", () => {
+  let n = 0;
+  /**
+   * A Weave this test's config keeps (as Me), and a keyed agent standing in the Lobby that joined it
+   * with its key and holds a direct invitation into it still pending. The Lobby exists, as it does on
+   * every booted instance.
+   */
+  async function kickable() {
+    await s.core.ensureLobby();
+    const created = (await run(["create", "--title", "Loom development", "--name", "Me", "--json"])).json();
+    const keeper = await s.core.resolveCredential(created.token);
+    const name = `Kickee${++n}`;
+    const { key } = await s.core.addAgent(await s.core.resolveCredential(keeperToken("k1")), name);
+    const agent = await s.core.resolveCredential(key);
+    const lobby = await s.core.joinLobby({ name, kind: "agent" }, agent);
+    const joined = await s.core.joinWeave(created.secret, { name, kind: "agent" }, agent);
+    await s.core.inviteToWeave(keeper, lobby.participant.id, created.weave.id, created.generalThread.id);
+    return { name, id: joined.participant.id };
+  }
+
+  it("kick prints the line with the withdrawn tail, a repeat the already-kicked line with the same seq, and --json the KickResult", async () => {
+    const k = await kickable();
+    const first = await run(["kick", k.id]);
+    expect(first.code).toBe(0);
+    const m = /^Kicked (\S+) \(seq (\d+)\); withdrew 1 pending invitation\n$/.exec(first.out);
+    expect(m?.[1]).toBe(k.name);
+    const again = await run(["kick", k.id]);
+    expect(again.out).toBe(`${k.name} was already kicked (seq ${m![2]})\n`);
+    const json = (await run(["kick", k.id, "--json"])).json();
+    expect(json).toMatchObject({ participantId: k.id, name: k.name, seq: Number(m![2]), created: false, withdrawn: [] });
+    expect(typeof json.kickedAt).toBe("string");
+  });
+
+  it("a member's kick exits 1 with the forbidden message", async () => {
+    await s.core.ensureLobby();
+    const created = (await run(["create", "--title", "T", "--name", "Me", "--json"])).json();
+    const cfg2 = path.join(mkdtempSync(path.join(tmpdir(), "loom-cli-")), "config.json");
+    await run(["join", created.secret, "--name", "Other", "--json"], { LOOM_CONFIG: cfg2 });
+    const refused = await run(["kick", created.participant.id], { LOOM_CONFIG: cfg2 });
+    expect(refused.code).toBe(1);
+    expect(refused.err).toContain("Only a keeper of this Weave can do this");
+  });
+
+  it("info lists a kicked participant under Kicked: and not under Participants:, and read renders the kick line", async () => {
+    const k = await kickable();
+    const kicked = (await run(["kick", k.id, "--json"])).json();
+    const out = (await run(["info"])).out;
+    const [present, gone] = out.split("Kicked:\n");
+    expect(present).toContain("Participants:\n");
+    expect(present).not.toContain(k.id);
+    expect(gone).toBe(`  ${k.id}  ${k.name} (agent) at ${hhmm(kicked.kickedAt)}\n`);
+    const read = await run(["read", "--since", String(kicked.seq - 1)]);
+    expect(read.out).toContain(`#${kicked.seq} [General] * ${k.name} was kicked by Me`);
   });
 });

@@ -41,6 +41,8 @@ export function formatEvent(e: LoomEvent, threads: Thread[], participants: Parti
   if (e.type === "weave.invitation_withdrawn") {
     return `${head} invitation to "${str(e.payload.targetWeaveTitle)}" for ${name(e.payload.participantId)} withdrawn by ${str(e.payload.withdrawnByName)}`;
   }
+  // A keeper kicked someone out of the Weave (spec 2026-10-09 §9.7), both names from the payload.
+  if (e.type === "participant.kicked") return `${head} ${str(e.payload.name)} was kicked by ${str(e.payload.kickedByName)}`;
   if (e.type === "request.completed") return `${head} ${name(e.payload.participantId)} finished "${thread}"`;
   if (e.type === "request.overdue") {
     const seen = typeof e.payload.lastSeenAt === "string" ? hhmm(e.payload.lastSeenAt) : "never";
