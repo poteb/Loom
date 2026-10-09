@@ -472,4 +472,19 @@ describe("a kick closes the kicked participant's streams (spec 2026-10-09 §8.1)
     expect((await mine.closed).code).toBe(4401);
     expect(mine.received.map((e) => e.type)).not.toContain("participant.kicked");
   });
+
+  it("a kick the stream skips as already sent still forces the re-check: the next event closes it with 4401", async () => {
+    const r = await room("Pia");
+    // since=5 is the kick's seq, so the stream counts the kick as already sent and skips it.
+    const mine = watch(`${k.wsUrl}/api/weaves/${r.weaveId}/stream?since=5&ticket=${await kTicket(r.member)}`);
+    await mine.opened;
+    const outcome = Promise.race([
+      mine.closed.then((c) => c.code),
+      new Promise<string>((resolve) => mine.ws.once("message", () => { mine.ws.terminate(); resolve("delivered"); })),
+    ]);
+    expect((await kick(r, r.memberId)).status).toBe(200);                                                   // seq 5
+    await api(k.baseUrl, "POST", `/api/threads/${r.generalId}/messages`, { text: "after the kick" }, r.keeper);   // seq 6
+    expect(await outcome).toBe(4401);
+    expect(mine.received).toEqual([]);
+  });
 });

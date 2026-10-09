@@ -138,8 +138,10 @@ async function stream(ws: WebSocket, weaveId: string, since: number, actor: Acto
 
   /** Sends `e`, first replaying anything between it and the last event we sent. */
   const deliver = async (e: LoomEvent): Promise<void> => {
-    if (e.seq <= lastSent) return;
+    // A kick arms the re-check even when it is skipped as already sent, so the next event this
+    // stream sends is checked first rather than a TTL later.
     forceRecheckOn(e);
+    if (e.seq <= lastSent) return;
     if (!(await ensureAuthorized())) { ws.close(CREDENTIAL_REVOKED, "credential revoked"); return; }
     while (e.seq > lastSent + 1) {
       // Each page of gap recovery is another read on the caller's behalf, and filling a large gap
