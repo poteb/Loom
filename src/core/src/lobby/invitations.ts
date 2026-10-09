@@ -200,8 +200,9 @@ export async function withdrawInvitation(
     // Before the two state checks, so a request's invitation answers the same whatever its state.
     if (inv.requestId !== null) throw errors.validation(BELONGS_TO_REQUEST);
     if (inv.revokedAt) {
-      // Only this function withdraws a direct invitation, and always writes its event in the same
-      // transaction, so the newest event naming the id is that withdrawal (spec §4.4); 0 when none
+      // Only this function and a kick (participants.ts) withdraw a direct invitation, and each writes
+      // its event in the same transaction, so the newest event naming the id is that withdrawal (spec
+      // §4.4; 2026-10-09 §4.6); 0 when none
       // is found, the "none" value lastRemovalSeq uses.
       const [withdrawal] = await tx.select({ seq: events.seq }).from(events)
         .where(and(eq(events.weaveId, lobbyId), eq(events.type, "weave.invitation_withdrawn"),

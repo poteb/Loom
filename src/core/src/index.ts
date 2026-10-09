@@ -13,7 +13,7 @@ import { inviteParticipant } from "./invites.js";
 import { removeParticipant } from "./removals.js";
 import * as reads from "./reads.js";
 import { inbox } from "./inbox.js";
-import { setRole } from "./participants.js";
+import { kickParticipant, setRole } from "./participants.js";
 import { exportWeave } from "./export.js";
 import { getSettings, updateSettings } from "./settings.js";
 import { getInstanceGuidelines, setWeaveGuidelines } from "./guidelines.js";
@@ -79,6 +79,10 @@ export function createCore(db: Db) {
     markAllRead: async (actor: Actor, weaveId: string) => reads.markAllRead(db, await forWeave(actor, weaveId), weaveId),
     readPositions: async (actor: Actor, weaveId: string) => reads.readPositions(db, await forWeave(actor, weaveId), weaveId),
     setRole: async (actor: Actor, weaveId: string, participantId: string, role: Role) => setRole(db, bus, await resolveInWeave(db, actor, weaveId), weaveId, participantId, role),
+    // A keeper action on one participant, resolved as setRole is (spec 2026-10-09 §9.1): an agent key
+    // stands for the participant it owns in the Weave.
+    kickParticipant: async (actor: Actor, weaveId: string, participantId: string) =>
+      kickParticipant(db, bus, await resolveInWeave(db, actor, weaveId), weaveId, participantId),
     exportWeave: async (actor: Actor, weaveId: string, format: "md" | "json") => exportWeave(db, await resolveInWeave(db, actor, weaveId), weaveId, format),
     // No unauthenticated getSettings on the facade: adapters go through readSettings, which
     // re-checks instance-keeper standing against the database on every call.
@@ -169,6 +173,7 @@ export { type ListenerStatus, type CurrentWork, type Cadence, type StatusCounts 
 export { type InvitationDraft, type PendingInvitation, type WithdrawResult, type WithdrawOptions } from "./lobby/invitations.js";
 export { GET_STARTED_NEEDS_AGENT, type OnboardingFacts } from "./lobby/onboarding.js";
 export { type RemovalResult } from "./removals.js";
+export { type KickResult, type KickOptions } from "./participants.js";
 export { type MarkReadResult, type MarkAllReadResult, type ReadPositions } from "./reads.js";
 export { computedStatus, type PublicRequest, type PublicOffer, type PublicAcceptance, type OpenRequestInput, type RequestStatus, type CloseReason, type AcceptOptions, type AcceptInput } from "./lobby/requests.js";
 export { EVENT_TYPES } from "./types.js";

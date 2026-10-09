@@ -1,0 +1,1 @@
+ALTER TABLE "participants" ADD COLUMN "kicked_at" timestamp with time zone;

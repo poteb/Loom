@@ -61,6 +61,10 @@ export const participants = pgTable("participants", {
   // 0007, even where `last_seen_at` is set from before it. Never returned as such: only
   // `cadenceOf`'s summary leaves core.
   seenHistory: timestamp("seen_history", { withTimezone: true }).array(),
+  // Kicked out of this Weave by a keeper (spec 2026-10-09): the token and any agent key's mapping
+  // here are refused from then on; the row stays, because events name it and the history keeps its
+  // name. Cleared when a keeper's invitation readmits it (lobby/invitations.ts).
+  kickedAt: timestamp("kicked_at", { withTimezone: true }),
 }, (t) => [
   uniqueIndex("participants_weave_name_idx").on(t.weaveId, sql`lower(${t.name})`),
   uniqueIndex("participants_weave_agent_idx").on(t.weaveId, t.agentId),
@@ -170,7 +174,8 @@ export const weaveInvitations = pgTable("weave_invitations", {
   redeemedAt: timestamp("redeemed_at", { withTimezone: true }),
   redeemedParticipantId: uuid("redeemed_participant_id"),
   // Withdrawn: by a removal from the request Thread (removals.ts) for a request's invitation, by
-  // `withdrawInvitation` (lobby/invitations.ts) for a direct one. Public shapes call it `withdrawnAt`.
+  // `withdrawInvitation` (lobby/invitations.ts) for a direct one, or by a kick of the invitee's agent
+  // from the target Weave (participants.ts). Public shapes call it `withdrawnAt`.
   revokedAt: timestamp("revoked_at", { withTimezone: true }),
 });
 

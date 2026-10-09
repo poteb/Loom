@@ -12,7 +12,7 @@ export function toPublicParticipant(p: typeof participants.$inferSelect): Public
   return { id: p.id, weaveId: p.weaveId, name: p.name, kind: p.kind, role: p.role,
     joinedAt: p.joinedAt.toISOString(), agentId: p.agentId ?? null,
     capabilities: (p.capabilities as Profile | null) ?? null,
-    lastSeenAt: p.lastSeenAt ? p.lastSeenAt.toISOString() : null };
+    lastSeenAt: p.lastSeenAt ? p.lastSeenAt.toISOString() : null, kickedAt: p.kickedAt ? p.kickedAt.toISOString() : null };
 }
 
 /** A participant's `last_seen_at` is written at most once per this many milliseconds (spec §6.6). */

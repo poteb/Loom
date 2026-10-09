@@ -5,7 +5,7 @@ import type { Profile } from "./lobby/matching.js";
  * renamed type fails there. `EventType` is derived from it, never written apart.
  */
 export const EVENT_TYPES = [
-  "message", "participant.joined", "participant.role_changed",
+  "message", "participant.joined", "participant.role_changed", "participant.kicked",
   "thread.created", "thread.closed", "thread.invited", "thread.removed", "thread.url_changed",
   "weave.archived", "weave.guidelines_changed",
   // Lobby. All of these are addressed-only: they never wake anyone through a Weave's "all events" mode.
@@ -40,6 +40,12 @@ export type PublicParticipant = {
    * reader decides what "alive" means, and a request's `maxResponseMs` is the one rule that reads it.
    */
   lastSeenAt: string | null;
+  /**
+   * When a keeper kicked it out of this Weave (spec 2026-10-09 §6), ISO; null while it is here. A
+   * kicked participant stays in `getWeave`'s list so names in the history resolve; every list that
+   * means "who is here" leaves it out.
+   */
+  kickedAt: string | null;
 };
 export type PublicThread = {
   id: string; weaveId: string; name: string; isGeneral: boolean;

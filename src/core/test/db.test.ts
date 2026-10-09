@@ -27,6 +27,14 @@ describe("migrations", () => {
     expect(pcol.length).toBe(1);
   });
 
+  it("participants.kicked_at exists, a nullable timestamptz with no default (spec 2026-10-09 §3)", async () => {
+    const db = await freshDb();
+    const rows = await db.execute<{ data_type: string; is_nullable: string; column_default: string | null }>(
+      sql`select data_type, is_nullable, column_default from information_schema.columns where table_name = 'participants' and column_name = 'kicked_at'`,
+    );
+    expect(rows.map((r) => [r.data_type, r.is_nullable, r.column_default])).toEqual([["timestamp with time zone", "YES", null]]);
+  });
+
   // Existence alone would pass just as happily on the wrong operator class or a full index: the
   // listeners query is planned against `capabilities @> …`, which only `jsonb_path_ops` serves, and
   // the partial predicate is what keeps the index to the listeners.
