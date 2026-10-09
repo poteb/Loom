@@ -366,7 +366,7 @@ function weaveRoutes(id: string, title: string): Routes {
       [`${BASE}/api/requests?status=${s}&limit=${CLOSED_REQUESTS_PAGE}`, () => json({ requests: [] })])),
     // No WebSocket in these tests: a *fatal* ticket failure closes the stream once and leaves no
     // reconnect timer behind, and the page it belongs to renders exactly as it otherwise would.
-    [`${BASE}/api/auth/ws-ticket`]: () => json({ code: "forbidden", message: "no stream in tests" }, 403),
+    [`${BASE}/api/auth/ws-ticket`]: () => json({ code: "weave_not_found", message: "no stream in tests" }, 404),
   };
 }
 const LOBBY_URL = `${BASE}/api/lobby`;

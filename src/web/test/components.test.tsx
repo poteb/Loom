@@ -46,6 +46,7 @@ function session(over: Partial<Session> = {}): Session {
     reportCredentialFailure: vi.fn(), markAllRead: vi.fn(async () => {}),
     onVisible: () => () => {}, onWorkChanged: () => () => {},
     canManageInvitations: () => false, withdrawInvitation: vi.fn(async () => {}),
+    canKick: () => false, kick: vi.fn(async () => {}),
     ...over };
 }
 
@@ -507,6 +508,14 @@ describe("MessageList", () => {
     const { container } = render(<MessageList state={lobbyState({ currentThreadId: "g1", events })} fold={false} />);
     expect([...container.querySelectorAll(".sysrow .sys-text")].map((d) => d.textContent))
       .toEqual(['invitation to "Loom development" for Helper withdrawn by Claude-Code']);
+  });
+
+  it("renders participant.kicked as a system line naming both people from the payload (spec 2026-10-09 §11.1)", () => {
+    const base = { weaveId: "w1", threadId: "g1", actor: "p1", at: new Date().toISOString() };
+    const events = [{ ...base, seq: 1, type: "participant.kicked" as const,
+      payload: { participantId: "p9", name: "ChatGPT-Work", kickedBy: "p1", kickedByName: "Claude-Code" } }];
+    const { container } = render(<MessageList state={state({ events })} fold={false} />);
+    expect([...container.querySelectorAll(".sysrow .sys-text")].map((d) => d.textContent)).toEqual(["ChatGPT-Work was kicked by Claude-Code"]);
   });
 
   describe("a message", () => {
@@ -1003,7 +1012,7 @@ describe("the Offer form on the Lobby's routes (spec §3.3)", () => {
     [`${BASE}/api/requests`]: (url) => json({ requests: url.searchParams.get("status") === "open" ? [open] : [] }),
     // The stream is deliberately fatal here: a forbidden ticket leaves no socket and no reconnect
     // timer behind, so nothing of this page outlives the test that mounted it.
-    [`${BASE}/api/auth/ws-ticket`]: () => json({ code: "forbidden", message: "no stream in tests" }, 403),
+    [`${BASE}/api/auth/ws-ticket`]: () => json({ code: "weave_not_found", message: "no stream in tests" }, 404),
     [`${BASE}/api/lobby/listeners`]: () => json({ total: 1, matched: 1, listeners: [] }),
     [MY_PROFILE]: () => json({ ...ME, capabilities: PROFILE }),
     ...over,
@@ -1813,5 +1822,86 @@ describe("the directory on becoming visible (spec 2026-09-27 §6.6)", () => {
     const before = d.offWork.mock.calls.length;
     d.unmount();
     expect([before, d.offWork.mock.calls.length]).toEqual([0, 1]);
+  });
+});
+
+describe("kicking from the people list (spec 2026-10-09 §12)", () => {
+  const keeperMe = { ...me, role: "keeper" as const };
+  const ann = { ...me, id: "p3", name: "Ann", role: "keeper" as const };
+  const gone = "2026-10-09T10:00:00.000Z";
+  const keeperState = (over: Partial<SessionState> = {}) => state({ me: { participant: keeperMe, token: "t" }, participants: [keeperMe, bot, ann], ...over });
+  /** A fake session whose gate is the real rule, read from the state the panel is drawn with. */
+  const gated = (st: SessionState, over: Partial<Session> = {}) => session({ canKick: () => mayManageInvitations(st), ...over });
+  const panel = (st: SessionState, s: Session = gated(st)) => render(<ThreadDetails thread={pr} state={st} session={s} onError={() => {}} />);
+  const kickLabels = () => screen.queryAllByRole("button", { name: /^kick / }).map((b) => b.getAttribute("aria-label"));
+
+  it("the people list leaves out a kicked participant, and its count is the present ones'", () => {
+    const { container } = panel(state({ participants: [me, { ...bot, kickedAt: gone }] }), session());
+    expect([screen.getByText("In this Weave · 1").tagName, [...container.querySelectorAll(".people .person-name")].map((n) => n.textContent)])
+      .toEqual(["SPAN", ["Paw"]]);
+  });
+
+  it("the composer never offers a kicked name", async () => {
+    const { container } = render(<Composer state={state({ participants: [me, bot, { ...bot, id: "p4", name: "Bob", kickedAt: gone }] })} onSend={async () => {}} />);
+    const box = screen.getByRole("textbox", { name: /^Message #/ }) as HTMLTextAreaElement;
+    box.value = "@Bo";
+    box.setSelectionRange(3, 3);
+    fireEvent.input(box);
+    await vi.waitFor(() => expect([...container.querySelectorAll(".suggest li")].map((li) => li.textContent)).toEqual(["@Bot"]));
+  });
+
+  it("Kick shows on everyone else's row for a keeper, keepers included, never on its own; not for a member, a link reader or on the Lobby; still in an archived Weave", () => {
+    const cases: [SessionState, string[]][] = [
+      [keeperState(), ["kick Bot", "kick Ann"]],
+      [keeperState({ weave: { ...state().weave!, archivedAt: gone } }), ["kick Bot", "kick Ann"]],
+      [state({ participants: [me, bot, ann] }), []],
+      [keeperState({ me: undefined, readOnlyReason: "not-joined" }), []],
+      [keeperState({ lobby: { weaveId: "w1", title: "Lobby" } }), []],
+    ];
+    for (const [st, labels] of cases) {
+      const { unmount } = panel(st);
+      expect(kickLabels()).toEqual(labels);
+      unmount();
+    }
+  });
+
+  it("pressing Kick shows the confirmation in that row and calls nothing; Cancel restores it; each row holds its own state", () => {
+    const kick = vi.fn(async () => {});
+    const st = keeperState();
+    const { container } = panel(st, gated(st, { kick }));
+    fireEvent.click(screen.getByRole("button", { name: "kick Bot" }));
+    expect([container.querySelector(".kick-confirm")!.textContent!.includes("Kick Bot out of this Weave?"),
+      !!screen.queryByRole("button", { name: "confirm kick Bot" }), kickLabels()]).toEqual([true, true, ["kick Ann"]]);
+    fireEvent.click(screen.getByRole("button", { name: "kick Ann" }));
+    expect(container.querySelectorAll(".kick-confirm")).toHaveLength(2);
+    fireEvent.click(screen.getAllByRole("button", { name: "Cancel" })[0]!);
+    expect([kickLabels(), container.querySelectorAll(".kick-confirm").length]).toEqual([["kick Bot"], 1]);
+    expect(kick).not.toHaveBeenCalled();
+  });
+
+  it("confirming calls session.kick once with the id, and the confirm button is disabled while it is in flight", async () => {
+    let finish!: () => void;
+    const kick = vi.fn((_participantId: string) => new Promise<void>((r) => { finish = r; }));
+    const st = keeperState();
+    panel(st, gated(st, { kick }));
+    fireEvent.click(screen.getByRole("button", { name: "kick Bot" }));
+    const confirm = screen.getByRole("button", { name: "confirm kick Bot" }) as HTMLButtonElement;
+    fireEvent.click(confirm);
+    await vi.waitFor(() => expect(confirm.disabled).toBe(true));
+    fireEvent.click(confirm);
+    expect(kick).toHaveBeenCalledTimes(1);
+    expect(kick).toHaveBeenCalledWith("p2");
+    finish();
+  });
+
+  it("a refused kick shows its message on the Weave view's error bar and returns the row to idle", async () => {
+    const st = keeperState();
+    const refusal = "Only a keeper of this Weave can do this";
+    render(<WeaveView session={gated(st, { kick: vi.fn(async () => { throw new Error(refusal); }) })} state={st} />);
+    fireEvent.click(screen.getByRole("button", { name: "Thread details" }));   // the panel starts closed below 1200px
+    fireEvent.click(screen.getByRole("button", { name: "kick Bot" }));
+    fireEvent.click(screen.getByRole("button", { name: "confirm kick Bot" }));
+    expect((await screen.findByText(refusal)).className).toContain("error-bar");
+    await vi.waitFor(() => expect(screen.getByRole("button", { name: "kick Bot" })).toBeTruthy());
   });
 });

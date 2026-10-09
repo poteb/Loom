@@ -1,7 +1,7 @@
 import type { Participant, Thread } from "@loom/client";
-import type { Session, SessionState } from "../session.js";
+import { present, type Session, type SessionState } from "../session.js";
 import { isHttpUrl, shortUrl } from "./artefact.js";
-import { InviteControl, LinkForm } from "./ThreadTools.js";
+import { InviteControl, KickControl, LinkForm } from "./ThreadTools.js";
 
 /** How many people the panel lists before it folds the rest away. */
 const PEOPLE_SHOWN = 8;
@@ -42,9 +42,13 @@ export function ThreadDetails({ thread, state, session, onError }: {
   const canClose = session.canModerate() && !thread.isGeneral && !thread.closedAt;
   const invited = state.invited[thread.id];
   const meId = state.me?.participant.id;
+  // Only who is here (spec 2026-10-09 §6): a kicked participant stays in `participants`, so the
+  // history keeps its name, and leaves this list, its count and its controls.
+  const here = present(state.participants);
+  const canKick = session.canKick();
   // Me first, then everyone else in the order the Weave lists them; past the first few, the rest
   // wait behind a fold so a busy Lobby does not bury the panel.
-  const people = [...state.participants.filter((p) => p.id === meId), ...state.participants.filter((p) => p.id !== meId)];
+  const people = [...here.filter((p) => p.id === meId), ...here.filter((p) => p.id !== meId)];
   const shown = people.slice(0, PEOPLE_SHOWN);
   const folded = people.slice(PEOPLE_SHOWN);
   const row = (p: Participant) => {
@@ -60,6 +64,7 @@ export function ThreadDetails({ thread, state, session, onError }: {
         {canEdit && !mine && (
           <InviteControl thread={thread} participant={p} invited={!!invited?.has(p.id)} session={session} onError={onError} />
         )}
+        {canKick && !mine && <KickControl participant={p} session={session} onError={onError} />}
       </li>
     );
   };
@@ -91,7 +96,7 @@ export function ThreadDetails({ thread, state, session, onError }: {
         )}
       </section>
       <section class="details-sec">
-        <span class="sec">In this Weave · {state.participants.length}</span>
+        <span class="sec">In this Weave · {here.length}</span>
         <ul class="people">{shown.map(row)}</ul>
         {folded.length > 0 && (
           <details class="people-more">

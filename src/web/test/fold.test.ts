@@ -75,6 +75,10 @@ describe("runSummary", () => {
     expect(runSummary([ev("weave.invited"), ev("weave.invitation_withdrawn"), ev("weave.invitation_withdrawn")]))
       .toEqual(["1 invited to a Weave", "2 invitations withdrawn"]);
   });
+
+  it("counts kicks in their word (spec 2026-10-09 §11.1)", () => {
+    expect(runSummary([ev("participant.kicked"), ev("participant.joined"), ev("participant.kicked")])).toEqual(["2 kicked", "1 joined"]);
+  });
 });
 
 describe("timeRange", () => {
