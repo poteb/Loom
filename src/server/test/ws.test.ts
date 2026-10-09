@@ -520,4 +520,29 @@ describe("a kick closes the kicked participant's streams (spec 2026-10-09 §8.1)
       k.core.readEvents = original;
     }
   });
+
+  it("a kick inside a recovered gap closes the stream and sends nothing at or after it", async () => {
+    const r = await room("Rae");
+    const mine = watch(`${k.wsUrl}/api/weaves/${r.weaveId}/stream?since=0&ticket=${await kTicket(r.member)}`);
+    while (mine.received.length < 4) await new Promise((resolve) => setTimeout(resolve, 10));   // replay read and sent; lastSent = 4
+    const outcome = Promise.race([
+      mine.closed.then((c) => c.code),
+      new Promise<string>((resolve) => mine.ws.on("message", () => {
+        if (mine.received.length > 4) { mine.ws.terminate(); resolve("delivered"); }
+      })),
+    ]);
+
+    // The kick commits as seq 5 but its event never reaches the bus, so the stream first hears of
+    // seq 6 and recovers 5 from the database.
+    const publish = k.core.bus.publish;
+    k.core.bus.publish = (e) => { if (!(e.weaveId === r.weaveId && e.type === "participant.kicked")) publish.call(k.core.bus, e); };
+    try {
+      expect((await kick(r, r.memberId)).status).toBe(200);                                                   // seq 5
+    } finally {
+      k.core.bus.publish = publish;
+    }
+    await api(k.baseUrl, "POST", `/api/threads/${r.generalId}/messages`, { text: "after the kick" }, r.keeper);   // seq 6
+    expect(await outcome).toBe(4401);
+    expect(mine.received.map((e) => e.seq)).toEqual([1, 2, 3, 4]);
+  });
 });
