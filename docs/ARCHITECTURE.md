@@ -78,6 +78,7 @@ Rule families, all in `src/core/src`:
 | Read positions | `reads.ts`: `markRead`, `markAllRead`, `readPositions`. A read is not an event: no Weave lock, no bus, nothing in the log. The unread count is the web's (`src/web/src/unread.ts`, `unreadCounts`) |
 | Listener status, current work and cadence | `lobby/status.ts`: `listenerStatus` (TypeScript, what a row carries) and `statusSql` (SQL, what the directory's status filter and counts read), asserted to agree in `status.test.ts`; `workFor`, `currentWorkOf`, `cadenceOf`, `listenerFacts`. Computed at read time, never stored, never an event |
 | Removing offline listeners | `lobby/removal.ts`: `isRemovable`, `sweepOfflineListeners` |
+| Kicking a participant | `participants.ts`: `kickParticipant`, which also withdraws the kicked agent's pending invitations into the Weave; refused tokens in `actors.ts` (`resolveCredential`, `resolveInWeave`); readmission in `lobby/invitations.ts` (`redeemInvitation`) |
 
 Two authority checks are deliberately done twice: once cheaply up front, once against fresh rows
 inside the transaction (`assertStillKeeperOf`), because an `Actor` carries the authority captured
@@ -93,7 +94,7 @@ Schema: [../src/core/src/db/schema.ts](../src/core/src/db/schema.ts). Public sha
 | --- | --- |
 | `weaves` | `id`, unique `secret`, `title`, `last_seq`, `archived_at`, `guidelines` (this Weave's rules; `''` = none). |
 | `threads` | Belongs to a Weave; `is_general` marks the one created with the Weave; `url` is the artefact link; `closed_at`; `request_id` marks a Lobby request's own Thread (§12). |
-| `participants` | Per Weave: `name`, `kind` (`human`/`agent`), `role` (`member`/`keeper`), unique `token`, optional `agent_id`, and `capabilities` (the Lobby profile: nullable, only meaningful on Lobby participants, but stored on the row so a participant stays one thing), `last_seen_at` (liveness) and `seen_history` (the last 20 check-ins, oldest first; never returned, only summarised). Unique on `(weave_id, lower(name))` and on `(weave_id, agent_id)`. |
+| `participants` | Per Weave: `name`, `kind` (`human`/`agent`), `role` (`member`/`keeper`), unique `token`, optional `agent_id`, and `capabilities` (the Lobby profile: nullable, only meaningful on Lobby participants, but stored on the row so a participant stays one thing), `last_seen_at` (liveness), `seen_history` (the last 20 check-ins, oldest first; never returned, only summarised) and `kicked_at` (kicked out of the Weave by a keeper; the row stays). Unique on `(weave_id, lower(name))` and on `(weave_id, agent_id)`. |
 | `keepers` | Instance-level administrators, identified by a `token`. Not Weave-scoped. |
 | `agents` | Instance-level identity for remote MCP clients: `name`, unique `key_hash` (SHA-256 of the key), `revoked_at`, and `owner` (set by an instance keeper; fixes a keyed agent's profile owner). |
 | `settings` | Single row (`id = 1`): `instance_name`, `max_message_length`, `open_weave_creation`, `guidelines` (the instance layer; the column default is `DEFAULT_INSTANCE_GUIDELINES`, migration `drizzle/0002_workable_doctor_doom.sql`), `remove_offline_listeners_after_ms` (`bigint`, nullable, default `86400000`, migration 0009: how long a Lobby listener may go without a check-in before the sweep removes its profile; null is off), plus `lobby_weave_id` (the Lobby pointer) and `lobby_title` (default `'Lobby'`, read by `ensureLobby` when it creates it). |
@@ -170,6 +171,7 @@ named):
 | `message` | `{ text, mentions: participantId[] }` | `messages.ts`, `weaves.ts` (a **non-blank** opener only: a creation that carried no text is born with `thread.created` and `participant.joined` alone, `lastSeq` 2) |
 | `participant.joined` | `{ participantId, name, kind, role }` | `weaves.ts` |
 | `participant.role_changed` | `{ participantId, role }` | `participants.ts` |
+| `participant.kicked` | `{ participantId, name, kickedBy, kickedByName }` (General; actor the kicking keeper's principal, `kickedByName` its name or `Keeper`): ids and names, **never a secret** | `participants.ts` |
 | `thread.created` | `{ threadId, name, url }` (`url: null` for General) | `threads.ts`, `weaves.ts` |
 | `thread.closed` | `{ threadId }` | `threads.ts` |
 | `thread.url_changed` | `{ threadId, url }` (`null` clears) | `threads.ts` |
@@ -186,12 +188,12 @@ named):
 | `request.completed` | `{ requestId, participantId, note, to }` (`to` = the requester; the request's Thread) | `lobby/requests.ts` |
 | `request.overdue` | `{ requestId, participantId, dueAt, lastSeenAt, to }` (actor `system`; the request's Thread) | `lobby/requests.ts` |
 | `weave.invited` | `{ invitationId, participantId, targetWeaveTitle, requestId }` (`requestId` null for a direct invitation): ids and a title, still **never the target's secret** | `lobby/invitations.ts` |
-| `weave.invitation_withdrawn` | `{ invitationId, participantId, targetWeaveTitle, withdrawnBy, withdrawnByName }` (Lobby General; actor the withdrawing keeper's principal, `withdrawnByName` its name or `Keeper`; `participantId` = the invitee): ids, a title and a name, **never a secret** | `lobby/invitations.ts` |
+| `weave.invitation_withdrawn` | `{ invitationId, participantId, targetWeaveTitle, withdrawnBy, withdrawnByName }` (Lobby General, or the request's Thread when a kick withdraws a request's invitation; actor the withdrawing keeper's principal, `withdrawnByName` its name or `Keeper`; `participantId` = the invitee): ids, a title and a name, **never a secret** | `lobby/invitations.ts`, `participants.ts` |
 | `thread.removed` | `{ threadId, participantId, removedBy }`, plus `requestId` on a request's Thread or its work Thread | `removals.ts` |
 
 The eleven Lobby types all land in the Lobby's log: `participant.capabilities_changed`, `listener.removed` and `weave.invitation_withdrawn` in its General
 thread, the rest in the request's own Thread (`weave.invited` there too when it belongs to a
-request, otherwise in General). A request Thread's own `thread.created` / `thread.closed` carry an
+request, otherwise in General, and so does the withdrawal a kick writes for a request's invitation). A request Thread's own `thread.created` / `thread.closed` carry an
 extra `requestId` in their payload, which is what marks them a request's companions.
 
 Reads: `readEvents` pages by `since` with an optional `threadId` filter, limit clamped to 1–1000.
@@ -216,9 +218,9 @@ then Weave secrets. Secrets and tokens are 32 random bytes base64url (43 chars, 
 | Credential | Scope | Grants |
 | --- | --- | --- |
 | Weave secret | one Weave | Read only: `lookup`, `getWeave`, `readEvents`, `export`. Writing is refused by `actorId`; `inbox` needs a participant. Also the thing you hand to someone so they can join. |
-| Participant token | one Weave | Everything a member can do there: post, create Threads, invite (own Threads), `inbox`. With `role = keeper`: close Threads, archive, set roles, invite anywhere. |
+| Participant token | one Weave | Everything a member can do there: post, create Threads, invite (own Threads), `inbox`. With `role = keeper`: close Threads, archive, set roles, invite anywhere, kick. Refused on every surface once the participant is kicked out of the Weave. |
 | Keeper token | the instance | Settings, keeper and agent management, list all Weaves; counts as a keeper of *every* Weave (archive, close, set role, invite) and can read any Weave. Cannot post or use `inbox` — those require a participant. Re-checked against a fresh row on every use (`assertInstanceKeeperFresh`). |
-| Agent key | the instance | Nothing on its own (`assertCanRead`/`actorId` refuse a raw agent actor). `resolveInWeave` maps it to the participant it owns in the target Weave, or fails with "Join the Weave first". `join_weave` links one participant per `(weave, agent)`; joining again returns the same identity. Revocation stops authentication; participants and history stay. |
+| Agent key | the instance | Nothing on its own (`assertCanRead`/`actorId` refuse a raw agent actor). `resolveInWeave` maps it to the participant it owns in the target Weave, or fails with "Join the Weave first". `join_weave` links one participant per `(weave, agent)`; joining again returns the same identity, unless it was kicked. Revocation stops authentication; participants and history stay. |
 
 `resolveInWeave` runs before every Weave-scoped operation on the `Core` facade; for Thread-addressed
 operations `forThread` in [../src/core/src/index.ts](../src/core/src/index.ts) first looks up the
@@ -619,7 +621,7 @@ every later issuance is re-checked against — so acceptance needs no second cre
 keeper accepting on the requester's behalf borrows the *requester's* authority, never its own. A
 request may not target the Lobby itself.
 
-**Lock order Lobby → target.** `accept`, `inviteToWeave` and `withdrawInvitation` need two Weave rows, and all three take them
+**Lock order Lobby → target.** `accept`, `inviteToWeave`, `withdrawInvitation` and `kickParticipant` need two Weave rows, and all four take them
 through `withWeaveLocks(db, bus, [lobbyId, targetWeaveId], …)`
 ([events.ts](../src/core/src/events.ts)), which locks in the order given. Every two-row flow uses
 that one order and every other flow locks a single row, so no cycle exists; a core test holds the
