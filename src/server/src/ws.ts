@@ -120,9 +120,26 @@ async function stream(ws: WebSocket, weaveId: string, since: number, actor: Acto
     }
   };
 
+  // A kick closes the kicked participant's streams at the kick, not a TTL later (spec 2026-10-09
+  // §8.1): before a participant.kicked is sent, live, in a recovered gap or in replay, the stream
+  // re-resolves its credential. The kicked one fails and closes with CREDENTIAL_REVOKED before the
+  // event; every other stream passes once and sends it. One resolution per open stream per kick.
+  const forceRecheckOn = (e: LoomEvent) => { if (e.type === "participant.kicked") authorizedAt = Number.NEGATIVE_INFINITY; };
+  /** Sends one event read from the database; false when the stream was closed instead. */
+  const sendRead = async (m: LoomEvent): Promise<boolean> => {
+    if (m.type === "participant.kicked") {
+      forceRecheckOn(m);
+      if (!(await ensureAuthorized())) { ws.close(CREDENTIAL_REVOKED, "credential revoked"); return false; }
+    }
+    lastSent = m.seq;
+    send(m);
+    return true;
+  };
+
   /** Sends `e`, first replaying anything between it and the last event we sent. */
   const deliver = async (e: LoomEvent): Promise<void> => {
     if (e.seq <= lastSent) return;
+    forceRecheckOn(e);
     if (!(await ensureAuthorized())) { ws.close(CREDENTIAL_REVOKED, "credential revoked"); return; }
     while (e.seq > lastSent + 1) {
       // Each page of gap recovery is another read on the caller's behalf, and filling a large gap
@@ -130,7 +147,7 @@ async function stream(ws: WebSocket, weaveId: string, since: number, actor: Acto
       if (!(await ensureAuthorized())) { ws.close(CREDENTIAL_REVOKED, "credential revoked"); return; }
       const missing = await deps.core.readEvents(currentActor, weaveId, { since: lastSent, limit: Math.min(e.seq - lastSent - 1, page) });
       if (missing.length === 0) break;   // not committed yet; send what we have rather than spin
-      for (const m of missing) if (m.seq > lastSent) { lastSent = m.seq; send(m); }
+      for (const m of missing) if (m.seq > lastSent && !(await sendRead(m))) return;
     }
     if (e.seq > lastSent) { lastSent = e.seq; send(e); }
   };
@@ -157,7 +174,7 @@ async function stream(ws: WebSocket, weaveId: string, since: number, actor: Acto
     for (;;) {
       if (!(await ensureAuthorized())) { ws.close(CREDENTIAL_REVOKED, "credential revoked"); return; }
       const events = await deps.core.readEvents(currentActor, weaveId, { since: lastSent, limit: page });
-      for (const e of events) { lastSent = e.seq; send(e); }
+      for (const e of events) if (!(await sendRead(e))) return;
       if (events.length < page) break;
     }
     if (deps.afterReplay) await deps.afterReplay();

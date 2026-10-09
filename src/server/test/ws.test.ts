@@ -392,3 +392,84 @@ describe("stream", () => {
     expect(JSON.parse(noRoute.body).code).toBe("not_found");
   });
 });
+
+describe("a kick closes the kicked participant's streams (spec 2026-10-09 §8.1)", () => {
+  // A server of its own, whose TTL re-check never comes due within a case, so only the re-check a
+  // kick forces can close a stream. Its freshDb() truncates the database this file shares with `s`,
+  // which is why this describe runs last; `s` serves no case after it.
+  let k: Awaited<ReturnType<typeof startTestServer>>;
+  let kGate: ReturnType<typeof makeGate> | undefined;
+  beforeAll(async () => {
+    k = await startTestServer({
+      authTtlMs: 600_000,
+      beforeReplay: async () => {
+        if (!kGate) return;
+        kGate.markEntered();
+        await kGate.released;
+      },
+    });
+    await k.core.seedKeepers([KEEPER]);
+    await k.core.ensureLobby();
+  });
+  afterAll(async () => { kGate?.release(); await k.close(); });
+
+  const kTicket = async (cred: string) => (await api(k.baseUrl, "POST", "/api/auth/ws-ticket", undefined, cred)).json.ticket as string;
+  /** A raw stream: what it receives, and how it closes. */
+  function watch(url: string) {
+    const ws = new WebSocket(url);
+    const received: LoomEvent[] = [];
+    const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+      ws.on("message", (data) => received.push(JSON.parse(data.toString()) as LoomEvent));
+      ws.on("close", (code, reason) => resolve({ code, reason: reason.toString() }));
+    });
+    const opened = new Promise<void>((resolve, reject) => { ws.once("open", () => resolve()); ws.once("error", reject); });
+    return { ws, received, closed, opened };
+  }
+  /** A Weave whose opener makes seqs 1 to 3, and a member whose join is seq 4. */
+  async function room(name: string) {
+    const c = await api(k.baseUrl, "POST", "/api/weaves", creator);
+    const j = await api(k.baseUrl, "POST", `/api/weaves/${c.json.secret}/join`, { name, kind: "human" });
+    return { weaveId: c.json.weave.id as string, secret: c.json.secret as string, keeper: c.json.token as string,
+      generalId: c.json.generalThread.id as string, member: j.json.token as string, memberId: j.json.participant.id as string };
+  }
+  const kick = (r: { weaveId: string; keeper: string }, pid: string) =>
+    api(k.baseUrl, "POST", `/api/weaves/${r.weaveId}/participants/${pid}/kick`, undefined, r.keeper);
+
+  it("the kicked member's live stream closes with 4401 before the kick is sent to it; the keeper's stream receives the kick", async () => {
+    const r = await room("Mia");
+    const mine = watch(`${k.wsUrl}/api/weaves/${r.weaveId}/stream?since=4&ticket=${await kTicket(r.member)}`);
+    await mine.opened;
+    const theirs = collect(`${k.wsUrl}/api/weaves/${r.weaveId}/stream?since=4&ticket=${await kTicket(r.keeper)}`,
+      (evs) => evs.some((e) => e.type === "participant.kicked"));
+    expect((await kick(r, r.memberId)).status).toBe(200);
+    expect(await mine.closed).toEqual({ code: 4401, reason: "credential revoked" });
+    expect(mine.received.map((e) => e.type)).not.toContain("participant.kicked");
+    const { events, ws } = await theirs.done;
+    expect(events.at(-1)!.payload).toMatchObject({ participantId: r.memberId, name: "Mia" });
+    ws.close();
+  });
+
+  it("a stream replaying across a kick closes there and sends nothing at or after it", async () => {
+    const r = await room("Ned");
+    kGate = makeGate();
+    const mine = watch(`${k.wsUrl}/api/weaves/${r.weaveId}/stream?since=0&ticket=${await kTicket(r.member)}`);
+    await kGate.entered;                       // subscribed, parked before the first replay page
+    expect((await kick(r, r.memberId)).status).toBe(200);                                                   // seq 5
+    await api(k.baseUrl, "POST", `/api/threads/${r.generalId}/messages`, { text: "after the kick" }, r.keeper);   // seq 6
+    kGate.release(); kGate = undefined;
+    expect((await mine.closed).code).toBe(4401);
+    expect(mine.received.map((e) => e.seq)).toEqual([1, 2, 3, 4]);
+  });
+
+  it("an agent-key stream closes when that agent's participant is kicked", async () => {
+    const r = await room("Ola");
+    const { key } = await k.core.addAgent(await k.core.resolveCredential(KEEPER), "KickBot");
+    const joined = await api(k.baseUrl, "POST", `/api/weaves/${r.secret}/join`, { name: "KickBot", kind: "agent" }, key);
+    expect(joined.status).toBe(201);           // seq 5
+    const mine = watch(`${k.wsUrl}/api/weaves/${r.weaveId}/stream?since=5&ticket=${await kTicket(key)}`);
+    await mine.opened;
+    expect((await kick(r, joined.json.participant.id as string)).status).toBe(200);
+    expect((await mine.closed).code).toBe(4401);
+    expect(mine.received.map((e) => e.type)).not.toContain("participant.kicked");
+  });
+});

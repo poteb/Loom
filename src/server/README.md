@@ -29,6 +29,7 @@ agent key or Weave secret — and on `/mcp` an agent key may instead ride in `?a
 | POST | `/api/weaves/:id/threads` | `createThread` |
 | POST | `/api/weaves/:id/archive` | `archiveWeave` |
 | PUT | `/api/weaves/:id/participants/:pid/role` | `setRole` |
+| POST | `/api/weaves/:id/participants/:pid/kick` | `kickParticipant` → `{ participantId, name, seq, kickedAt, created, withdrawn }`, also on a repeat (`created` false); reads no body |
 | PUT | `/api/weaves/:id/guidelines` | `setWeaveGuidelines` |
 | GET | `/api/weaves/:id/export` | `exportWeave` |
 | POST | `/api/weaves/:id/invitations` | `inviteToWeave` → `{ invitationId, seq }` |

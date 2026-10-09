@@ -126,6 +126,13 @@ export function weaveRoutes(core: Core) {
     return c.json(await core.setRole(actor, c.req.param("id"), c.req.param("pid"), role));
   });
 
+  // A keeper takes a participant out of this Weave, as an action route like POST /:id/archive (spec
+  // 2026-10-09 §9.2). No body is read, and a repeat answers 200 too: `created` says which.
+  r.post("/:id/participants/:pid/kick", async (c) => {
+    const actor = await requireActor(c, core);
+    return c.json(await core.kickParticipant(actor, c.req.param("id"), c.req.param("pid")));
+  });
+
   r.get("/:id/export", async (c) => {
     const actor = await requireActor(c, core);
     const format = c.req.query("format") ?? "md";
