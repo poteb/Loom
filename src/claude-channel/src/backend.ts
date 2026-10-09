@@ -122,6 +122,7 @@ export class ClientToolBackend implements LoomToolBackend {
   closeThread(c: string, threadId: string) { return this.as(c).closeThread(threadId); }
   archiveWeave(c: string, weaveId: string) { return this.as(c).archiveWeave(weaveId); }
   setRole(c: string, weaveId: string, participantId: string, role: Role) { return this.as(c).setRole(weaveId, participantId, role); }
+  kickParticipant(c: string, weaveId: string, participantId: string) { return this.as(c).kickParticipant(weaveId, participantId); }
   exportWeave(c: string, weaveId: string, format: "md" | "json") { return this.as(c).exportWeave(weaveId, format); }
   keeperListWeaves(c: string) { return this.as(c).admin.listWeaves(); }
   keeperGetSettings(c: string) { return this.as(c).admin.getSettings(); }

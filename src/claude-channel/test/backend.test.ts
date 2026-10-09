@@ -272,3 +272,20 @@ describe("the two invitation tools with the stored credential (spec 2026-10-08 ย
     expect(fake.withdrawInvitation).toHaveBeenCalledWith(WEAVE_ID, "i1");
   });
 });
+
+describe("kick_participant with the stored credential (spec 2026-10-09 ยง9.4)", () => {
+  it("reaches that Weave's own token", async () => {
+    const state = makeState();
+    await state.upsertWeave(WEAVE_ID, { title: "Design review", token: "stored-token", participantId: "p2", participantName: "Claude", generalThreadId: "g1", wake: "all", lastSeq: 7 });
+    const tokens: string[] = [];
+    const answer = { participantId: "p9", name: "ChatGPT-Work", seq: 12, kickedAt: "2026-10-09T10:00:00.000Z", created: true, withdrawn: [] };
+    const fake = {
+      withToken: (t: string): unknown => { tokens.push(t); return fake; },
+      kickParticipant: vi.fn(async () => answer),
+    };
+    const backend = withStoredCredential(new ClientToolBackend(fake as unknown as LoomClient, state, { onJoined: vi.fn() }), state, () => undefined);
+    expect(await backend.kickParticipant("stored", WEAVE_ID, "p9")).toEqual(answer);
+    expect(tokens).toEqual(["stored-token"]);
+    expect(fake.kickParticipant).toHaveBeenCalledWith(WEAVE_ID, "p9");
+  });
+});

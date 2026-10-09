@@ -39,6 +39,7 @@ export type LoomToolBackend = {
   closeThread(credential: string, threadId: string): Promise<void>;
   archiveWeave(credential: string, weaveId: string): Promise<void>;
   setRole(credential: string, weaveId: string, participantId: string, role: Role): Promise<unknown>;
+  kickParticipant(credential: string, weaveId: string, participantId: string): Promise<unknown>; // { participantId, name, seq, kickedAt, created, withdrawn }
   exportWeave(credential: string, weaveId: string, format: "md" | "json"): Promise<string>;
   keeperListWeaves(credential: string): Promise<unknown[]>;
   keeperGetSettings(credential: string): Promise<unknown>;

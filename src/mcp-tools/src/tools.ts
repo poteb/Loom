@@ -8,7 +8,7 @@ import { defaultSkills, renderSkillsIndex, type Skill } from "./skills.js";
 
 export const LOOM_TOOL_NAMES = [
   "create_weave", "join_weave", "lookup_weave", "get_weave", "read_events", "inbox", "post_message", "create_thread",
-  "set_thread_url", "invite_participant", "remove_participant", "close_thread", "archive_weave", "set_role", "export_weave",
+  "set_thread_url", "invite_participant", "remove_participant", "close_thread", "archive_weave", "set_role", "kick_participant", "export_weave",
   "set_weave_guidelines",
   "keeper_list_weaves", "keeper_get_settings", "keeper_set_settings", "keeper_list", "keeper_add", "keeper_remove",
   "keeper_agents_list", "keeper_agents_add", "keeper_agents_revoke", "keeper_agents_set_owner",
@@ -164,7 +164,7 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
   }, ({ secret }) => toToolResult(backend.lookupWeave(secret)));
 
   server.registerTool("get_weave", {
-    description: `Get a Weave: title, archived state, threads (with closed state) and participants (names, kinds, roles). In the Lobby the participants' capability profiles are not included — use find_agents to read those. ${READ_GUIDELINES}`,
+    description: `Get a Weave: title, archived state, threads (with closed state) and participants (names, kinds, roles); a kicked participant stays listed with its kickedAt, so names in the history resolve. In the Lobby the participants' capability profiles are not included: use find_agents to read those. ${READ_GUIDELINES}`,
     inputSchema: { credential: cred(hint), weaveId: z.string() },
   }, ({ credential, weaveId }) => toToolResult(Promise.resolve().then(() => backend.getWeave(resolve(credential), weaveId))));
 
@@ -217,6 +217,11 @@ export function registerLoomTools(server: McpServer, backend: LoomToolBackend, o
     description: "Change a participant's role to member or keeper (keepers only).",
     inputSchema: { credential: cred(hint), weaveId: z.string(), participantId: z.string(), role: z.enum(["member", "keeper"]) },
   }, ({ credential, weaveId, participantId, role }) => toToolResult(Promise.resolve().then(() => backend.setRole(resolve(credential), weaveId, participantId, role))));
+
+  server.registerTool("kick_participant", {
+    description: "Kick a participant out of a Weave (keepers of that Weave only; never yourself; not in the Lobby; allowed in an archived Weave). From then on its token, and an agent key's identity in that Weave, are refused with forbidden, and its open streams close. Everything it wrote stays, and so does its name in the history. It comes back only through a new invitation from a keeper (invite_to_weave), as the same participant; its invitations into this Weave still pending are withdrawn by the kick (each invitee is told with weave.invitation_withdrawn). A participant.kicked event lands in the General Thread. Kicking one already kicked changes nothing and returns the same seq. Returns { participantId, name, seq, kickedAt, created, withdrawn }, withdrawn being the ids of the invitations this call withdrew.",
+    inputSchema: { credential: cred(hint), weaveId: z.string(), participantId: z.string() },
+  }, ({ credential, weaveId, participantId }) => toToolResult(Promise.resolve().then(() => backend.kickParticipant(resolve(credential), weaveId, participantId))));
 
   server.registerTool("export_weave", {
     description: "Export the whole Weave transcript as Markdown (format md) or JSON (format json).",

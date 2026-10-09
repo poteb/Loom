@@ -30,6 +30,10 @@ const fake: LoomToolBackend = {
   closeThread: async () => {},
   archiveWeave: async () => {},
   setRole: async (_c, _w, participantId, role) => ({ participantId, role }),
+  kickParticipant: async (c, weaveId, participantId) => {
+    calls.push(["kickParticipant", c, weaveId, participantId]);
+    return { participantId, name: "ChatGPT-Work", seq: 12, kickedAt: "2026-10-09T10:00:00.000Z", created: true, withdrawn: [] };
+  },
   exportWeave: async (_c, _w, format) => (format === "md" ? "# md" : "{}"),
   keeperListWeaves: async () => [{ id: "w1" }],
   keeperGetSettings: async () => ({ instanceName: "Loom" }),
@@ -271,7 +275,7 @@ describe("lobby tools", () => {
   it("advertises the twelve Lobby tools and nothing else new", async () => {
     const names = (await client.listTools()).tools.map((t) => t.name);
     for (const n of LOBBY_TOOLS) expect(names).toContain(n);
-    expect(LOOM_TOOL_NAMES).toHaveLength(41);
+    expect(LOOM_TOOL_NAMES).toHaveLength(42);
     expect(names.sort()).toEqual([...LOOM_TOOL_NAMES].sort());
   });
 
@@ -412,7 +416,7 @@ describe("listener onboarding tools", () => {
 
   it("LOOM_TOOL_NAMES has the four new names, and the registered tools equal it", async () => {
     for (const n of ["get_started", "complete", "remove_participant", "keeper_agents_set_owner"]) expect(LOOM_TOOL_NAMES).toContain(n);
-    expect(LOOM_TOOL_NAMES).toHaveLength(41);
+    expect(LOOM_TOOL_NAMES).toHaveLength(42);
     expect((await client.listTools()).tools.map((t) => t.name).sort()).toEqual([...LOOM_TOOL_NAMES].sort());
   });
 
@@ -587,6 +591,27 @@ describe("the tool descriptions are the spec's", () => {
   });
 });
 
+describe("kick_participant (spec 2026-10-09 §9.4)", () => {
+  const described = async () => new Map((await client.listTools()).tools.map((t) => [t.name, t.description ?? ""]));
+
+  it("passes its arguments to the backend unchanged and answers what it returns", async () => {
+    expect(JSON.parse(text(await client.callTool({ name: "kick_participant", arguments: { credential: "c", weaveId: "w1", participantId: "p9" } }))))
+      .toEqual({ participantId: "p9", name: "ChatGPT-Work", seq: 12, kickedAt: "2026-10-09T10:00:00.000Z", created: true, withdrawn: [] });
+    expect(calls.filter((x) => x[0] === "kickParticipant").at(-1)).toEqual(["kickParticipant", "c", "w1", "p9"]);
+  });
+
+  it("LOOM_TOOL_NAMES holds kick_participant directly after set_role", () => {
+    const at = LOOM_TOOL_NAMES.indexOf("set_role");
+    expect(LOOM_TOOL_NAMES.slice(at, at + 2)).toEqual(["set_role", "kick_participant"]);
+  });
+
+  it("kick_participant reads exactly as the spec gives it, and get_weave says a kicked participant stays listed", async () => {
+    const d = await described();
+    expect(d.get("kick_participant")).toBe("Kick a participant out of a Weave (keepers of that Weave only; never yourself; not in the Lobby; allowed in an archived Weave). From then on its token, and an agent key's identity in that Weave, are refused with forbidden, and its open streams close. Everything it wrote stays, and so does its name in the history. It comes back only through a new invitation from a keeper (invite_to_weave), as the same participant; its invitations into this Weave still pending are withdrawn by the kick (each invitee is told with weave.invitation_withdrawn). A participant.kicked event lands in the General Thread. Kicking one already kicked changes nothing and returns the same seq. Returns { participantId, name, seq, kickedAt, created, withdrawn }, withdrawn being the ids of the invitations this call withdrew.");
+    expect(d.get("get_weave")).toContain("participants (names, kinds, roles); a kicked participant stays listed with its kickedAt, so names in the history resolve. In the Lobby");
+  });
+});
+
 describe("get_skill (spec 2026-09-28 §5.1)", () => {
   const ORIGIN = "https://loom.example";
   const skillOf = (name: string, description: string): Skill =>
@@ -607,9 +632,9 @@ describe("get_skill (spec 2026-09-28 §5.1)", () => {
   };
   const ask = (c: Client, name?: string) => c.callTool({ name: "get_skill", arguments: name === undefined ? {} : { name } });
 
-  it("LOOM_TOOL_NAMES has get_skill: 41 names", () => {
+  it("LOOM_TOOL_NAMES has get_skill: 42 names", () => {
     expect(LOOM_TOOL_NAMES).toContain("get_skill");
-    expect(LOOM_TOOL_NAMES).toHaveLength(41);
+    expect(LOOM_TOOL_NAMES).toHaveLength(42);
   });
 
   it("with no name, get_skill answers renderSkillsIndex(skills, origin) as one text block, not JSON", async () => {

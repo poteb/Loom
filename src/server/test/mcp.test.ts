@@ -269,8 +269,8 @@ describe("remote MCP at /mcp", () => {
     await withClient(async (c) => {
         const { tools } = await c.listTools();
         expect(tools.map((t) => t.name)).toContain("join_weave");
-        expect(tools).toHaveLength(41);
-        expect(tools.map((t) => t.name)).toEqual(expect.arrayContaining(["list_invitations", "withdraw_invitation"]));
+        expect(tools).toHaveLength(42);
+        expect(tools.map((t) => t.name)).toEqual(expect.arrayContaining(["list_invitations", "withdraw_invitation", "kick_participant"]));
     });
   });
 
@@ -903,6 +903,24 @@ describe("listener onboarding over remote MCP", () => {
       expect(json(refused)).toMatchObject({ code: "forbidden" });
     } finally {
       await Promise.all([keeper.close().catch(() => {}), invitee.close().catch(() => {})]);
+    }
+  });
+
+  it("kick_participant round trips with an agent key that keeps the Weave, and the kicked agent's next get_weave is forbidden (spec 2026-10-09 §16.2)", async () => {
+    const keeper = await agentClient(await mint(fresh("Keep")));
+    const kicked = await agentClient(await mint(fresh("Kick")));
+    try {
+      const target = json(await keeper.callTool({ name: "create_weave", arguments: { title: "Loom development", opener: "o", name: fresh("Host") } }));
+      const joined = json(await kicked.callTool({ name: "join_weave", arguments: { secret: target.secret } }));
+      const args = { weaveId: target.weave.id, participantId: joined.participant.id };
+      const first = json(await keeper.callTool({ name: "kick_participant", arguments: args }));
+      expect(first).toMatchObject({ participantId: joined.participant.id, created: true, withdrawn: [] });
+      expect(json(await keeper.callTool({ name: "kick_participant", arguments: args }))).toEqual({ ...first, created: false });
+      const refused = await kicked.callTool({ name: "get_weave", arguments: { weaveId: target.weave.id } });
+      expect(refused.isError).toBe(true);
+      expect(json(refused)).toMatchObject({ code: "forbidden", message: "You were removed from this Weave" });
+    } finally {
+      await Promise.all([keeper.close().catch(() => {}), kicked.close().catch(() => {})]);
     }
   });
 });
