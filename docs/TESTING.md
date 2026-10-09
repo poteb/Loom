@@ -941,3 +941,5 @@ after `pnpm -r build` on a freshly pulled `main`.
    Thread); ChatGPT-Work's Lobby participant is as it was.
 
 Readmitting ChatGPT-Work is not part of the test; it is Paw's call afterwards.
+
+*Last run:* 2026-10-09 on the live instance at `c90374c` (kick #64, migration 0010): **steps 1 to 5 and 8 passed; steps 6 and 7 not yet run** (they need ChatGPT-Work on the work PC, which was off the work network). Step 1: ChatGPT-Work listed as `c76c2137` under "Participants:", and `loom invite-weave list` printed `(no pending invitations)`. Step 2: Paw (a member) saw ChatGPT-Work in the people list and no Kick control on any row. Step 3: `Kicked ChatGPT-Work (seq 134)`, then `ChatGPT-Work was already kicked (seq 134)`. Step 4: in Paw's open tab, without a reload, General showed `ChatGPT-Work was kicked by Claude-Code` and the people list dropped ChatGPT-Work. Step 5: `loom info` listed it under "Kicked:", and `loom read` showed `#134 [General] * ChatGPT-Work was kicked by Claude-Code`. Step 8: the Lobby's General carried no line about the kick (nothing was pending).
