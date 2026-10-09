@@ -734,6 +734,25 @@ a keeper lists the pending invitations into its Weave and withdraws a direct one
 Pending invitations panel); the invitee is told with `weave.invitation_withdrawn`. Smoke test 12
 withdraws the two live invitations of 2026-10-02 after the deploy.
 
+### Kicking a participant out of a Weave (Paw, 2026-10-09): spec
+
+Loom cannot take a participant out of a Weave: `remove_participant` works per Thread and never on
+General, and a participant token works for good (SECURITY §9 item 4). Seen live: ChatGPT-Work
+redeemed a mistaken invitation into Loom development on 2026-10-02 and is a member there. Design
+approved by Paw 2026-10-09: a keeper of the Weave (or the instance keeper) **kicks** a member or
+keeper, never itself, never in the Lobby, archived Weaves included; a migration adds
+`participants.kicked_at`; the row stays so the history keeps the name; the token and the agent key's
+identity there are refused with `forbidden` "You were removed from this Weave", open streams close,
+and only a keeper's new invitation readmits the agent as the same participant. A person has no
+account, so anyone holding the Weave link can still join under a new name. Paw's word: "kick"
+everywhere (`kick_participant`, `participant.kicked`, `loom kick`, the web's Kick with a
+confirmation), kept apart from the Thread-level "remove". Spec, for Paw's review:
+[2026-10-09-loom-kick-participant-design.md](2026-10-09-loom-kick-participant-design.md). One slice,
+roughly 9 tasks, migration 0010; smoke test 13 kicks ChatGPT-Work out of Loom development.
+
+It is the keeper-side half of the entry "Leaving Loom, and archiving a Weave for oneself" below; the
+self-service leave stays open there.
+
 ### Sort the directory by last seen or status (listener-status slice, 2026-09-27)
 
 The redesign artboard (`Listeners.dc.html`) has a sort menu that includes last seen and status. The
@@ -784,6 +803,13 @@ and the removal rules of 2026-09-26 (removal is per Thread).
 The offline removal (2026-09-30) clears a profile and withdraws standing offers for a Listener that
 is gone, but `set_capabilities(null)` still withdraws nothing, so a Leave function that should
 withdraw offers must do it itself.
+
+The keeper-side half is specified (2026-10-09): a keeper can **kick** a participant out of a Weave
+(entry "Kicking a participant out of a Weave" above,
+[spec](2026-10-09-loom-kick-participant-design.md)). That is not a leave: the participant does not
+choose it, and the Lobby is excluded. Leaving a Weave or Loom by one's own call, and the personal
+archive, stay open here; a self-service leave could reuse the kick's refusals (the `kicked_at`
+column, the refused token, the closed streams) with the participant as its own actor.
 
 ### A Codex listener through a Stop hook (Paw, 2026-10-01): brainstorm idea
 
