@@ -106,9 +106,10 @@ export class StreamManager {
     try {
       const replacement = await this.state.removeWeaveIfToken(weaveId, refused);
       if (replacement) {
-        this.log(`identity for weave ${weaveId} refused (forbidden): a replacement is stored, restarted with it`);
         // A join in this process may have started the Weave while the state answered; that stream already reads with it.
-        if (!this.active.has(weaveId)) this.start(weaveId, replacement);
+        const running = this.active.has(weaveId);
+        this.log(`identity for weave ${weaveId} refused (forbidden): a replacement is stored, ${running ? "already running" : "restarted with it"}`);
+        if (!running) this.start(weaveId, replacement);
         return;
       }
       this.preambleDone.delete(weaveId);   // what stop() adds to teardown(): a later rejoin opens with the rules again

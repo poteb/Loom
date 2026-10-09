@@ -621,7 +621,7 @@ every later issuance is re-checked against — so acceptance needs no second cre
 keeper accepting on the requester's behalf borrows the *requester's* authority, never its own. A
 request may not target the Lobby itself.
 
-**Lock order Lobby → target.** `accept`, `inviteToWeave`, `withdrawInvitation` and `kickParticipant` need two Weave rows, and all four take them
+**Lock order Lobby → target.** `accept`, `inviteToWeave`, `withdrawInvitation`, `removeFromRequestThread` ([removals.ts](../src/core/src/removals.ts)) and `kickParticipant` need two Weave rows, and all five take them
 through `withWeaveLocks(db, bus, [lobbyId, targetWeaveId], …)`
 ([events.ts](../src/core/src/events.ts)), which locks in the order given. Every two-row flow uses
 that one order and every other flow locks a single row, so no cycle exists; a core test holds the

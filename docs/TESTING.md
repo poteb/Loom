@@ -181,19 +181,20 @@ guarded by `typeof document !== "undefined"` because the package runs Vitest wit
 
 ## Current totals
 
-As of **the kick-participant slice** on `feat/kick-participant` (measured at `0826d45`, the head
-after its last code task): **2536 tests in 81 files**: core 809 in 33, web 994 in 17, server 254
+As of **the kick-participant slice** on `feat/kick-participant` (measured after the whole-branch
+review's fixes): **2538 tests in 81 files**: core 809 in 33, web 994 in 17, server 256
 in 10, claude-channel 159 in 9, cli 92 in 5, client 53 in 4, mcp-tools 175 in 3, from
 `pnpm -r build`, `pnpm -r typecheck` (clean) and `pnpm --workspace-concurrency=1 -r test`, every
 suite passing. The baseline recorded by the plan's Task 0 was `main` at `20f25a4`, 2473 in 80, so
-the slice added **63 tests and one file**: core +28 (`kick.test.ts` 26, the new file,
+the slice added **65 tests and one file**: core +28 (`kick.test.ts` 26, the new file,
 `units.test.ts` 1, `db.test.ts` 1); web +12 (`components.test.tsx` 7, `session.test.ts` 4,
-`fold.test.ts` 1); server +7 (`ws.test.ts` 4, `routes.test.ts` 2, `mcp.test.ts` 1);
+`fold.test.ts` 1); server +9 (`ws.test.ts` 6, `routes.test.ts` 2, `mcp.test.ts` 1);
 claude-channel +7 (`streams.test.ts` 4, `format.test.ts` 2, `backend.test.ts` 1); cli +3
 (`cli-more.test.ts` 3); client +2 (`client.test.ts` 1, `stream.test.ts` 1); mcp-tools +4
-(`tools.test.ts` 3, `skills.test.ts` 1). The plan expected +62: the one more is the `ws.test.ts`
-case for a kick the stream skips still forcing its re-check (fix `028938f`). The repaired and
-renamed cases added none.
+(`tools.test.ts` 3, `skills.test.ts` 1). The plan expected +62: the three more are `ws.test.ts`
+cases, for a kick the stream skips still forcing its re-check (fix `028938f`), and, from the
+whole-branch review's fixes, for a stream started past the head re-checking on its first replay
+page and for a kick inside a recovered gap. The repaired and renamed cases added none.
 
 Before it, as of **the withdraw-invitation slice** on `feat/withdraw-invitation` (measured at `02762e3`, the
 head after its last code task, plus the one web test of the review fix `a626b8b`): **2473 tests in 80 files**:
