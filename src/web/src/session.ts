@@ -97,6 +97,10 @@ export type Session = {
   canManageInvitations(): boolean;
   /** Withdraws a direct invitation into this Weave: on success its row leaves `invitations` at once and a refresh follows; a refusal re-reads the list and is thrown. */
   withdrawInvitation(invitationId: string): Promise<void>;
+  /** A keeper of this Weave, which is not the Lobby, archived or not (spec 2026-10-09 §12): who sees Kick on the people list. */
+  canKick(): boolean;
+  /** Kicks a participant out of this Weave: on success it leaves the people list at once and a refresh follows; a refusal schedules a refresh and is thrown. */
+  kick(participantId: string): Promise<void>;
   // --- Lobby requests. Thin wrappers: each applies the snapshot it gets back through the watermark.
   openRequest(input: OpenRequestInput): Promise<LoomRequest>;
   offer(requestId: string, input: { model?: string; effort?: string; note?: string }): Promise<void>;
@@ -126,6 +130,15 @@ export type Session = {
  */
 export function mayManageInvitations(state: SessionState): boolean {
   return state.me?.participant.role === "keeper" && !!state.weave && state.lobby?.weaveId !== state.weave.id;
+}
+
+/**
+ * The participants who are in the Weave now (spec 2026-10-09 §6): a kicked one stays in
+ * `participants` so every name in the history resolves, and leaves every list that means "who is
+ * here" (the people list and its count, the mention completion).
+ */
+export function present(participants: readonly Participant[]): Participant[] {
+  return participants.filter((p) => !p.kickedAt);
 }
 
 /** The server's own page maximum (`MAX_PAGE_LIMIT`): what "everything" is asked for as. */
@@ -849,7 +862,7 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
     // re-reads it. The profile the event carries is deliberately not read from here — my own comes
     // from its own side read, one source of truth for one small request (spec §3.3).
     if (e.type === "thread.created" || e.type === "thread.closed" || e.type === "thread.url_changed"
-      || e.type === "participant.joined" || e.type === "participant.role_changed"
+      || e.type === "participant.joined" || e.type === "participant.role_changed" || e.type === "participant.kicked"
       || e.type === "participant.capabilities_changed" || e.type === "listener.removed") {
       // …and when that event names *me*, the own-profile read is the mechanism rather than the
       // backstop: one edit, one event, no fan-out to coalesce. A removal by the offline sweep is the
@@ -1029,9 +1042,17 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
       const opened = reader.stream(weaveId!, {
         since: events.at(-1)?.seq ?? 0,
         onEvent: (ev) => { if (stale()) return; onEvent(ev); },
-        onStatus: (st) => {
+        onStatus: (st, d) => {
           if (stale()) return;
           set({ connection: st });
+          // A stream that ended on a refused credential is the §2.6 rule (spec 2026-10-09 §8.2): a kick
+          // refuses this tab's token, so the identity is dropped once, never the secret, and the page
+          // reads on with the secret or settles at no-credential. The token is not retried.
+          if (st === "closed" && d?.error && isCredentialFailure(d.error)) {
+            const recovered = recoverFromCredentialFailure(d.error);
+            if (recovered?.reload) void doLoad();
+            return;
+          }
           // A reconnect's "open" (as opposed to the first "open" after this load()) means the
           // stream was down for a while; refresh derived state in case a qualifying event was
           // missed while disconnected.
@@ -1280,6 +1301,18 @@ export function createSession(opts: { client: LoomClient; target: SessionTarget;
     canEditThread: (t) => !!state.me && !state.weave?.archivedAt && !t.closedAt
       && (state.me.participant.role === "keeper" || t.createdBy === state.me.participant.id),
     canManageInvitations: () => mayManageInvitations(state),
+    // One rule for one predicate (spec 2026-10-09 §12): a keeper here, not the Lobby, archived or not.
+    canKick: () => mayManageInvitations(state),
+    async kick(participantId) {
+      const w = writer();
+      if (!weaveId) throw new LoomClientError("validation", "Weave not loaded");
+      // Refused (this keeper demoted meanwhile, or an id that is not this Weave's): the refresh brings
+      // the list up to date, and the view's error path shows the message.
+      const r = await w.kickParticipant(weaveId, participantId).catch((e: unknown) => { scheduleRefresh(); throw e; });
+      // Committed server-side: the row leaves the people list at once, and the refresh brings the rest.
+      set({ participants: state.participants.map((p) => (p.id === r.participantId ? { ...p, kickedAt: r.kickedAt, role: "member" as const } : p)) });
+      scheduleRefresh();
+    },
     async withdrawInvitation(invitationId) {
       const w = writer();
       if (!weaveId) throw new LoomClientError("validation", "Weave not loaded");

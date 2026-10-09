@@ -37,6 +37,7 @@ type Words = string | [one: string, many: string];
 const WORDS: Partial<Record<string, Words>> = {
   "participant.joined": "joined",
   "participant.role_changed": ["role change", "role changes"],
+  "participant.kicked": "kicked",
   "participant.capabilities_changed": ["profile update", "profile updates"],
   "thread.created": ["thread created", "threads created"],
   "thread.closed": ["thread closed", "threads closed"],

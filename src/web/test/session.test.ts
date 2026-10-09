@@ -3969,3 +3969,82 @@ describe("pending invitations (spec 2026-10-08 §9)", () => {
     } finally { session.dispose(); }
   });
 });
+
+describe("kicking a participant (spec 2026-10-09 §8.2, §12)", () => {
+  let kickN = 0;
+  /** A Weave this browser keeps, with a human member to kick and the keeper's stored identity. */
+  async function keptWeave() {
+    const n = ++kickN;
+    const r = await anon.createWeave({ title: `Kick ${n}`, opener: "hello", creator: { name: "Paw", kind: "human" } });
+    const member = await anon.joinWeave(r.secret, { name: `Mia-${n}`, kind: "human" });
+    const keeperStorage = () => {
+      const st = memoryStorage();
+      st.set(`loom:${r.secret}`, JSON.stringify({ token: r.token, participantId: r.participant.id }));
+      return st;
+    };
+    return { r, member, keeperStorage, keeper: await s.core.resolveCredential(r.token) };
+  }
+  const TICKET = "/api/auth/ws-ticket";
+
+  it("kick marks the participant kicked from the answer at once, as a member, and schedules a refresh", async () => {
+    const f = await keptWeave();
+    const c = sideReadClient();
+    const session = createSession({ client: c.client, target: { kind: "secret", secret: f.r.secret }, storage: f.keeperStorage() });
+    await session.load();
+    try {
+      expect(session.canKick()).toBe(true);
+      const reads = c.weaveReads();
+      await session.kick(f.member.participant.id);
+      const kicked = session.getState().participants.find((p) => p.id === f.member.participant.id)!;
+      expect([typeof kicked.kickedAt, kicked.role]).toEqual(["string", "member"]);
+      await waitFor(() => c.weaveReads() > reads);
+    } finally { session.dispose(); }
+  });
+
+  it("a participant.kicked from another client schedules the refresh that marks the participant kicked", async () => {
+    const f = await keptWeave();
+    const session = createSession({ client: anon, target: { kind: "secret", secret: f.r.secret }, storage: f.keeperStorage() });
+    await session.load();
+    try {
+      await waitFor(() => session.getState().connection === "open");
+      await s.core.kickParticipant(f.keeper, f.r.weave.id, f.member.participant.id);
+      await waitFor(() => session.getState().participants.find((p) => p.id === f.member.participant.id)?.kickedAt != null);
+    } finally { session.dispose(); }
+  });
+
+  it("a tab whose own participant is kicked drops the identity once, keeps the secret, reads on with it, and never retries the token", async () => {
+    const f = await keptWeave();
+    const storage = storedIdentity(f.r.weave.id, f.member, { secret: f.r.secret });
+    const c = sideReadClient();
+    const ticketsWith = (token: string) =>
+      Array.from({ length: c.calls(TICKET) }, (_, i) => c.credentialOn(TICKET, i + 1)).filter((a) => a === `Bearer ${token}`).length;
+    const session = createSession({ client: c.client, target: { kind: "id", weaveId: f.r.weave.id }, storage });
+    await session.load();
+    try {
+      expect(session.getState().me?.participant.id).toBe(f.member.participant.id);
+      await waitFor(() => session.getState().connection === "open");
+      await s.core.kickParticipant(f.keeper, f.r.weave.id, f.member.participant.id);
+      await waitFor(() => session.getState().readOnlyReason === "secret-fallback" && session.getState().status === "ready");
+      expect(session.getState().me).toBeUndefined();
+      const e = readWeaveEntry(storage, f.r.weave.id)!;
+      expect([e.identity, e.token, e.secret]).toEqual(["invalid", undefined, f.r.secret]);
+      const asked = [ticketsWith(f.member.token), c.weaveReadsWith(f.member.token)];
+      await waitFor(() => session.getState().connection === "open");
+      await anon.withToken(f.r.token).postMessage(f.r.generalThread.id, "still reading");
+      await waitFor(() => session.getState().events.some((ev) => ev.payload.text === "still reading"));
+      expect([ticketsWith(f.member.token), c.weaveReadsWith(f.member.token)]).toEqual(asked);
+    } finally { session.dispose(); }
+  });
+
+  it("with no stored secret the kicked tab settles at no-credential", async () => {
+    const f = await keptWeave();
+    const session = createSession({ client: anon, target: { kind: "id", weaveId: f.r.weave.id }, storage: storedIdentity(f.r.weave.id, f.member) });
+    await session.load();
+    try {
+      await waitFor(() => session.getState().connection === "open");
+      await s.core.kickParticipant(f.keeper, f.r.weave.id, f.member.participant.id);
+      await waitFor(() => session.getState().status === "no-credential");
+      expect([session.getState().error, session.getState().me]).toEqual(["Your identity in this Weave is no longer valid", undefined]);
+    } finally { session.dispose(); }
+  });
+});

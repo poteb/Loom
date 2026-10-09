@@ -39,3 +39,33 @@ export function InviteControl({ thread, participant, invited, session, onError }
     ? <span class="invited-mark muted" title="invited">invited</span>
     : <button type="button" class="btn btn-xs" aria-label={`invite ${participant.name}`} onClick={() => void invite()}>Invite</button>;
 }
+
+/**
+ * Kick one participant out of the Weave (spec 2026-10-09 §12), for a keeper, on every row but its
+ * own. Pressing Kick only asks: the confirmation replaces the button in this row alone, and only its
+ * own Kick calls the session. It is in the page, not `window.confirm`, so the design session can
+ * style it. On success the row leaves the list (the session marks the participant kicked); on a
+ * refusal the error goes to the view's one error path and the row returns to idle.
+ */
+export function KickControl({ participant, session, onError }: { participant: Participant; session: Session; onError: (e: unknown) => void }) {
+  const [step, setStep] = useState<"idle" | "confirm" | "kicking">("idle");
+  const kick = async () => {
+    setStep("kicking");
+    try { await session.kick(participant.id); }
+    catch (err) { onError(err); setStep("idle"); }
+  };
+  return (
+    <span class="kick-control">
+      {step === "idle"
+        ? <button type="button" class="btn btn-xs" aria-label={`kick ${participant.name}`} onClick={() => setStep("confirm")}>Kick</button>
+        : (
+          <span class="kick-confirm">
+            <span>Kick {participant.name} out of this Weave?</span>
+            <button type="button" class="btn btn-xs" aria-label={`confirm kick ${participant.name}`} disabled={step === "kicking"}
+              onClick={() => void kick()}>Kick</button>
+            <button type="button" class="btn btn-xs" disabled={step === "kicking"} onClick={() => setStep("idle")}>Cancel</button>
+          </span>
+        )}
+    </span>
+  );
+}

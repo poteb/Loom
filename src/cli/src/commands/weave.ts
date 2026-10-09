@@ -3,6 +3,7 @@ import type { Kind } from "@loom/client";
 import { CliError, textArg, type CliContext, type CliIo } from "../context.js";
 import { emit } from "../output.js";
 import { lobbyContext } from "./lobby.js";
+import { hhmm } from "./request.js";
 
 const kindOption = () => new Option("--kind <kind>", "agent | human").choices(["agent", "human"]).default("agent");
 
@@ -86,8 +87,12 @@ export function registerWeaveCommands(program: Command, ctx: () => CliContext, i
         `${info.weave.title} (${info.weave.id})${info.weave.archivedAt ? " [archived]" : ""}`,
         "Threads:",
         ...info.threads.map((t) => `  ${t.id}  ${t.name}${t.closedAt ? " [closed]" : ""}`),
+        // Who is here; a kicked participant follows under its own heading (spec 2026-10-09 §9.6).
         "Participants:",
-        ...info.participants.map((p) => `  ${p.id}  ${p.name} (${p.kind}, ${p.role})`),
+        ...info.participants.filter((p) => !p.kickedAt).map((p) => `  ${p.id}  ${p.name} (${p.kind}, ${p.role})`),
+        ...(info.participants.some((p) => p.kickedAt)
+          ? ["Kicked:", ...info.participants.filter((p) => p.kickedAt).map((p) => `  ${p.id}  ${p.name} (${p.kind}) at ${hhmm(p.kickedAt)}`)]
+          : []),
       ];
       emit(c, info, lines.join("\n"));
     });
@@ -110,6 +115,18 @@ export function registerWeaveCommands(program: Command, ctx: () => CliContext, i
       const { weaveId, entry } = c.resolveWeave();
       const p = await c.client(entry.token).setRole(weaveId, participantId, role);
       emit(c, p, `${p.name} is now ${p.role}`);
+    });
+
+  program.command("kick")
+    .description("Kick a participant out of the current Weave (keepers only): its token stops working, and only a keeper's invitation brings it back")
+    .argument("<participantId>")
+    .action(async (participantId: string) => {
+      const c = ctx();
+      const { weaveId, entry } = c.resolveWeave();
+      const r = await c.client(entry.token).kickParticipant(weaveId, participantId);
+      const n = r.withdrawn.length;
+      const tail = n === 0 ? "" : `; withdrew ${n} pending invitation${n === 1 ? "" : "s"}`;
+      emit(c, r, r.created ? `Kicked ${r.name} (seq ${r.seq})${tail}` : `${r.name} was already kicked (seq ${r.seq})`);
     });
 
   program.command("export")

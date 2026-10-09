@@ -32,7 +32,7 @@ const JOINED = {
   weaveId: LOBBY.weaveId,
   weave: { id: LOBBY.weaveId, title: "Lobby", createdAt: "", archivedAt: null, lastSeq: 0, guidelines: "" },
   generalThreadId: "g1",
-  participant: { id: "p-dana", weaveId: LOBBY.weaveId, name: "dana", kind: "human", role: "member", joinedAt: "", agentId: null, capabilities: null, lastSeenAt: null },
+  participant: { id: "p-dana", weaveId: LOBBY.weaveId, name: "dana", kind: "human", role: "member", joinedAt: "", agentId: null, capabilities: null, lastSeenAt: null, kickedAt: null },
   token: "participant-token",
   guidelines: "",
 };
@@ -366,7 +366,7 @@ function weaveRoutes(id: string, title: string): Routes {
       [`${BASE}/api/requests?status=${s}&limit=${CLOSED_REQUESTS_PAGE}`, () => json({ requests: [] })])),
     // No WebSocket in these tests: a *fatal* ticket failure closes the stream once and leaves no
     // reconnect timer behind, and the page it belongs to renders exactly as it otherwise would.
-    [`${BASE}/api/auth/ws-ticket`]: () => json({ code: "forbidden", message: "no stream in tests" }, 403),
+    [`${BASE}/api/auth/ws-ticket`]: () => json({ code: "weave_not_found", message: "no stream in tests" }, 404),
   };
 }
 const LOBBY_URL = `${BASE}/api/lobby`;
@@ -1977,7 +1977,7 @@ const ENTRY_LIMIT = 120;
 const CREATED_RESULT = {
   weave: { id: CREATED, title: "Test Weave", createdAt: "", archivedAt: null, lastSeq: 3, guidelines: "" },
   secret: NEW_SECRET,
-  participant: { id: "p-creator", weaveId: CREATED, name: "dana", kind: "human", role: "keeper", joinedAt: "", agentId: null, capabilities: null, lastSeenAt: null },
+  participant: { id: "p-creator", weaveId: CREATED, name: "dana", kind: "human", role: "keeper", joinedAt: "", agentId: null, capabilities: null, lastSeenAt: null, kickedAt: null },
   token: "keeper-token",
   generalThread: { id: "g-new", weaveId: CREATED, name: "General", isGeneral: true, createdBy: "p-creator", createdAt: "", closedAt: null, url: null },
   guidelines: "",

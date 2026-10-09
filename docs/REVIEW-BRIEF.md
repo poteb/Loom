@@ -4,7 +4,7 @@ For an external reviewer (ChatGPT, acting as two independent lenses — **Standa
 doing a review of a branch. Read this first; it says what to review, what to ignore, and what a
 finding must contain.
 
-**This branch is `feat/withdraw-invitation`: withdrawing a Weave invitation (2026-10-08).** Everything
+**This branch is `feat/kick-participant`: kicking a participant out of a Weave (2026-10-09).** Everything
 below §1 describes the codebase as a whole, because the review is against all of `src/`; §1a says
 what *this* branch changed and where to look first.
 
@@ -19,8 +19,8 @@ workspace: `core` holds every rule, and `server`, `client`, `mcp-tools`, `cli`, 
 `web` are adapters over it.
 
 Current state: **v1 plus v2 sub-projects 1 to 5 on `main` (sub-project 5 is the Lobby listeners
-page), then listener onboarding, two removal rules, unread counts, listener status, agent skills and removing offline Listeners;
-this branch lets a keeper withdraw a Weave invitation.** Sub-project 1 added Thread URLs, Thread invites, `inbox`, and instance-level agent keys.
+page), then listener onboarding, two removal rules, unread counts, listener status, agent skills, removing offline Listeners and withdrawing a Weave invitation;
+this branch lets a keeper kick a participant out of a Weave.** Sub-project 1 added Thread URLs, Thread invites, `inbox`, and instance-level agent keys.
 Sub-project 2 added **guidelines**: two layers of keeper-written Markdown (instance-wide on
 `settings`, per-Weave on `weaves`), composed and handed to every agent on connect, with a
 `weave.guidelines_changed` event, `set_weave_guidelines`, the public `GET /api/guidelines`, two MCP
@@ -73,43 +73,44 @@ onboarding walkthrough:
 
 ## 1a. What **this** branch changes, and the promises it does not make
 
-`feat/withdraw-invitation` lets a keeper of a Weave **see the invitations still pending into it and
-withdraw a direct one** before it is redeemed, which closes the KNOWN-ISSUES row that said a Weave
-invitation handed out with `invite_to_weave` could not be withdrawn (two such invitations into Loom
-development were sent to the work-PC agents by mistake on 2026-10-02). `withdrawInvitation` has
-`inviteToWeave`'s authority exactly (a keeper of the target, or the instance keeper token, re-checked
-inside the target's lock), takes the Lobby's lock, then the target's, then the invitation row
-`FOR UPDATE`, sets the existing `revoked_at`, and writes `weave.invitation_withdrawn` on the Lobby's
-General Thread, addressed to the invitee; a later redemption answers `forbidden` "This invitation was
-withdrawn". A request's invitation is refused (the removal from its Thread withdraws it), a redeemed
-one too, and a repeat answers the original seq with `created: false`. `listInvitations` is a
-keeper's read of the rows neither redeemed nor withdrawn, a request's listed and marked. The spec is
-[superpowers/specs/2026-10-08-loom-withdraw-invitation-design.md](superpowers/specs/2026-10-08-loom-withdraw-invitation-design.md),
+`feat/kick-participant` lets a keeper of a Weave **kick a participant out of it**, which closes the
+SECURITY §9 item 4 limitation that a participant token could not be revoked, for the case that was
+needed live: ChatGPT-Work redeemed a mistaken invitation into Loom development on 2026-10-02 and
+nothing could take it back out. `kickParticipant` (`participants.ts`) checks keepership before
+anything about the participant is read, refuses the Lobby and oneself, takes the Lobby's lock, then
+the Weave's, re-checks keepership inside them, sets `participants.kicked_at` and `role = 'member'`,
+withdraws the kicked agent's invitations into the Weave still pending (each told with
+`weave.invitation_withdrawn` in the Lobby), and writes `participant.kicked` on the Weave's General
+Thread; a repeat answers the newest kick's seq with `created: false`. From then on the token is
+refused on every surface (`resolveCredential`), an agent key's identity there is refused
+(`resolveInWeave`), the agent cannot rejoin with the secret (`joinWeave`), and its open streams close
+at the kick (the forced re-check in `ws.ts`); only a keeper's new invitation readmits it, as the same
+participant with a new token. The row stays, so the history keeps its name. The spec is
+[superpowers/specs/2026-10-09-loom-kick-participant-design.md](superpowers/specs/2026-10-09-loom-kick-participant-design.md),
 the plan
-[superpowers/plans/2026-10-08-loom-withdraw-invitation.md](superpowers/plans/2026-10-08-loom-withdraw-invitation.md);
-both were approved by Paw (PR #60). No migration, one new event type, no new error code, two new
-routes, two new tools (41 in all), and no authority beyond the new action's, which is
-`inviteToWeave`'s.
+[superpowers/plans/2026-10-09-loom-kick-participant.md](superpowers/plans/2026-10-09-loom-kick-participant.md);
+both were approved by Paw (PR #63). One migration (0010, one nullable column), one new event type, no
+new error code, one new route, one new tool (42 in all), and no authority beyond the new action's.
 
 | Layer | What this branch changed |
 | --- | --- |
-| core | `listInvitations`, `withdrawInvitation` and their types (`lobby/invitations.ts`); `weave.invitation_withdrawn` at the end of `EVENT_TYPES`; the `inbox` arm it shares with `weave.invited`; the facade's two methods; the export line; the `revokedAt` comment (`db/schema.ts`) |
-| server | `GET /api/weaves/:id/invitations`, `POST /api/weaves/:id/invitations/:invitationId/withdraw` (`routes/weaves.ts`); the MCP backend's two methods (`mcp/backend.ts`) |
-| mcp-tools | `list_invitations` and `withdraw_invitation` after `invite_to_weave` (`tools.ts`); the two `LoomToolBackend` methods; the `weave.invitation_withdrawn` row of `REACTION_TABLE` (`onboarding.ts`) |
-| client | `listInvitations`, `withdrawInvitation`, `PendingInvitation`, `WithdrawResult`; the type in `EventType` |
-| claude-channel | `shouldWake` and the two texts (`format.ts`); the instructions' `type=` list and `invitation=` sentence (`server.ts`); the two backend methods over the client and with the stored credential (`backend.ts`, `stored.ts`) |
-| cli | `invite-weave list` and `invite-weave withdraw <invitationId>`, `--thread` checked by the invite action (`commands/request.ts`); the `read` line (`commands/messages.ts`) |
-| web | the session's invitation read, `mayManageInvitations`, `canManageInvitations` and `withdrawInvitation` (`session.ts`); `InvitationsPanel.tsx` (new) in the sidebar (`WeaveView.tsx`); the Thread line and folded words; no CSS |
-| repo | three skills (`loom-work-in-a-thread`, `loom-ask-for-review`, `loom-do-accepted-work`) and spec 2026-09-28 §7 amended with the same bytes |
-| docs | README, the core, server, client, mcp-tools, cli and channel READMEs, ARCHITECTURE, SECURITY (two authorization rows, the Lobby-event paragraph, item 14), TESTING (smoke test 12, the coverage lines, the totals, "twelve"), CLAUDE.md and HANDBOOK ("twelve"), KNOWN-ISSUES (the "cannot be withdrawn" row removed, three core rows amended, one web row), v2-notes, this brief |
+| core | migration `0010` (`participants.kicked_at`); `kickParticipant`, `KickResult`, `KICKED_TARGET` and the `setRole` refusal (`participants.ts`); `REMOVED_FROM_WEAVE` and the refusals in `resolveCredential` and `resolveInWeave` (`actors.ts`); the secret-path refusal in `joinWeave` (`weaves.ts`); readmission in `redeemInvitation` (`lobby/invitations.ts`); the `inviteParticipant` refusal (`invites.ts`); the mention filter (`messages.ts`); `participant.kicked` in `EVENT_TYPES` and `PublicParticipant.kickedAt` (`types.ts`); the export line and Participants mark (`export.ts`); the facade's `kickParticipant` |
+| server | `POST /api/weaves/:id/participants/:pid/kick` (`routes/weaves.ts`); the forced re-check on `participant.kicked` (`ws.ts`); the MCP backend's method (`mcp/backend.ts`) |
+| mcp-tools | `kick_participant` after `set_role` and `get_weave`'s sentence on kicked participants (`tools.ts`); the `LoomToolBackend` method |
+| client | `kickParticipant`, `KickResult`, `Participant.kickedAt`, the type in `EventType` |
+| claude-channel | the `participant.kicked` line (`format.ts`); the instructions' `type=` list and sentence (`server.ts`); a stored identity dropped on `forbidden` with one notification, only while it is still the refused token (`streams.ts`, `removeWeaveIfToken` in `state.ts`); the backend methods (`backend.ts`, `stored.ts`) |
+| cli | `loom kick <participantId>` and `loom info`'s `Kicked:` section (`commands/weave.ts`); the `read` line (`commands/messages.ts`) |
+| web | `present`, `canKick`, `kick` and the stream-close recovery (`session.ts`); `KickControl` with its confirmation (`ThreadTools.tsx`) on the people list (`ThreadDetails.tsx`); the composer's names (`Composer.tsx`); the Thread line and folded word; no CSS |
+| repo | two skills (`loom-work-in-a-thread`, `loom-ask-for-review`) and spec 2026-09-28 §7 amended with the same bytes |
+| docs | README, the core, server, client, mcp-tools, cli and channel READMEs, ARCHITECTURE, SECURITY (§5 rows, the Lobby-event paragraph, §9 item 4), TESTING (smoke test 13, the coverage lines, the totals, "thirteen"), CLAUDE.md and HANDBOOK ("thirteen"), KNOWN-ISSUES (four rows added, the export row amended), v2-notes, this brief |
 
-**The promises it does not make**, stated in the spec's §17 and not to be re-reported: no expiry on
-invitations and no automatic withdrawal; a request's invitation is not withdrawn through this call
-(the removal from its Thread stays the one way); a redemption is not undone; nobody but the invitee
-is told, and the target Weave's log gets nothing; the target's web panel is not live on another
-client's withdrawal, invitation or redemption (KNOWN-ISSUES, the web row); no inviting or accepting
-an invitation from the web; `revoked_at` is not renamed (public shapes say `withdrawnAt`); no paging
-of `listInvitations`.
+**The promises it does not make**, stated in the spec's §20 and not to be re-reported: no
+self-service leave; nobody is kicked from the Lobby; the Weave secret is not rotated, so a kicked
+participant who holds it can still read and join under a new name (KNOWN-ISSUES); a kicked person is
+not recognised; nothing is deleted; the Lobby is touched only by the withdrawals; no readmitting
+from the web and no web list of kicked participants; member-level writes are not re-checked inside
+the lock (KNOWN-ISSUES, the one-call window); the CLI store keeps the token, and the channel drops an
+identity only on `forbidden`; the kicked participant is not told through its inbox.
 
 **Choices** are the spec's own, each marked **(choice)** in it, and the plan's "Decisions this plan
 makes", and not drift.
@@ -118,16 +119,22 @@ makes", and not drift.
 
 - **All of `src/` as it stands on this branch** — the seven packages, their tests, their
   configuration. The diff against `main` is the new work; the rest is already-reviewed code you
-  should still judge where this branch changed it (`types.ts`, `inbox.ts`, `index.ts` (the facade's
-  `listInvitations` and `withdrawInvitation`), `db/schema.ts` (the `revokedAt` comment) and
-  `export.ts` (the new line) in core; `routes/weaves.ts` and `mcp/backend.ts` in the server;
-  `tools.ts`, `backend.ts` and `onboarding.ts` in mcp-tools; the client's `client.ts` and
-  `types.ts`; the channel's `format.ts`, `server.ts`, `backend.ts` and `stored.ts`; the CLI's
-  `request.ts` and `messages.ts`; the web's `session.ts`, `WeaveView.tsx`, `MessageList.tsx` and
-  `fold.ts`).
+  should still judge where this branch changed it (`types.ts`, `actors.ts`, `participants.ts`,
+  `weaves.ts`, `invites.ts`, `messages.ts`, `export.ts`, `index.ts` (the facade's `kickParticipant`),
+  `lobby/invitations.ts` (readmission) and `db/schema.ts` (the column) in core; `routes/weaves.ts`,
+  `ws.ts` and `mcp/backend.ts` in the server; `tools.ts` and `backend.ts` in mcp-tools; the client's
+  `client.ts` and `types.ts`; the channel's `format.ts`, `server.ts`, `streams.ts`, `backend.ts` and
+  `stored.ts`; the CLI's `weave.ts` and `messages.ts`; the web's `session.ts`, `ThreadDetails.tsx`,
+  `ThreadTools.tsx`, `Composer.tsx`, `MessageList.tsx` and `fold.ts`).
 - **The specs are the binding requirements**, the last one first:
-  - [superpowers/specs/2026-10-08-loom-withdraw-invitation-design.md](superpowers/specs/2026-10-08-loom-withdraw-invitation-design.md)
+  - [superpowers/specs/2026-10-09-loom-kick-participant-design.md](superpowers/specs/2026-10-09-loom-kick-participant-design.md)
     **the spec for this branch**, with
+    [superpowers/plans/2026-10-09-loom-kick-participant.md](superpowers/plans/2026-10-09-loom-kick-participant.md)
+    beside it. Its quoted texts are binding, byte for byte, and Paw accepted every **(choice)** in it
+    as written. It amends the agent-skills spec's §7 (its dated line), which the skill files must
+    still equal, and changes no other spec.
+  - [superpowers/specs/2026-10-08-loom-withdraw-invitation-design.md](superpowers/specs/2026-10-08-loom-withdraw-invitation-design.md)
+    (the previous branch: withdrawing a Weave invitation), with
     [superpowers/plans/2026-10-08-loom-withdraw-invitation.md](superpowers/plans/2026-10-08-loom-withdraw-invitation.md)
     beside it. Its quoted texts are binding, byte for byte, and Paw accepted every **(choice)** in it
     as written. It amends the agent-skills spec's §7 (its dated line), which the skill files must
@@ -315,7 +322,7 @@ secret-less join, `owner` as data rather than authority, the two credentials and
 | 3 | [SECURITY.md](SECURITY.md) | The claims you verify |
 | 4 | `core` ([../src/core/README.md](../src/core/README.md)) | `src/core/src/actors.ts` (credential resolution, every authority check, `resolveInWeave`), `src/core/src/events.ts` (`withWeaveLock`, `withWeaveLocks`, `appendInTx`, seq), then `weaves.ts` (**including `getWeave`'s Lobby blanking**), `threads.ts`, `invites.ts`, `inbox.ts`, `guidelines.ts`, and **the Lobby**: `lobby/matching.ts` (the pure `matches` / `admits` / `eligible`), `lobby/profile.ts` (`findAgents`, `getMyLobbyParticipant`), `lobby/listeners-input.ts` and `lobby/listeners.ts` (the listeners directory), `errors.ts`, `types.ts` and `lobby/matching.ts` (`ERROR_CODES`, `EVENT_TYPES`, `REQUIREMENT_KEYS`, and `PROFILE_KEYS` in `lobby/profile.ts`), `lobby/removal.ts` and `settings.ts` (**this branch**: the offline removal pass and its limit), `lobby/lobby.ts` (`ensureLobby`, `getLobby` and who is told the secret), `lobby/requests.ts` (open, offer, accept, cancel, sweep, the computed status, the recorded target authority), `lobby/invitations.ts` (mint and redeem), `index.ts` (the facade, `forThread`, `resolveInLobby`) |
 | 5 | `server` ([../src/server/README.md](../src/server/README.md)) | `src/server/src/ws.ts` (ticket redeem, replay/live handoff, mid-stream re-auth), `src/server/src/mcp/index.ts` + `mcp/backend.ts` (session identity, per-call re-resolve), `src/server/src/auth.ts` (bearer + `?agent=`), `routes/lobby.ts` and `routes/requests.ts` (the two-credential open), the rest of `routes/*`, and `main.ts` / `app.ts` (boot `ensureLobby`, the sweep interval (on **this branch** with its third pass), the skills loaded before anything else and the `/skills` routes) |
-| 6 | `mcp-tools` ([../src/mcp-tools/README.md](../src/mcp-tools/README.md)) and `client` ([../src/client/README.md](../src/client/README.md)) | `src/mcp-tools/src/tools.ts` (all **41** tools, `defaultCredential`, the **three** resources `loom://guidelines`, `loom://weaves/{weaveId}/guidelines` and `loom://lobby/requests`, `LOBBY_MECHANICS`, and `get_skill`), `src/mcp-tools/src/skills.ts` and `src/mcp-tools/test/skills.test.ts` (the loader and the drift guard), `src/mcp-tools/src/onboarding.ts` (the pointer lines, and on **this branch** state 2's removal texts and the reaction table's `listener.removed` row), `src/client/src/client.ts` and `src/client/src/stream.ts` |
+| 6 | `mcp-tools` ([../src/mcp-tools/README.md](../src/mcp-tools/README.md)) and `client` ([../src/client/README.md](../src/client/README.md)) | `src/mcp-tools/src/tools.ts` (all **42** tools, `defaultCredential`, the **three** resources `loom://guidelines`, `loom://weaves/{weaveId}/guidelines` and `loom://lobby/requests`, `LOBBY_MECHANICS`, and `get_skill`), `src/mcp-tools/src/skills.ts` and `src/mcp-tools/test/skills.test.ts` (the loader and the drift guard), `src/mcp-tools/src/onboarding.ts` (the pointer lines, and on **this branch** state 2's removal texts and the reaction table's `listener.removed` row), `src/client/src/client.ts` and `src/client/src/stream.ts` |
 | 7 | `cli` ([../src/cli/README.md](../src/cli/README.md)) | `src/cli/src/cli.ts` (arg handling, exit codes), `src/cli/src/context.ts` (credential precedence), `src/cli/src/config.ts` |
 | 8 | `claude-channel` ([../src/claude-channel/README.md](../src/claude-channel/README.md)) | `src/claude-channel/src/state.ts` (lock-free versioned CAS), `src/claude-channel/src/streams.ts` (delivery chain, cursors), `src/claude-channel/src/format.ts` (`shouldWake`, `safe()`), `src/claude-channel/src/backend.ts` + `stored.ts` |
 | 9 | `web` ([../src/web/README.md](../src/web/README.md)) | `src/web/src/session.ts` (load order, backfill, derived invites, the Lobby branch, and **the two side reads** with `src/web/src/side-reads.ts`), `src/web/src/requests-state.ts` (the per-request `lastEventSeq` watermark), `src/web/src/markdown.ts`, `src/web/src/components/ThreadList.tsx`, `components/RequestsPanel.tsx`, and **the directory as a view of the Lobby**: `src/web/src/lobby-view.ts`, `components/WeaveRoute.tsx` (the view state, the `popstate` listener and the one `pushState`), `components/WeaveView.tsx` (`showListeners`), `components/listeners/ListenersPage.tsx`, `FacetChips.tsx`, `listeners-query.ts` and `components/ListenersLink.tsx` |
@@ -329,7 +336,7 @@ Two separate lenses, reported separately, even when they look at the same file:
   the existing code already holds (layering, typed errors, `withWeaveLock`, in-lock re-checks,
   idempotency shape, redaction, test placement, ESM/`.js` suffixes, no lint/format churn)?
 - **Spec**: does the code do what the specs of §2 require, no more and no less? Gaps, silent
-  divergences, and things built beyond the spec both count. For this branch the withdraw-invitation spec is
+  divergences, and things built beyond the spec both count. For this branch the kick-participant spec is
   the one to hold the code against line by line, and the texts it quotes are binding, byte for byte.
 
 Each finding, in priority order:
@@ -358,8 +365,8 @@ Also:
   [TESTING.md](TESTING.md): `pnpm -r build`, `pnpm -r typecheck`, and `pnpm --workspace-concurrency=1 -r test`
   (the serial run — tests must not run concurrently across packages, and they need Docker for the
   Postgres testcontainer or a reachable compose Postgres). Give the totals you saw; on this branch
-  they should be **2473 tests in 80 files** (core 781/32, web 982/17, server 247/10,
-  claude-channel 152/9, cli 89/5, client 51/4, mcp-tools 171/3), with `pnpm -r typecheck` clean.
+  they should be **2538 tests in 81 files** (core 809/33, web 994/17, server 256/10,
+  claude-channel 159/9, cli 92/5, client 53/4, mcp-tools 175/3), with `pnpm -r typecheck` clean.
 - **Explicitly state anything you could not verify** — a suite you could not run, a path you could only
   read, a claim in SECURITY.md you could not exercise. An unverified assumption stated as fact is
   worse to us than a gap you name.
@@ -409,8 +416,8 @@ Derived from the code and the docs; answer them even if the answer is "yes, it h
    mints an invitation into a Weave the requester is not (still) a keeper of — a demotion between
    open and accept, an archived target, a closed target Thread, a Lobby keeper accepting on the
    requester's behalf, an agent key standing for both credentials, a removed instance keeper.
-10. **Is the Lobby→target lock order really total?** Four flows take two Weave
-    rows, Lobby first (`withWeaveLocks`): `accept`, `inviteToWeave`, a removal from a request's Thread, and `withdrawInvitation`. Is there any other path that can hold one Weave's row and
+10. **Is the Lobby→target lock order really total?** Five flows take two Weave
+    rows, Lobby first (`withWeaveLocks`): `accept`, `inviteToWeave`, a removal from a request's Thread, `withdrawInvitation`, and `kickParticipant`. Is there any other path that can hold one Weave's row and
     wait for another's, and so close a cycle?
 11. **Is "addressed-only" complete?** Every Lobby event is supposed to reach exactly the participants
     named in its own payload, and never to wake a `wake: "all"` session standing in the Lobby. Check
@@ -425,26 +432,26 @@ Derived from the code and the docs; answer them even if the answer is "yes, it h
 
 For **this branch** specifically:
 
-13. **Can a withdrawal and a redemption both win?** `withdrawInvitation` takes the Lobby's lock, then
-    the target's, then the invitation row `FOR UPDATE`; `redeemInvitation` takes only the target's,
-    then the row. Find an interleaving that leaves a row both redeemed and withdrawn, a participant
-    created from a withdrawn invitation, a `weave.invitation_withdrawn` for a redeemed one, or a
-    deadlock between the two or with `accept` or a removal from a request's Thread.
-14. **Is the authority exactly `inviteToWeave`'s?** `assertIsKeeperOf` before anything about the
-    invitation is read, `assertStillKeeperOf` inside the target's lock. Find a caller other than a
-    keeper of the target or an instance keeper that lists or withdraws, a demotion that slips
-    between the two checks, or an answer that tells a non-keeper whether an invitation id exists.
-15. **Is the idempotent answer honest?** A repeat answers `created: false` with the original
-    withdrawal's seq, read from the Lobby log, and writes nothing. Find a direct row with
-    `revoked_at` set that no `weave.invitation_withdrawn` names, or a request's invitation, withdrawn
-    by a removal, that answers anything but the request refusal.
-16. **Does the event reach exactly the invitee?** `weave.invitation_withdrawn` names its invitee in
-    `participantId`: check `inbox`, `shouldWake` in both wake modes and with `invites` off, and the
-    web, and that no secret, token or key is in its payload.
-17. **Does every reader say the same thing?** The web line, the Markdown export, `loom read` and the
-    channel's two texts against spec §7.5 and §8.1 to §8.3; and the CLI's three forms of
-    `invite-weave` under commander's parsing (a participant id never taken for a subcommand,
-    `--thread` missing as exit 2).
+13. **Can a pending invitation undo a kick?** The kick withdraws, inside the Weave's lock, every
+    invitation into the Weave still pending for the kicked agent, and compares no clock. Find an
+    interleaving of `kickParticipant` with `inviteToWeave`, `accept` or `redeemInvitation` that
+    leaves an invitation issued before the kick redeemable after it, a kicked row adopted without
+    being readmitted, or a deadlock among them or with a removal from a request's Thread.
+14. **Is the token refused everywhere?** `resolveCredential` refuses a kicked token, `resolveInWeave`
+    a kicked agent's mapping, `joinWeave` its secret path. Find a surface (REST, MCP, the ticket, the
+    upgrade, a request's target credential, the WebSocket re-check, a Thread-addressed call) that
+    still accepts either after the kick commits, beyond the one in-flight call KNOWN-ISSUES names.
+15. **Do the streams close at the kick?** Every stream re-checks its credential before a
+    `participant.kicked` is sent, live, replayed or in a recovered gap. Find a path on which the
+    kicked participant receives the kick, or anything after it, or on which another reader does not.
+16. **Is the authority exactly a keeper's, re-checked?** `assertIsKeeperOf` before anything about the
+    participant is read, `assertStillKeeperOf` inside the locks, never oneself, never the Lobby. Find
+    a caller that kicks without keepership, a demotion or a kick of the kicker that slips between the
+    checks, or an answer that tells a non-keeper whether a participant id exists.
+17. **Does every reader say the same thing, and keep the names?** The web line, the export,
+    `loom read` and the channel against spec §9.7 and §11; the people list, the composer, `loom info`
+    and the export's Participants line leaving kicked participants out or marking them, while every
+    old message and system line still names them.
 
 ## 7. How findings will be handled
 

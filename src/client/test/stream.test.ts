@@ -182,3 +182,23 @@ describe("stream survives a failing WebSocket constructor", () => {
     expect(statuses.filter(([st]) => st === "closed")).toHaveLength(1);
   });
 });
+
+describe("a kicked participant's stream (spec 2026-10-09 §8.1)", () => {
+  it("reports closed with forbidden and does not reconnect again", async () => {
+    await srv().core.ensureLobby();
+    const r = await anon.createWeave(input);
+    const j = await anon.joinWeave(r.secret, { name: "Gone", kind: "human" });
+    const statuses: [StreamStatus, unknown][] = [];
+    anon.withToken(j.token).stream(r.weave.id, {
+      onEvent: () => {}, onStatus: (st, d) => statuses.push([st, d?.error]), backoffMs: { initial: 20, max: 50 },
+    });
+    await waitFor(() => statuses.some(([st]) => st === "open"));
+    await anon.withToken(r.token).kickParticipant(r.weave.id, j.participant.id);
+    await waitFor(() => statuses.some(([st]) => st === "closed"));
+    expect(statuses.find(([st]) => st === "closed")![1]).toMatchObject({ code: "forbidden" });
+    const settled = statuses.length;
+    await new Promise((done) => setTimeout(done, 200));      // many backoffs of 20 ms
+    expect(statuses.length).toBe(settled);
+    expect(statuses.filter(([st]) => st === "reconnecting")).toHaveLength(1);
+  });
+});

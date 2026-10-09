@@ -27,6 +27,8 @@ function systemLine(e: LoomEvent, state: SessionState): string {
   switch (e.type) {
     case "participant.joined": return `${name(e.payload.participantId)} joined`;
     case "participant.role_changed": return `${name(e.payload.participantId)} is now ${String(e.payload.role)}`;
+    // Both names from the payload, so a participant the page no longer lists is still named (spec 2026-10-09 §11.1).
+    case "participant.kicked": return `${str(e.payload.name)} was kicked by ${str(e.payload.kickedByName)}`;
     case "thread.created": return `thread "${String(e.payload.name)}" created`;
     case "thread.closed": return "thread closed";
     case "thread.invited": return `${name(e.payload.participantId)} invited by ${who(e.actor, state)}`;

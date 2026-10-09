@@ -27,7 +27,7 @@ describe("errors", () => {
 describe("EVENT_TYPES (spec 2026-09-28 §10.0)", () => {
   /** The members the EventType union named before it was derived from EVENT_TYPES, in its order. */
   const NAMED = [
-    "message", "participant.joined", "participant.role_changed",
+    "message", "participant.joined", "participant.role_changed", "participant.kicked",
     "thread.created", "thread.closed", "thread.invited", "thread.removed", "thread.url_changed",
     "weave.archived", "weave.guidelines_changed",
     "participant.capabilities_changed", "listener.removed",
@@ -50,6 +50,11 @@ describe("EVENT_TYPES (spec 2026-09-28 §10.0)", () => {
   it("EVENT_TYPES holds weave.invitation_withdrawn directly after weave.invited, as its last entry (spec 2026-10-08 §6.2)", () => {
     const at = (t: string) => (EVENT_TYPES as readonly string[]).indexOf(t);
     expect([at("weave.invitation_withdrawn") - at("weave.invited"), at("weave.invitation_withdrawn")]).toEqual([1, EVENT_TYPES.length - 1]);
+  });
+
+  it("EVENT_TYPES holds participant.kicked directly after participant.role_changed (spec 2026-10-09 §5.2)", () => {
+    const at = (t: string) => (EVENT_TYPES as readonly string[]).indexOf(t);
+    expect(at("participant.kicked") - at("participant.role_changed")).toBe(1);
   });
 });
 

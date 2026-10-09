@@ -8,6 +8,7 @@ import { withWeaveLock } from "./events.js";
 import { actorId, assertIsKeeperOf, assertStillKeeperOf } from "./actors.js";
 import { getThread } from "./threads.js";
 import { lastRemovalSeq } from "./removals.js";
+import { KICKED_TARGET } from "./participants.js";
 import type { Actor } from "./types.js";
 
 /**
@@ -48,9 +49,12 @@ export async function inviteParticipant(db: Db, bus: EventBus, actor: Actor, thr
     if (weave.archivedAt) throw errors.weaveArchived();
     const [fresh] = await tx.select({ closedAt: threads.closedAt }).from(threads).where(eq(threads.id, threadId));
     if (fresh!.closedAt) throw errors.threadClosed();
-    const [invitee] = await tx.select({ id: participants.id }).from(participants)
+    const [invitee] = await tx.select({ id: participants.id, kickedAt: participants.kickedAt }).from(participants)
       .where(and(eq(participants.id, participantId), eq(participants.weaveId, t.weaveId))).limit(1);
     if (!invitee) throw errors.validation("No such participant in this Weave");
+    // A Thread invite is "your input is wanted here", which a kicked participant cannot act on, and it
+    // is no way back into the Weave (spec 2026-10-09 §7.6).
+    if (invitee.kickedAt) throw errors.validation(KICKED_TARGET);
     const since = await lastRemovalSeq(tx, threadId, participantId);
     const [existing] = await tx.select({ seq: events.seq }).from(events)
       .where(and(eq(events.threadId, threadId), eq(events.type, "thread.invited"),

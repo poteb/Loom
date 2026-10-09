@@ -47,7 +47,7 @@ const JOINED = {
   weaveId: LOBBY.weaveId,
   weave: { id: LOBBY.weaveId, title: "Lobby", createdAt: "", archivedAt: null, lastSeq: 0, guidelines: "" },
   generalThreadId: "g1",
-  participant: { id: "p-dana", weaveId: LOBBY.weaveId, name: "dana", kind: "human" as const, role: "member" as const, joinedAt: "", agentId: null, capabilities: null, lastSeenAt: null },
+  participant: { id: "p-dana", weaveId: LOBBY.weaveId, name: "dana", kind: "human" as const, role: "member" as const, joinedAt: "", agentId: null, capabilities: null, lastSeenAt: null, kickedAt: null },
   token: "participant-token",
   guidelines: "",
 };
@@ -142,7 +142,7 @@ const INSTANCE: Routes = {
     actor: JOINED.participant.id, at: "", payload: { text: "" } }),
   // A *fatal* ticket failure is what leaves no socket and no reconnect timer behind, so nothing of
   // this page outlives the test that mounted it.
-  [TICKET]: () => json({ code: "forbidden", message: "no stream in tests" }, 403),
+  [TICKET]: () => json({ code: "weave_not_found", message: "no stream in tests" }, 404),
 };
 
 /** Several macrotask turns: the pointer resolving, the first query landing, and a rebuilt one after. */
@@ -280,7 +280,7 @@ describe("the Lobby's two addresses (spec §4.1)", () => {
 /**
  * Spec §3.2, asserted by counting requests and never by inspecting internals. This is the one
  * **absolute** request count in the suite, and it is one legitimately: the `ws-ticket` row answers a
- * fatal `403`, so this harness opens no stream, has no reconnect and therefore schedules no refresh
+ * fatal `404`, so this harness opens no stream, has no reconnect and therefore schedules no refresh
  * — nothing but a remount can ask for the Weave or its events a second time, which is the claim.
  */
 describe("the session does not remount on a view flip (spec §3.2)", () => {

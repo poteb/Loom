@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from "preact/hooks";
-import type { SessionState } from "../session.js";
+import { present, type SessionState } from "../session.js";
 import { applyMention, clampSelection, completeMention } from "./mention-logic.js";
 
 export function Composer({ state, onSend, draft }: { state: SessionState; onSend: (text: string) => Promise<void>; draft?: string }) {
@@ -10,7 +10,8 @@ export function Composer({ state, onSend, draft }: { state: SessionState; onSend
   const [dismissed, setDismissed] = useState(false);
   const ta = useRef<HTMLTextAreaElement>(null);
   const id = useId();
-  const names = state.participants.map((p) => p.name);
+  // A kicked participant is never offered (spec 2026-10-09 §6).
+  const names = present(state.participants).map((p) => p.name);
   const mention = completeMention(text, caret, names);
   const query = mention?.query;
   // A new query means a new list: the highlight starts at the top again, and an Escape that hid the

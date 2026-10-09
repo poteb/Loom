@@ -16,10 +16,12 @@ export type Participant = {
   capabilities: Profile | null;
   /** When this participant last made a call, stamped by the server; null until the first. */
   lastSeenAt: string | null;
+  /** When a keeper kicked it out of this Weave (spec 2026-10-09 §6), ISO; null while it is here. A kicked participant stays listed, so names in the history resolve. */
+  kickedAt: string | null;
 };
 
 export type EventType =
-  | "message" | "participant.joined" | "participant.role_changed"
+  | "message" | "participant.joined" | "participant.role_changed" | "participant.kicked"
   | "thread.created" | "thread.closed" | "thread.invited" | "thread.removed" | "thread.url_changed"
   | "weave.archived" | "weave.guidelines_changed"
   // Lobby. All of these are addressed-only: they never wake anyone through a Weave's "all events" mode.
@@ -213,3 +215,5 @@ export type PendingInvitation = {
 /** What a withdrawal answers (spec 2026-10-08 §4.1): `created` is false on a repeat, which carries the original seq. */
 export type WithdrawResult = { invitationId: string; seq: number; withdrawnAt: string; created: boolean };
 export type RemovalResult = { seq: number; created: boolean; acceptanceRemoved: boolean; targetRemoved: boolean };
+/** What a kick answers (spec 2026-10-09 §4.1): `created` is false on a repeat, which carries the kick's seq; `withdrawn` is the invitations this call withdrew. */
+export type KickResult = { participantId: string; name: string; seq: number; kickedAt: string; created: boolean; withdrawn: string[] };

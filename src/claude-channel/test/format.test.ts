@@ -300,3 +300,19 @@ describe("withdrawn invitations (spec 2026-10-08 §8.1)", () => {
     expect(formatEvent(withdrawnFor("p2"), weave, names, "p1").content).toBe('Invitation to "Loom development" for Paw withdrawn by Claude-Code');
   });
 });
+
+describe("participant.kicked (spec 2026-10-09 §11.3)", () => {
+  /** A keeper unknown to this Weave's names kicked someone also unknown to them: the payload names both. */
+  const kicked = ev({ type: "participant.kicked", actor: "kp9",
+    payload: { participantId: "p9", name: "ChatGPT-Work", kickedBy: "kp9", kickedByName: "Claude-Code" } });
+
+  it("formatEvent names both people from the payload alone", () => {
+    const r = formatEvent(kicked, weave, names, "p1");
+    expect([r.content, r.meta.type]).toEqual(["ChatGPT-Work was kicked from the Weave by Claude-Code", "participant.kicked"]);
+  });
+
+  it("shouldWake: it wakes a session in wake all, and not in mentions mode (no rule of its own)", () => {
+    expect(shouldWake(kicked, { participantId: "p1", wake: "all", invites: true, requests: true })).toBe(true);
+    expect(shouldWake(kicked, { participantId: "p1", wake: "mentions", invites: true, requests: true })).toBe(false);
+  });
+});

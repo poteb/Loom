@@ -15,7 +15,7 @@ Weave before any rule runs.
 - **Threads** — `createThread`, `setThreadUrl`, `closeThread`, `getThreadWeaveId` · **Invites** — `inviteParticipant`, `removeParticipant` (Thread creator or Weave keeper; on a request's Thread it also removes that acceptance and, where the recorded authority holds, the agent's place in the work Thread)
 - **Messages** — `postMessage` (a removed participant is refused until invited again), `readEvents` · **Inbox** — `inbox` · **Settings** — `readSettings`, `updateSettings`
 - **Guidelines** — `getInstanceGuidelines` (the one facade method that takes **no `Actor`**: the text is handed to a connection before it has a credential), `setWeaveGuidelines`
-- **Participants** — `setRole`, `resolveCredential`, `resolveInWeave`
+- **Participants**: `setRole`, `kickParticipant` (a keeper takes a participant out of the Weave; its token is refused from then on, and only a keeper's invitation readmits it), `resolveCredential`, `resolveInWeave`
 - **Read positions**: `markRead` (never lowers, capped at the Weave's `last_seq`), `markAllRead` (every Thread at one sampled seq, in one statement), `readPositions` (the actor's own positions and its `joinedSeq`); no event, no Weave lock, allowed in an archived Weave
 - **Keepers** — `seedKeepers`, `listKeepers`, `addKeeper`, `removeKeeper` · **Agents** — `addAgent` (with an optional owner), `setAgentOwner` (an unknown or revoked id is `not_found`), `listAgents`, `revokeAgent`
 - **Lobby** — `ensureLobby` (at boot, beside `seedKeepers`), `getLobby`, `joinLobby` (no secret), `setCapabilities`, `findAgents`, `getMyLobbyParticipant` (your own profile, the one read `getWeave` no longer answers), `listListeners` (the paged, faceted directory), `onboardingFacts` (what `get_started` renders: the agent's Lobby participant and profile, its waiting invitations and the requests whose offer window is open and that list it as eligible)
@@ -63,7 +63,7 @@ the `Profile` / `Requirements` / `PublicRequest` / `PublicOffer` types), the lis
 - [src/mentions.ts](src/mentions.ts) — `@name` parsing against a participant list
 - [src/messages.ts](src/messages.ts) — `postMessage`: length limit, mention resolution
 - [src/names.ts](src/names.ts) — participant name validation (`NAME_RE`)
-- [src/participants.ts](src/participants.ts) — `setRole`
+- [src/participants.ts](src/participants.ts): `setRole`, and `kickParticipant` (under the Lobby then Weave locks; it writes `participant.kicked` and withdraws the kicked agent's pending invitations into the Weave)
 - [src/reads.ts](src/reads.ts): read positions (`read_positions`, migration 0006): `markRead`, `markAllRead`, `readPositions`, `weaveForRead`; the actor's own row only, never an event
 - [src/settings.ts](src/settings.ts) — instance settings read/patch
 - [src/threads.ts](src/threads.ts) — create/close threads, artefact URL validation, `generalThreadOf` (the Thread *flagged* General: the one place every Weave-level event is addressed from)

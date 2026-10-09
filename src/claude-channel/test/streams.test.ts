@@ -30,7 +30,7 @@ function weaveInfo(extraThreads: Thread[] = [], guidelines = ""): WeaveInfo {
       { id: "t1", weaveId: WEAVE_ID, name: "Existing", isGeneral: false, createdBy: "p1", createdAt: "", closedAt: null, url: null },
       ...extraThreads,
     ],
-    participants: [{ id: "p1", weaveId: WEAVE_ID, name: "Claude", kind: "agent" as const, role: "member" as const, joinedAt: "", agentId: null, capabilities: null, lastSeenAt: null }],
+    participants: [{ id: "p1", weaveId: WEAVE_ID, name: "Claude", kind: "agent" as const, role: "member" as const, joinedAt: "", agentId: null, capabilities: null, lastSeenAt: null, kickedAt: null }],
     guidelines,
   };
 }
@@ -638,6 +638,96 @@ describe("guidelines preamble", () => {
     streams[1]!.opts.onEvent(event(6));
     await waitFor(() => got.length === 3);
     expect(got[2]!.content).toBe(`${UPDATED}\n\n---\n\nm6`);
+    sm.closeAll();
+  });
+});
+
+describe("a refused identity is dropped (spec 2026-10-09 §8.3)", () => {
+  const REFUSED = () => new LoomClientError("forbidden", "You were removed from this Weave");
+  const NOTICE = {
+    content: 'You were removed from "T": Loom refuses this participant\'s token. The channel forgot this Weave; a keeper must invite you back (invite_to_weave).',
+    meta: { weave: WEAVE_ID, weave_title: "T", type: "participant.kicked" },
+  };
+
+  it("a stream that closes with forbidden is stopped, removed from state, notified once, and not restarted", async () => {
+    const w = makeWeave();
+    const state = await makeState(w);
+    const log = vi.fn();
+    const notify = vi.fn().mockResolvedValue(undefined);
+    const { client, streams } = makeFakeClient();
+    const sm = new StreamManager(client, state, notify, log, { initial: 20, max: 80 });
+    sm.start(WEAVE_ID, w);
+    await waitFor(() => streams.length === 1);
+    streams[0]!.opts.onStatus?.("closed", { error: REFUSED() });
+    await waitFor(() => notify.mock.calls.length === 1);
+    expect(notify).toHaveBeenCalledWith(NOTICE);
+    expect(state.load().weaves[WEAVE_ID]).toBeUndefined();
+    expect(log).toHaveBeenCalledWith(`identity for weave ${WEAVE_ID} refused (forbidden): dropped`);
+    expect(streams[0]!.close).toHaveBeenCalled();
+    await new Promise((r) => setTimeout(r, 60));   // past the 20 ms backoff
+    expect([streams.length, notify.mock.calls.length]).toEqual([1, 1]);
+  });
+
+  it("the same when the restart's getWeave answers forbidden", async () => {
+    const w = makeWeave();
+    const state = await makeState(w);
+    const log = vi.fn();
+    const notify = vi.fn().mockResolvedValue(undefined);
+    const { client, streams, getWeaveCalls } = makeFakeClient({ onGetWeave: (call) => { if (call === 2) throw REFUSED(); } });
+    const sm = new StreamManager(client, state, notify, log, { initial: 20, max: 80 });
+    sm.start(WEAVE_ID, w);
+    await waitFor(() => streams.length === 1);
+    streams[0]!.opts.onStatus?.("closed", { error: new LoomClientError("network", "boom") });   // an ordinary restart
+    await waitFor(() => notify.mock.calls.length === 1);
+    expect(notify).toHaveBeenCalledWith(NOTICE);
+    expect(state.load().weaves[WEAVE_ID]).toBeUndefined();
+    await new Promise((r) => setTimeout(r, 60));
+    expect([streams.length, getWeaveCalls(), notify.mock.calls.length]).toEqual([1, 2, 1]);
+  });
+
+  it("invalid_token still restarts with backoff and drops nothing", async () => {
+    const w = makeWeave();
+    const state = await makeState(w);
+    const notify = vi.fn().mockResolvedValue(undefined);
+    const { client, streams } = makeFakeClient();
+    const sm = new StreamManager(client, state, notify, vi.fn(), { initial: 20, max: 80 });
+    sm.start(WEAVE_ID, w);
+    await waitFor(() => streams.length === 1);
+    streams[0]!.opts.onStatus?.("closed", { error: new LoomClientError("invalid_token", "Unknown credential") });
+    await waitFor(() => streams.length === 2);
+    expect([notify.mock.calls.length, state.load().weaves[WEAVE_ID]?.token]).toEqual([0, "tok"]);
+    sm.closeAll();
+  });
+
+  it("a replacement token another session stored outlives the old token's refusal: kept with every cursor and preference, the stream restarted with it, nothing notified", async () => {
+    // One machine, one state directory, two sessions. A listens with "tok"; B, after the kick, is
+    // readmitted and stores the new token; only then does A's stream get its delayed forbidden.
+    const w = makeWeave();
+    const a = await makeState(w, "s1");
+    await a.setPrefs(WEAVE_ID, { invites: false });
+    const log = vi.fn();
+    const notify = vi.fn().mockResolvedValue(undefined);
+    const { client: fake, streams } = makeFakeClient();
+    const tokens: string[] = [];
+    const client = { ...fake, withToken: (t: string) => { tokens.push(t); return fake.withToken(t); } } as unknown as LoomClient;
+    const sm = new StreamManager(client, a, notify, log, { initial: 20, max: 80 });
+    sm.start(WEAVE_ID, w);
+    await waitFor(() => streams.length === 1);
+    const b = new ChannelState(a.dir, "s2");
+    await b.setPrefs(WEAVE_ID, { wake: "mentions" });
+    await b.upsertWeave(WEAVE_ID, { ...makeWeave(), token: "tok-2", lastSeq: 5 });
+    streams[0]!.opts.onStatus?.("closed", { error: REFUSED() });
+    await waitFor(() => streams.length === 2);
+    expect(tokens).toEqual(["tok", "tok-2"]);
+    expect(streams[0]!.close).toHaveBeenCalled();
+    expect(streams[1]!.opts.since).toBe(3);   // A's own cursor, kept
+    expect(log).toHaveBeenCalledWith(`identity for weave ${WEAVE_ID} refused (forbidden): a replacement is stored, restarted with it`);
+    const after = new ChannelState(a.dir, "s3").load();
+    expect(after.weaves[WEAVE_ID]?.token).toBe("tok-2");
+    expect([after.sessions.s1?.cursors[WEAVE_ID], after.sessions.s1?.prefs?.[WEAVE_ID]]).toEqual([3, { invites: false }]);
+    expect([after.sessions.s2?.cursors[WEAVE_ID], after.sessions.s2?.prefs?.[WEAVE_ID]]).toEqual([5, { wake: "mentions" }]);
+    await new Promise((r) => setTimeout(r, 60));   // past the 20 ms backoff: no further restart
+    expect([streams.length, notify.mock.calls.length]).toEqual([2, 0]);
     sm.closeAll();
   });
 });

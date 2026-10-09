@@ -414,3 +414,40 @@ describe("the offline-removal setting over REST (spec 2026-09-30 §7)", () => {
     expect((await put({ removeOfflineListenersAfterMs: 86_400_000 })).status).toBe(200);
   });
 });
+
+describe("kicking a participant over REST (spec 2026-10-09 §9.2)", () => {
+  /** A Weave with a member to kick; the Lobby exists, as it does on every booted instance. */
+  async function kickable(name: string) {
+    await s.core.ensureLobby();
+    const c = await api(s.baseUrl, "POST", "/api/weaves", creator);
+    const j = await api(s.baseUrl, "POST", `/api/weaves/${c.json.secret}/join`, { name, kind: "agent" });
+    return { weaveId: c.json.weave.id as string, keeper: c.json.token as string, keeperId: c.json.participant.id as string,
+      member: j.json.token as string, memberId: j.json.participant.id as string };
+  }
+  const kickPath = (weaveId: string, pid: string) => `/api/weaves/${weaveId}/participants/${pid}/kick`;
+
+  it("POST .../kick answers 200 created true, then 200 created false with the same seq; a member 403, the Lobby 400, oneself 400", async () => {
+    const f = await kickable("KickMe");
+    const first = await api(s.baseUrl, "POST", kickPath(f.weaveId, f.memberId), undefined, f.keeper);
+    expect([first.status, first.json.participantId, first.json.name, first.json.created, first.json.withdrawn]).toEqual([200, f.memberId, "KickMe", true, []]);
+    const again = await api(s.baseUrl, "POST", kickPath(f.weaveId, f.memberId), undefined, f.keeper);
+    expect([again.status, again.json]).toEqual([200, { ...first.json, created: false }]);
+    const g = await kickable("KickMeToo");
+    const member = await api(s.baseUrl, "POST", kickPath(g.weaveId, g.keeperId), undefined, g.member);
+    expect([member.status, member.json.code]).toEqual([403, "forbidden"]);
+    const { weaveId: lobbyId } = await s.core.ensureLobby();
+    const lobby = await api(s.baseUrl, "POST", kickPath(lobbyId, g.memberId), undefined, KEEPER);
+    expect([lobby.status, lobby.json.code, lobby.json.message]).toEqual([400, "validation", "Nobody is kicked from the Lobby"]);
+    const self = await api(s.baseUrl, "POST", kickPath(g.weaveId, g.keeperId), undefined, g.keeper);
+    expect([self.status, self.json.code, self.json.message]).toEqual([400, "validation", "You cannot kick yourself"]);
+  });
+
+  it("the kicked token is refused: GET /api/weaves/:id and POST /api/auth/ws-ticket answer 403 with the message", async () => {
+    const f = await kickable("KickRead");
+    expect((await api(s.baseUrl, "POST", kickPath(f.weaveId, f.memberId), undefined, f.keeper)).status).toBe(200);
+    const read = await api(s.baseUrl, "GET", `/api/weaves/${f.weaveId}`, undefined, f.member);
+    expect([read.status, read.json.code, read.json.message]).toEqual([403, "forbidden", "You were removed from this Weave"]);
+    const ticket = await api(s.baseUrl, "POST", "/api/auth/ws-ticket", undefined, f.member);
+    expect([ticket.status, ticket.json.code, ticket.json.message]).toEqual([403, "forbidden", "You were removed from this Weave"]);
+  });
+});

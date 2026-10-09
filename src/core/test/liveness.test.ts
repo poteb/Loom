@@ -214,6 +214,6 @@ describe("the check-in history (spec 2026-09-27 §4.1)", () => {
     const actor = await resolveCredential(db, j.token, T0);
     await setCapabilities(db, bus, actor, { owner: "paw" });
     const mine = (await getWeave(db, actor, lobbyId)).participants.find((p) => p.id === j.participant.id)!;
-    expect(Object.keys(mine).sort()).toEqual(["agentId", "capabilities", "id", "joinedAt", "kind", "lastSeenAt", "name", "role", "weaveId"]);
+    expect(Object.keys(mine).sort()).toEqual(["agentId", "capabilities", "id", "joinedAt", "kickedAt", "kind", "lastSeenAt", "name", "role", "weaveId"]);
   });
 });

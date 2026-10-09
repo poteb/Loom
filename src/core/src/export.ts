@@ -39,7 +39,7 @@ export async function exportWeave(db: Db, actor: Actor, weaveId: string, format:
   lines.push(`- Created: ${info.weave.createdAt}`);
   lines.push(`- Archived: ${info.weave.archivedAt ?? "no"}`);
   if (info.weave.guidelines) lines.push("- Guidelines:", ...info.weave.guidelines.split("\n").map((l) => `  > ${l}`));
-  lines.push(`- Participants: ${info.participants.map((p: PublicParticipant) => `${p.name} (${p.kind}, ${p.role})`).join(", ")}`, "");
+  lines.push(`- Participants: ${info.participants.map((p: PublicParticipant) => `${p.name} (${p.kind}, ${p.role}${p.kickedAt ? ", kicked" : ""})`).join(", ")}`, "");
   for (const t of info.threads) {
     lines.push(t.url ? `## ${t.name}\n\n<${t.url}>` : `## ${t.name}`, "");
     for (const e of all.filter((x) => x.threadId === t.id)) {
@@ -59,6 +59,8 @@ export async function exportWeave(db: Db, actor: Actor, weaveId: string, format:
       const sys =
         e.type === "participant.joined" ? `${nameOf(e.payload.participantId)} joined` :
         e.type === "participant.role_changed" ? `${nameOf(e.payload.participantId)} is now ${String(e.payload.role)}` :
+        // A keeper kicked a participant out of the Weave (spec 2026-10-09 §11.2), both names from the payload.
+        e.type === "participant.kicked" ? `${String(e.payload.name ?? "?")} was kicked by ${String(e.payload.kickedByName ?? "?")}` :
         e.type === "thread.created" ? `Thread "${String(e.payload.name)}" created by ${who(e.actor)}` :
         e.type === "thread.closed" ? `Thread closed by ${who(e.actor)}` :
         e.type === "thread.url_changed" ? (e.payload.url ? `Thread now links to ${String(e.payload.url)}` : "Thread no longer links to an artefact") :

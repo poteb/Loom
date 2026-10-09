@@ -26,6 +26,7 @@ export class CoreToolBackend implements LoomToolBackend {
   async closeThread(c: string, threadId: string) { await this.core.closeThread(await this.actor(c), threadId); }
   async archiveWeave(c: string, weaveId: string) { await this.core.archiveWeave(await this.actor(c), weaveId); }
   async setRole(c: string, weaveId: string, participantId: string, role: Role) { return this.core.setRole(await this.actor(c), weaveId, participantId, role); }
+  async kickParticipant(c: string, weaveId: string, participantId: string) { return this.core.kickParticipant(await this.actor(c), weaveId, participantId); }
   async exportWeave(c: string, weaveId: string, format: "md" | "json") { return this.core.exportWeave(await this.actor(c), weaveId, format); }
   async keeperListWeaves(c: string) { return this.core.listWeaves(await this.actor(c)); }
   async keeperGetSettings(c: string) { return this.core.readSettings(await this.actor(c)); }

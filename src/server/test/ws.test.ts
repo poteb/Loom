@@ -392,3 +392,157 @@ describe("stream", () => {
     expect(JSON.parse(noRoute.body).code).toBe("not_found");
   });
 });
+
+describe("a kick closes the kicked participant's streams (spec 2026-10-09 §8.1)", () => {
+  // A server of its own, whose TTL re-check never comes due within a case once a stream's first
+  // replay page has checked, so only the re-check a kick forces can close a stream. Its freshDb()
+  // truncates the database this file shares with `s`, which is why this describe runs last; `s`
+  // serves no case after it.
+  let k: Awaited<ReturnType<typeof startTestServer>>;
+  beforeAll(async () => {
+    k = await startTestServer({ authTtlMs: 600_000 });
+    await k.core.seedKeepers([KEEPER]);
+    await k.core.ensureLobby();
+  });
+  afterAll(async () => { await k.close(); });
+
+  const kTicket = async (cred: string) => (await api(k.baseUrl, "POST", "/api/auth/ws-ticket", undefined, cred)).json.ticket as string;
+  /** A raw stream: what it receives, and how it closes. */
+  function watch(url: string) {
+    const ws = new WebSocket(url);
+    const received: LoomEvent[] = [];
+    const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+      ws.on("message", (data) => received.push(JSON.parse(data.toString()) as LoomEvent));
+      ws.on("close", (code, reason) => resolve({ code, reason: reason.toString() }));
+    });
+    const opened = new Promise<void>((resolve, reject) => { ws.once("open", () => resolve()); ws.once("error", reject); });
+    return { ws, received, closed, opened };
+  }
+  /** A Weave whose opener makes seqs 1 to 3, and a member whose join is seq 4. */
+  async function room(name: string) {
+    const c = await api(k.baseUrl, "POST", "/api/weaves", creator);
+    const j = await api(k.baseUrl, "POST", `/api/weaves/${c.json.secret}/join`, { name, kind: "human" });
+    return { weaveId: c.json.weave.id as string, secret: c.json.secret as string, keeper: c.json.token as string,
+      generalId: c.json.generalThread.id as string, member: j.json.token as string, memberId: j.json.participant.id as string };
+  }
+  const kick = (r: { weaveId: string; keeper: string }, pid: string) =>
+    api(k.baseUrl, "POST", `/api/weaves/${r.weaveId}/participants/${pid}/kick`, undefined, r.keeper);
+
+  it("the kicked member's live stream closes with 4401 before the kick is sent to it; the keeper's stream receives the kick", async () => {
+    const r = await room("Mia");
+    const mine = watch(`${k.wsUrl}/api/weaves/${r.weaveId}/stream?since=4&ticket=${await kTicket(r.member)}`);
+    await mine.opened;
+    const theirs = collect(`${k.wsUrl}/api/weaves/${r.weaveId}/stream?since=4&ticket=${await kTicket(r.keeper)}`,
+      (evs) => evs.some((e) => e.type === "participant.kicked"));
+    expect((await kick(r, r.memberId)).status).toBe(200);
+    expect(await mine.closed).toEqual({ code: 4401, reason: "credential revoked" });
+    expect(mine.received.map((e) => e.type)).not.toContain("participant.kicked");
+    const { events, ws } = await theirs.done;
+    expect(events.at(-1)!.payload).toMatchObject({ participantId: r.memberId, name: "Mia" });
+    ws.close();
+  });
+
+  it("a stream replaying across a kick closes there and sends nothing at or after it", async () => {
+    const r = await room("Ned");
+    // The kick and a later message commit after the first replay page's credential check and before
+    // its read, so that read returns the kick in the middle of the page.
+    const original = k.core.readEvents;
+    k.core.readEvents = async (actor, weaveId, opts) => {
+      if (weaveId === r.weaveId && opts.since === 0) {
+        k.core.readEvents = original;
+        expect((await kick(r, r.memberId)).status).toBe(200);                                                   // seq 5
+        await api(k.baseUrl, "POST", `/api/threads/${r.generalId}/messages`, { text: "after the kick" }, r.keeper);   // seq 6
+      }
+      return original(actor, weaveId, opts);
+    };
+    try {
+      const mine = watch(`${k.wsUrl}/api/weaves/${r.weaveId}/stream?since=0&ticket=${await kTicket(r.member)}`);
+      expect((await mine.closed).code).toBe(4401);
+      expect(mine.received.map((e) => e.seq)).toEqual([1, 2, 3, 4]);
+    } finally {
+      k.core.readEvents = original;
+    }
+  });
+
+  it("an agent-key stream closes when that agent's participant is kicked", async () => {
+    const r = await room("Ola");
+    const { key } = await k.core.addAgent(await k.core.resolveCredential(KEEPER), "KickBot");
+    const joined = await api(k.baseUrl, "POST", `/api/weaves/${r.secret}/join`, { name: "KickBot", kind: "agent" }, key);
+    expect(joined.status).toBe(201);           // seq 5
+    const mine = watch(`${k.wsUrl}/api/weaves/${r.weaveId}/stream?since=5&ticket=${await kTicket(key)}`);
+    await mine.opened;
+    expect((await kick(r, joined.json.participant.id as string)).status).toBe(200);
+    expect((await mine.closed).code).toBe(4401);
+    expect(mine.received.map((e) => e.type)).not.toContain("participant.kicked");
+  });
+
+  it("a kick the stream skips as already sent still forces the re-check: the next event closes it with 4401", async () => {
+    const r = await room("Pia");
+    // since=5 is the kick's seq, so the stream counts the kick as already sent and skips it.
+    const mine = watch(`${k.wsUrl}/api/weaves/${r.weaveId}/stream?since=5&ticket=${await kTicket(r.member)}`);
+    await mine.opened;
+    const outcome = Promise.race([
+      mine.closed.then((c) => c.code),
+      new Promise<string>((resolve) => mine.ws.once("message", () => { mine.ws.terminate(); resolve("delivered"); })),
+    ]);
+    expect((await kick(r, r.memberId)).status).toBe(200);                                                   // seq 5
+    await api(k.baseUrl, "POST", `/api/threads/${r.generalId}/messages`, { text: "after the kick" }, r.keeper);   // seq 6
+    expect(await outcome).toBe(4401);
+    expect(mine.received).toEqual([]);
+  });
+
+  it("a stream started past the head re-checks its credential on its first replay page: a kick between the upgrade and the subscription closes it", async () => {
+    const r = await room("Quin");
+    // The kick commits after the upgrade's own check (its readEvents) and before the stream
+    // subscribes, so the stream never hears it live; since=5 is the kick's seq, so replay reads nothing.
+    const original = k.core.readEvents;
+    let armed = true;
+    k.core.readEvents = async (actor, weaveId, opts) => {
+      const out = await original(actor, weaveId, opts);
+      if (armed && weaveId === r.weaveId && opts.limit === 1 && opts.since === undefined) {
+        armed = false;
+        expect((await kick(r, r.memberId)).status).toBe(200);                                             // seq 5
+      }
+      return out;
+    };
+    try {
+      const mine = watch(`${k.wsUrl}/api/weaves/${r.weaveId}/stream?since=5&ticket=${await kTicket(r.member)}`);
+      const outcome = Promise.race([
+        mine.closed.then((c) => c.code),
+        new Promise<string>((resolve) => mine.ws.once("message", () => { mine.ws.terminate(); resolve("delivered"); })),
+      ]);
+      await mine.opened;
+      expect(armed).toBe(false);
+      await api(k.baseUrl, "POST", `/api/threads/${r.generalId}/messages`, { text: "after the kick" }, r.keeper);   // seq 6
+      expect(await outcome).toBe(4401);
+      expect(mine.received).toEqual([]);
+    } finally {
+      k.core.readEvents = original;
+    }
+  });
+
+  it("a kick inside a recovered gap closes the stream and sends nothing at or after it", async () => {
+    const r = await room("Rae");
+    const mine = watch(`${k.wsUrl}/api/weaves/${r.weaveId}/stream?since=0&ticket=${await kTicket(r.member)}`);
+    while (mine.received.length < 4) await new Promise((resolve) => setTimeout(resolve, 10));   // replay read and sent; lastSent = 4
+    const outcome = Promise.race([
+      mine.closed.then((c) => c.code),
+      new Promise<string>((resolve) => mine.ws.on("message", () => {
+        if (mine.received.length > 4) { mine.ws.terminate(); resolve("delivered"); }
+      })),
+    ]);
+
+    // The kick commits as seq 5 but its event never reaches the bus, so the stream first hears of
+    // seq 6 and recovers 5 from the database.
+    const publish = k.core.bus.publish;
+    k.core.bus.publish = (e) => { if (!(e.weaveId === r.weaveId && e.type === "participant.kicked")) publish.call(k.core.bus, e); };
+    try {
+      expect((await kick(r, r.memberId)).status).toBe(200);                                                   // seq 5
+    } finally {
+      k.core.bus.publish = publish;
+    }
+    await api(k.baseUrl, "POST", `/api/threads/${r.generalId}/messages`, { text: "after the kick" }, r.keeper);   // seq 6
+    expect(await outcome).toBe(4401);
+    expect(mine.received.map((e) => e.seq)).toEqual([1, 2, 3, 4]);
+  });
+});

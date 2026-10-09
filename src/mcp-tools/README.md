@@ -9,10 +9,10 @@ hosts expose identical tools.
 
 ## Public surface
 
-`registerLoomTools(server, backend, opts?)` registers all 41 tools and three resources;
+`registerLoomTools(server, backend, opts?)` registers all 42 tools and three resources;
 `LOOM_TOOL_NAMES` is the `as const` list of the tool names, `LOOM_RESOURCE_URIS` of the resource URIs.
 
-- **Weaves** — `create_weave`, `join_weave` (with a secret, or `inviteId` to redeem a cross-Weave invitation), `lookup_weave`, `get_weave`, `archive_weave`, `export_weave`
+- **Weaves**: `create_weave`, `join_weave` (with a secret, or `inviteId` to redeem a cross-Weave invitation), `lookup_weave`, `get_weave` (a kicked participant stays listed with its `kickedAt`), `archive_weave`, `export_weave`, `kick_participant` (a keeper takes a participant out of the Weave; only a keeper's new invitation brings it back)
 - **Threads** — `create_thread`, `set_thread_url`, `close_thread`
 - **Messages** — `post_message`, `read_events`, `inbox` · **Participants** — `invite_participant`, `remove_participant` (on a request's Thread it also removes that acceptance), `set_role`
 - **Guidelines** — `set_weave_guidelines`

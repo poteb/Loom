@@ -47,6 +47,7 @@ export function withStoredCredential(inner: LoomToolBackend, state: ChannelState
     closeThread: async (c, t) => inner.closeThread(byThread(c, t), t),
     archiveWeave: async (c, w) => inner.archiveWeave(byWeave(c, w), w),
     setRole: async (c, w, p, r) => inner.setRole(byWeave(c, w), w, p, r),
+    kickParticipant: async (c, w, p) => inner.kickParticipant(byWeave(c, w), w, p),
     exportWeave: async (c, w, f) => inner.exportWeave(byWeave(c, w), w, f),
     keeperListWeaves: async (c) => inner.keeperListWeaves(keeperOnly(c)),
     keeperGetSettings: async (c) => inner.keeperGetSettings(keeperOnly(c)),

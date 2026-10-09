@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "./db/index.js";
 import { participants, threads } from "./db/schema.js";
 import type { EventBus } from "./bus.js";
@@ -29,7 +29,8 @@ export async function postMessage(db: Db, bus: EventBus, actor: Actor, threadId:
       throw errors.forbidden("You were removed from this Thread; you can post here again once you are invited back");
     }
     const ps = await tx.select({ id: participants.id, name: participants.name })
-      .from(participants).where(eq(participants.weaveId, t.weaveId));
+      // A mention of someone who cannot read is a promise nobody keeps (spec 2026-10-09 §6).
+      .from(participants).where(and(eq(participants.weaveId, t.weaveId), isNull(participants.kickedAt)));
     const mentions = parseMentions(text, ps);
     return {
       result: weave.lastSeq + 1,

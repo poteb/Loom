@@ -200,8 +200,9 @@ export async function withdrawInvitation(
     // Before the two state checks, so a request's invitation answers the same whatever its state.
     if (inv.requestId !== null) throw errors.validation(BELONGS_TO_REQUEST);
     if (inv.revokedAt) {
-      // Only this function withdraws a direct invitation, and always writes its event in the same
-      // transaction, so the newest event naming the id is that withdrawal (spec §4.4); 0 when none
+      // Only this function and a kick (participants.ts) withdraw a direct invitation, and each writes
+      // its event in the same transaction, so the newest event naming the id is that withdrawal (spec
+      // §4.4; 2026-10-09 §4.6); 0 when none
       // is found, the "none" value lastRemovalSeq uses.
       const [withdrawal] = await tx.select({ seq: events.seq }).from(events)
         .where(and(eq(events.weaveId, lobbyId), eq(events.type, "weave.invitation_withdrawn"),
@@ -272,6 +273,16 @@ export async function redeemInvitation(
         : [undefined];
       const out: NewEvent[] = [];
       let p = mine;
+      // Kicked from this Weave (spec 2026-10-09 §7.5): an invitation pending at the kick was withdrawn
+      // by it, so this one was issued after the kick, by a keeper who meant to readmit. The same
+      // participant comes back as a member with a new token, announced as a join, before the
+      // thread.invited, as for a participant new to the Weave.
+      if (p?.kickedAt) {
+        [p] = await tx.update(participants).set({ kickedAt: null, role: "member", token: newSecret() })
+          .where(eq(participants.id, p.id)).returning();
+        out.push({ threadId: thread.id, type: "participant.joined", actor: p!.id,
+          payload: { participantId: p!.id, name: p!.name, kind: p!.kind, role: p!.role } });
+      }
       if (!p) {
         const name = validateName(who.name ?? invitee.name);
         attempted = name;
@@ -289,7 +300,8 @@ export async function redeemInvitation(
         result: {
           weaveId: weave.id, weave: toPublicWeave({ ...weave, lastSeq: weave.lastSeq + out.length }),
           generalThreadId: general.id, participant: toPublicParticipant(p!), token: p!.token,
-          alreadyJoined: !!mine, guidelines: guidelinesFor(await getInstanceGuidelines(tx), weave),
+          // A readmitted participant was not in the Weave when it redeemed.
+          alreadyJoined: !!mine && !mine.kickedAt, guidelines: guidelinesFor(await getInstanceGuidelines(tx), weave),
         },
         events: out,
       };

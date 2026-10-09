@@ -71,6 +71,13 @@
       "when": 1790879530257,
       "tag": "0009_zippy_quicksilver",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791562117629,
+      "tag": "0010_equal_serpent_society",
+      "breakpoints": true
     }
   ]
 }

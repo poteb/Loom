@@ -418,3 +418,18 @@ describe("the offline-removal setting (spec 2026-09-30 §7)", () => {
     expect((await k.admin.updateSettings({ removeOfflineListenersAfterMs: 86_400_000 })).removeOfflineListenersAfterMs).toBe(86_400_000);
   });
 });
+
+describe("kickParticipant (spec 2026-10-09 §9.3)", () => {
+  it("round-trips both created values; the kicked token is refused, and the Weave still lists it with its kickedAt", async () => {
+    await srv().core.ensureLobby();
+    const r = await anon.createWeave(input);
+    const me = anon.withToken(r.token);
+    const j = await anon.joinWeave(r.secret, { name: "Kicked", kind: "agent" });
+    const first = await me.kickParticipant(r.weave.id, j.participant.id);
+    expect(first).toMatchObject({ participantId: j.participant.id, name: "Kicked", created: true, withdrawn: [] });
+    expect(typeof first.kickedAt).toBe("string");
+    expect(await me.kickParticipant(r.weave.id, j.participant.id)).toEqual({ ...first, created: false });
+    await expect(anon.withToken(j.token).getWeave(r.weave.id)).rejects.toMatchObject({ code: "forbidden", status: 403, message: "You were removed from this Weave" });
+    expect((await me.getWeave(r.weave.id)).participants.find((p) => p.id === j.participant.id)!.kickedAt).toBe(first.kickedAt);
+  });
+});
