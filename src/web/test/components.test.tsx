@@ -25,8 +25,8 @@ import { createPersistenceNotice } from "../src/persistence.js";
 import { createWeavesSignal } from "../src/weaves-signal.js";
 import { setIdentity } from "../src/weaves-store.js";
 
-const me = { id: "p1", weaveId: "w1", name: "Paw", kind: "human" as const, role: "member" as const, joinedAt: "", agentId: null, capabilities: null, lastSeenAt: null };
-const bot = { id: "p2", weaveId: "w1", name: "Bot", kind: "agent" as const, role: "member" as const, joinedAt: "", agentId: "a1", capabilities: null, lastSeenAt: null };
+const me = { id: "p1", weaveId: "w1", name: "Paw", kind: "human" as const, role: "member" as const, joinedAt: "", agentId: null, capabilities: null, lastSeenAt: null, kickedAt: null };
+const bot = { id: "p2", weaveId: "w1", name: "Bot", kind: "agent" as const, role: "member" as const, joinedAt: "", agentId: "a1", capabilities: null, lastSeenAt: null, kickedAt: null };
 const general = { id: "g1", weaveId: "w1", name: "General", isGeneral: true, createdBy: "p1", createdAt: "", closedAt: null, url: null };
 const pr = { id: "t1", weaveId: "w1", name: "PR 12", isGeneral: false, createdBy: "p1", createdAt: "", closedAt: null, url: "https://github.com/poteb/Loom/pull/12" };
 
@@ -982,7 +982,7 @@ describe("the Offer form on the Lobby's routes (spec §3.3)", () => {
   const LOBBY_ID = "11111111-1111-4111-8111-111111111111";
   const SECRET = "s".repeat(43);
   const ME = { id: "p-me", weaveId: LOBBY_ID, name: "dana", kind: "agent" as const, role: "member" as const,
-    joinedAt: "", agentId: null, capabilities: null, lastSeenAt: null };
+    joinedAt: "", agentId: null, capabilities: null, lastSeenAt: null, kickedAt: null };
   const REQUESTER = { ...ME, id: "p-other", name: "Paw", kind: "human" as const };
   const MY_PROFILE = `${BASE}/api/lobby/participants/me`;
 

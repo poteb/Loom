@@ -3,7 +3,7 @@ import { resolveBaseUrl } from "./url.js";
 import { openStream, type StreamHandle, type StreamOptions } from "./stream.js";
 import type {
   AcceptResult, Agent, AgentFilter, CreateWeaveInput, CreateWeaveResult, FoundAgent, InboxItem, InvitationResult, InviteResult,
-  JoinResult, Keeper, Kind, ListenersPage, ListenersQuery, Lobby, LoomEvent, LoomRequest, MarkAllReadResult, MarkReadResult,
+  JoinResult, Keeper, KickResult, Kind, ListenersPage, ListenersQuery, Lobby, LoomEvent, LoomRequest, MarkAllReadResult, MarkReadResult,
   Offer, OpenRequestInput, Participant, PendingInvitation, Profile, ReadPositions, RemovalResult, RequestStatus, Role, Settings, Thread, Weave,
   WeaveInfo, WithdrawResult,
 } from "./types.js";
@@ -86,6 +86,10 @@ export class LoomClient {
   }
   setRole(weaveId: string, participantId: string, role: Role): Promise<Participant> {
     return this.call("PUT", `/api/weaves/${weaveId}/participants/${participantId}/role`, { role });
+  }
+  /** Kicks a participant out of `weaveId` (keepers). Idempotent: a repeat answers created false. */
+  kickParticipant(weaveId: string, participantId: string): Promise<KickResult> {
+    return this.call("POST", `/api/weaves/${weaveId}/participants/${participantId}/kick`);
   }
   exportWeave(weaveId: string, format: "md" | "json"): Promise<string> {
     return this.call("GET", `/api/weaves/${weaveId}/export?format=${format}`, undefined, "text");
