@@ -171,13 +171,13 @@ async function migrateToPrefix(db: Db, count: number): Promise<string[]> {
 }
 
 /**
- * Whether the newest migration's effect is in the schema: 0009's column on `settings`. The probe
+ * Whether the newest migration's effect is in the schema: 0010's column on `participants`. The probe
  * must follow the last migration in the journal, or the cases below that use it prove nothing.
  */
 async function newestMigrationApplied(db: Db): Promise<boolean> {
   const rows = await pg(db)`
     select count(*)::int as n from information_schema.columns
-    where table_schema = 'public' and table_name = 'settings' and column_name = 'remove_offline_listeners_after_ms'`;
+    where table_schema = 'public' and table_name = 'participants' and column_name = 'kicked_at'`;
   return (rows as Array<{ n: number }>)[0]!.n === 1;
 }
 
