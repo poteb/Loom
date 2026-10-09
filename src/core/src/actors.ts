@@ -54,6 +54,9 @@ export async function stampSeen(db: Db, which: SQL, now: Date): Promise<void> {
   }).where(and(which, or(isNull(participants.lastSeenAt), lt(participants.lastSeenAt, cutoff))));
 }
 
+/** What a kicked participant's credential is answered with, on every surface (spec 2026-10-09 §7). */
+export const REMOVED_FROM_WEAVE = "You were removed from this Weave";
+
 /**
  * Resolves a bearer credential: participant token, keeper token, agent key, or weave secret. Every
  * authenticated call passes through here, so this is where liveness is stamped: a participant
@@ -64,6 +67,9 @@ export async function resolveCredential(db: Db, credential: string, now: Date = 
   if (!credential) throw errors.invalidToken();
   const [p] = await db.select().from(participants).where(eq(participants.token, credential)).limit(1);
   if (p) {
+    // Kicked out of its Weave by a keeper (spec 2026-10-09 §7.2): refused before the stamp, so a
+    // refused token checks nothing in. Every surface resolves its credential here.
+    if (p.kickedAt) throw errors.forbidden(REMOVED_FROM_WEAVE);
     await stampSeen(db, eq(participants.id, p.id), now);
     // `p` was read before the stamp, so the actor's copy of lastSeenAt is one stamp stale. No rule
     // reads it from the actor; the reads that report lastSeenAt load the row again.
@@ -101,6 +107,9 @@ export async function resolveInWeave(db: Db, actor: Actor, weaveId: string): Pro
   if (!isUuid(weaveId)) throw errors.weaveNotFound();
   const me = await participantForAgent(db, actor.agent.id, weaveId);
   if (!me) throw errors.forbidden("Join the Weave first");
+  // The agent's participant there was kicked (spec 2026-10-09 §7.3): refused before the stamp.
+  // participantForAgent itself answers what exists; its one direct caller reads the Lobby.
+  if (me.kickedAt !== null) throw errors.forbidden(REMOVED_FROM_WEAVE);
   await stampSeen(db, eq(participants.id, me.id), new Date());
   return { kind: "participant", participant: me };
 }

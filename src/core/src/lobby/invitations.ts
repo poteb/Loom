@@ -273,6 +273,16 @@ export async function redeemInvitation(
         : [undefined];
       const out: NewEvent[] = [];
       let p = mine;
+      // Kicked from this Weave (spec 2026-10-09 §7.5): an invitation pending at the kick was withdrawn
+      // by it, so this one was issued after the kick, by a keeper who meant to readmit. The same
+      // participant comes back as a member with a new token, announced as a join, before the
+      // thread.invited, as for a participant new to the Weave.
+      if (p?.kickedAt) {
+        [p] = await tx.update(participants).set({ kickedAt: null, role: "member", token: newSecret() })
+          .where(eq(participants.id, p.id)).returning();
+        out.push({ threadId: thread.id, type: "participant.joined", actor: p!.id,
+          payload: { participantId: p!.id, name: p!.name, kind: p!.kind, role: p!.role } });
+      }
       if (!p) {
         const name = validateName(who.name ?? invitee.name);
         attempted = name;
@@ -290,7 +300,8 @@ export async function redeemInvitation(
         result: {
           weaveId: weave.id, weave: toPublicWeave({ ...weave, lastSeq: weave.lastSeq + out.length }),
           generalThreadId: general.id, participant: toPublicParticipant(p!), token: p!.token,
-          alreadyJoined: !!mine, guidelines: guidelinesFor(await getInstanceGuidelines(tx), weave),
+          // A readmitted participant was not in the Weave when it redeemed.
+          alreadyJoined: !!mine && !mine.kickedAt, guidelines: guidelinesFor(await getInstanceGuidelines(tx), weave),
         },
         events: out,
       };

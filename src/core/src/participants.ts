@@ -19,6 +19,11 @@ export async function setRole(db: Db, bus: EventBus, actor: Actor, weaveId: stri
   return withWeaveLock(db, bus, weaveId, async (tx, weave) => {
     await assertStillKeeperOf(tx, actor, weaveId);
     if (weave.archivedAt) throw errors.weaveArchived();
+    // A kicked participant keeps its row so the history keeps its name; promoting it would make it a
+    // recorded target authority again while it cannot act (spec 2026-10-09 §7.6).
+    const [target] = await tx.select({ kickedAt: participants.kickedAt }).from(participants)
+      .where(and(eq(participants.id, participantId), eq(participants.weaveId, weaveId)));
+    if (target?.kickedAt) throw errors.validation(KICKED_TARGET);
     const [p] = await tx.update(participants).set({ role })
       .where(and(eq(participants.id, participantId), eq(participants.weaveId, weaveId))).returning();
     if (!p) throw errors.validation("No such participant in this Weave");
@@ -44,6 +49,8 @@ export type KickOptions = {
 };
 
 const NO_SUCH_PARTICIPANT = "No such participant in this Weave";
+/** What `setRole` and `inviteParticipant` answer for a participant kicked out of the Weave (spec 2026-10-09 §7.6). */
+export const KICKED_TARGET = "That participant was kicked from this Weave";
 
 /**
  * Kicks a participant out of a Weave (spec 2026-10-09 §4): its `kicked_at` is set and its role is

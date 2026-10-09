@@ -10,7 +10,7 @@ import { getLobbyWeaveId, getSettings } from "./settings.js";
 import { getInstanceGuidelines, guidelinesFor, validateGuidelines } from "./guidelines.js";
 import { appendInTx, withWeaveLock } from "./events.js";
 import { generalThreadOf } from "./threads.js";
-import { actorId, assertCanRead, assertInstanceKeeperFresh, assertIsKeeperOf, assertStillKeeperOf, toPublicParticipant } from "./actors.js";
+import { actorId, assertCanRead, assertInstanceKeeperFresh, assertIsKeeperOf, assertStillKeeperOf, REMOVED_FROM_WEAVE, toPublicParticipant } from "./actors.js";
 import type { Actor, Kind, PublicParticipant, PublicThread, PublicWeave } from "./types.js";
 
 export type CreateWeaveInput = { title: string; opener: string; creator: { name: string; kind: Kind }; guidelines?: string };
@@ -160,6 +160,10 @@ export async function joinWeave(db: Db, bus: EventBus, secret: string, who: { na
   // of a moment earlier. No lock is needed: these paths append no event, so what is owed is an
   // answer current as of the moment it is given, not atomicity with a write.
   const asAlreadyJoined = async (p: typeof participants.$inferSelect): Promise<JoinResult> => {
+    // A kicked agent does not come back through the secret (spec 2026-10-09 §7.4): only a keeper's
+    // invitation readmits it. Both adoption paths, the lookup and the lost race, pass through here,
+    // before any token is handed out.
+    if (p.kickedAt) throw errors.forbidden(`${REMOVED_FROM_WEAVE}: a keeper must invite you back`);
     const [w] = await db.select().from(weaves).where(eq(weaves.id, found.id));
     if (!w) throw errors.weaveNotFound();
     return {

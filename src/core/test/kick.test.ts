@@ -4,10 +4,13 @@ import { freshDb, closeTestDb, keeperToken } from "./helpers.js";
 import { EventBus } from "../src/bus.js";
 import { participants, requestOffers, weaveInvitations, weaves } from "../src/db/schema.js";
 import { readEvents } from "../src/events.js";
-import { resolveCredential } from "../src/actors.js";
+import { resolveCredential, resolveInWeave } from "../src/actors.js";
 import { seedKeepers } from "../src/keepers.js";
 import { addAgent } from "../src/agents.js";
-import { archiveWeave, createWeave, joinWeave, type CreateWeaveResult } from "../src/weaves.js";
+import { archiveWeave, createWeave, getWeave, joinWeave, type CreateWeaveResult } from "../src/weaves.js";
+import { postMessage } from "../src/messages.js";
+import { inviteParticipant } from "../src/invites.js";
+import { exportWeave } from "../src/export.js";
 import { createThread } from "../src/threads.js";
 import { kickParticipant, setRole } from "../src/participants.js";
 import { removeParticipant } from "../src/removals.js";
@@ -317,5 +320,173 @@ describe("kickParticipant (spec 2026-10-09 §4)", () => {
     const lobby = await lobbyLog(f);
     expect([weave.some((e) => e.type === "participant.kicked"), lobby.some((e) => e.type === "weave.invitation_withdrawn")]).toEqual([true, true]);
     for (const e of [...weave, ...lobby]) for (const s of secrets) expect(JSON.stringify(e.payload)).not.toContain(s);
+  });
+});
+
+describe("the refusals and the way back (spec 2026-10-09 §7)", () => {
+  const REMOVED = { code: "forbidden", message: "You were removed from this Weave" };
+  const REJOIN = { code: "forbidden", message: "You were removed from this Weave: a keeper must invite you back" };
+
+  it("a repeat is idempotent: the first call's seq and kickedAt; an invitation issued between the two survives the repeat and readmits; after a second kick the repeat answers its seq", async () => {
+    const f = await setup();
+    const first = await kickParticipant(db, bus, f.paw, f.weaveId, f.mia.id);
+    expect(await kickParticipant(db, bus, f.paw, f.weaveId, f.mia.id)).toEqual({ ...first, created: false });
+    expect(await kicks(f)).toHaveLength(1);
+
+    const kicked = await kickParticipant(db, bus, f.paw, f.weaveId, f.helper.id);
+    const { invitationId } = await directInvite(f);       // a keeper means to readmit
+    expect((await kickParticipant(db, bus, f.paw, f.weaveId, f.helper.id)).withdrawn).toEqual([]);
+    expect((await invitation(invitationId)).revokedAt).toBeNull();
+    const back = await redeemInvitation(db, bus, f.helper.keyActor, invitationId, { kind: "agent" });
+    expect([back.participant.id, back.participant.kickedAt]).toEqual([f.helper.id, null]);
+    const second = await kickParticipant(db, bus, f.paw, f.weaveId, f.helper.id);
+    expect(second.seq).toBeGreaterThan(kicked.seq);
+    expect((await kickParticipant(db, bus, f.paw, f.weaveId, f.helper.id)).seq).toBe(second.seq);
+  });
+
+  it("the kicked token is refused on every path with You were removed from this Weave, and checks nothing in", async () => {
+    const f = await setup();
+    await kickParticipant(db, bus, f.paw, f.weaveId, f.mia.id);
+    await db.update(participants).set({ lastSeenAt: null }).where(eq(participants.id, f.mia.id));
+    const core = createCore(db);
+    // Every adapter turns the bearer string into an Actor with resolveCredential first (requireActor,
+    // CoreToolBackend.actor, the WebSocket ticket and upgrade, a request's target credential), so each
+    // call below resolves the token as they do.
+    const as = () => core.resolveCredential(f.mia.token);
+    const calls: [string, () => Promise<unknown>][] = [
+      ["getWeave", async () => core.getWeave(await as(), f.weaveId)],
+      ["readEvents", async () => core.readEvents(await as(), f.weaveId, {})],
+      ["inbox", async () => core.inbox(await as(), f.weaveId, {})],
+      ["postMessage", async () => core.postMessage(await as(), f.w.generalThread.id, "still here?")],
+      ["createThread", async () => core.createThread(await as(), f.weaveId, "Mine")],
+      ["markRead", async () => core.markRead(await as(), f.w.generalThread.id, 1)],
+      ["readPositions", async () => core.readPositions(await as(), f.weaveId)],
+      ["exportWeave", async () => core.exportWeave(await as(), f.weaveId, "md")],
+      ["openRequest, as the target credential", async () => core.openRequest(f.requester, await as(),
+        { title: "Review", requirements: {}, targetWeaveId: f.weaveId, targetThreadId: f.pr.id })],
+    ];
+    for (const [label, call] of calls) await expect(call(), label).rejects.toMatchObject(REMOVED);
+    expect((await row(f.mia.id)).lastSeenAt).toBeNull();
+  });
+
+  it("the agent key is refused in that Weave only: the Lobby and another Weave it is in still answer", async () => {
+    const f = await setup();
+    const other = await elsewhere();
+    await joinWeave(db, bus, other.w.secret, { name: "Helper", kind: "agent" }, f.helper.keyActor);
+    await kickParticipant(db, bus, f.paw, f.weaveId, f.helper.id);
+    await expect(resolveInWeave(db, f.helper.keyActor, f.weaveId)).rejects.toMatchObject(REMOVED);
+    const core = createCore(db);
+    await expect(core.getWeave(f.helper.keyActor, f.weaveId)).rejects.toMatchObject(REMOVED);
+    expect((await core.getWeave(f.helper.keyActor, f.lobbyId)).weave.id).toBe(f.lobbyId);
+    expect((await core.getWeave(f.helper.keyActor, other.w.weave.id)).weave.id).toBe(other.w.weave.id);
+  });
+
+  it("rejoining with the secret is refused for that agent, on the lookup and on the race path, and no second identity is made", async () => {
+    const f = await setup();
+    await kickParticipant(db, bus, f.paw, f.weaveId, f.helper.id);
+    await expect(joinWeave(db, bus, f.w.secret, { kind: "agent" }, f.helper.keyActor)).rejects.toMatchObject(REJOIN);
+    // The race: a first join by the same key commits, and is kicked, after this one's lookup missed it.
+    const { key } = await addAgent(db, f.instanceKeeper, "Racer");
+    const racer = await resolveCredential(db, key);
+    await expect(joinWeave(db, bus, f.w.secret, { name: "Racer", kind: "agent" }, racer, {
+      beforeLock: async () => {
+        const first = await joinWeave(db, bus, f.w.secret, { name: "Racer-2", kind: "agent" }, racer);
+        await kickParticipant(db, bus, f.paw, f.weaveId, first.participant.id);
+      },
+    })).rejects.toMatchObject(REJOIN);
+    const agentId = racer.kind === "agent" ? racer.agent.id : "";
+    expect(await db.select().from(participants).where(and(eq(participants.weaveId, f.weaveId), eq(participants.agentId, agentId)))).toHaveLength(1);
+  });
+
+  it("a keeper's invitation readmits the same identity: kicked_at cleared, a member, a new token, announced with participant.joined then thread.invited", async () => {
+    const f = await setup();
+    await setRole(db, bus, f.paw, f.weaveId, f.helper.id, "keeper");
+    await kickParticipant(db, bus, f.paw, f.weaveId, f.helper.id);
+    // Kicked and not yet readmitted: the old token is known and refused.
+    await expect(resolveCredential(db, f.helper.token)).rejects.toMatchObject(REMOVED);
+    const { invitationId } = await directInvite(f);
+    const r = await redeemInvitation(db, bus, f.helper.keyActor, invitationId, { kind: "agent" });
+    expect([r.participant.id, r.participant.kickedAt, r.participant.role, r.alreadyJoined]).toEqual([f.helper.id, null, "member", false]);
+    expect(r.token).not.toBe(f.helper.token);
+    // Readmitted: the row now carries the new token, so no row matches the old one and it is unknown.
+    await expect(resolveCredential(db, f.helper.token)).rejects.toMatchObject({ code: "invalid_token" });
+    expect(await resolveCredential(db, r.token)).toMatchObject({ kind: "participant", participant: { id: f.helper.id } });
+    const [joined, invited] = (await readEvents(db, f.weaveId, { threadId: f.pr.id })).slice(-2);
+    expect([joined!.type, joined!.payload, invited!.type, invited!.payload.participantId])
+      .toEqual(["participant.joined", { participantId: f.helper.id, name: "Helper", kind: "agent", role: "member" }, "thread.invited", f.helper.id]);
+    // The Lobby-token redemption reaches the same row.
+    await kickParticipant(db, bus, f.paw, f.weaveId, f.helper.id);
+    const again = await directInvite(f);
+    const viaLobby = await redeemInvitation(db, bus, f.helper.lobbyActor, again.invitationId, { kind: "agent" });
+    expect([viaLobby.participant.id, viaLobby.participant.kickedAt]).toEqual([f.helper.id, null]);
+  });
+
+  it("an invitation issued after the kick readmits, even dated before the kick", async () => {
+    const f = await setup();
+    await kickParticipant(db, bus, f.paw, f.weaveId, f.helper.id);
+    const kickedAt = (await row(f.helper.id)).kickedAt!;
+    const { invitationId } = await directInvite(f);
+    await pin(invitationId, new Date(kickedAt.getTime() - 3_600_000));
+    const r = await redeemInvitation(db, bus, f.helper.keyActor, invitationId, { kind: "agent" });
+    expect([r.participant.id, r.participant.kickedAt, r.alreadyJoined]).toEqual([f.helper.id, null, false]);
+  });
+
+  it("a kick racing inviteToWeave: both complete, and exactly one order holds", async () => {
+    const f = await setup();
+    const [k, inv] = await Promise.all([kickParticipant(db, bus, f.paw, f.weaveId, f.helper.id), directInvite(f)]);
+    const log = await lobbyLog(f);
+    const invited = log.find((e) => e.type === "weave.invited" && e.payload.invitationId === inv.invitationId)!;
+    const withdrawal = log.find((e) => e.type === "weave.invitation_withdrawn" && e.payload.invitationId === inv.invitationId);
+    if (withdrawal) {
+      // The invitation came first: the kick withdrew it.
+      expect([withdrawal.seq > invited.seq, k.withdrawn]).toEqual([true, [inv.invitationId]]);
+      await expect(redeemInvitation(db, bus, f.helper.keyActor, inv.invitationId, { kind: "agent" })).rejects.toMatchObject(WITHDRAWN);
+    } else {
+      // The kick came first: the invitation was issued after it, and readmits.
+      expect(k.withdrawn).toEqual([]);
+      expect((await redeemInvitation(db, bus, f.helper.keyActor, inv.invitationId, { kind: "agent" })).participant.kickedAt).toBeNull();
+    }
+  });
+
+  it("a kick racing inviteToWeave, each order forced once: committed before the kick's locks, withdrawn; after the kick, it readmits", async () => {
+    const f = await setup();
+    let before = "";
+    const k = await kickParticipant(db, bus, f.paw, f.weaveId, f.helper.id, {
+      beforeLock: async () => { before = (await directInvite(f)).invitationId; },
+    });
+    expect(k.withdrawn).toEqual([before]);
+    await expect(redeemInvitation(db, bus, f.helper.keyActor, before, { kind: "agent" })).rejects.toMatchObject(WITHDRAWN);
+    const after = await directInvite(f);
+    expect((await redeemInvitation(db, bus, f.helper.keyActor, after.invitationId, { kind: "agent" })).participant)
+      .toMatchObject({ id: f.helper.id, kickedAt: null });
+  });
+
+  it("names still resolve: getWeave keeps the kicked participant with kickedAt, and the export names it, prints the kick and marks it", async () => {
+    const f = await setup();
+    await postMessage(db, bus, f.mia.actor, f.w.generalThread.id, "hello from Mia");
+    const r = await kickParticipant(db, bus, f.paw, f.weaveId, f.mia.id);
+    const info = await getWeave(db, f.paw, f.weaveId);
+    expect(info.participants.find((p) => p.id === f.mia.id)!.kickedAt).toBe(r.kickedAt);
+    const md = await exportWeave(db, f.paw, f.weaveId, "md");
+    expect(md).toContain("**Mia** · ");
+    expect(md).toContain("_system: Mia was kicked by Paw_");
+    expect(md).toContain("Mia (human, member, kicked)");
+    const json = JSON.parse(await exportWeave(db, f.paw, f.weaveId, "json"));
+    expect(json.participants.find((p: { id: string }) => p.id === f.mia.id).kickedAt).toBe(r.kickedAt);
+  });
+
+  it("mentions skip a kicked participant", async () => {
+    const f = await setup();
+    await kickParticipant(db, bus, f.paw, f.weaveId, f.mia.id);
+    const m = await postMessage(db, bus, f.paw, f.w.generalThread.id, "@Mia and @Helper, a look?");
+    expect(m.payload.mentions).toEqual([f.helper.id]);
+  });
+
+  it("invite_participant and set_role refuse a kicked participant", async () => {
+    const f = await setup();
+    await kickParticipant(db, bus, f.paw, f.weaveId, f.mia.id);
+    const answer = { code: "validation", message: "That participant was kicked from this Weave" };
+    await expect(inviteParticipant(db, bus, f.paw, f.pr.id, f.mia.id)).rejects.toMatchObject(answer);
+    await expect(setRole(db, bus, f.paw, f.weaveId, f.mia.id, "keeper")).rejects.toMatchObject(answer);
   });
 });
