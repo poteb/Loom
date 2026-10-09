@@ -734,7 +734,7 @@ a keeper lists the pending invitations into its Weave and withdraws a direct one
 Pending invitations panel); the invitee is told with `weave.invitation_withdrawn`. Smoke test 12
 withdraws the two live invitations of 2026-10-02 after the deploy.
 
-### Kicking a participant out of a Weave (Paw, 2026-10-09): spec
+### Kicking a participant out of a Weave (Paw, 2026-10-09): spec and plan
 
 Loom cannot take a participant out of a Weave: `remove_participant` works per Thread and never on
 General, and a participant token works for good (SECURITY §9 item 4). Seen live: ChatGPT-Work
@@ -746,9 +746,12 @@ identity there are refused with `forbidden` "You were removed from this Weave", 
 and only a keeper's new invitation readmits the agent as the same participant. A person has no
 account, so anyone holding the Weave link can still join under a new name. Paw's word: "kick"
 everywhere (`kick_participant`, `participant.kicked`, `loom kick`, the web's Kick with a
-confirmation), kept apart from the Thread-level "remove". Spec, for Paw's review:
-[2026-10-09-loom-kick-participant-design.md](2026-10-09-loom-kick-participant-design.md). One slice,
-roughly 9 tasks, migration 0010; smoke test 13 kicks ChatGPT-Work out of Loom development.
+confirmation), kept apart from the Thread-level "remove". Spec, approved by Paw 2026-10-09:
+[2026-10-09-loom-kick-participant-design.md](2026-10-09-loom-kick-participant-design.md); plan:
+[2026-10-09-loom-kick-participant.md](../plans/2026-10-09-loom-kick-participant.md). One slice, ten
+tasks after Task 0 (core in two, then server, client, MCP, channel, CLI, web, skills, docs),
+migration 0010, +61 tests and one new test file expected; smoke test 13 kicks ChatGPT-Work out of
+Loom development.
 
 It is the keeper-side half of the entry "Leaving Loom, and archiving a Weave for oneself" below; the
 self-service leave stays open there.

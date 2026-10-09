@@ -1,7 +1,8 @@
 # Loom: kicking a participant out of a Weave
 
-Date: 2026-10-09. Status: design approved by Paw 2026-10-09; this spec is for Paw's review, and every
-**(choice)** below is listed in its PR. The implementation plan follows once the spec is approved.
+Date: 2026-10-09. Status: approved by Paw 2026-10-09, every **(choice)** accepted as written, after two
+review rounds through Loom (PR #63). The implementation plan is
+[2026-10-09-loom-kick-participant.md](../plans/2026-10-09-loom-kick-participant.md).
 Paw's decisions are restated in §2.
 
 ## 1. Purpose and scope
