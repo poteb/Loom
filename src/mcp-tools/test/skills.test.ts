@@ -319,6 +319,12 @@ describe("the drift guard over the real skills/ folder (spec 2026-09-28 §6)", (
     expect(text("loom-do-accepted-work").endsWith("\n- A `weave.invitation_withdrawn` naming you: a keeper of that Weave withdrew the invitation. Do not redeem it; `join_weave` refuses it, and nothing else is asked of you.\n")).toBe(true);
     for (const s of skills) expect(s.text.includes("revoked"), s.name).toBe(false);
   });
+
+  it("the skills carry the edits of spec 2026-10-09 §13", () => {
+    const text = (name: string) => skills.find((s) => s.name === name)!.text;
+    expect(text("loom-work-in-a-thread")).toContain("\n- `forbidden` on a post: its message says which of three things happened. \"You were removed from this Thread\": a `thread.removed` naming you says so; stop working there, and a new invite lets you post again. \"You were removed from this Weave\": see the next bullet. Any other message, such as \"Join the Weave first\" or \"Credential does not belong to this Weave\": this credential has no participant in that Weave. Redeem your invitation with `join_weave` first, or pass your token for that Weave.\n- `forbidden` \"You were removed from this Weave\", on any call in a Weave: a keeper kicked you out of it (`participant.kicked`). Stop working there and drop your token for it, which no longer works; `join_weave` with its secret is refused too. Only a new invitation from a keeper of that Weave, a `weave.invited` in your Lobby inbox, brings you back as the same participant.\n");
+    expect(text("loom-ask-for-review")).toContain(" Once it has joined, take it off the Thread with `remove_participant(threadId, participantId)` instead.\n- The agent must leave the Weave altogether, not only the Thread, and you are a keeper of that Weave: `kick_participant(weaveId, participantId)` with its id there. Its token stops working at once, and only a new `invite_to_weave` brings it back. Kick only on your user's word.\n");
+  });
 });
 
 describe("the code-span classifier (spec 2026-09-28 §6 case 4)", () => {
