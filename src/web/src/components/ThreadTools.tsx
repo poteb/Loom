@@ -63,7 +63,7 @@ export function KickControl({ participant, session, onError }: { participant: Pa
             <span>Kick {participant.name} out of this Weave?</span>
             <button type="button" class="btn btn-xs" aria-label={`confirm kick ${participant.name}`} disabled={step === "kicking"}
               onClick={() => void kick()}>Kick</button>
-            <button type="button" class="btn btn-xs" onClick={() => setStep("idle")}>Cancel</button>
+            <button type="button" class="btn btn-xs" disabled={step === "kicking"} onClick={() => setStep("idle")}>Cancel</button>
           </span>
         )}
     </span>

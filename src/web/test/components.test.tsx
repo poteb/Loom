@@ -1879,7 +1879,7 @@ describe("kicking from the people list (spec 2026-10-09 §12)", () => {
     expect(kick).not.toHaveBeenCalled();
   });
 
-  it("confirming calls session.kick once with the id, and the confirm button is disabled while it is in flight", async () => {
+  it("confirming calls session.kick once with the id, and the confirm and Cancel buttons are disabled while it is in flight", async () => {
     let finish!: () => void;
     const kick = vi.fn((_participantId: string) => new Promise<void>((r) => { finish = r; }));
     const st = keeperState();
@@ -1888,6 +1888,7 @@ describe("kicking from the people list (spec 2026-10-09 §12)", () => {
     const confirm = screen.getByRole("button", { name: "confirm kick Bot" }) as HTMLButtonElement;
     fireEvent.click(confirm);
     await vi.waitFor(() => expect(confirm.disabled).toBe(true));
+    expect((screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(confirm);
     expect(kick).toHaveBeenCalledTimes(1);
     expect(kick).toHaveBeenCalledWith("p2");
