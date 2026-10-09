@@ -216,7 +216,8 @@ describe("channel tools", () => {
 
   it("the instructions list the onboarding and removal types", async () => {
     await withChannel(stateDir, async (c) => {
-      expect(c.getInstructions()).toContain('|thread.removed|listener.removed|request.offer_withdrawn|weave.invitation_withdrawn" from=');
+      expect(c.getInstructions()).toContain('|thread.removed|listener.removed|request.offer_withdrawn|weave.invitation_withdrawn|participant.kicked" from=');
+      expect(c.getInstructions()).toContain("A participant.kicked notification without seq or thread is the channel's own: Loom refused your token in that Weave, and the channel forgot it.");
       expect(c.getInstructions()).toContain('invitation="<invitationId>" on weave.invited and weave.invitation_withdrawn, and preamble=');
     });
   });

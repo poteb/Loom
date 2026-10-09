@@ -159,9 +159,22 @@ export class ChannelState {
   }
 
   removeWeave(id: string): Promise<void> {
+    return this.mutate((c) => { forget(c, id); });
+  }
+
+  /**
+   * Forgets a Weave only while its stored token is `token`, the one Loom refused (spec 2026-10-09
+   * §8.3). Read inside the mutation, so it holds against the newest committed state: another session
+   * sharing this state may have been readmitted and stored a replacement token after the refused one
+   * was read. A replacement is returned and left standing, with every session's cursor and
+   * preferences for the Weave; undefined means the refused entry was forgotten, or nothing was stored.
+   */
+  removeWeaveIfToken(id: string, token: string): Promise<JoinedWeave | undefined> {
     return this.mutate((c) => {
-      delete c.weaves[id];
-      for (const s of Object.values(c.sessions)) { delete s.cursors[id]; delete s.prefs?.[id]; }
+      const w = c.weaves[id];
+      if (w && w.token !== token) return { ...w };
+      forget(c, id);
+      return undefined;
     });
   }
 
@@ -375,6 +388,12 @@ export class ChannelState {
       } catch { /* already gone */ }
     }
   }
+}
+
+/** Removes a Weave's stored identity and every session's cursor and preferences for it. */
+function forget(c: ChannelConfig, id: string): void {
+  delete c.weaves[id];
+  for (const s of Object.values(c.sessions)) { delete s.cursors[id]; delete s.prefs?.[id]; }
 }
 
 /** A writer entry belongs to a process that still exists (and could therefore still resume and re-check). */

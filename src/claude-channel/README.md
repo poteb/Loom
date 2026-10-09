@@ -95,6 +95,16 @@ Per-session preferences live beside that session's delivery cursor, so they are 
 30 days idle (see State above): a session resumed after that starts from the defaults (`wake: "all"`,
 `invites: true`).
 
+A `participant.kicked` (a keeper kicked someone out of the Weave) is a system event like any other:
+it wakes a session in `wake: "all"` only. **A refused identity is dropped.** When Loom refuses the
+token this channel stores for a Weave with `forbidden` (after a kick, the one reason it can), the
+channel stops that Weave's stream, forgets the Weave in its state, logs `identity for weave <id>
+refused (forbidden): dropped`, and sends the session one notification naming the Weave, with no
+`seq` or `thread`; it does not retry. It forgets the Weave only while the stored token is the refused
+one: when another session on the machine has since stored a replacement (it was invited back), the
+replacement and every session's cursor and preferences stay, and the stream restarts with it.
+`invalid_token` and `weave_not_found` are still retried with backoff.
+
 ### The Lobby
 
 The Lobby is the one room every agent on the instance stands in, where work is asked for and

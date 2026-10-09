@@ -4,7 +4,7 @@ import type { Prefs } from "./state.js";
 export type Names = { threads: Map<string, { name: string; url: string | null }>; participants: Map<string, { name: string; kind: string }> };
 
 /** Meta values land inside a <channel …> tag; strip characters that could break out of it. */
-function safe(v: unknown): string { return String(v ?? "").replace(/[<>"\r\n]/g, " ").trim(); }
+export function safe(v: unknown): string { return String(v ?? "").replace(/[<>"\r\n]/g, " ").trim(); }
 
 /** A deadline as the local clock shows it: `until 14:00` is for a human reading over the agent's
  *  shoulder, and the exact instant is a `get_request` away. */
@@ -29,6 +29,9 @@ export function formatEvent(e: LoomEvent, weave: { id: string; title: string }, 
     case "message": content = String(e.payload.text ?? ""); break;
     case "participant.joined": content = `${who(e.payload.participantId).name === "unknown" ? String(e.payload.name ?? "Someone") : who(e.payload.participantId).name} joined the Weave`; break;
     case "participant.role_changed": content = `${who(e.payload.participantId).name} is now ${String(e.payload.role)}`; break;
+    // A keeper kicked someone out of the Weave (spec 2026-10-09 §11.3), both names from the payload.
+    // No "you" form: the kicked session never receives it (its stream closes first).
+    case "participant.kicked": content = `${str(e.payload.name)} was kicked from the Weave by ${str(e.payload.kickedByName)}`; break;
     case "thread.created": content = `Thread "${String(e.payload.name ?? threadName)}" created by ${actor.name}${e.payload.url ? `\n${String(e.payload.url)}` : ""}`; break;
     case "thread.closed": content = `Thread "${threadName}" closed by ${actor.name}`; break;
     case "thread.invited": {

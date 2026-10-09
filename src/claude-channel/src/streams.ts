@@ -1,9 +1,9 @@
-import type { LoomClient, LoomEvent, StreamHandle } from "@loom/client";
+import { LoomClientError, type LoomClient, type LoomEvent, type StreamHandle } from "@loom/client";
 import type { ChannelState, JoinedWeave, Prefs } from "./state.js";
-import { formatEvent, shouldWake, withPreamble, type Names } from "./format.js";
+import { formatEvent, safe, shouldWake, withPreamble, type Names } from "./format.js";
 
 type Active = {
-  handle?: StreamHandle; names: Names; title: string; prefs: Prefs; participantId: string; chain: Promise<void>; stopped: boolean;
+  handle?: StreamHandle; names: Names; title: string; prefs: Prefs; participantId: string; token: string; chain: Promise<void>; stopped: boolean;
   threadIds: Set<string>; restartTimer?: ReturnType<typeof setTimeout>; backoffMs: number;
   /** The Weave's combined guidelines as of the last successful refresh(); "" when there are none. */
   guidelines: string;
@@ -82,6 +82,48 @@ export class StreamManager {
     this.nextBackoffMs.delete(weaveId);
   }
 
+  /**
+   * Loom refused this stored identity in its own Weave with `forbidden` (spec 2026-10-09 §8.3). After
+   * the kick slice a participant token reading its own Weave is refused that way for one reason only,
+   * a kick, so the Weave is stopped and forgotten, the agent is told once, and no restart is
+   * scheduled: a dead token retried every 30 s for the life of the process helps nobody.
+   * `invalid_token` and `weave_not_found` keep the backoff (KNOWN-ISSUES), because a misconfigured
+   * LOOM_URL or a restored database answers one of them for every stored identity at once.
+   *
+   * The refused token is the one this entry's stream read with, captured before anything awaits.
+   * Every session on the machine shares ChannelState, and another one may have been readmitted and
+   * stored a replacement token after this stream opened; so the Weave is forgotten only while its
+   * stored token is still the refused one. When a replacement is stored, it and every session's
+   * cursor and preferences stand, nothing is notified, and this Weave is restarted with the
+   * replacement from this session's own cursor: nothing else tells this process the token changed.
+   */
+  private async drop(weaveId: string, entry: Active): Promise<void> {
+    if (this.active.get(weaveId) !== entry) return;
+    const refused = entry.token;
+    const title = entry.title;
+    // teardown(), not stop(): whether this session leaves the Weave is known only once the state answers.
+    this.teardown(weaveId);
+    try {
+      const replacement = await this.state.removeWeaveIfToken(weaveId, refused);
+      if (replacement) {
+        this.log(`identity for weave ${weaveId} refused (forbidden): a replacement is stored, restarted with it`);
+        // A join in this process may have started the Weave while the state answered; that stream already reads with it.
+        if (!this.active.has(weaveId)) this.start(weaveId, replacement);
+        return;
+      }
+      this.preambleDone.delete(weaveId);   // what stop() adds to teardown(): a later rejoin opens with the rules again
+      this.log(`identity for weave ${weaveId} refused (forbidden): dropped`);
+      // The channel never receives the participant.kicked itself (its stream closes first), and
+      // without this the session's next call on the Weave would be sent to join_weave, which refuses it.
+      await this.notify({
+        content: `You were removed from "${title}": Loom refuses this participant's token. The channel forgot this Weave; a keeper must invite you back (invite_to_weave).`,
+        meta: { weave: safe(weaveId), weave_title: safe(title), type: "participant.kicked" },
+      });
+    } catch (err) {
+      this.log(`dropping weave ${weaveId} failed: ${(err as Error).message}`);
+    }
+  }
+
   /** Schedules a restart of `weaveId` from the persisted cursor after a backoff, doubling on repeat
    * failures up to `restartBackoffMs.max` and resetting to `initial` after a successful delivery.
    * The doubled delay is recorded in `nextBackoffMs` so the *next* restart's fresh `Active` entry
@@ -113,7 +155,7 @@ export class StreamManager {
     this.teardown(weaveId);
     const reader = this.client.withToken(w.token);
     const entry: Active = {
-      names: { threads: new Map(), participants: new Map() }, title: w.title, prefs: this.state.prefs(weaveId), participantId: w.participantId,
+      names: { threads: new Map(), participants: new Map() }, title: w.title, prefs: this.state.prefs(weaveId), participantId: w.participantId, token: w.token,
       chain: Promise.resolve(), stopped: false, threadIds: new Set(), backoffMs, guidelines: "",
     };
     this.active.set(weaveId, entry);
@@ -198,6 +240,7 @@ export class StreamManager {
       // precondition rather than a nicety: open no stream and leave the cursor where it is, so the
       // events waiting behind it are still there when a getWeave finally succeeds.
       if (entry.stopped) return undefined;
+      if (err instanceof LoomClientError && err.code === "forbidden") { void this.drop(weaveId, entry); return undefined; }
       entry.stopped = true;
       this.log(`initial metadata fetch failed for weave ${weaveId}: ${(err as Error).message}`);
       this.scheduleRestart(weaveId, entry);
@@ -209,6 +252,7 @@ export class StreamManager {
         onEvent,
         onStatus: (st, d) => {
           if (st === "closed" && d?.error && !entry.stopped) {
+            if (d.error.code === "forbidden") { void this.drop(weaveId, entry); return; }
             entry.stopped = true;
             entry.handle?.close();
             this.log(`stream for weave ${weaveId} closed: ${d.error.code}`);
