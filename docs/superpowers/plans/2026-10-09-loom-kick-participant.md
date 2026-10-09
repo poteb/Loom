@@ -77,7 +77,7 @@ git diff --cached | node -e "const bad = [String.fromCharCode(0xc2), String.from
 | `src/mcp-tools/src/tools.ts`, `src/mcp-tools/src/backend.ts` (modify) | the name, the tool, the `get_weave` sentence; the `LoomToolBackend` method |
 | `src/server/src/mcp/backend.ts`, `src/claude-channel/src/backend.ts`, `src/claude-channel/src/stored.ts` (modify) | the backend method over core, over the client, and with the stored credential |
 | `src/mcp-tools/test/tools.test.ts`; `src/server/test/mcp.test.ts`; `src/claude-channel/test/backend.test.ts` (modify); `src/mcp-tools/README.md` (modify) | spec §16.4 tools, §16.2 MCP, §16.6 backend; the count and the Weaves line |
-| `src/claude-channel/src/format.ts`, `server.ts`, `streams.ts` (modify) | the line and `safe` exported; the instructions; the `forbidden` drop |
+| `src/claude-channel/src/format.ts`, `server.ts`, `streams.ts`, `state.ts` (modify) | the line and `safe` exported; the instructions; the `forbidden` drop; `removeWeaveIfToken`, which forgets a Weave only while its stored token is the refused one |
 | `src/claude-channel/test/format.test.ts`, `streams.test.ts`, `channel.test.ts` (modify); `src/claude-channel/README.md` (modify) | spec §16.6 |
 | `src/cli/src/commands/weave.ts`, `messages.ts` (modify) | `loom kick`, `loom info`'s `Kicked:`; the `read` line |
 | `src/cli/test/cli-more.test.ts` (modify); `src/cli/README.md`, `README.md` (modify) | spec §16.5; the command rows and the paragraph |
@@ -925,11 +925,14 @@ describe("the refusals and the way back (spec 2026-10-09 §7)", () => {
     const f = await setup();
     await setRole(db, bus, f.paw, f.weaveId, f.helper.id, "keeper");
     await kickParticipant(db, bus, f.paw, f.weaveId, f.helper.id);
+    // Kicked and not yet readmitted: the old token is known and refused.
+    await expect(resolveCredential(db, f.helper.token)).rejects.toMatchObject(REMOVED);
     const { invitationId } = await directInvite(f);
     const r = await redeemInvitation(db, bus, f.helper.keyActor, invitationId, { kind: "agent" });
     expect([r.participant.id, r.participant.kickedAt, r.participant.role, r.alreadyJoined]).toEqual([f.helper.id, null, "member", false]);
     expect(r.token).not.toBe(f.helper.token);
-    await expect(resolveCredential(db, f.helper.token)).rejects.toMatchObject(REMOVED);
+    // Readmitted: the row now carries the new token, so no row matches the old one and it is unknown.
+    await expect(resolveCredential(db, f.helper.token)).rejects.toMatchObject({ code: "invalid_token" });
     expect(await resolveCredential(db, r.token)).toMatchObject({ kind: "participant", participant: { id: f.helper.id } });
     const [joined, invited] = (await readEvents(db, f.weaveId, { threadId: f.pr.id })).slice(-2);
     expect([joined!.type, joined!.payload, invited!.type, invited!.payload.participantId])
@@ -1015,7 +1018,7 @@ describe("the refusals and the way back (spec 2026-10-09 §7)", () => {
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `cd src/core && npx vitest run test/kick.test.ts`
-Expected: FAIL in the new `describe` only (the fifteen cases of Task 1 still pass): the repeat case at its readmission (`kickedAt` still set); the token case (`getWeave` resolves); the agent-key case (`resolveInWeave` resolves); the secret-path case (the join answers the stored identity); the readmission case (`alreadyJoined` true, the old token); the after-the-kick case; the forced-order case at its readmission; the racing case on whichever branch did not readmit; the names case at the export's line; the mentions case (`[mia, helper]`); the refusals case (`inviteParticipant` resolves). Capture this output for the report.
+Expected: FAIL in the new `describe` only (the fifteen cases of Task 1 still pass): the repeat case at its readmission (`kickedAt` still set); the token case (`getWeave` resolves); the agent-key case (`resolveInWeave` resolves); the secret-path case (the join answers the stored identity); the readmission case (the old token still resolves before the readmission); the after-the-kick case; the forced-order case at its readmission; the racing case on whichever branch did not readmit; the names case at the export's line; the mentions case (`[mia, helper]`); the refusals case (`inviteParticipant` resolves). Capture this output for the report.
 
 - [ ] **Step 3: The token and the agent key (spec §7.2, §7.3).** In `src/core/src/actors.ts`, directly before the doc comment that begins `/**` and whose first line is ` * Resolves a bearer credential: participant token, keeper token, agent key, or weave secret. Every`, add:
 
@@ -1743,18 +1746,25 @@ Expected: the stat shows no `Bin` row, and the scan prints `scan clean`.
 
 ### Task 6: claude-channel: the line, the instructions, and dropping a refused identity
 
-Spec §5.3 (the channel), §8.3, §11.3, §16.6. **This task carries the two `format.test.ts` cases, the three `streams.test.ts` cases and the repaired `channel.test.ts` case.**
+Spec §5.3 (the channel), §8.3, §11.3, §16.6. **This task carries the two `format.test.ts` cases, the four `streams.test.ts` cases and the repaired `channel.test.ts` case.**
 
 **Files:**
 - Modify: `src/claude-channel/src/format.ts` (`safe` exported; `formatEvent`)
 - Modify: `src/claude-channel/src/server.ts` (the `INSTRUCTIONS` entry beginning `'Events arrive as <channel source="loom"`)
-- Modify: `src/claude-channel/src/streams.ts` (the imports; `drop`; the stream's terminal close; the initial metadata failure)
+- Modify: `src/claude-channel/src/state.ts` (`removeWeaveIfToken`; `removeWeave` through the shared `forget`)
+- Modify: `src/claude-channel/src/streams.ts` (the imports; `Active.token`; `drop`; the stream's terminal close; the initial metadata failure)
 - Modify: `src/claude-channel/README.md`
 - Test: `src/claude-channel/test/format.test.ts`, `src/claude-channel/test/streams.test.ts`, `src/claude-channel/test/channel.test.ts`
 
 **Interfaces:**
 - Consumes: Task 4's `EventType` member `"participant.kicked"` and `LoomClientError` (`@loom/client`); the payload of Task 1.
-- Produces: `formatEvent` renders `<name> was kicked from the Weave by <kickedByName>`; `shouldWake` is unchanged (the type wakes only in `wake: "all"`); `StreamManager` drops a stored Weave whose stream closes with `forbidden`, or whose start's `getWeave` answers `forbidden`: it stops it, removes it from `ChannelState`, logs `identity for weave <id> refused (forbidden): dropped`, sends one notification, and schedules no restart.
+- Produces: `formatEvent` renders `<name> was kicked from the Weave by <kickedByName>`; `shouldWake` is unchanged (the type wakes only in `wake: "all"`); `StreamManager` acts on a stored Weave whose stream closes with `forbidden`, or whose start's `getWeave` answers `forbidden`: it tears the stream down and asks `ChannelState` to forget the Weave only while the stored token is still the refused one. When it was, the entry and every session's cursor and preferences for it are removed, it logs `identity for weave <id> refused (forbidden): dropped`, sends one notification, and schedules no restart. When another session sharing the state has stored a replacement token since, the entry, its cursors and its preferences stand, nothing is notified, it logs `identity for weave <id> refused (forbidden): a replacement is stored, restarted with it`, and restarts the stream with the replacement.
+
+```ts
+// src/claude-channel/src/state.ts
+/** Forgets a Weave only while its stored token is `token`; returns the replacement when another one is stored. */
+removeWeaveIfToken(id: string, token: string): Promise<JoinedWeave | undefined>;
+```
 
 - [ ] **Step 1: Write the failing `format.test.ts` cases.** In `src/claude-channel/test/format.test.ts`, at the end of the file, add:
 
@@ -1835,6 +1845,38 @@ describe("a refused identity is dropped (spec 2026-10-09 §8.3)", () => {
     expect([notify.mock.calls.length, state.load().weaves[WEAVE_ID]?.token]).toEqual([0, "tok"]);
     sm.closeAll();
   });
+
+  it("a replacement token another session stored outlives the old token's refusal: kept with every cursor and preference, the stream restarted with it, nothing notified", async () => {
+    // One machine, one state directory, two sessions. A listens with "tok"; B, after the kick, is
+    // readmitted and stores the new token; only then does A's stream get its delayed forbidden.
+    const w = makeWeave();
+    const a = await makeState(w, "s1");
+    await a.setPrefs(WEAVE_ID, { invites: false });
+    const log = vi.fn();
+    const notify = vi.fn().mockResolvedValue(undefined);
+    const { client: fake, streams } = makeFakeClient();
+    const tokens: string[] = [];
+    const client = { ...fake, withToken: (t: string) => { tokens.push(t); return fake.withToken(t); } } as unknown as LoomClient;
+    const sm = new StreamManager(client, a, notify, log, { initial: 20, max: 80 });
+    sm.start(WEAVE_ID, w);
+    await waitFor(() => streams.length === 1);
+    const b = new ChannelState(a.dir, "s2");
+    await b.setPrefs(WEAVE_ID, { wake: "mentions" });
+    await b.upsertWeave(WEAVE_ID, { ...makeWeave(), token: "tok-2", lastSeq: 5 });
+    streams[0]!.opts.onStatus?.("closed", { error: REFUSED() });
+    await waitFor(() => streams.length === 2);
+    expect(tokens).toEqual(["tok", "tok-2"]);
+    expect(streams[0]!.close).toHaveBeenCalled();
+    expect(streams[1]!.opts.since).toBe(3);   // A's own cursor, kept
+    expect(log).toHaveBeenCalledWith(`identity for weave ${WEAVE_ID} refused (forbidden): a replacement is stored, restarted with it`);
+    const after = new ChannelState(a.dir, "s3").load();
+    expect(after.weaves[WEAVE_ID]?.token).toBe("tok-2");
+    expect([after.sessions.s1?.cursors[WEAVE_ID], after.sessions.s1?.prefs?.[WEAVE_ID]]).toEqual([3, { invites: false }]);
+    expect([after.sessions.s2?.cursors[WEAVE_ID], after.sessions.s2?.prefs?.[WEAVE_ID]]).toEqual([5, { wake: "mentions" }]);
+    await new Promise((r) => setTimeout(r, 60));   // past the 20 ms backoff: no further restart
+    expect([streams.length, notify.mock.calls.length]).toEqual([2, 0]);
+    sm.closeAll();
+  });
 });
 ```
 
@@ -1848,7 +1890,7 @@ describe("a refused identity is dropped (spec 2026-10-09 §8.3)", () => {
 - [ ] **Step 4: Run them to verify they fail**
 
 Run: `pnpm -r build && cd src/claude-channel && npx vitest run test/format.test.ts test/streams.test.ts test/channel.test.ts`
-Expected: FAIL. `format.test.ts`: the `formatEvent` case (`participant.kicked` is rendered as its type by the `default` branch); its `shouldWake` case passes already, since it pins that no rule is added (spec §5.3). `streams.test.ts`: the two drop cases time out waiting for the notification (a `forbidden` close restarts today); the `invalid_token` case passes already, and pins that it keeps doing so. `channel.test.ts`: the repaired case, neither substring found. Capture this output for the report.
+Expected: FAIL. `format.test.ts`: the `formatEvent` case (`participant.kicked` is rendered as its type by the `default` branch); its `shouldWake` case passes already, since it pins that no rule is added (spec §5.3). `streams.test.ts`: the two drop cases time out waiting for the notification (a `forbidden` close restarts today); the replacement case fails at `tokens` (`["tok", "tok"]`: today's restart reads this process's cached state, which still holds the refused token); the `invalid_token` case passes already, and pins that it keeps doing so. `channel.test.ts`: the repaired case, neither substring found. Capture this output for the report.
 
 - [ ] **Step 5: The line.** In `src/claude-channel/src/format.ts`, replace the line that is today, whole, `function safe(v: unknown): string { return String(v ?? "").replace(/[<>"\r\n]/g, " ").trim(); }` with:
 
@@ -1879,6 +1921,8 @@ import { LoomClientError, type LoomClient, type LoomEvent, type StreamHandle } f
 import { formatEvent, safe, shouldWake, withPreamble, type Names } from "./format.js";
 ```
 
+In `type Active`, replace the substring `participantId: string; chain: Promise<void>;` with `participantId: string; token: string; chain: Promise<void>;` (the token this entry's stream reads with, so a refusal names the token it refused), and in `start`, in the `const entry: Active = {` literal, replace the substring `participantId: w.participantId,` with `participantId: w.participantId, token: w.token,`.
+
 Directly before the line that begins `  /** Schedules a restart of` (the doc comment of `scheduleRestart`), add:
 
 ```ts
@@ -1889,14 +1933,30 @@ Directly before the line that begins `  /** Schedules a restart of` (the doc com
    * scheduled: a dead token retried every 30 s for the life of the process helps nobody.
    * `invalid_token` and `weave_not_found` keep the backoff (KNOWN-ISSUES), because a misconfigured
    * LOOM_URL or a restored database answers one of them for every stored identity at once.
+   *
+   * The refused token is the one this entry's stream read with, captured before anything awaits.
+   * Every session on the machine shares ChannelState, and another one may have been readmitted and
+   * stored a replacement token after this stream opened; so the Weave is forgotten only while its
+   * stored token is still the refused one. When a replacement is stored, it and every session's
+   * cursor and preferences stand, nothing is notified, and this Weave is restarted with the
+   * replacement from this session's own cursor: nothing else tells this process the token changed.
    */
   private async drop(weaveId: string, entry: Active): Promise<void> {
     if (this.active.get(weaveId) !== entry) return;
+    const refused = entry.token;
     const title = entry.title;
-    this.stop(weaveId);
-    this.log(`identity for weave ${weaveId} refused (forbidden): dropped`);
+    // teardown(), not stop(): whether this session leaves the Weave is known only once the state answers.
+    this.teardown(weaveId);
     try {
-      await this.state.removeWeave(weaveId);
+      const replacement = await this.state.removeWeaveIfToken(weaveId, refused);
+      if (replacement) {
+        this.log(`identity for weave ${weaveId} refused (forbidden): a replacement is stored, restarted with it`);
+        // A join in this process may have started the Weave while the state answered; that stream already reads with it.
+        if (!this.active.has(weaveId)) this.start(weaveId, replacement);
+        return;
+      }
+      this.preambleDone.delete(weaveId);   // what stop() adds to teardown(): a later rejoin opens with the rules again
+      this.log(`identity for weave ${weaveId} refused (forbidden): dropped`);
       // The channel never receives the participant.kicked itself (its stream closes first), and
       // without this the session's next call on the Weave would be sent to join_weave, which refuses it.
       await this.notify({
@@ -1907,6 +1967,52 @@ Directly before the line that begins `  /** Schedules a restart of` (the doc com
       this.log(`dropping weave ${weaveId} failed: ${(err as Error).message}`);
     }
   }
+
+```
+
+In `src/claude-channel/src/state.ts`, replace the method that is today, whole:
+
+```ts
+  removeWeave(id: string): Promise<void> {
+    return this.mutate((c) => {
+      delete c.weaves[id];
+      for (const s of Object.values(c.sessions)) { delete s.cursors[id]; delete s.prefs?.[id]; }
+    });
+  }
+```
+
+with:
+
+```ts
+  removeWeave(id: string): Promise<void> {
+    return this.mutate((c) => { forget(c, id); });
+  }
+
+  /**
+   * Forgets a Weave only while its stored token is `token`, the one Loom refused (spec 2026-10-09
+   * §8.3). Read inside the mutation, so it holds against the newest committed state: another session
+   * sharing this state may have been readmitted and stored a replacement token after the refused one
+   * was read. A replacement is returned and left standing, with every session's cursor and
+   * preferences for the Weave; undefined means the refused entry was forgotten, or nothing was stored.
+   */
+  removeWeaveIfToken(id: string, token: string): Promise<JoinedWeave | undefined> {
+    return this.mutate((c) => {
+      const w = c.weaves[id];
+      if (w && w.token !== token) return { ...w };
+      forget(c, id);
+      return undefined;
+    });
+  }
+```
+
+and directly before the line that is today, whole, `/** A writer entry belongs to a process that still exists (and could therefore still resume and re-check). */`, add:
+
+```ts
+/** Removes a Weave's stored identity and every session's cursor and preferences for it. */
+function forget(c: ChannelConfig, id: string): void {
+  delete c.weaves[id];
+  for (const s of Object.values(c.sessions)) { delete s.cursors[id]; delete s.prefs?.[id]; }
+}
 
 ```
 
@@ -1935,8 +2041,10 @@ it wakes a session in `wake: "all"` only. **A refused identity is dropped.** Whe
 token this channel stores for a Weave with `forbidden` (after a kick, the one reason it can), the
 channel stops that Weave's stream, forgets the Weave in its state, logs `identity for weave <id>
 refused (forbidden): dropped`, and sends the session one notification naming the Weave, with no
-`seq` or `thread`; it does not retry. `invalid_token` and `weave_not_found` are still retried with
-backoff.
+`seq` or `thread`; it does not retry. It forgets the Weave only while the stored token is the refused
+one: when another session on the machine has since stored a replacement (it was invited back), the
+replacement and every session's cursor and preferences stay, and the stream restarts with it.
+`invalid_token` and `weave_not_found` are still retried with backoff.
 ```
 
 - [ ] **Step 10: Typecheck, then the channel suite whole**
@@ -1947,10 +2055,10 @@ Expected: all green, pristine.
 - [ ] **Step 11: Commit**
 
 ```bash
-git add src/claude-channel/src/format.ts src/claude-channel/src/server.ts src/claude-channel/src/streams.ts src/claude-channel/README.md src/claude-channel/test/format.test.ts src/claude-channel/test/streams.test.ts src/claude-channel/test/channel.test.ts
+git add src/claude-channel/src/format.ts src/claude-channel/src/server.ts src/claude-channel/src/state.ts src/claude-channel/src/streams.ts src/claude-channel/README.md src/claude-channel/test/format.test.ts src/claude-channel/test/streams.test.ts src/claude-channel/test/channel.test.ts
 git diff --cached --stat
 git diff --cached | node -e "const bad = [String.fromCharCode(0xc2), String.fromCharCode(0xe2, 0x20ac), String.fromCharCode(0x2014)]; let s = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', (c) => { s += c; }).on('end', () => { const hits = s.split('\n').filter((l) => l.startsWith('+') && bad.some((b) => l.includes(b))); console.log(hits.length ? 'FOUND:\n' + hits.join('\n') : 'scan clean'); });"
-git commit -m "feat(channel): render participant.kicked, and drop an identity Loom refuses with forbidden" -m "The line names both people from the payload; the type wakes in wake all only, by the existing fallback. The instructions' type= list gains it, with a sentence on the channel's own notification. A stored Weave whose stream closes with forbidden, or whose start's getWeave answers forbidden, is stopped, removed from state and notified once, with no restart; invalid_token and weave_not_found keep the backoff. Ripple repaired: channel.test.ts 'the instructions list the onboarding and removal types'." -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git commit -m "feat(channel): render participant.kicked, and drop an identity Loom refuses with forbidden" -m "The line names both people from the payload; the type wakes in wake all only, by the existing fallback. The instructions' type= list gains it, with a sentence on the channel's own notification. A stored Weave whose stream closes with forbidden, or whose start's getWeave answers forbidden, is stopped, removed from state and notified once, with no restart, but only while the stored token is the refused one: a replacement another session stored is kept with every cursor and preference, and the stream restarts with it. invalid_token and weave_not_found keep the backoff. Ripple repaired: channel.test.ts 'the instructions list the onboarding and removal types'." -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 Expected: the stat shows no `Bin` row, and the scan prints `scan clean`.
@@ -2698,7 +2806,7 @@ only summarised) and `kicked_at` (kicked out of the Weave by a keeper; the row s
   - `client`: ``The kick-participant slice: `kickParticipant` round-tripped, and a kicked stream reporting `closed` with `forbidden` without reconnecting again.``
   - `mcp-tools`: in this row replace the substring `(41 tools)` with `(42 tools)`, and append: ``The kick-participant slice: `kick_participant` (its place after `set_role`, its description, the pass-through), `get_weave`'s sentence on kicked participants, and the skills' kick edits.``
   - `cli`: ``The kick-participant slice: `loom kick` (the withdrawn tail, a repeat, `--json`, a member refused), `loom info`'s `Kicked:` section and the `read` line.``
-  - `claude-channel`: ``The kick-participant slice: the `participant.kicked` line and its wake in `all` mode only, the instructions' `type=` list and sentence, a stored identity dropped once on `forbidden` (from the stream and from the restart's metadata read) while `invalid_token` still restarts, and the stored credential reaching `kick_participant`.``
+  - `claude-channel`: ``The kick-participant slice: the `participant.kicked` line and its wake in `all` mode only, the instructions' `type=` list and sentence, a stored identity dropped once on `forbidden` (from the stream and from the restart's metadata read) but kept, and the stream restarted with it, when another session stored a replacement token, while `invalid_token` still restarts, and the stored credential reaching `kick_participant`.``
   - `web`: ``The kick-participant slice: the people list and the composer leaving kicked participants out, the Kick control with its confirmation (a keeper only, never on oneself, not the Lobby, archived too, in flight and refused), the session's `kick` and its refresh on `participant.kicked`, a kicked tab dropping its identity once and reading on with the secret or settling at `no-credential`, and the Thread line and folded word.``
 
 - [ ] **Step 5: docs/TESTING.md, smoke test 13.** Replace the opening words `Twelve things the automated suites cannot cover` with `Thirteen things the automated suites cannot cover`. At the end of the file, after smoke test 12's `*Last run:*` paragraph, add, with one empty line before it:
@@ -2773,7 +2881,7 @@ new error code, one new route, one new tool (42 in all), and no authority beyond
 | server | `POST /api/weaves/:id/participants/:pid/kick` (`routes/weaves.ts`); the forced re-check on `participant.kicked` (`ws.ts`); the MCP backend's method (`mcp/backend.ts`) |
 | mcp-tools | `kick_participant` after `set_role` and `get_weave`'s sentence on kicked participants (`tools.ts`); the `LoomToolBackend` method |
 | client | `kickParticipant`, `KickResult`, `Participant.kickedAt`, the type in `EventType` |
-| claude-channel | the `participant.kicked` line (`format.ts`); the instructions' `type=` list and sentence (`server.ts`); a stored identity dropped on `forbidden` with one notification (`streams.ts`); the backend methods (`backend.ts`, `stored.ts`) |
+| claude-channel | the `participant.kicked` line (`format.ts`); the instructions' `type=` list and sentence (`server.ts`); a stored identity dropped on `forbidden` with one notification, only while it is still the refused token (`streams.ts`, `removeWeaveIfToken` in `state.ts`); the backend methods (`backend.ts`, `stored.ts`) |
 | cli | `loom kick <participantId>` and `loom info`'s `Kicked:` section (`commands/weave.ts`); the `read` line (`commands/messages.ts`) |
 | web | `present`, `canKick`, `kick` and the stream-close recovery (`session.ts`); `KickControl` with its confirmation (`ThreadTools.tsx`) on the people list (`ThreadDetails.tsx`); the composer's names (`Composer.tsx`); the Thread line and folded word; no CSS |
 | repo | two skills (`loom-work-in-a-thread`, `loom-ask-for-review`) and spec 2026-09-28 §7 amended with the same bytes |
@@ -2859,7 +2967,7 @@ after the deploy.
 - [ ] **Step 9: Build, typecheck and run everything, serially, from a clean build**
 
 Run: `pnpm -r build && pnpm -r typecheck && pnpm --workspace-concurrency=1 -r test`
-Expected: every package passes, with no stray output. If the Docker daemon does not answer, stop and report so Paw can start Docker Desktop. Record per package (tests and files) and overall in the ledger, beside Task 0's baseline. The expected movement, for the controller to check against (the run's figures are the record, not these): core +28 tests and +1 file (`kick.test.ts` 26, `units.test.ts` 1, `db.test.ts` 1), server +6 (`routes.test.ts` 2, `ws.test.ts` 3, `mcp.test.ts` 1; the repaired catalog case adds none), client +2 (`client.test.ts` 1, `stream.test.ts` 1), mcp-tools +4 (`tools.test.ts` 3, `skills.test.ts` 1; the repaired and renamed cases add none), claude-channel +6 (`format.test.ts` 2, `streams.test.ts` 3, `backend.test.ts` 1; the repaired `channel.test.ts` case adds none), cli +3, web +12 (`components.test.tsx` 7, `session.test.ts` 4, `fold.test.ts` 1): **+61 tests and +1 file**, so from 2473 in 80 to **2534 in 81** if Task 0's baseline matched TESTING.md. A difference is reported in the ledger with its reason, never smoothed.
+Expected: every package passes, with no stray output. If the Docker daemon does not answer, stop and report so Paw can start Docker Desktop. Record per package (tests and files) and overall in the ledger, beside Task 0's baseline. The expected movement, for the controller to check against (the run's figures are the record, not these): core +28 tests and +1 file (`kick.test.ts` 26, `units.test.ts` 1, `db.test.ts` 1), server +6 (`routes.test.ts` 2, `ws.test.ts` 3, `mcp.test.ts` 1; the repaired catalog case adds none), client +2 (`client.test.ts` 1, `stream.test.ts` 1), mcp-tools +4 (`tools.test.ts` 3, `skills.test.ts` 1; the repaired and renamed cases add none), claude-channel +7 (`format.test.ts` 2, `streams.test.ts` 4, `backend.test.ts` 1; the repaired `channel.test.ts` case adds none), cli +3, web +12 (`components.test.tsx` 7, `session.test.ts` 4, `fold.test.ts` 1): **+62 tests and +1 file**, so from 2473 in 80 to **2535 in 81** if Task 0's baseline matched TESTING.md. A difference is reported in the ledger with its reason, never smoothed.
 
 - [ ] **Step 10: The checks the branch must pass whole**
   - `git diff --stat origin/main -- src/web/src/styles.css` prints nothing, and `git diff --stat origin/main -- src/core/drizzle` lists exactly the 0010 `.sql`, `meta/0010_snapshot.json` and `meta/_journal.json`.
@@ -2909,11 +3017,11 @@ Expected: the stat shows no `Bin` row, and the scan prints `scan clean`.
 9. **The Kick control's markup.** `KickControl` is a `<span class="kick-control">` holding either the button or the `<span class="kick-confirm">`, so both hooks the spec names exist; the buttons reuse `btn btn-xs`. Only the confirming button is disabled while the kick is in flight, as the spec says; Cancel stays enabled. No CSS.
 10. **`present(participants)` is exported from `session.ts`** and is the one rule for "who is here", read by the people list, its count and the composer (spec §6). It keeps a participant whose `kickedAt` is falsy, so an answer without the field (an older server) lists everyone, as today.
 11. **`canKick()` is `mayManageInvitations(state)`** (the spec's own choice), and the DOM tests gate on that real function rather than on a stub, as the previous slice's panel tests do.
-12. **The channel's drop.** It runs only for a `LoomClientError` whose code is `forbidden`, from the stream's terminal close or from `start`'s metadata read; it is a no-op unless the Weave's active entry is still the one that failed; a failing `removeWeave` or `notify` is logged rather than thrown. The notification's meta values go through `format.ts`'s `safe`, now exported, as every other notification's do.
+12. **The channel's drop.** It runs only for a `LoomClientError` whose code is `forbidden`, from the stream's terminal close or from `start`'s metadata read; it is a no-op unless the Weave's active entry is still the one that failed; the refused token is the entry's own (`Active.token`, the one its reader was made with), captured before anything awaits; the state forgets the Weave only while the stored token equals it (`removeWeaveIfToken`, inside the mutation, so against the newest commit). When another session sharing the state has stored a replacement, the entry and every session's cursor and preferences stand, nothing is notified, and the stream is restarted with the replacement from this session's own cursor, because nothing else tells this process the token changed (a restart from the cached state would retry the refused token); a replacement refused in turn is then dropped the ordinary way, so there is no loop. A failing `removeWeaveIfToken` or `notify` is logged rather than thrown. The notification's meta values go through `format.ts`'s `safe`, now exported, as every other notification's do.
 13. **Core's shared words are constants**: `REMOVED_FROM_WEAVE` (`actors.ts`, also used by `joinWeave`'s longer message) and `KICKED_TARGET` (`participants.ts`, also used by `invites.ts`). `withdrawPending` is a private helper of `participants.ts`; the withdrawn rows are sorted in JavaScript by `created_at`, then id, as spec §4.6 says, for a stable event order only.
 14. **ARCHITECTURE edits beyond the spec's list**, for accuracy: the lock-order paragraph names `kickParticipant` among the two-row flows, the Lobby-types paragraph says a kick's withdrawal of a request's invitation lands on the request's Thread, and the participant token row says a keeper may kick. REVIEW-BRIEF question 10 counts five two-row flows.
 15. **Readmission's answer.** `alreadyJoined` is `!!mine && !mine.kickedAt`: false for a readmitted participant (spec §7.5 step 3), unchanged otherwise. The readmitted row is re-read by `returning()`, so the answer carries the new token and the cleared `kickedAt`.
-16. **Beyond the spec's list**, each in the task named: the authority matrix also checks the facade's "Join the Weave first" for a key with no participant in the Weave (1); the pending-invitation case also redeems with the Lobby token (1); the readmission case also checks the old token refused and the new one resolving (2); the names case also checks the JSON export's `kickedAt` (2); the client case also checks `getWeave` lists the kicked participant (4); the CLI also checks a member's refusal (7); the channel's `invalid_token` case pins the backoff the spec keeps, and its `shouldWake` case pins that no rule is added (6), so both pass at once by design.
+16. **Beyond the spec's list**, each in the task named: the authority matrix also checks the facade's "Join the Weave first" for a key with no participant in the Weave (1); the pending-invitation case also redeems with the Lobby token (1); the readmission case also checks the old token, `forbidden` while kicked and `invalid_token` after the readmission (no row holds it any more), and the new one resolving (2); the names case also checks the JSON export's `kickedAt` (2); the client case also checks `getWeave` lists the kicked participant (4); the CLI also checks a member's refusal (7); the channel's `invalid_token` case pins the backoff the spec keeps, and its `shouldWake` case pins that no rule is added (6), so both pass at once by design.
 17. **The web's kicked-tab cases use an id target with a stored token.** A tab reading with the Weave secret (a `/w/<secret>` target) is not refused by a kick and keeps reading, which is today's behaviour and spec §19's honest limit.
 18. **Smoke test 13 says to run `pnpm -r build` after pulling `main`** before the live CLI is used (the HANDOFF's lesson: the CLI runs from `dist`), and the controller's after-merge steps say the same.
 19. **The migration's stamp.** If the machine's clock reads earlier than 0009's `when` when `drizzle-kit generate` runs, Task 1 stops and reports rather than editing the stamp (CONTRIBUTING: the hash is recorded beside it).
@@ -2980,6 +3088,7 @@ Expected: the stat shows no `Bin` row, and the scan prints `scan clean`.
 | §16.6 `streams.test.ts`: forbidden on the stream's close drops, notifies once, does not restart | 6 |
 | §16.6 `streams.test.ts`: the same when the restart's getWeave answers forbidden | 6 |
 | §16.6 `streams.test.ts`: invalid_token still restarts with backoff | 6 |
+| §16.6 `streams.test.ts`: a replacement token another session stored is kept with its cursors and preferences, the stream restarts with it, nothing is notified | 6 |
 | §16.6 `channel.test.ts`: the pinned instructions substring and the sentence | 6 |
 | §16.6 `backend.test.ts`: kickParticipant with credential stored reaches that Weave's token | 5 |
 | §16.7 `components.test.tsx`: systemLine renders the line of §11.1 | 8 |

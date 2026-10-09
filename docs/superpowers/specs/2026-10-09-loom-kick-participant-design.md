@@ -486,7 +486,10 @@ readmit, and it readmits. When `mine.kickedAt` is set:
 1. Inside the same transaction and lock: `UPDATE participants SET kicked_at = NULL, role =
    'member', token = <newSecret()>` **(choice: a new token)**. A kick may be the answer to a token that
    leaked or misbehaved; a readmission is for the agent, not for whatever still holds the old string.
-   The new token is in the answer, as every join's is.
+   The new token is in the answer, as every join's is. From then on no participant row holds the old
+   token, so `resolveCredential` no longer finds it and answers `invalid_token` (401) "Unknown or
+   missing credential", the answer for any unknown string; the kicked-row check of §7.2 is never
+   reached for it. Only between the kick and the readmission is the old token answered `forbidden`.
 2. The readmission is announced with **`participant.joined`** on the invitation's Thread, payload
    `{ participantId, name, kind, role }` exactly as for a participant new to the Weave, before the
    `thread.invited` **(choice)**: every reader that must put the participant back (the web session's
@@ -567,9 +570,24 @@ retried every 30 s for the life of the process.
 
 It gains one rule: when a stored identity's own Weave answers **`forbidden`**, either as the stream's
 terminal close error (`onStatus("closed", { error })`) or as the `getWeave` of `refresh()` in
-`start`, the manager stops that Weave (`stop(weaveId)`), removes it from `ChannelState`
-(`removeWeave(weaveId)`), logs `identity for weave <id> refused (forbidden): dropped`, and sends the
-agent one notification (below). No restart is scheduled.
+`start`, the manager tears that Weave's stream down and asks `ChannelState` to forget the Weave
+**only if the stored token is still the refused one**. When it is, the entry is removed with every
+session's cursor and preferences for it, the manager logs `identity for weave <id> refused
+(forbidden): dropped`, and sends the agent one notification (below). No restart is scheduled.
+
+**Only the refused token is dropped** **(choice)**. Every channel process on the machine shares one
+`ChannelState`, and its stored identity per Weave is machine-wide. One session's old stream can get
+its token's delayed `forbidden` after another session has been invited back, redeemed, and stored
+the replacement token (a readmission issues a new token, §7.5). Forgetting the Weave then would
+delete the replacement and every session's cursor and preferences. So the refused token is the one
+the failing stream read with, captured where it failed, and the comparison runs inside the state's
+mutation (`removeWeaveIfToken(weaveId, refusedToken)` in `src/claude-channel/src/state.ts`), against
+the newest committed state. When the stored token differs, the entry, its cursors and its preferences
+stand, nothing is notified, the manager logs `identity for weave <id> refused (forbidden): a
+replacement is stored, restarted with it`, and restarts the Weave's stream with the replacement from
+this session's own cursor: nothing else tells this process that the token changed, and a restart
+from its cached state would retry the refused token. A replacement refused in turn is dropped the
+ordinary way, so this cannot loop.
 
 **Only `forbidden`** **(choice)**. After this slice a participant token reading its own Weave is
 refused with `forbidden` for one reason only: the kick (`assertCanRead` passes for a token in its own
@@ -847,6 +865,7 @@ removal from the request's Thread.
 | The caller kicks itself | `validation` "You cannot kick yourself" (400) |
 | Already kicked | no error: `created: false`, the original seq (§4.4) |
 | A kicked participant's token, anywhere | `forbidden` "You were removed from this Weave" (403), from `resolveCredential` |
+| That old token after a keeper's invitation readmitted the participant | `invalid_token` (401): the readmission issued a new token, so no row holds the old one (§7.5) |
 | An agent key whose participant in that Weave is kicked | `forbidden` "You were removed from this Weave" (403), from `resolveInWeave` |
 | That agent key joining with the secret | `forbidden` "You were removed from this Weave: a keeper must invite you back" (403) |
 | Redeeming an invitation that was pending at the kick | the existing `forbidden` "This invitation was withdrawn" (403): the kick withdrew it (§4.6) |
@@ -936,7 +955,8 @@ is for removals)**:
   and through the race path (`beforeLock` commits the first join); no token is returned.
 - `a keeper's invitation readmits the same identity`: `inviteToWeave` after the kick, then
   `redeemInvitation` with the agent key: the same participant id, `kicked_at` null, `role` member, a new
-  token (the old one still refused, the new one works), `alreadyJoined` false, `participant.joined`
+  token (the old one answers `forbidden` "You were removed from this Weave" before the readmission and
+  `invalid_token` after it, since no row holds it any more; the new one works), `alreadyJoined` false, `participant.joined`
   then `thread.invited` on the invitation's Thread; the Lobby-token redemption reaches the same row.
 - `an invitation pending at the kick is withdrawn by it, whatever its timestamp` (the review's
   regression): a direct invitation and a request's invitation to the agent, both committed before the
@@ -1031,7 +1051,11 @@ the `forbidden` message; `loom info` lists the kicked participant under "Kicked:
   not in mentions mode.
 - `streams.test.ts`: a stored identity whose stream closes with `forbidden` is stopped, removed from
   state, notified once with the text and meta of §8.3, and not restarted; the same when the restart's
-  `getWeave` answers `forbidden`; `invalid_token` still restarts with backoff.
+  `getWeave` answers `forbidden`; `invalid_token` still restarts with backoff; two sessions sharing
+  one state directory, where session B stores a replacement token for the Weave and only then session
+  A's stream closes with `forbidden` for the old token: the replacement token, both sessions' cursors
+  and preferences survive, nothing is notified, and A's stream restarts with the replacement from A's
+  own cursor.
 - `channel.test.ts`: the pinned instructions substring gains `|participant.kicked` after
   `|weave.invitation_withdrawn`, and the new sentence.
 - `backend.test.ts`: `kickParticipant` with `credential: "stored"` reaches that Weave's token.
@@ -1125,7 +1149,7 @@ One slice, one migration (0010), no new setting. A sketch of the plan's tasks (t
   reopen the way in. The withdrawals take the Lobby's lock before the Weave's, the order every
   cross-Weave flow uses, so no deadlock is added (§4.6).
 - **A readmission issues a new token** (§7.5), so a readmitted agent does not revive whatever held the
-  old one.
+  old one: after the readmission the old string is simply unknown (`invalid_token`).
 - **The events expose nothing new.** `participant.kicked` carries two ids and two names the Weave's
   participants already see; each `weave.invitation_withdrawn` has the shape `withdrawInvitation`
   already writes (ids, a title and a name). The test of §16.1 scans both logs for secrets.
