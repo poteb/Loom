@@ -394,24 +394,17 @@ describe("stream", () => {
 });
 
 describe("a kick closes the kicked participant's streams (spec 2026-10-09 §8.1)", () => {
-  // A server of its own, whose TTL re-check never comes due within a case, so only the re-check a
-  // kick forces can close a stream. Its freshDb() truncates the database this file shares with `s`,
-  // which is why this describe runs last; `s` serves no case after it.
+  // A server of its own, whose TTL re-check never comes due within a case once a stream's first
+  // replay page has checked, so only the re-check a kick forces can close a stream. Its freshDb()
+  // truncates the database this file shares with `s`, which is why this describe runs last; `s`
+  // serves no case after it.
   let k: Awaited<ReturnType<typeof startTestServer>>;
-  let kGate: ReturnType<typeof makeGate> | undefined;
   beforeAll(async () => {
-    k = await startTestServer({
-      authTtlMs: 600_000,
-      beforeReplay: async () => {
-        if (!kGate) return;
-        kGate.markEntered();
-        await kGate.released;
-      },
-    });
+    k = await startTestServer({ authTtlMs: 600_000 });
     await k.core.seedKeepers([KEEPER]);
     await k.core.ensureLobby();
   });
-  afterAll(async () => { kGate?.release(); await k.close(); });
+  afterAll(async () => { await k.close(); });
 
   const kTicket = async (cred: string) => (await api(k.baseUrl, "POST", "/api/auth/ws-ticket", undefined, cred)).json.ticket as string;
   /** A raw stream: what it receives, and how it closes. */
@@ -451,14 +444,24 @@ describe("a kick closes the kicked participant's streams (spec 2026-10-09 §8.1)
 
   it("a stream replaying across a kick closes there and sends nothing at or after it", async () => {
     const r = await room("Ned");
-    kGate = makeGate();
-    const mine = watch(`${k.wsUrl}/api/weaves/${r.weaveId}/stream?since=0&ticket=${await kTicket(r.member)}`);
-    await kGate.entered;                       // subscribed, parked before the first replay page
-    expect((await kick(r, r.memberId)).status).toBe(200);                                                   // seq 5
-    await api(k.baseUrl, "POST", `/api/threads/${r.generalId}/messages`, { text: "after the kick" }, r.keeper);   // seq 6
-    kGate.release(); kGate = undefined;
-    expect((await mine.closed).code).toBe(4401);
-    expect(mine.received.map((e) => e.seq)).toEqual([1, 2, 3, 4]);
+    // The kick and a later message commit after the first replay page's credential check and before
+    // its read, so that read returns the kick in the middle of the page.
+    const original = k.core.readEvents;
+    k.core.readEvents = async (actor, weaveId, opts) => {
+      if (weaveId === r.weaveId && opts.since === 0) {
+        k.core.readEvents = original;
+        expect((await kick(r, r.memberId)).status).toBe(200);                                                   // seq 5
+        await api(k.baseUrl, "POST", `/api/threads/${r.generalId}/messages`, { text: "after the kick" }, r.keeper);   // seq 6
+      }
+      return original(actor, weaveId, opts);
+    };
+    try {
+      const mine = watch(`${k.wsUrl}/api/weaves/${r.weaveId}/stream?since=0&ticket=${await kTicket(r.member)}`);
+      expect((await mine.closed).code).toBe(4401);
+      expect(mine.received.map((e) => e.seq)).toEqual([1, 2, 3, 4]);
+    } finally {
+      k.core.readEvents = original;
+    }
   });
 
   it("an agent-key stream closes when that agent's participant is kicked", async () => {
@@ -486,5 +489,35 @@ describe("a kick closes the kicked participant's streams (spec 2026-10-09 §8.1)
     await api(k.baseUrl, "POST", `/api/threads/${r.generalId}/messages`, { text: "after the kick" }, r.keeper);   // seq 6
     expect(await outcome).toBe(4401);
     expect(mine.received).toEqual([]);
+  });
+
+  it("a stream started past the head re-checks its credential on its first replay page: a kick between the upgrade and the subscription closes it", async () => {
+    const r = await room("Quin");
+    // The kick commits after the upgrade's own check (its readEvents) and before the stream
+    // subscribes, so the stream never hears it live; since=5 is the kick's seq, so replay reads nothing.
+    const original = k.core.readEvents;
+    let armed = true;
+    k.core.readEvents = async (actor, weaveId, opts) => {
+      const out = await original(actor, weaveId, opts);
+      if (armed && weaveId === r.weaveId && opts.limit === 1 && opts.since === undefined) {
+        armed = false;
+        expect((await kick(r, r.memberId)).status).toBe(200);                                             // seq 5
+      }
+      return out;
+    };
+    try {
+      const mine = watch(`${k.wsUrl}/api/weaves/${r.weaveId}/stream?since=5&ticket=${await kTicket(r.member)}`);
+      const outcome = Promise.race([
+        mine.closed.then((c) => c.code),
+        new Promise<string>((resolve) => mine.ws.once("message", () => { mine.ws.terminate(); resolve("delivered"); })),
+      ]);
+      await mine.opened;
+      expect(armed).toBe(false);
+      await api(k.baseUrl, "POST", `/api/threads/${r.generalId}/messages`, { text: "after the kick" }, r.keeper);   // seq 6
+      expect(await outcome).toBe(4401);
+      expect(mine.received).toEqual([]);
+    } finally {
+      k.core.readEvents = original;
+    }
   });
 });

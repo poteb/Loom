@@ -100,7 +100,9 @@ async function stream(ws: WebSocket, weaveId: string, since: number, actor: Acto
   // (or a participant demoted/removed) since must not keep streaming forever. Re-resolve the
   // credential against the database at most once per authTtlMs, right before delivering an event.
   let currentActor = actor;
-  let authorizedAt = Date.now();
+  // Due at once: the first replay page re-resolves the credential after subscribing, so a kick
+  // committed between the upgrade's check and the subscription is caught even when replay reads nothing.
+  let authorizedAt = Number.NEGATIVE_INFINITY;
   let revoked = false;
   const ensureAuthorized = async (): Promise<boolean> => {
     if (revoked) return false;
